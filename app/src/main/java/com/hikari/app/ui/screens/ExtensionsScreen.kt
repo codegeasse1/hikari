@@ -205,7 +205,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         return withContext(Dispatchers.IO) {
             runCatching {
-                val text = Http.getStringStrict(url).getOrElse { throw it }
+                val text = Http.fetchStringRobust(url).getOrElse { throw it }
                 val obj = JSONObject(text)
                 val repo = Cs3Repo(
                     url = url,
@@ -229,7 +229,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refreshRepoPlugins(repo: Cs3Repo) {
         repoState.value = repoState.value + (repo.url to RepoLoadState(loading = true, error = null))
         try {
-            val plugins = fetchRepoPlugins(repo.url)
+            val plugins = withContext(Dispatchers.IO) { fetchRepoPlugins(repo.url) }
             pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
         } catch (e: Exception) {
@@ -238,7 +238,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
-        val text = Http.getString(repoUrl) ?: throw Exception("Could not fetch $repoUrl")
+        val text = Http.fetchStringRobust(repoUrl)
+            .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = JSONObject(text)
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
         root.optJSONArray("plugins")?.let { arr ->
@@ -249,7 +250,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         root.optJSONArray("pluginLists")?.let { lists ->
             for (i in 0 until lists.length()) {
                 val listUrl = lists.optString(i).ifBlank { null } ?: continue
-                val listText = Http.getString(listUrl) ?: continue
+                val listText = Http.fetchStringRobust(listUrl).getOrNull() ?: continue
                 val arr = runCatching { JSONArray(listText) }.getOrNull() ?: continue
                 for (j in 0 until arr.length()) {
                     arr.optJSONObject(j)?.let { parsePlugin(it)?.let { p -> out[p.url] = p } }
@@ -279,7 +280,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun installCs3Plugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
-        val bytes = Http.getBytes(plugin.url)
+        val bytes = Http.fetchBytesRobust(plugin.url)
             ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {

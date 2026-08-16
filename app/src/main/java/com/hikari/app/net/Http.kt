@@ -50,4 +50,55 @@ object Http {
         } catch (e: Exception) {
             Result.failure(e)
         }
+
+    private val GITHUB_RAW =
+        Regex("^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$")
+
+    /**
+     * URL + a jsDelivr CDN mirror (global CDN, reachable where GitHub raw often isn't),
+     * each retried once. Returns the first success or the last failure.
+     */
+    private fun urlVariants(url: String): List<String> {
+        val variants = mutableListOf(url)
+        GITHUB_RAW.matchEntire(url)?.let { m ->
+            val user = m.groupValues[1]
+            val repo = m.groupValues[2]
+            val branch = m.groupValues[3]
+            val path = m.groupValues[4]
+            variants.add("https://cdn.jsdelivr.net/gh/$user/$repo@$branch/$path")
+        }
+        return variants
+    }
+
+    fun fetchStringRobust(url: String, headers: Map<String, String> = emptyMap()): Result<String> {
+        var last: Exception = Exception("Failed to fetch $url")
+        for (u in urlVariants(url)) {
+            for (attempt in 0 until 2) {
+                val r = getStringStrict(u, headers)
+                if (r.isSuccess) return r
+                r.exceptionOrNull()?.let { last = it }
+                try {
+                    Thread.sleep(300L)
+                } catch (e: InterruptedException) {
+                    break
+                }
+            }
+        }
+        return Result.failure(last)
+    }
+
+    fun fetchBytesRobust(url: String, headers: Map<String, String> = emptyMap()): ByteArray? {
+        for (u in urlVariants(url)) {
+            for (attempt in 0 until 2) {
+                val b = getBytes(u, headers)
+                if (b != null) return b
+                try {
+                    Thread.sleep(300L)
+                } catch (e: InterruptedException) {
+                    break
+                }
+            }
+        }
+        return null
+    }
 }
