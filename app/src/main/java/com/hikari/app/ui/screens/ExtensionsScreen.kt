@@ -21,13 +21,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -164,6 +167,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .let { if (it.endsWith(".cs3", true)) it else "$it.cs3" }
         val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
         val file = File(dir, clean)
+        file.setWritable(true)
         file.writeBytes(bytes)
 
         val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
@@ -331,6 +335,7 @@ fun ExtensionsScreen() {
     val providers by vm.providers.collectAsState()
     val scope = rememberCoroutineScope()
 
+    var openRepoUrl by remember { mutableStateOf<String?>(null) }
     var showStremio by remember { mutableStateOf(false) }
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
@@ -348,6 +353,7 @@ fun ExtensionsScreen() {
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
     val repoState by vm.repoState.collectAsState()
+    val openRepo = repos.firstOrNull { it.url == openRepoUrl }
 
     LaunchedEffect(Unit) {
         vm.repos.value.forEach { repo -> vm.refreshRepoPlugins(repo) }
@@ -368,188 +374,82 @@ fun ExtensionsScreen() {
         }
     }
 
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp)
-    ) {
-        item {
-            Button(
-                onClick = { errorMsg = null; successMsg = null; showRepoDialog = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Add plugin repo")
+    fun installPlugin(p: Cs3RepoPlugin) {
+        scope.launch {
+            busy = true
+            busyMsg = "Installing ${p.name}…"
+            errorMsg = null
+            successMsg = null
+            val r = vm.installCs3Plugin(p)
+            busy = false
+            r.onSuccess { n ->
+                successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
             }
+            r.onFailure { errorMsg = it.message }
         }
-        item {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = { errorMsg = null; showStremio = true },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add Stremio addon")
+    }
+
+    fun uninstallPlugin(p: Cs3RepoPlugin) {
+        scope.launch {
+            busy = true
+            busyMsg = "Uninstalling ${p.name}…"
+            errorMsg = null
+            successMsg = null
+            vm.uninstallCs3Plugin(p.url)
+            busy = false
+            successMsg = "Uninstalled ${p.name}"
+        }
+    }
+
+    if (openRepo != null) {
+        RepoPluginsView(
+            repo = openRepo,
+            plugins = pluginsByRepo[openRepo.url] ?: emptyList(),
+            state = repoState[openRepo.url] ?: RepoLoadState(loading = true),
+            installedUrls = installed,
+            busy = busy,
+            busyMsg = busyMsg,
+            successMsg = successMsg,
+            errorMsg = errorMsg,
+            onBack = { openRepoUrl = null; errorMsg = null; successMsg = null },
+            onInstall = ::installPlugin,
+            onUninstall = ::uninstallPlugin,
+        )
+    } else {
+        RepoBrowserView(
+            repos = repos,
+            pluginsByRepo = pluginsByRepo,
+            repoState = repoState,
+            providers = providers,
+            busy = busy,
+            busyMsg = busyMsg,
+            successMsg = successMsg,
+            errorMsg = errorMsg,
+            onOpenRepo = { repo ->
+                openRepoUrl = repo.url
+                errorMsg = null
+                successMsg = null
+                if (repoState[repo.url] == null) scope.launch { vm.refreshRepoPlugins(repo) }
+            },
+            onAddRepo = { errorMsg = null; successMsg = null; showRepoDialog = true },
+            onAddStremio = { errorMsg = null; showStremio = true },
+            onAddScraper = { errorMsg = null; showScraper = true },
+            onAddCs3Url = { errorMsg = null; showCs3Url = true },
+            onPickCs3File = {
+                errorMsg = null
+                successMsg = null
+                filePicker.launch(arrayOf("application/octet-stream", "*/*"))
+            },
+            onRemoveRepo = { url ->
+                scope.launch {
+                    vm.removeCs3Repo(url)
+                    if (openRepoUrl == url) openRepoUrl = null
+                    successMsg = "Removed repo"
                 }
-                OutlinedButton(
-                    onClick = { errorMsg = null; showScraper = true },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.Build, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add scraper")
-                }
-            }
-        }
-        item {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = { errorMsg = null; showCs3Url = true },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Install .cs3 from URL")
-                }
-                OutlinedButton(
-                    onClick = {
-                        errorMsg = null
-                        successMsg = null
-                        filePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.Build, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Pick .cs3 file")
-                }
-            }
-        }
-        item {
-            Card(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "CloudStream .cs3 plugins",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Add a CloudStream-style repo (a repo.json URL) to browse and install compiled extensions — or install a single .cs3 file directly.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-        repos.forEach { repo ->
-            item(key = "repo-${repo.url}") {
-                RepoCard(
-                    repo = repo,
-                    plugins = pluginsByRepo[repo.url] ?: emptyList(),
-                    state = repoState[repo.url] ?: RepoLoadState(loading = true),
-                    installedUrls = installed,
-                    onInstall = { p ->
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Installing ${p.name}…"
-                            errorMsg = null
-                            successMsg = null
-                            val r = vm.installCs3Plugin(p)
-                            busy = false
-                            r.onSuccess { n ->
-                                successMsg =
-                                    "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
-                    },
-                    onUninstall = { p ->
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Uninstalling ${p.name}…"
-                            errorMsg = null
-                            successMsg = null
-                            vm.uninstallCs3Plugin(p.url)
-                            busy = false
-                            successMsg = "Uninstalled ${p.name}"
-                        }
-                    },
-                    onRemoveRepo = {
-                        scope.launch {
-                            vm.removeCs3Repo(repo.url)
-                            successMsg = "Removed repo"
-                        }
-                    }
-                )
-            }
-        }
-        if (busy) {
-            item {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(
-                    busyMsg,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-        }
-        successMsg?.let { msg ->
-            item {
-                Text(
-                    msg,
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-        }
-        errorMsg?.let { msg ->
-            item {
-                Text(
-                    msg,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-        }
-        if (providers.isEmpty() && !busy) {
-            item {
-                EmptyState(
-                    title = "No extensions yet",
-                    subtitle = "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file.",
-                    actionLabel = null,
-                    action = null
-                )
-            }
-        }
-        items(providers, key = { it.config.id }) { p ->
-            ProviderCard(
-                p = p,
-                onToggle = { enabled -> scope.launch { vm.toggle(p.config.id, enabled) } },
-                onDelete = { scope.launch { vm.remove(p.config.id) } }
-            )
-        }
-        item { Spacer(Modifier.height(8.dp)) }
+            },
+            onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
+            onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
+        )
     }
 
     if (showRepoDialog) {
@@ -763,6 +663,292 @@ fun ExtensionsScreen() {
 }
 
 @Composable
+private fun SectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp)
+    )
+}
+
+@Composable
+private fun RepoBrowserView(
+    repos: List<Cs3Repo>,
+    pluginsByRepo: Map<String, List<Cs3RepoPlugin>>,
+    repoState: Map<String, RepoLoadState>,
+    providers: List<ContentProvider>,
+    busy: Boolean,
+    busyMsg: String,
+    successMsg: String?,
+    errorMsg: String?,
+    onOpenRepo: (Cs3Repo) -> Unit,
+    onAddRepo: () -> Unit,
+    onAddStremio: () -> Unit,
+    onAddScraper: () -> Unit,
+    onAddCs3Url: () -> Unit,
+    onPickCs3File: () -> Unit,
+    onRemoveRepo: (String) -> Unit,
+    onToggleProvider: (String, Boolean) -> Unit,
+    onDeleteProvider: (String) -> Unit,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        item {
+            Button(
+                onClick = onAddRepo,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Add plugin repo")
+            }
+        }
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = onAddStremio,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add Stremio addon")
+                }
+                OutlinedButton(
+                    onClick = onAddScraper,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Build, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add scraper")
+                }
+            }
+        }
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = onAddCs3Url,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Install .cs3 from URL")
+                }
+                OutlinedButton(
+                    onClick = onPickCs3File,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Build, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Pick .cs3 file")
+                }
+            }
+        }
+        if (busy) {
+            item {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        }
+        successMsg?.let { msg ->
+            item {
+                Text(
+                    msg,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+        }
+        errorMsg?.let { msg ->
+            item {
+                Text(
+                    msg,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+        }
+
+        item { SectionHeader("Plugin repos") }
+        if (repos.isEmpty()) {
+            item {
+                EmptyState(
+                    title = "No plugin repos yet",
+                    subtitle = "Add a CloudStream-style repo to browse and install extensions.",
+                    actionLabel = null,
+                    action = null
+                )
+            }
+        }
+        items(repos, key = { it.url }) { repo ->
+            RepoCard(
+                repo = repo,
+                pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
+                state = repoState[repo.url],
+                onClick = { onOpenRepo(repo) },
+                onRemoveRepo = { onRemoveRepo(repo.url) }
+            )
+        }
+
+        item { SectionHeader("Installed extensions") }
+        if (providers.isEmpty()) {
+            item {
+                EmptyState(
+                    title = "No extensions yet",
+                    subtitle = "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file.",
+                    actionLabel = null,
+                    action = null
+                )
+            }
+        }
+        items(providers, key = { it.config.id }) { p ->
+            ProviderCard(
+                p = p,
+                onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
+                onDelete = { onDeleteProvider(p.config.id) }
+            )
+        }
+        item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun RepoPluginsView(
+    repo: Cs3Repo,
+    plugins: List<Cs3RepoPlugin>,
+    state: RepoLoadState,
+    installedUrls: Set<String>,
+    busy: Boolean,
+    busyMsg: String,
+    successMsg: String?,
+    errorMsg: String?,
+    onBack: () -> Unit,
+    onInstall: (Cs3RepoPlugin) -> Unit,
+    onUninstall: (Cs3RepoPlugin) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    repo.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (repo.description.isNotBlank()) {
+                    Text(
+                        repo.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Text(
+                "${plugins.size} plugin${if (plugins.size == 1) "" else "s"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        HorizontalDivider()
+        if (busy) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                busyMsg,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
+        successMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        errorMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        LazyColumn(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(horizontal = 16.dp, bottom = 24.dp)
+        ) {
+            when {
+                state.loading && plugins.isEmpty() -> item {
+                    Text(
+                        "Loading plugins…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                }
+                state.error != null -> item {
+                    Text(
+                        state.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                }
+                plugins.isEmpty() -> item {
+                    Text(
+                        "No plugins found in this repo.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                }
+                else -> items(plugins, key = { it.url }) { p ->
+                    PluginRow(
+                        p = p,
+                        installed = p.url in installedUrls,
+                        onInstall = { onInstall(p) },
+                        onUninstall = { onUninstall(p) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProviderCard(
     p: ContentProvider,
     onToggle: (Boolean) -> Unit,
@@ -814,68 +1000,69 @@ private fun ProviderCard(
 @Composable
 private fun RepoCard(
     repo: Cs3Repo,
-    plugins: List<Cs3RepoPlugin>,
-    state: RepoLoadState,
-    installedUrls: Set<String>,
-    onInstall: (Cs3RepoPlugin) -> Unit,
-    onUninstall: (Cs3RepoPlugin) -> Unit,
+    pluginCount: Int,
+    state: RepoLoadState?,
+    onClick: () -> Unit,
     onRemoveRepo: () -> Unit,
 ) {
     Card(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        onClick = onClick
     ) {
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(repo.name, style = MaterialTheme.typography.titleSmall)
-                    if (repo.description.isNotBlank()) {
-                        Text(
-                            repo.description,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                IconButton(onClick = onRemoveRepo) {
-                    Icon(
-                        Icons.Filled.Delete,
-                        contentDescription = "Remove repo",
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
             }
-            Spacer(Modifier.height(4.dp))
-            when {
-                state.loading -> Text(
-                    "Loading plugins…",
-                    style = MaterialTheme.typography.bodySmall,
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    repo.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    when {
+                        state?.loading == true -> "Loading plugins…"
+                        pluginCount > 0 -> "${pluginCount} plugin${if (pluginCount == 1) "" else "s"}"
+                        else -> repo.description.ifBlank { "No plugins found" }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 4.dp)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                state.error != null -> Text(
-                    state.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(vertical = 4.dp)
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconButton(onClick = onRemoveRepo) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Remove repo",
+                    tint = MaterialTheme.colorScheme.error
                 )
-                plugins.isEmpty() -> Text(
-                    "No plugins found in this repo.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-                else -> plugins.forEach { p ->
-                    PluginRow(
-                        p = p,
-                        installed = p.url in installedUrls,
-                        onInstall = { onInstall(p) },
-                        onUninstall = { onUninstall(p) }
-                    )
-                }
             }
         }
     }

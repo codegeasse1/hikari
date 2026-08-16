@@ -1,27 +1,34 @@
 package com.hikari.app.cs3
 
 import android.content.Context
+import android.content.res.AssetManager
+import android.content.res.Resources
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import dalvik.system.DexClassLoader
-import dalvik.system.DexFile
 import org.json.JSONObject
 import java.io.File
 import java.util.zip.ZipInputStream
 
 /**
- * Loads compiled CloudStream `.cs3` plugin archives the same way the real
- * CloudStream app does: read `manifest.json` for the `pluginClassName`,
- * instantiate that class with a no-arg constructor, call its `load()`, and
- * collect the MainAPIs it registers. Also scans every other class in the dex
- * as a fallback (some old plugins omit the manifest or ship several providers).
+ * Loads compiled CloudStream `.cs3` plugin archives exactly the way the real
+ * CloudStream app does (see CloudStream-3 `PluginManager.loadPlugin`):
+ *
+ *  1. mark the file read-only — Android 14+ refuses to load a writable dex
+ *     file (`SecurityException: Writable dex file ... is not allowed`),
+ *  2. open a [dalvik.system.PathClassLoader] on the archive,
+ *  3. read `manifest.json` → `pluginClassName` (+ `requiresResources`),
+ *  4. instantiate that class with a no-arg constructor,
+ *  5. set `filename`, load optional resources, call `load()`,
+ *  6. collect the MainAPIs the plugin registers.
+ *
+ * As a fallback (older plugins with no/partial manifests) it also scans the
+ * other classes in the dex for anything that looks like a plugin.
  *
  * Instances are cached per file path so provider state survives across calls.
- *
- * The last failure (if any) is surfaced on [lastError] so the UI can tell the
- * user the REAL reason a plugin refused to load instead of a generic message.
+ * The last failure (if any) is surfaced on [lastError] so the UI can show the
+ * REAL reason a plugin refused to load.
  */
 object Cs3PluginManager {
 
@@ -57,47 +64,36 @@ object Cs3PluginManager {
         errorDetails.setLength(0)
         lastError = null
 
-        val classLoader = try {
-            DexClassLoader(
-                file.absolutePath,
-                context.codeCacheDir.absolutePath,
-                null,
-                context.classLoader
-            )
+        // 1) CloudStream does this first: Android 14+ refuses writable dex files.
+        try {
+            if (!file.setReadOnly()) {
+                record("setReadOnly failed", RuntimeException("could not mark ${file.name} read-only"))
+            }
         } catch (e: Throwable) {
-            record("DexClassLoader failed", e)
+            record("setReadOnly threw", e)
+        }
+
+        // 2) Open a class loader on the archive (PathClassLoader, like CloudStream).
+        val classLoader = try {
+            dalvik.system.PathClassLoader(file.absolutePath, context.classLoader)
+        } catch (e: Throwable) {
+            record("PathClassLoader failed", e)
             finish(null, apis)
             return apis
         }
 
-        val names = try {
-            @Suppress("DEPRECATION")
-            val dex = DexFile(file)
-            try {
-                val list = ArrayList<String>()
-                val it = dex.entries()
-                while (it.hasMoreElements()) list.add(it.nextElement())
-                list
-            } finally {
-                dex.close()
-            }
-        } catch (e: Throwable) {
-            record("DexFile enumeration failed, using fallback parser", e)
-            parseDexClassNames(file)
-        }
-
-        if (names.isEmpty()) {
-            record("no classes found in dex", RuntimeException("empty class list"))
-        }
-
-        // 1) Manifest-declared plugin class first (exactly how CloudStream works).
-        val manifestClass = try {
-            readManifestPluginClass(file)
+        // 3) manifest.json → pluginClassName (+ requiresResources)
+        val manifest = try {
+            readManifest(file)
         } catch (e: Throwable) {
             record("manifest read failed", e)
             null
         }
+        val manifestClass = manifest?.pluginClassName
 
+        // 4) names to consider: manifest class first, then every com./org. class
+        //    in the dex as a fallback for plugins with no usable manifest.
+        val names = dexClassNames(file)
         val loaded = HashSet<String>()
         val loadQueue = ArrayList<String>()
         manifestClass?.let { loadQueue.add(it) }
@@ -133,7 +129,23 @@ object Cs3PluginManager {
                 continue
             }
 
+            // 5) CloudStream sets filename + optional resources, then load().
             try {
+                if (instance is BasePlugin) instance.filename = file.absolutePath
+                if (manifest != null && manifest.requiresResources && instance is Plugin) {
+                    try {
+                        val assets = AssetManager::class.java.getDeclaredConstructor().newInstance()
+                        val addPath = AssetManager::class.java.getMethod("addAssetPath", String::class.java)
+                        addPath.invoke(assets, file.absolutePath)
+                        instance.resources = Resources(
+                            assets as AssetManager,
+                            context.resources.displayMetrics,
+                            context.resources.configuration
+                        )
+                    } catch (e: Throwable) {
+                        record("resource loading for $name failed", e)
+                    }
+                }
                 when (instance) {
                     is Plugin -> {
                         instance.load(context)
@@ -154,35 +166,42 @@ object Cs3PluginManager {
     }
 
     private fun finish(manifestClass: String?, apis: List<MainAPI>) {
-        val n = errorDetails.length
-        if (n > 0 && apis.isEmpty()) {
-            lastError = errorDetails.toString().trim()
-        }
         if (apis.isEmpty()) {
-            lastError = lastError
-                ?: "No CloudStream plugin class found (manifest class: $manifestClass)"
+            val details = errorDetails.toString().trim()
+            lastError = if (details.isNotBlank()) {
+                details
+            } else {
+                "No CloudStream plugin class found (manifest class: $manifestClass)"
+            }
         }
     }
 
-    private fun readManifestPluginClass(file: File): String? {
-        var pluginClass: String? = null
+    private class Manifest(
+        val pluginClassName: String?,
+        val requiresResources: Boolean,
+    )
+
+    private fun readManifest(file: File): Manifest? {
         var manifestText: String? = null
         ZipInputStream(file.inputStream().buffered()).use { zis ->
             while (true) {
                 val entry = zis.nextEntry ?: break
-                if (entry.name == "manifest.json") manifestText = zis.readBytes().toString(Charsets.UTF_8)
+                if (entry.name == "manifest.json") {
+                    manifestText = zis.readBytes().toString(Charsets.UTF_8)
+                }
                 zis.closeEntry()
             }
         }
-        manifestText?.let {
-            val manifest = JSONObject(it)
-            pluginClass = manifest.optString("pluginClassName").takeIf { c -> c.isNotBlank() }
-        }
-        return pluginClass
+        manifestText ?: return null
+        val manifest = JSONObject(manifestText)
+        return Manifest(
+            pluginClassName = manifest.optString("pluginClassName").takeIf { it.isNotBlank() },
+            requiresResources = manifest.optBoolean("requiresResources", false),
+        )
     }
 
-    /** Fallback: if DexFile enumeration fails, parse class names straight from classes.dex. */
-    private fun parseDexClassNames(file: File): List<String> {
+    /** Parses class names straight from classes.dex (handles packed id tables). */
+    private fun dexClassNames(file: File): List<String> {
         val names = mutableListOf<String>()
         try {
             val dexBytes = mutableListOf<ByteArray>()
@@ -204,7 +223,6 @@ object Cs3PluginManager {
     private fun dexClassNames(bytes: ByteArray): List<String> {
         val out = mutableListOf<String>()
         try {
-            fun u16(o: Int) = ((bytes[o].toInt() and 0xff) shl 8) or (bytes[o + 1].toInt() and 0xff)
             fun u32(o: Int) =
                 (bytes[o].toLong() and 0xff) or
                     ((bytes[o + 1].toLong() and 0xff) shl 8) or
