@@ -1,1 +1,84 @@
-bmFtZTogQnVpbGQKCm9uOgogIHB1c2g6CiAgICBicmFuY2hlczogWyBtYWluIF0KICB3b3JrZmxvd19kaXNwYXRjaDoKCnBlcm1pc3Npb25zOgogIGNvbnRlbnRzOiB3cml0ZQoKam9iczoKICBidWlsZDoKICAgIHJ1bnMtb246IHVidW50dS1sYXRlc3QKICAgIHN0ZXBzOgogICAgICAtIHVzZXM6IGFjdGlvbnMvY2hlY2tvdXRAdjQKCiAgICAgIC0gdXNlczogYWN0aW9ucy9zZXR1cC1qYXZhQHY0CiAgICAgICAgd2l0aDoKICAgICAgICAgIGRpc3RyaWJ1dGlvbjogdGVtdXJpbgogICAgICAgICAgamF2YS12ZXJzaW9uOiAxNwoKICAgICAgLSBuYW1lOiBBY2NlcHQgQW5kcm9pZCBTREsgbGljZW5zZXMKICAgICAgICBydW46IHwKICAgICAgICAgIGlmIFsgLW4gIiRBTkRST0lEX0hPTUUiIF07IHRoZW4KICAgICAgICAgICAgeWVzIHwgIiRBTkRST0lEX0hPTUUiL2NtZGxpbmUtdG9vbHMvbGF0ZXN0L2Jpbi9zZGttYW5hZ2VyIC0tbGljZW5zZXMgPiAvZGV2L251bGwgMj4mMSB8fCB0cnVlCiAgICAgICAgICAgICIkQU5EUk9JRF9IT01FIi9jbWRsaW5lLXRvb2xzL2xhdGVzdC9iaW4vc2RrbWFuYWdlciAicGxhdGZvcm1zO2FuZHJvaWQtMzQiICJwbGF0Zm9ybXM7YW5kcm9pZC0zNSIgImJ1aWxkLXRvb2xzOzM0LjAuMCIgImJ1aWxkLXRvb2xzOzM1LjAuMCIgPiAvZGV2L251bGwgMj4mMSB8fCB0cnVlCiAgICAgICAgICBmaQoKICAgICAgLSB1c2VzOiBncmFkbGUvYWN0aW9ucy9zZXR1cC1ncmFkbGVAdjMKICAgICAgICB3aXRoOgogICAgICAgICAgZ3JhZGxlLXZlcnNpb246ICI4LjExLjEiCgogICAgICAtIG5hbWU6IEJ1aWxkIGRlYnVnIEFQSwogICAgICAgIHJ1bjogfAogICAgICAgICAgZ3JhZGxlIGFzc2VtYmxlRGVidWcgLS1uby1kYWVtb24gLS1zdGFja3RyYWNlID4gZ3JhZGxlLWJ1aWxkLmxvZyAyPiYxCiAgICAgICAgICBjb2RlPSQ/CiAgICAgICAgICBpZiBbICRjb2RlIC1uZSAwIF07IHRoZW4KICAgICAgICAgICAgZWNobyAiPT09PSBCVUlMRCBGQUlMRUQgKGV4aXQgJGNvZGUpID09PT0iCiAgICAgICAgICAgIHRhaWwgLW4gMjAwIGdyYWRsZS1idWlsZC5sb2cKICAgICAgICAgICAgZWNobyAiPT09PSBLT1RMSU4gRVJST1JTID09PT0iCiAgICAgICAgICAgIGdyZXAgLUUgIl5lOiAiIGdyYWRsZS1idWlsZC5sb2cgfCBoZWFkIC1uIDQwCiAgICAgICAgICAgIGdyZXAgLUUgIl5lOiAiIGdyYWRsZS1idWlsZC5sb2cgfCBoZWFkIC1uIDQwIHwgc2VkIC1FICdzL15lOiAoLispOiBcKChbMC05XSspLCAoWzAtOV0rKVwpOiAoLiopLzo6ZXJyb3IgZmlsZT1cMSxsaW5lPVwyLGNvbD1cMzo6XDQvJyB8fCB0cnVlCiAgICAgICAgICBmaQogICAgICAgICAgZXhpdCAkY29kZQoKICAgICAgLSBuYW1lOiBVcGxvYWQgYnVpbGQgbG9nCiAgICAgICAgaWY6IGFsd2F5cygpCiAgICAgICAgdXNlczogYWN0aW9ucy91cGxvYWQtYXJ0aWZhY3RAdjQKICAgICAgICB3aXRoOgogICAgICAgICAgbmFtZTogYnVpbGQtbG9nCiAgICAgICAgICBwYXRoOiBncmFkbGUtYnVpbGQubG9nCiAgICAgICAgICBpZi1uby1maWxlcy1mb3VuZDogaWdub3JlCgogICAgICAtIG5hbWU6IFVwbG9hZCBBUEsKICAgICAgICB1c2VzOiBhY3Rpb25zL3VwbG9hZC1hcnRpZmFjdEB2NAogICAgICAgIHdpdGg6CiAgICAgICAgICBuYW1lOiBoaWthcmktYXBrCiAgICAgICAgICBwYXRoOiBhcHAvYnVpbGQvb3V0cHV0cy9hcGsvZGVidWcvYXBwLWRlYnVnLmFwawogICAgICAgICAgaWYtbm8tZmlsZXMtZm91bmQ6IGVycm9yCgogICAgICAtIG5hbWU6IFB1Ymxpc2ggQVBLIHRvIEdpdEh1YiBSZWxlYXNlCiAgICAgICAgZW52OgogICAgICAgICAgR0hfVE9LRU46ICR7eyBzZWNyZXRzLkdJVEhVQl9UT0tFTiB9fQogICAgICAgIHJ1bjogfAogICAgICAgICAgY3AgYXBwL2J1aWxkL291dHB1dHMvYXBrL2RlYnVnL2FwcC1kZWJ1Zy5hcGsgaGlrYXJpLWRlYnVnLmFwawogICAgICAgICAgaWYgZ2ggcmVsZWFzZSB2aWV3IGNvbnRpbnVvdXMgLS1yZXBvICIkR0lUSFVCX1JFUE9TSVRPUlkiID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICAgICAgICBnaCByZWxlYXNlIHVwbG9hZCBjb250aW51b3VzIGhpa2FyaS1kZWJ1Zy5hcGsgLS1yZXBvICIkR0lUSFVCX1JFUE9TSVRPUlkiIC0tY2xvYmJlcgogICAgICAgICAgZWxzZQogICAgICAgICAgICBnaCByZWxlYXNlIGNyZWF0ZSBjb250aW51b3VzIGhpa2FyaS1kZWJ1Zy5hcGsgLS1yZXBvICIkR0lUSFVCX1JFUE9TSVRPUlkiIFwKICAgICAgICAgICAgICAtLXRpdGxlICJDb250aW51b3VzIGJ1aWxkIiBcCiAgICAgICAgICAgICAgLS1ub3RlcyAiTGF0ZXN0IGRlYnVnIEFQSywgYXV0by1idWlsdCBmcm9tIG1haW4uIiB8fCB0cnVlCiAgICAgICAgICBmaQoKICAgICAgLSBuYW1lOiBQdXNoIGRlYnVnIEFQSyB0byBidWlsZCBicmFuY2gKICAgICAgICBlbnY6CiAgICAgICAgICBHSF9UT0tFTjogJHt7IHNlY3JldHMuR0lUSFVCX1RPS0VOIH19CiAgICAgICAgcnVuOiB8CiAgICAgICAgICBnaXQgY29uZmlnIHVzZXIubmFtZSAiZ2l0aHViLWFjdGlvbnNbYm90XSIKICAgICAgICAgIGdpdCBjb25maWcgdXNlci5lbWFpbCAiNDE4OTgyODIrZ2l0aHViLWFjdGlvbnNbYm90XUB1c2Vycy5ub3JlcGx5LmdpdGh1Yi5jb20iCiAgICAgICAgICBnaXQgZmV0Y2ggb3JpZ2luIGJ1aWxkID4vZGV2L251bGwgMj4mMSAmJiBnaXQgY2hlY2tvdXQgYnVpbGQgMj4vZGV2L251bGwgfHwgZ2l0IGNoZWNrb3V0IC0tb3JwaGFuIGJ1aWxkCiAgICAgICAgICBjcCBhcHAvYnVpbGQvb3V0cHV0cy9hcGsvZGVidWcvYXBwLWRlYnVnLmFwayBoaWthcmktZGVidWcuYXBrCiAgICAgICAgICBnaXQgYWRkIGhpa2FyaS1kZWJ1Zy5hcGsKICAgICAgICAgIGdpdCBjb21taXQgLW0gImJ1aWxkOiB1cGRhdGUgZGVidWcgQVBLICQoZGF0ZSAtdSArJVklbSVkJUglTSkiIHx8IHRydWUKICAgICAgICAgIGdpdCBwdXNoIG9yaWdpbiBidWlsZCAtLWZvcmNlCg==
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Accept Android SDK licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ]; then
+            yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          fi
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build debug APK
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace > gradle-build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "==== BUILD FAILED (exit $code) ===="
+            tail -n 200 gradle-build.log
+            echo "==== KOTLIN ERRORS ===="
+            grep -E "^e: " gradle-build.log | head -n 40
+            grep -E "^e: " gradle-build.log | head -n 40 | sed -E 's/^e: (.+): \(([0-9]+), ([0-9]+)\): (.*)/::error file=\1,line=\2,col=\3::\4/' || true
+          fi
+          exit $code
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: gradle-build.log
+          if-no-files-found: ignore
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Continuous build" \
+              --notes "Latest debug APK, auto-built from main." || true
+          fi
+
+      - name: Push debug APK to build branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
+          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
+          git add hikari-debug.apk
+          git commit -m "build: update debug APK $(date -u +%Y%m%d%H%M)" || true
+          git push origin build --force
