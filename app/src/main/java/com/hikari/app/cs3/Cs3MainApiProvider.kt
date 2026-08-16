@@ -71,18 +71,20 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
             val resp = try {
-                a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                withTimeoutOrNull(15_000) {
+                    a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                }
             } catch (e: Throwable) {
-                return@withContext emptyList()
-            }
-            resp?.items.orEmpty().flatMap { row -> row.list.orEmpty().mapNotNull { it.toMediaItem() } }
+                null
+            } ?: return@withContext emptyList()
+            resp.items.orEmpty().flatMap { row -> row.list.orEmpty().mapNotNull { it.toMediaItem() } }
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
             val found = try {
-                a.search(query)
+                withTimeoutOrNull(30_000) { a.search(query) }
             } catch (e: Throwable) {
                 emptyList()
             }

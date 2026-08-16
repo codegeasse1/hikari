@@ -6,6 +6,7 @@ import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
@@ -17,6 +18,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -32,6 +34,9 @@ import com.google.common.collect.ImmutableList
 import com.hikari.app.R
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -60,6 +65,8 @@ class PlayerActivity : ComponentActivity() {
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
     private var speedIndex = 2
+
+    private lateinit var client: OkHttpClient
 
     private val longPressDetector: GestureDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -131,6 +138,13 @@ class PlayerActivity : ComponentActivity() {
             return
         }
 
+        client = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+
         buildChips()
         playSource(0)
     }
@@ -172,13 +186,6 @@ class PlayerActivity : ComponentActivity() {
         }
         playerView?.player = null
 
-        val client = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
-
         val dataSourceFactory = OkHttpDataSource.Factory(client)
             .setUserAgent("Hikari/" + Http.UA)
             .setDefaultRequestProperties(src.headers)
@@ -190,22 +197,17 @@ class PlayerActivity : ComponentActivity() {
         player.addListener(listener)
         playerView?.player = player
 
-        val subtitleConfigs = src.subtitles.map { s ->
-            MediaItem.SubtitleConfiguration.Builder(Uri.parse(s.url))
-                .setMimeType(mimeFor(s.url))
-                .setLanguage(s.lang)
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                .build()
-        }
-
+        // Start the video IMMEDIATELY, without subtitles. A broken/expired
+        // subtitle URL must never kill playback (some providers emit subtitle
+        // URLs that return junk like "1", which media3 treats as a fatal parse
+        // error). Subtitles are fetched and validated in the background and
+        // only added if their content is actually a subtitle.
         val mime = when {
             src.url.contains(".m3u8", true) -> MimeTypes.APPLICATION_M3U8
             src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
             else -> null
         }
-        val itemBuilder = MediaItem.Builder()
-            .setUri(src.url)
-            .setSubtitleConfigurations(subtitleConfigs)
+        val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
 
         player.setMediaItem(itemBuilder.build())
@@ -213,7 +215,61 @@ class PlayerActivity : ComponentActivity() {
         player.playWhenReady = true
         applySpeed(SPEEDS[speedIndex])
 
+        val playedIndex = index
+        lifecycleScope.launch {
+            val valid = withContext(Dispatchers.IO) {
+                src.subtitles.mapNotNull { s ->
+                    val data = validateSubtitle(s, src.headers)
+                    if (data == null) null else s to data
+                }
+            }
+            if (valid.isEmpty()) return@launch
+            if (currentIndex != playedIndex) return@launch
+            val p = player ?: return@launch
+            val configs = valid.map { (s, data) ->
+                MediaItem.SubtitleConfiguration.Builder(Uri.parse(data))
+                    .setMimeType(mimeFor(s.url))
+                    .setLanguage(s.lang)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+            }
+            val item = MediaItem.Builder()
+                .setUri(src.url)
+                .setSubtitleConfigurations(configs)
+            if (mime != null) item.setMimeType(mime)
+            p.setMediaItem(item.build(), false)
+            p.prepare()
+        }
+
         updateChips()
+    }
+
+    /**
+     * Fetches a subtitle file with the given headers and returns it as a
+     * self-contained data URI — but only if the content actually looks like a
+     * subtitle. Returns null for anything that 404s, errors, or returns junk,
+     * so a dead provider subtitle is silently dropped instead of crashing the
+     * player.
+     */
+    private fun validateSubtitle(s: SubtitleSource, headers: Map<String, String>): String? {
+        val bytes = Http.getBytes(s.url, headers) ?: return null
+        if (bytes.size > 4 * 1024 * 1024) return null
+        val text = String(bytes, Charsets.UTF_8).trimStart('\uFEFF')
+        val ok = when {
+            s.url.contains(".vtt", true) || s.url.contains("webvtt", true) ->
+                text.contains("WEBVTT", ignoreCase = true)
+            s.url.contains(".ass", true) || s.url.contains(".ssa", true) ->
+                text.contains("Script Info") || text.contains("Dialogue:")
+            s.url.contains(".srt", true) ->
+                Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
+            else ->
+                text.contains("WEBVTT", ignoreCase = true) ||
+                    text.contains("Dialogue:") ||
+                    Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
+        }
+        if (!ok) return null
+        return "data:text/plain;base64," +
+            Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
     private val listener = object : Player.Listener {

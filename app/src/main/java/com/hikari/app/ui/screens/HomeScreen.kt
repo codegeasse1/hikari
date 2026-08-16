@@ -48,6 +48,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
 
+    private var loadJob: kotlinx.coroutines.Job? = null
+
     init {
         viewModelScope.launch {
             manager.providers.collect { ps ->
@@ -67,9 +69,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadInternal() {
-        _loading.value = true
-        _rows.value = repo.homeRows(_selectedProvider.value)
-        _loading.value = false
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            _loading.value = true
+            _rows.value = emptyList()
+            _rows.value = repo.homeRows(_selectedProvider.value)
+            _loading.value = false
+        }
+        loadJob?.join()
     }
 
     fun refresh() {
@@ -127,7 +134,7 @@ fun HomeScreen(nav: NavHostController) {
                 }
             }
         }
-        if (loading && rows.isEmpty()) {
+        if (loading) {
             items(4) { ShimmerRow() }
         }
         rows.forEach { row ->
@@ -143,12 +150,22 @@ fun HomeScreen(nav: NavHostController) {
         }
         if (rows.isEmpty() && !loading) {
             item {
-                EmptyState(
-                    title = "No content yet",
-                    subtitle = "Add a Stremio addon or a universal scraper to start watching.",
-                    actionLabel = "Add extensions",
-                    action = { nav.navigate(Routes.EXTENSIONS) }
-                )
+                if (selected != null) {
+                    val name = providers.firstOrNull { it.config.id == selected }?.config?.name
+                    EmptyState(
+                        title = "Couldn't load ${name ?: "this extension"}",
+                        subtitle = "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
+                        actionLabel = "Retry",
+                        action = { vm.refresh() }
+                    )
+                } else {
+                    EmptyState(
+                        title = "No content yet",
+                        subtitle = "Add a Stremio addon or a universal scraper to start watching.",
+                        actionLabel = "Add extensions",
+                        action = { nav.navigate(Routes.EXTENSIONS) }
+                    )
+                }
             }
         }
     }
