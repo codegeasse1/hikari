@@ -19,6 +19,7 @@ class AppStore(private val ctx: Context) {
     private object K {
         val PROVIDERS = stringPreferencesKey("providers")
         val FAVORITES = stringPreferencesKey("favorites")
+        val CS3_REPOS = stringPreferencesKey("cs3Repos")
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =
@@ -39,6 +40,23 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
         saveProviders(providers().map { if (it.id == id) it.copy(enabled = enabled) else it })
+    }
+
+    fun reposFlow(): Flow<List<Cs3Repo>> =
+        store.data.map { parseRepos(it[K.CS3_REPOS]) }
+
+    suspend fun repos(): List<Cs3Repo> = reposFlow().first()
+
+    suspend fun addCs3Repo(r: Cs3Repo) {
+        saveRepos(repos().filter { it.url != r.url } + r)
+    }
+
+    suspend fun removeCs3Repo(url: String) {
+        saveRepos(repos().filter { it.url != url })
+    }
+
+    private suspend fun saveRepos(list: List<Cs3Repo>) {
+        store.edit { it[K.CS3_REPOS] = encodeRepos(list) }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =
@@ -93,6 +111,36 @@ class AppStore(private val ctx: Context) {
                     extra = o.optString("extra").ifBlank { null },
                 )
             }.filter { it.id.isNotBlank() }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodeRepos(list: List<Cs3Repo>): String {
+        val arr = JSONArray()
+        for (r in list) {
+            arr.put(
+                JSONObject()
+                    .put("url", r.url)
+                    .put("name", r.name)
+                    .put("description", r.description)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun parseRepos(s: String?): List<Cs3Repo> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                Cs3Repo(
+                    url = o.optString("url"),
+                    name = o.optString("name").ifBlank { o.optString("url") },
+                    description = o.optString("description"),
+                )
+            }.filter { it.url.isNotBlank() }
         } catch (e: Exception) {
             emptyList()
         }

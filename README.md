@@ -59,7 +59,15 @@ Download it on the phone and open it (allow "install unknown apps").
 
 Rules use CSS selectors; `element@attr` means read an attribute instead of text. `{query}`, `{page}`, `{href}` are substituted at runtime. Streams can be direct `video`/m3u8 or hidden inside an `iframe` (followed recursively).
 
-**CloudStream .cs3 plugin:** Extensions → *Install .cs3 from URL* (or *Pick .cs3 file*). Paste a direct link to a compiled `.cs3`, e.g.:
+**CloudStream .cs3 plugins (repos):** Extensions → *Add plugin repo* → paste a CloudStream-style `repo.json` URL, e.g.:
+
+```
+https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json
+```
+
+Hikari fetches the repo's `pluginLists`, shows every plugin (icon, description, author, version, checksum-verified install), and each gets a one-tap *Install* / *Uninstall*. Your saved repos persist across restarts.
+
+You can also install a single `.cs3` directly: Extensions → *Install .cs3 from URL* (or *Pick .cs3 file*), e.g.:
 
 ```
 https://github.com/codegeasse1/codegeasse-cloudstream-repos/raw/builds/JustAnimeProvider.cs3

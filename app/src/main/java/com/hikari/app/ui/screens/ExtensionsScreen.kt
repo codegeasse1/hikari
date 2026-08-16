@@ -38,6 +38,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,16 +56,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3PluginManager
+import com.hikari.app.data.Cs3Repo
+import com.hikari.app.data.Cs3RepoPlugin
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RepoLoadState
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -73,9 +79,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
+    val repos = MutableStateFlow<List<Cs3Repo>>(emptyList())
+    val pluginsByRepo = MutableStateFlow<Map<String, List<Cs3RepoPlugin>>>(emptyMap())
+    val installedUrls = MutableStateFlow<Set<String>>(emptySet())
+    val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
 
     init {
-        viewModelScope.launch { manager.refresh() }
+        viewModelScope.launch {
+            manager.refresh()
+            repos.value = store.repos()
+            reloadInstalled()
+        }
     }
 
     suspend fun addStremio(url: String): Result<String> = withContext(Dispatchers.IO) {
@@ -127,7 +141,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         val bytes = Http.getBytes(clean)
             ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
-        installCs3Bytes(bytes, clean.substringAfterLast('/').ifBlank { "plugin.cs3" })
+        installCs3Bytes(bytes, clean.substringAfterLast('/').ifBlank { "plugin.cs3" }, sourceUrl = clean)
     }
 
     suspend fun installCs3FromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
@@ -138,7 +152,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         installCs3Bytes(bytes, name)
     }
 
-    private suspend fun installCs3Bytes(bytes: ByteArray, rawName: String): Result<Int> {
+    private suspend fun installCs3Bytes(
+        bytes: ByteArray,
+        rawName: String,
+        sourceUrl: String? = null,
+    ): Result<Int> {
         if (bytes.size > 10 * 1024 * 1024) {
             return Result.failure(Exception("File too large (max 10MB)"))
         }
@@ -157,11 +175,146 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         apis.forEachIndexed { i, api ->
             val name = api.name.ifBlank { clean.removeSuffix(".cs3") }
             val id = "cs3|" + clean.hashCode() + "|" + i
-            store.addProvider(ProviderConfig(id, name, ProviderType.CS3, file.absolutePath, extra = clean))
+            store.addProvider(
+                ProviderConfig(
+                    id = id,
+                    name = name,
+                    type = ProviderType.CS3,
+                    url = file.absolutePath,
+                    extra = sourceUrl ?: clean,
+                )
+            )
             added++
         }
         manager.refresh()
+        reloadInstalled()
         return Result.success(added)
+    }
+
+    suspend fun reloadInstalled() {
+        installedUrls.value = store.providers()
+            .filter { it.type == ProviderType.CS3 && (it.extra?.startsWith("http") == true) }
+            .mapNotNull { it.extra }
+            .toSet()
+    }
+
+    suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> {
+        val url = rawUrl.trim()
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return Result.failure(Exception("Must start with http(s)://"))
+        }
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val text = Http.getStringStrict(url).getOrElse { throw it }
+                val obj = JSONObject(text)
+                val repo = Cs3Repo(
+                    url = url,
+                    name = obj.optString("name").ifBlank { url },
+                    description = obj.optString("description"),
+                )
+                store.addCs3Repo(repo)
+                repos.value = store.repos()
+                repo
+            }
+        }
+    }
+
+    suspend fun removeCs3Repo(url: String) {
+        store.removeCs3Repo(url)
+        repos.value = store.repos()
+        pluginsByRepo.value = pluginsByRepo.value - url
+        repoState.value = repoState.value - url
+    }
+
+    suspend fun refreshRepoPlugins(repo: Cs3Repo) {
+        repoState.value = repoState.value + (repo.url to RepoLoadState(loading = true, error = null))
+        try {
+            val plugins = fetchRepoPlugins(repo.url)
+            pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
+            repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
+        } catch (e: Exception) {
+            repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false, error = e.message))
+        }
+    }
+
+    private fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
+        val text = Http.getString(repoUrl) ?: throw Exception("Could not fetch $repoUrl")
+        val root = JSONObject(text)
+        val out = LinkedHashMap<String, Cs3RepoPlugin>()
+        root.optJSONArray("plugins")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { parsePlugin(it)?.let { p -> out[p.url] = p } }
+            }
+        }
+        root.optJSONArray("pluginLists")?.let { lists ->
+            for (i in 0 until lists.length()) {
+                val listUrl = lists.optString(i).ifBlank { null } ?: continue
+                val listText = Http.getString(listUrl) ?: continue
+                val arr = runCatching { JSONArray(listText) }.getOrNull() ?: continue
+                for (j in 0 until arr.length()) {
+                    arr.optJSONObject(j)?.let { parsePlugin(it)?.let { p -> out[p.url] = p } }
+                }
+            }
+        }
+        return out.values.toList()
+    }
+
+    private fun parsePlugin(o: JSONObject): Cs3RepoPlugin? {
+        val name = o.optString("name").ifBlank { return null }
+        val url = o.optString("url").ifBlank { return null }
+        fun strings(key: String): List<String> =
+            runCatching { o.getJSONArray(key) }.getOrNull()
+                ?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx).ifBlank { null } } }
+                ?: emptyList()
+        return Cs3RepoPlugin(
+            name = name,
+            description = o.optString("description"),
+            url = url,
+            iconUrl = o.optString("iconUrl").ifBlank { null },
+            authors = strings("authors"),
+            version = o.optInt("version", 1),
+            tvTypes = strings("tvTypes"),
+            fileHash = o.optString("fileHash").ifBlank { null },
+        )
+    }
+
+    suspend fun installCs3Plugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = Http.getBytes(plugin.url)
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        val hash = plugin.fileHash
+        if (hash != null && hash.startsWith("sha256-")) {
+            val expected = hash.removePrefix("sha256-").lowercase()
+            val actual = sha256Hex(bytes)
+            if (actual != expected) {
+                return@withContext Result.failure(
+                    Exception("Checksum mismatch — the plugin file is corrupted or modified")
+                )
+            }
+        }
+        val fileName = plugin.name.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: "plugin"
+        installCs3Bytes(bytes, "$fileName.cs3", sourceUrl = plugin.url)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        return md.digest(bytes).joinToString("") { "%02x".format(it) }
+    }
+
+    suspend fun uninstallCs3Plugin(pluginUrl: String) {
+        val all = store.providers()
+        val paths = all.filter { it.extra == pluginUrl }.map { it.url }.toSet()
+        store.saveProviders(all.filter { it.extra != pluginUrl })
+        manager.refresh()
+        reloadInstalled()
+        withContext(Dispatchers.IO) {
+            val remaining = store.providers().map { it.url }.toSet()
+            val base = getApplication<Application>().filesDir.absolutePath
+            paths.forEach { p ->
+                if (p.startsWith(base) && p !in remaining) {
+                    runCatching { File(p).delete() }
+                }
+            }
+        }
     }
 }
 
@@ -174,13 +327,24 @@ fun ExtensionsScreen() {
     var showStremio by remember { mutableStateOf(false) }
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
+    var showRepoDialog by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
     var cs3Url by remember { mutableStateOf("") }
+    var repoUrl by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var busyMsg by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var successMsg by remember { mutableStateOf<String?>(null) }
+
+    val repos by vm.repos.collectAsState()
+    val pluginsByRepo by vm.pluginsByRepo.collectAsState()
+    val installed by vm.installedUrls.collectAsState()
+    val repoState by vm.repoState.collectAsState()
+
+    LaunchedEffect(Unit) {
+        vm.repos.value.forEach { repo -> vm.refreshRepoPlugins(repo) }
+    }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -201,6 +365,18 @@ fun ExtensionsScreen() {
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
+        item {
+            Button(
+                onClick = { errorMsg = null; successMsg = null; showRepoDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Add plugin repo")
+            }
+        }
         item {
             Row(
                 Modifier
@@ -270,11 +446,53 @@ fun ExtensionsScreen() {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Compiled CloudStream extensions run natively in Hikari — install any .cs3 file from your provider repo (e.g. JustAnimeProvider.cs3).",
+                        "Add a CloudStream-style repo (a repo.json URL) to browse and install compiled extensions — or install a single .cs3 file directly.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+        }
+        repos.forEach { repo ->
+            item(key = "repo-${repo.url}") {
+                RepoCard(
+                    repo = repo,
+                    plugins = pluginsByRepo[repo.url] ?: emptyList(),
+                    state = repoState[repo.url] ?: RepoLoadState(loading = true),
+                    installedUrls = installed,
+                    onInstall = { p ->
+                        scope.launch {
+                            busy = true
+                            busyMsg = "Installing ${p.name}…"
+                            errorMsg = null
+                            successMsg = null
+                            val r = vm.installCs3Plugin(p)
+                            busy = false
+                            r.onSuccess { n ->
+                                successMsg =
+                                    "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
+                            }
+                            r.onFailure { errorMsg = it.message }
+                        }
+                    },
+                    onUninstall = { p ->
+                        scope.launch {
+                            busy = true
+                            busyMsg = "Uninstalling ${p.name}…"
+                            errorMsg = null
+                            successMsg = null
+                            vm.uninstallCs3Plugin(p.url)
+                            busy = false
+                            successMsg = "Uninstalled ${p.name}"
+                        }
+                    },
+                    onRemoveRepo = {
+                        scope.launch {
+                            vm.removeCs3Repo(repo.url)
+                            successMsg = "Removed repo"
+                        }
+                    }
+                )
             }
         }
         if (busy) {
@@ -311,7 +529,7 @@ fun ExtensionsScreen() {
             item {
                 EmptyState(
                     title = "No extensions yet",
-                    subtitle = "Add a Stremio addon, a universal scraper, or install a CloudStream .cs3 plugin.",
+                    subtitle = "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file.",
                     actionLabel = null,
                     action = null
                 )
@@ -325,6 +543,62 @@ fun ExtensionsScreen() {
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+
+    if (showRepoDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showRepoDialog = false },
+            title = { Text("Add plugin repo") },
+            text = {
+                Column {
+                    Text(
+                        "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
+                            "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = repoUrl,
+                        onValueChange = { repoUrl = it },
+                        placeholder = { Text("https://…/repo.json") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            busyMsg = "Fetching repo…"
+                            errorMsg = null
+                            successMsg = null
+                            val r = vm.addCs3Repo(repoUrl)
+                            busy = false
+                            r.onSuccess { repo ->
+                                showRepoDialog = false
+                                repoUrl = ""
+                                successMsg = "Added repo: ${repo.name}"
+                                vm.refreshRepoPlugins(repo)
+                            }
+                            r.onFailure { errorMsg = it.message }
+                        }
+                    }
+                ) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showStremio) {
@@ -526,6 +800,135 @@ private fun ProviderCard(
                     tint = MaterialTheme.colorScheme.error
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RepoCard(
+    repo: Cs3Repo,
+    plugins: List<Cs3RepoPlugin>,
+    state: RepoLoadState,
+    installedUrls: Set<String>,
+    onInstall: (Cs3RepoPlugin) -> Unit,
+    onUninstall: (Cs3RepoPlugin) -> Unit,
+    onRemoveRepo: () -> Unit,
+) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(repo.name, style = MaterialTheme.typography.titleSmall)
+                    if (repo.description.isNotBlank()) {
+                        Text(
+                            repo.description,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                IconButton(onClick = onRemoveRepo) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "Remove repo",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            when {
+                state.loading -> Text(
+                    "Loading plugins…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                state.error != null -> Text(
+                    state.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                plugins.isEmpty() -> Text(
+                    "No plugins found in this repo.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                else -> plugins.forEach { p ->
+                    PluginRow(
+                        p = p,
+                        installed = p.url in installedUrls,
+                        onInstall = { onInstall(p) },
+                        onUninstall = { onUninstall(p) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PluginRow(
+    p: Cs3RepoPlugin,
+    installed: Boolean,
+    onInstall: () -> Unit,
+    onUninstall: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = p.iconUrl?.replace("%size%", "48"),
+                contentDescription = null,
+                modifier = Modifier.size(28.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                p.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val meta = listOfNotNull(
+                p.description.ifBlank { null },
+                p.authors.joinToString(", ").ifBlank { null },
+                if (p.version > 0) "v${p.version}" else null,
+                p.tvTypes.joinToString(", ").ifBlank { null },
+            ).joinToString(" · ")
+            Text(
+                meta,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        if (installed) {
+            TextButton(onClick = onUninstall) {
+                Text("Uninstall", color = MaterialTheme.colorScheme.error)
+            }
+        } else {
+            Button(onClick = onInstall) { Text("Install") }
         }
     }
 }

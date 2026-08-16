@@ -12,6 +12,31 @@ data class ProviderConfig(
     val extra: String? = null,
 )
 
+/** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
+data class Cs3Repo(
+    val url: String,
+    val name: String,
+    val description: String = "",
+)
+
+/** A single installable plugin entry from a CloudStream repository. */
+data class Cs3RepoPlugin(
+    val name: String,
+    val description: String = "",
+    val url: String,
+    val iconUrl: String? = null,
+    val authors: List<String> = emptyList(),
+    val version: Int = 1,
+    val tvTypes: List<String> = emptyList(),
+    val fileHash: String? = null,
+)
+
+/** Per-repo plugin-list loading state shown in the Extensions screen. */
+data class RepoLoadState(
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
 enum class MediaType { MOVIE, SERIES, UNKNOWN }
 
 data class MediaItem(
