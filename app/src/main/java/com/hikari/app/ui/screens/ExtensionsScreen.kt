@@ -169,7 +169,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
         if (apis.isEmpty()) {
             file.delete()
-            return Result.failure(Exception("No CloudStream plugin found in this .cs3 file"))
+            val detail = Cs3PluginManager.lastError?.take(600)
+            return Result.failure(
+                Exception(
+                    if (detail.isNullOrBlank()) "No CloudStream plugin found in this .cs3 file"
+                    else "No CloudStream plugin loaded:\n$detail"
+                )
+            )
         }
         var added = 0
         apis.forEachIndexed { i, api ->

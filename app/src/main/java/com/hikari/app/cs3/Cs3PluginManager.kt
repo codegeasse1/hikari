@@ -7,18 +7,39 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import dalvik.system.DexClassLoader
 import dalvik.system.DexFile
+import org.json.JSONObject
 import java.io.File
 import java.util.zip.ZipInputStream
 
 /**
- * Loads compiled CloudStream `.cs3` plugin archives: instantiates every class that
- * extends Plugin/BasePlugin, calls its load()/load(context), and collects the
- * MainAPIs each registers. Instances are cached per file path so provider state
- * survives across calls.
+ * Loads compiled CloudStream `.cs3` plugin archives the same way the real
+ * CloudStream app does: read `manifest.json` for the `pluginClassName`,
+ * instantiate that class with a no-arg constructor, call its `load()`, and
+ * collect the MainAPIs it registers. Also scans every other class in the dex
+ * as a fallback (some old plugins omit the manifest or ship several providers).
+ *
+ * Instances are cached per file path so provider state survives across calls.
+ *
+ * The last failure (if any) is surfaced on [lastError] so the UI can tell the
+ * user the REAL reason a plugin refused to load instead of a generic message.
  */
 object Cs3PluginManager {
 
     private val cache = HashMap<String, List<MainAPI>>()
+
+    @Volatile
+    var lastError: String? = null
+        private set
+
+    private val errorDetails = StringBuilder()
+
+    private fun record(what: String, e: Throwable) {
+        val line = "$what: ${e.javaClass.simpleName}: ${e.message}"
+        if (errorDetails.length < 4000) {
+            errorDetails.append(line).append("\n")
+        }
+        android.util.Log.e("Cs3PluginManager", line, e)
+    }
 
     @Synchronized
     fun apisFor(context: Context, file: File): List<MainAPI> =
@@ -33,48 +54,83 @@ object Cs3PluginManager {
 
     private fun loadFile(context: Context, file: File): List<MainAPI> {
         val apis = mutableListOf<MainAPI>()
-        try {
-            val classLoader = DexClassLoader(
+        errorDetails.setLength(0)
+        lastError = null
+
+        val classLoader = try {
+            DexClassLoader(
                 file.absolutePath,
                 context.codeCacheDir.absolutePath,
                 null,
                 context.classLoader
             )
-            val names = try {
-                @Suppress("DEPRECATION")
-                val dex = DexFile(file)
+        } catch (e: Throwable) {
+            record("DexClassLoader failed", e)
+            finish(null, apis)
+            return apis
+        }
+
+        val names = try {
+            @Suppress("DEPRECATION")
+            DexFile(file).use { dex ->
                 val list = ArrayList<String>()
                 val it = dex.entries()
                 while (it.hasMoreElements()) list.add(it.nextElement())
-                dex.close()
                 list
+            }
+        } catch (e: Throwable) {
+            record("DexFile enumeration failed, using fallback parser", e)
+            parseDexClassNames(file)
+        }
+
+        if (names.isEmpty()) {
+            record("no classes found in dex", RuntimeException("empty class list"))
+        }
+
+        // 1) Manifest-declared plugin class first (exactly how CloudStream works).
+        val manifestClass = try {
+            readManifestPluginClass(file)
+        } catch (e: Throwable) {
+            record("manifest read failed", e)
+            null
+        }
+
+        val loaded = HashSet<String>()
+        val loadQueue = ArrayList<String>()
+        manifestClass?.let { loadQueue.add(it) }
+        for (n in names) {
+            if (n.startsWith("com.lagradost.") || n.startsWith("com.hikari.")) continue
+            if (n.startsWith("com.") || n.startsWith("org.")) {
+                if (!loaded.contains(n)) loadQueue.add(n)
+            }
+        }
+
+        for (name in loadQueue) {
+            if (loaded.contains(name)) continue
+            loaded.add(name)
+            val cls = try {
+                Class.forName(name, true, classLoader)
             } catch (e: Throwable) {
-                parseDexClassNames(file)
+                record("Class.forName $name failed", e)
+                continue
+            }
+            val looksLikePlugin =
+                cls.isAnnotationPresent(CloudstreamPlugin::class.java) ||
+                    BasePlugin::class.java.isAssignableFrom(cls) ||
+                    Plugin::class.java.isAssignableFrom(cls)
+            if (!looksLikePlugin) continue
+
+            val instance = try {
+                val ctor = cls.getDeclaredConstructor()
+                @Suppress("DEPRECATION")
+                ctor.isAccessible = true
+                ctor.newInstance()
+            } catch (e: Throwable) {
+                record("instantiate $name failed", e)
+                continue
             }
 
-            for (name in names) {
-                if (!(name.startsWith("com.") || name.startsWith("org."))) continue
-                if (name.startsWith("com.lagradost.") || name.startsWith("com.hikari.")) continue
-                val cls = try {
-                    Class.forName(name, false, classLoader)
-                } catch (e: Throwable) {
-                    null
-                } ?: continue
-                val looksLikePlugin =
-                    cls.isAnnotationPresent(CloudstreamPlugin::class.java) ||
-                        BasePlugin::class.java.isAssignableFrom(cls) ||
-                        Plugin::class.java.isAssignableFrom(cls)
-                if (!looksLikePlugin) continue
-
-                val instance = try {
-                    val ctor = cls.getDeclaredConstructor()
-                    @Suppress("DEPRECATION")
-                    ctor.isAccessible = true
-                    ctor.newInstance()
-                } catch (e: Throwable) {
-                    null
-                } ?: continue
-
+            try {
                 when (instance) {
                     is Plugin -> {
                         instance.load(context)
@@ -85,11 +141,41 @@ object Cs3PluginManager {
                         apis += instance.apis
                     }
                 }
+            } catch (e: Throwable) {
+                record("load() of $name threw", e)
             }
-        } catch (e: Throwable) {
-            e.printStackTrace()
         }
+
+        finish(manifestClass, apis)
         return apis
+    }
+
+    private fun finish(manifestClass: String?, apis: List<MainAPI>) {
+        val n = errorDetails.length
+        if (n > 0 && apis.isEmpty()) {
+            lastError = errorDetails.toString().trim()
+        }
+        if (apis.isEmpty()) {
+            lastError = lastError
+                ?: "No CloudStream plugin class found (manifest class: $manifestClass)"
+        }
+    }
+
+    private fun readManifestPluginClass(file: File): String? {
+        var pluginClass: String? = null
+        var manifestText: String? = null
+        ZipInputStream(file.inputStream().buffered()).use { zis ->
+            while (true) {
+                val entry = zis.nextEntry ?: break
+                if (entry.name == "manifest.json") manifestText = zis.readBytes().toString(Charsets.UTF_8)
+                zis.closeEntry()
+            }
+        }
+        manifestText?.let {
+            val manifest = JSONObject(it)
+            pluginClass = manifest.optString("pluginClassName").takeIf { c -> c.isNotBlank() }
+        }
+        return pluginClass
     }
 
     /** Fallback: if DexFile enumeration fails, parse class names straight from classes.dex. */
