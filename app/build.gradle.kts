@@ -22,6 +22,17 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // CI passes signing config via env vars (decoded from the SIGNING_KEY
+            // repo secret). Local builds stay unsigned.
+            val storePath = System.getenv("SIGNING_STORE_PATH")
+            if (!storePath.isNullOrBlank()) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(storePath)
+                    storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                    keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                    keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+                }
+            }
         }
     }
 
