@@ -82,6 +82,35 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
     private fun enc(s: String): String =
         java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
+    private suspend fun scrapeList(url: String, rules: JSONObject): List<MediaItem> {
+        val html = Http.getString(url) ?: return emptyList()
+        val doc = runCatching { Jsoup.parse(html, url) }.getOrNull() ?: return emptyList()
+        val itemSel = rules.optString("item")
+        if (itemSel.isBlank()) return emptyList()
+        val titleSel = rules.optString("title").ifBlank { "h3, h2, .title, a" }
+        val hrefSel = rules.optString("href").ifBlank { "a" }
+        val posterSel = rules.optString("poster").ifBlank { "img" }
+        val yearSel = rules.optString("year").ifBlank { null }
+        val out = mutableListOf<MediaItem>()
+        for (el in doc.select(itemSel)) {
+            val title = pick(el, titleSel, null) ?: continue
+            if (title.isBlank()) continue
+            val href = el.select(hrefSel).first()?.attr("abs:href")
+            val poster = el.select(posterSel).first()?.attr("abs:src")
+            val year = yearSel?.let { pick(el, it, null) }
+                ?.let { s -> s.filter { c -> c.isDigit() }.take(4).toIntOrNull() }
+            out += MediaItem(
+                providerId = config.id,
+                id = href ?: title,
+                title = title,
+                type = MediaType.UNKNOWN,
+                posterUrl = poster?.ifBlank { null },
+                year = year,
+            )
+        }
+        return out
+    }
+
     // ---------------------------------------------------------------
     // JSON-API mode helpers
     // ---------------------------------------------------------------
@@ -172,13 +201,13 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         )
     }
 
-    private fun getApiCatalog(ref: CatalogRef): List<MediaItem> {
+    private suspend fun getApiCatalog(ref: CatalogRef): List<MediaItem> {
         val json = apiHome() ?: return emptyList()
         val arr = json.optJSONArray(ref.id) ?: return emptyList()
         return (0 until arr.length()).mapNotNull { i -> toApiMedia(arr.optJSONObject(i)) }
     }
 
-    private fun getApiSearch(query: String, page: Int): List<MediaItem> {
+    private suspend fun getApiSearch(query: String, page: Int): List<MediaItem> {
         val path = api?.optString("searchPath")?.ifBlank { "/search" } ?: "/search"
         val qParam = api?.optString("searchQueryParam")?.ifBlank { "query" } ?: "query"
         val pParam = api?.optString("searchPageParam")?.ifBlank { "page" } ?: "page"
@@ -188,7 +217,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         return (0 until arr.length()).mapNotNull { i -> toApiMedia(arr.optJSONObject(i)) }
     }
 
-    private fun getApiMeta(item: MediaItem): MediaItem {
+    private suspend fun getApiMeta(item: MediaItem): MediaItem {
         val path = api?.optString("detailPath")?.ifBlank { "/anime/{id}" } ?: "/anime/{id}"
         val json = apiGet(path.replace("{id}", item.id)) ?: return item
         val d = (api?.optString("detailData")?.ifBlank { null }?.let { json.optJSONObject(it) }) ?: json
@@ -216,7 +245,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         )
     }
 
-    private fun getApiEpisodes(item: MediaItem): List<Episode>? {
+    private suspend fun getApiEpisodes(item: MediaItem): List<Episode>? {
         val path = api?.optString("episodesPath")?.ifBlank { "/anime/{id}/episodes" } ?: "/anime/{id}/episodes"
         val basePath = path.replace("{id}", item.id)
         val itemsKey = api?.optString("episodesItems")?.ifBlank { "episodes" } ?: "episodes"
@@ -243,7 +272,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         return out.distinctBy { it.number }.sortedBy { it.number }.ifEmpty { null }
     }
 
-    private fun getApiStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
+    private suspend fun getApiStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val path = api?.optString("streamsPath")
             ?.ifBlank { "/watch/{id}/episode/{ep}/anineko/{lang}/hd1" }
             ?: "/watch/{id}/episode/{ep}/anineko/{lang}/hd1"
