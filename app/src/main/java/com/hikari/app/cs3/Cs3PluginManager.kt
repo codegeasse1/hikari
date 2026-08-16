@@ -1,3 +1,5 @@
+@file:OptIn(com.lagradost.cloudstream3.InternalAPI::class)
+
 package com.hikari.app.cs3
 
 import android.content.Context
