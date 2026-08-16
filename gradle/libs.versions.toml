@@ -23,6 +23,8 @@ coroutines = "1.11.0"
 ksoup = "0.2.6"
 datetime = "0.8.0"
 atomicfu = "0.33.0"
+newpipeextractor = "v0.26.3"
+cryptography = "0.6.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -60,6 +62,9 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup", version.ref = "ksoup" }
 kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime", version.ref = "datetime" }
 atomicfu = { group = "org.jetbrains.kotlinx", name = "atomicfu", version.ref = "atomicfu" }
+newpipeextractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeextractor" }
+cryptography-core = { group = "dev.whyoleg.cryptography", name = "cryptography-core", version.ref = "cryptography" }
+cryptography-provider-optimal = { group = "dev.whyoleg.cryptography", name = "cryptography-provider-optimal", version.ref = "cryptography" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

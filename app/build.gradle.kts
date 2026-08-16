@@ -83,5 +83,8 @@ dependencies {
     implementation(libs.ksoup)
     implementation(libs.kotlinx.datetime)
     implementation(libs.atomicfu)
+    implementation(libs.newpipeextractor)
+    implementation(libs.cryptography.core)
+    implementation(libs.cryptography.provider.optimal)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
