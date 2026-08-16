@@ -20,6 +20,7 @@ import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -33,6 +34,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         /** Last loadLinks failure (shown in the UI so users see the real reason). */
         @Volatile
         var lastStreamsError: String? = null
+
+        /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
+        @Volatile
+        var lastStreamsTimeMs: Long = 0L
     }
 
     private val api: MainAPI? by lazy {
@@ -136,17 +141,32 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
             val subs = mutableListOf<SubtitleFile>()
             val data = episode?.id ?: item.id
+            val started = System.currentTimeMillis()
+            // The CloudStream runtime resolves embeds through several network
+            // calls that can each take ~10s; give it a hard cap so the UI can
+            // never silently hang. On timeout, dump the stuck thread's stack so
+            // the red error text tells us EXACTLY which call is blocking.
+            val worker = Thread.currentThread()
             try {
-                a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
-                lastStreamsError = null
+                val completed = withTimeoutOrNull(90_000) {
+                    a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                }
+                if (completed == null) {
+                    lastStreamsError =
+                        "Timed out after 90s — the provider hung while resolving sources.\n" +
+                            "Stuck on thread '${worker.name}':\n" +
+                            worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
+                } else {
+                    lastStreamsError = null
+                }
             } catch (e: Throwable) {
                 // NoClassDefFoundError/NoSuchMethodError from extractor machinery
-                // escapes loadExtractor's Exception-catch; surface it in the UI.
-                lastStreamsError =
-                    "${e.javaClass.simpleName}: ${e.message}\n" +
-                        e.stackTrace.take(4).joinToString("\n") { "    at $it" }
+                // escapes loadExtractor's Exception-catch; surface the full cause
+                // chain in the UI.
+                lastStreamsError = fullCause(e)
                 android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
             }
+            lastStreamsTimeMs = System.currentTimeMillis() - started
             val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
             links
                 .filter { it.url.isNotBlank() && it.url != a.mainUrl }
@@ -159,6 +179,20 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     )
                 }
         }
+
+    private fun fullCause(e: Throwable): String {
+        val sb = StringBuilder()
+        var t: Throwable? = e
+        var depth = 0
+        while (t != null && depth < 4) {
+            if (depth > 0) sb.append("\nCaused by: ")
+            sb.append("${t.javaClass.simpleName}: ${t.message}\n")
+            sb.append(t.stackTrace.take(5).joinToString("\n") { "    at $it" })
+            t = t.cause
+            depth++
+        }
+        return sb.toString()
+    }
 
     private suspend fun loadResponse(id: String): LoadResponse? {
         loadCache[id]?.let { return it }

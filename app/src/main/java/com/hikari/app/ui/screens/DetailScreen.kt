@@ -145,12 +145,15 @@ fun DetailScreen(
     }
 
     val openStreams: (Episode?) -> Unit = { ep ->
+        // Show the sheet + spinner IMMEDIATELY, then resolve sources in the
+        // background. Otherwise a slow provider looks like a dead click.
+        selectedEp = ep
+        streams = emptyList()
+        loadingStreams = true
+        showSheet = true
         scope.launch {
-            loadingStreams = true
             streams = vm.getStreams(ep)
             loadingStreams = false
-            selectedEp = ep
-            showSheet = true
         }
     }
 
@@ -297,6 +300,15 @@ fun DetailScreen(
                             streamErr,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    val tookMs = com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsTimeMs
+                    if (tookMs > 0) {
+                        Text(
+                            "Looked for sources for ${tookMs / 1000}s",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }

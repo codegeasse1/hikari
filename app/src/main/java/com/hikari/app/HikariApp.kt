@@ -14,7 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.OkHttpClient
+import org.conscrypt.Conscrypt
 import java.io.File
+import java.security.Security
 
 class HikariApp : Application() {
 
@@ -40,6 +42,14 @@ class HikariApp : Application() {
 
     private fun initCloudStream(context: Context) {
         try {
+            // CloudStream's buildDefaultClient inserts Conscrypt as the JSSE
+            // provider before building okhttp — mirror it so TLS handshakes to
+            // the streaming CDNs behave identically.
+            try {
+                Security.insertProviderAt(Conscrypt.newProvider(), 1)
+            } catch (_: Throwable) {
+            }
+
             // Accessing the jar's MainActivityKt initializes its own default
             // nicehttp Requests (jackson responseParser + CloudStream user-agent).
             // Wire up the real okhttp client (redirects, 50MiB cache, optional
@@ -59,6 +69,19 @@ class HikariApp : Application() {
             wire("getApp", ignoreSSL = false)
             wire("getInsecureApp", ignoreSSL = true)
             MainAPI.settingsForProvider = SettingsJson()
+
+            // Warm the 810-extractor registry (constructs every built-in
+            // extractor, loading newpipe/cryptography/ksoup classes) on a
+            // background thread so the first "load sources" click is instant
+            // and any initialization failure surfaces as a caught error
+            // instead of a silent hang on first play.
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    Class.forName("com.lagradost.cloudstream3.utils.ExtractorApiKt")
+                } catch (t: Throwable) {
+                    android.util.Log.e("HikariApp", "extractor registry init failed", t)
+                }
+            }
         } catch (t: Throwable) {
             android.util.Log.e("HikariApp", "CloudStream runtime init failed", t)
         }
