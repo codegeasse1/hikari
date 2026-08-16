@@ -4,10 +4,19 @@
 
 - **Stremio addons** — add any addon URL, browse catalogs, search, play.
 - **Universal scrapers** — JSON-rule site scrapers, no code needed.
-- **CloudStream .cs3 plugins** — coming in Stage 2 (your existing `.cs3` extensions will run unchanged).
+- **CloudStream .cs3 plugins** — Stage 2 ✅ — your existing `.cs3` extensions run unchanged.
 - **SkyStream extensions** — Stage 3.
 
 Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, built in pure Kotlin + Compose.
+
+## Installing the app
+
+Every push to `main` auto-builds `app-debug.apk` and publishes it to:
+
+- **Release:** <https://github.com/codegeasse1/hikari/releases/download/continuous/hikari-debug.apk>
+- **build branch:** <https://github.com/codegeasse1/hikari/raw/build/hikari-debug.apk>
+
+Download it on the phone and open it (allow "install unknown apps").
 
 ## Add extensions
 
@@ -50,11 +59,19 @@ Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, b
 
 Rules use CSS selectors; `element@attr` means read an attribute instead of text. `{query}`, `{page}`, `{href}` are substituted at runtime. Streams can be direct `video`/m3u8 or hidden inside an `iframe` (followed recursively).
 
+**CloudStream .cs3 plugin:** Extensions → *Install .cs3 from URL* (or *Pick .cs3 file*). Paste a direct link to a compiled `.cs3`, e.g.:
+
+```
+https://github.com/codegeasse1/codegeasse-cloudstream-repos/raw/builds/JustAnimeProvider.cs3
+```
+
+The plugin's providers appear in Home/Search and play like any other source. One `.cs3` can register several providers (each gets its own card, toggle and delete). The plugin files are stored in the app's private `filesDir/cs3/`, so they survive app restarts.
+
 ## Roadmap
 
 - **Stage 1 (done):** app core, Material 3 UI, Stremio addons, universal scrapers, Media3 player with headers + subtitles.
-- **Stage 2:** CloudStream `.cs3` plugin loader, torrent engine (Stremio infoHash streams), downloads, favorites/continue-watching, Trakt.
-- **Stage 3:** SkyStream shims, scriptable scrapers, casting, widgets.
+- **Stage 2 (done):** CloudStream `.cs3` plugin loader (native cloudstream3 API compatibility layer: MainAPI, models, factories, nicehttp `app`, M3u8Helper, loadExtractor, WebViewResolver, CloudflareKiller).
+- **Stage 3:** SkyStream shims, torrent engine (Stremio infoHash streams), downloads, favorites/continue-watching, Trakt.
 
 ## Build
 

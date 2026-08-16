@@ -36,3 +36,33 @@ jobs:
           name: hikari-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Continuous build" \
+              --notes "Latest debug APK, auto-built from main.
+
+Install:
+- Download **hikari-debug.apk** below and open it on the phone.
+- In the app: Extensions -> \"Install .cs3 from URL\" and paste e.g.
+  https://github.com/codegeasse1/codegeasse-cloudstream-repos/raw/builds/JustAnimeProvider.cs3" || true
+          fi
+
+      - name: Push debug APK to build branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
+          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
+          git add hikari-debug.apk
+          git commit -m "build: update debug APK $(date -u +%Y%m%d%H%M)" || true
+          git push origin build --force

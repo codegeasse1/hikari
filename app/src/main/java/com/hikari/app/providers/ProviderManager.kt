@@ -1,5 +1,6 @@
 package com.hikari.app.providers
 
+import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.data.AppStore
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
@@ -20,7 +21,7 @@ class ProviderManager(private val store: AppStore) {
     fun instantiate(c: ProviderConfig): ContentProvider? = when (c.type) {
         ProviderType.STREMIO -> StremioAddon(c)
         ProviderType.UNIVERSAL -> UniversalScraper(c)
-        ProviderType.CS3 -> null // .cs3 plugin loading lands in Stage 2
+        ProviderType.CS3 -> Cs3MainApiProvider(c)
     }
 
     fun byId(id: String): ContentProvider? =

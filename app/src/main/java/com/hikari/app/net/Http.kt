@@ -34,6 +34,13 @@ object Http {
             null
         }
 
+    fun getBytes(url: String, headers: Map<String, String> = emptyMap()): ByteArray? =
+        try {
+            get(url, headers).use { if (it.isSuccessful) it.body?.bytes() else null }
+        } catch (e: Exception) {
+            null
+        }
+
     fun getStringStrict(url: String, headers: Map<String, String> = emptyMap()): Result<String> =
         try {
             get(url, headers).use { r ->

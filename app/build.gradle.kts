@@ -65,5 +65,9 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.jsoup)
     implementation(libs.coil.compose)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlin.reflect)
+    implementation(libs.jackson.databind)
+    implementation(libs.jackson.module.kotlin)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

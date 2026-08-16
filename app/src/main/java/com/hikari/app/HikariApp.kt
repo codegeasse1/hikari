@@ -10,6 +10,11 @@ import kotlinx.coroutines.launch
 
 class HikariApp : Application() {
 
+    companion object {
+        lateinit var instance: HikariApp
+            private set
+    }
+
     lateinit var store: AppStore
         private set
     lateinit var providers: ProviderManager
@@ -17,6 +22,7 @@ class HikariApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         store = AppStore(this)
         providers = ProviderManager(store)
         Http.init()
