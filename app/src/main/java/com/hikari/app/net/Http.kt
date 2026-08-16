@@ -71,7 +71,7 @@ object Http {
     }
 
     fun fetchStringRobust(url: String, headers: Map<String, String> = emptyMap()): Result<String> {
-        var last: Exception = Exception("Failed to fetch $url")
+        var last: Throwable = Exception("Failed to fetch $url")
         for (u in urlVariants(url)) {
             for (attempt in 0 until 2) {
                 val r = getStringStrict(u, headers)
