@@ -4,6 +4,15 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a main release (v<version>) from current main"
+        type: boolean
+        default: false
+      version:
+        description: "Release version (e.g. 0.1.0)"
+        type: string
+        default: "0.1.0"
 
 permissions:
   contents: write
@@ -82,7 +91,20 @@ jobs:
             app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
-      - name: Publish signed APK to continuous release
+      # ---- TEST CHANNELS: updated on every push to main ----
+      - name: Publish test APK to build branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
+          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          git add hikari.apk
+          git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
+          git push origin build --force
+
+      - name: Publish test APK to continuous release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -92,14 +114,16 @@ jobs:
           else
             gh release create continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" \
               --title "Continuous build" \
-              --notes "Signed release APK, auto-built from main." || true
+              --notes "Signed test APK, auto-built from main." || true
           fi
 
-      - name: Publish main release (signed APK)
+      # ---- MAIN RELEASE: only when manually triggered with "release" checked ----
+      - name: Publish main release (manual only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
+          VERSION="${{ github.event.inputs.version }}"
           TAG="v${VERSION:-0.1.0}"
           cp app/build/outputs/apk/release/app-release.apk hikari.apk
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -107,17 +131,5 @@ jobs:
           else
             gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
               --title "Hikari $VERSION" \
-              --notes "Signed release APK, auto-built from main." || true
+              --notes "Signed release APK." || true
           fi
-
-      - name: Push debug APK to build branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
-          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
-          git add hikari-debug.apk
-          git commit -m "build: update debug APK $(date -u +%Y%m%d%H%M)" || true
-          git push origin build --force
