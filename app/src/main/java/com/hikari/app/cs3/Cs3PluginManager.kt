@@ -3,13 +3,14 @@ package com.hikari.app.cs3
 import android.content.Context
 import android.content.res.AssetManager
 import android.content.res.Resources
+import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import org.json.JSONObject
+import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.extractorApis
 import java.io.File
-import java.util.zip.ZipInputStream
+import java.io.InputStreamReader
 
 /**
  * Loads compiled CloudStream `.cs3` plugin archives exactly the way the real
@@ -21,10 +22,10 @@ import java.util.zip.ZipInputStream
  *  3. read `manifest.json` → `pluginClassName` (+ `requiresResources`),
  *  4. instantiate that class with a no-arg constructor,
  *  5. set `filename`, load optional resources, call `load()`,
- *  6. collect the MainAPIs the plugin registers.
+ *  6. collect the MainAPIs the plugin registered (via `APIHolder.allProviders`).
  *
- * As a fallback (older plugins with no/partial manifests) it also scans the
- * other classes in the dex for anything that looks like a plugin.
+ * The whole real CloudStream runtime ships inside the app (`libs/cloudstream3.jar`),
+ * so plugins get their genuine extractors, M3u8Helper, nicehttp etc. for free.
  *
  * Instances are cached per file path so provider state survives across calls.
  * The last failure (if any) is surfaced on [lastError] so the UI can show the
@@ -60,9 +61,9 @@ object Cs3PluginManager {
     }
 
     private fun loadFile(context: Context, file: File): List<MainAPI> {
-        val apis = mutableListOf<MainAPI>()
         errorDetails.setLength(0)
         lastError = null
+        val path = file.absolutePath
 
         // 1) CloudStream does this first: Android 14+ refuses writable dex files.
         try {
@@ -73,232 +74,103 @@ object Cs3PluginManager {
             record("setReadOnly threw", e)
         }
 
-        // 2) Open a class loader on the archive (PathClassLoader, like CloudStream).
+        // 2) Open a class loader on the archive. The real CloudStream runtime
+        //    classes live in the app itself, so the parent loader resolves them.
         val classLoader = try {
-            dalvik.system.PathClassLoader(file.absolutePath, context.classLoader)
+            dalvik.system.PathClassLoader(path, context.classLoader)
         } catch (e: Throwable) {
             record("PathClassLoader failed", e)
-            finish(null, apis)
-            return apis
+            return fail()
         }
 
         // 3) manifest.json → pluginClassName (+ requiresResources)
         val manifest = try {
-            readManifest(file)
+            val stream = classLoader.getResourceAsStream("manifest.json")
+            if (stream == null) {
+                record("manifest missing", RuntimeException("no manifest.json in ${file.name}"))
+                return fail()
+            }
+            stream.use {
+                AppUtils.parseJson(InputStreamReader(it).readText(), BasePlugin.Manifest::class)
+            }
         } catch (e: Throwable) {
             record("manifest read failed", e)
-            null
-        }
-        val manifestClass = manifest?.pluginClassName
-
-        // 4) names to consider: manifest class first, then every com./org. class
-        //    in the dex as a fallback for plugins with no usable manifest.
-        val names = dexClassNames(file)
-        val loaded = HashSet<String>()
-        val loadQueue = ArrayList<String>()
-        manifestClass?.let { loadQueue.add(it) }
-        for (n in names) {
-            if (n.startsWith("com.lagradost.") || n.startsWith("com.hikari.")) continue
-            if (n.startsWith("com.") || n.startsWith("org.")) {
-                if (!loaded.contains(n)) loadQueue.add(n)
-            }
+            return fail()
         }
 
-        for (name in loadQueue) {
-            if (loaded.contains(name)) continue
-            loaded.add(name)
-            val cls = try {
-                Class.forName(name, true, classLoader)
-            } catch (e: Throwable) {
-                record("Class.forName $name failed", e)
-                continue
-            }
-            val looksLikePlugin =
-                cls.isAnnotationPresent(CloudstreamPlugin::class.java) ||
-                    BasePlugin::class.java.isAssignableFrom(cls) ||
-                    Plugin::class.java.isAssignableFrom(cls)
-            if (!looksLikePlugin) continue
+        // 4) instantiate the plugin class with a no-arg constructor
+        val instance = try {
+            @Suppress("UNCHECKED_CAST")
+            val pluginClass =
+                classLoader.loadClass(manifest.pluginClassName) as Class<out BasePlugin>
+            pluginClass.getDeclaredConstructor().newInstance()
+        } catch (e: Throwable) {
+            record("loadClass/instantiate ${manifest.pluginClassName} failed", e)
+            return fail()
+        }
 
-            val instance = try {
-                val ctor = cls.getDeclaredConstructor()
-                @Suppress("DEPRECATION")
-                ctor.isAccessible = true
-                ctor.newInstance()
-            } catch (e: Throwable) {
-                record("instantiate $name failed", e)
-                continue
+        // Drop any earlier registrations from this exact file (reinstall).
+        try {
+            APIHolder.allProviders.withLock {
+                APIHolder.allProviders.removeAll { it.sourcePlugin == path }
             }
+            extractorApis.withLock {
+                extractorApis.removeAll { it.sourcePlugin == path }
+            }
+        } catch (e: Throwable) {
+            record("cleanup old registrations failed", e)
+        }
 
-            // 5) CloudStream sets filename + optional resources, then load().
-            try {
-                if (instance is BasePlugin) instance.filename = file.absolutePath
-                if (manifest != null && manifest.requiresResources && instance is Plugin) {
-                    try {
-                        val assets = AssetManager::class.java.getDeclaredConstructor().newInstance()
-                        val addPath = AssetManager::class.java.getMethod("addAssetPath", String::class.java)
-                        addPath.invoke(assets, file.absolutePath)
-                        instance.resources = Resources(
-                            assets as AssetManager,
-                            context.resources.displayMetrics,
-                            context.resources.configuration
-                        )
-                    } catch (e: Throwable) {
-                        record("resource loading for $name failed", e)
-                    }
+        // 5) CloudStream sets filename + optional resources, then load().
+        try {
+            instance.filename = path
+            if (manifest.requiresResources) {
+                try {
+                    val assets = AssetManager::class.java.getDeclaredConstructor().newInstance()
+                    val addPath =
+                        AssetManager::class.java.getMethod("addAssetPath", String::class.java)
+                    addPath.invoke(assets, path)
+                    @Suppress("DEPRECATION")
+                    (instance as? Plugin)?.resources = Resources(
+                        assets as AssetManager,
+                        context.resources.displayMetrics,
+                        context.resources.configuration
+                    )
+                } catch (e: Throwable) {
+                    record("resource loading failed", e)
                 }
-                when (instance) {
-                    is Plugin -> {
-                        instance.load(context)
-                        apis += instance.apis
-                    }
-                    is BasePlugin -> {
-                        instance.load()
-                        apis += instance.apis
-                    }
-                }
-            } catch (e: Throwable) {
-                record("load() of $name threw", e)
             }
+            if (instance is Plugin) {
+                instance.load(context)
+            } else {
+                instance.load()
+            }
+        } catch (e: Throwable) {
+            record("load() threw", e)
+            return fail()
         }
 
-        finish(manifestClass, apis)
-        return apis
-    }
-
-    private fun finish(manifestClass: String?, apis: List<MainAPI>) {
+        // 6) collect the providers this plugin registered
+        val apis = try {
+            APIHolder.allProviders.filter { it.sourcePlugin == path }
+        } catch (e: Throwable) {
+            record("collecting providers failed", e)
+            return fail()
+        }
         if (apis.isEmpty()) {
             val details = errorDetails.toString().trim()
             lastError = if (details.isNotBlank()) {
                 details
             } else {
-                "No CloudStream plugin class found (manifest class: $manifestClass)"
+                "Plugin loaded but registered no providers"
             }
         }
+        return apis
     }
 
-    private class Manifest(
-        val pluginClassName: String?,
-        val requiresResources: Boolean,
-    )
-
-    private fun readManifest(file: File): Manifest? {
-        var manifestText: String? = null
-        ZipInputStream(file.inputStream().buffered()).use { zis ->
-            while (true) {
-                val entry = zis.nextEntry ?: break
-                if (entry.name == "manifest.json") {
-                    manifestText = zis.readBytes().toString(Charsets.UTF_8)
-                }
-                zis.closeEntry()
-            }
-        }
-        manifestText ?: return null
-        val manifest = JSONObject(manifestText)
-        return Manifest(
-            pluginClassName = manifest.optString("pluginClassName").takeIf { it.isNotBlank() },
-            requiresResources = manifest.optBoolean("requiresResources", false),
-        )
-    }
-
-    /** Parses class names straight from classes.dex (handles packed id tables). */
-    private fun dexClassNames(file: File): List<String> {
-        val names = mutableListOf<String>()
-        try {
-            val dexBytes = mutableListOf<ByteArray>()
-            ZipInputStream(file.inputStream().buffered()).use { zis ->
-                while (true) {
-                    val entry = zis.nextEntry ?: break
-                    if (entry.name.endsWith(".dex")) dexBytes.add(zis.readBytes())
-                    zis.closeEntry()
-                }
-            }
-            for (bytes in dexBytes) {
-                names += dexClassNames(bytes)
-            }
-        } catch (e: Exception) {
-        }
-        return names.distinct()
-    }
-
-    private fun dexClassNames(bytes: ByteArray): List<String> {
-        val out = mutableListOf<String>()
-        try {
-            fun u32(o: Int) =
-                (bytes[o].toLong() and 0xff) or
-                    ((bytes[o + 1].toLong() and 0xff) shl 8) or
-                    ((bytes[o + 2].toLong() and 0xff) shl 16) or
-                    ((bytes[o + 3].toLong() and 0xff) shl 24)
-
-            if (bytes.size < 8) return out
-            if (bytes[0] != 'd'.code.toByte() || bytes[1] != 'e'.code.toByte() || bytes[2] != 'x'.code.toByte()) return out
-
-            fun uleb(start: Int): Pair<Long, Int> {
-                var result = 0L
-                var shift = 0
-                var idx = start
-                while (true) {
-                    val b = bytes[idx].toInt() and 0xff
-                    idx++
-                    result = result or ((b and 0x7f).toLong() shl shift)
-                    if (b and 0x80 == 0) break
-                    shift += 7
-                }
-                return result to idx
-            }
-
-            fun readString(off: Int): String {
-                val (_, start) = uleb(off)
-                var i = start
-                val sb = StringBuilder()
-                while (true) {
-                    val b = bytes[i].toInt() and 0xff
-                    i++
-                    if (b == 0) break
-                    when {
-                        b < 0x80 -> sb.append(b.toChar())
-                        (b and 0xe0) == 0xc0 -> {
-                            sb.append((((b and 0x1f) shl 6) or (bytes[i].toInt() and 0x3f)).toChar())
-                            i++
-                        }
-                        (b and 0xf0) == 0xe0 -> {
-                            sb.append(
-                                (((b and 0x0f) shl 12) or
-                                    ((bytes[i].toInt() and 0x3f) shl 6) or
-                                    (bytes[i + 1].toInt() and 0x3f)).toChar()
-                            )
-                            i += 2
-                        }
-                        else -> return ""
-                    }
-                }
-                return sb.toString()
-            }
-
-            val stringIdsSize = u32(0x38).toInt()
-            val stringIdsOff = u32(0x3c).toInt()
-            val typeIdsSize = u32(0x40).toInt()
-            val typeIdsOff = u32(0x44).toInt()
-            val classDefsSize = u32(0x60).toInt()
-            val classDefsOff = u32(0x64).toInt()
-            if (stringIdsOff + stringIdsSize * 4 > bytes.size) return out
-
-            val strings = Array(stringIdsSize) { "" }
-            for (i in 0 until stringIdsSize) {
-                strings[i] = readString(u32(stringIdsOff + i * 4).toInt())
-            }
-            val types = Array(typeIdsSize) { "" }
-            for (i in 0 until typeIdsSize) {
-                types[i] = strings[u32(typeIdsOff + i * 4).toInt()]
-            }
-            for (i in 0 until classDefsSize) {
-                val clsIdx = u32(classDefsOff + i * 32).toInt()
-                val t = types[clsIdx]
-                if (t.startsWith("L") && t.endsWith(";")) {
-                    out.add(t.substring(1, t.length - 1).replace('/', '.'))
-                }
-            }
-        } catch (e: Exception) {
-        }
-        return out
+    private fun fail(): List<MainAPI> {
+        val details = errorDetails.toString().trim()
+        lastError = if (details.isNotBlank()) details else "Unknown error loading plugin"
+        return emptyList()
     }
 }

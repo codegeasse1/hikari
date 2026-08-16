@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.hikari.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.hikari.app"
@@ -45,6 +45,7 @@ android {
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
+    implementation(files("libs/cloudstream3.jar"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -69,5 +70,11 @@ dependencies {
     implementation(libs.kotlin.reflect)
     implementation(libs.jackson.databind)
     implementation(libs.jackson.module.kotlin)
+    implementation(libs.nicehttp)
+    implementation(libs.conscrypt.android)
+    implementation(libs.androidx.preference.ktx)
+    implementation(libs.rhino)
+    implementation(libs.ktor.http)
+    implementation(libs.kotlinx.coroutines.android)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

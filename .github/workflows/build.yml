@@ -23,12 +23,12 @@ jobs:
         run: |
           if [ -n "$ANDROID_HOME" ]; then
             yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null 2>&1 || true
           fi
 
       - uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: "8.4"
+          gradle-version: "8.11.1"
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
