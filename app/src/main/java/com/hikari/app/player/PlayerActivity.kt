@@ -48,7 +48,9 @@ class PlayerActivity : ComponentActivity() {
         val name: String,
         val url: String,
         val headers: Map<String, String>,
-        val subtitles: List<SubtitleSource>
+        val subtitles: List<SubtitleSource>,
+        val isM3u8: Boolean = false,
+        val isMpd: Boolean = false,
     )
 
     private var player: ExoPlayer? = null
@@ -144,7 +146,14 @@ class PlayerActivity : ComponentActivity() {
                     val s = subsObj.getJSONObject(j)
                     SubtitleSource(s.optString("lang"), s.optString("url"))
                 }
-                PlayerSource(o.optString("name", "Source ${i + 1}"), o.optString("url"), headers, subs)
+                PlayerSource(
+                    o.optString("name", "Source ${i + 1}"),
+                    o.optString("url"),
+                    headers,
+                    subs,
+                    o.optBoolean("isM3u8"),
+                    o.optBoolean("isMpd"),
+                )
             }
         }.getOrDefault(emptyList())
 
@@ -258,6 +267,51 @@ class PlayerActivity : ComponentActivity() {
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
 
+        // CloudStream extractors tell us the container type (HLS/DASH) — many
+        // anime CDNs serve an extensionless URL, and without the MIME hint
+        // ExoPlayer tries it as a progressive file and dies with
+        // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED.
+        val mime = when {
+            src.isM3u8 || src.url.contains(".m3u8", true) -> MimeTypes.APPLICATION_M3U8
+            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
+            else -> null
+        }
+        if (mime != null) {
+            startPlayer(index, src, mime)
+            return
+        }
+
+        // Container unknown: probe the first bytes BEFORE preparing so we can
+        // force the right MIME type when the server doesn't advertise it, and
+        // fail fast (move to the next server) when the response is an
+        // anti-hotlink HTML page instead of video.
+        lifecycleScope.launch {
+            val detected = withContext(Dispatchers.IO) { detectStreamType(src.url, src.headers) }
+            if (currentIndex != index) return@launch
+            when (detected) {
+                STREAM_HLS -> startPlayer(index, src, MimeTypes.APPLICATION_M3U8)
+                STREAM_DASH -> startPlayer(index, src, MimeTypes.APPLICATION_MPD)
+                STREAM_HTML -> {
+                    val hasNext = index + 1 < sources.size
+                    if (autoFallback && hasNext) {
+                        autoFallback = false
+                        Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
+                        playSource(index + 1)
+                    } else {
+                        showError(
+                            "The server did not return video data — it answered with an HTML page " +
+                                "(anti-bot or hotlink protection).", hasNext
+                        )
+                    }
+                }
+                // Direct file, or the probe itself failed: hand it to ExoPlayer
+                // normally — it can still succeed when the probe couldn't.
+                else -> startPlayer(index, src, null)
+            }
+        }
+    }
+
+    private fun startPlayer(index: Int, src: PlayerSource, mime: String?) {
         player?.let { old ->
             old.removeListener(listener)
             old.release()
@@ -280,11 +334,6 @@ class PlayerActivity : ComponentActivity() {
         // URLs that return junk like "1", which media3 treats as a fatal parse
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
-        val mime = when {
-            src.url.contains(".m3u8", true) -> MimeTypes.APPLICATION_M3U8
-            src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
-            else -> null
-        }
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
 
@@ -317,6 +366,24 @@ class PlayerActivity : ComponentActivity() {
             if (mime != null) item.setMimeType(mime)
             p.setMediaItem(item.build(), false)
             p.prepare()
+        }
+    }
+
+    /** Fetches the first bytes of a stream and classifies the container. */
+    private suspend fun detectStreamType(url: String, headers: Map<String, String>): Int {
+        val withRange = LinkedHashMap(headers).apply { put("Range", "bytes=0-4095") }
+        val bytes = runCatching { Http.getBytes(url, withRange) }.getOrNull()
+            ?: return STREAM_ERROR
+        if (bytes.isEmpty()) return STREAM_ERROR
+        val head = String(bytes, 0, minOf(bytes.size, 1024), Charsets.ISO_8859_1)
+            .trimStart('\uFEFF', ' ', '\r', '\n')
+        val lower = head.lowercase()
+        return when {
+            head.startsWith("#EXTM3U") || lower.contains("#extinf") -> STREAM_HLS
+            lower.contains("<mpd") || lower.contains("dash:") -> STREAM_DASH
+            lower.startsWith("<!doctype") || lower.startsWith("<html") -> STREAM_HTML
+            head.startsWith("{") || head.startsWith("[") -> STREAM_HTML
+            else -> STREAM_DIRECT
         }
     }
 
@@ -422,5 +489,11 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        private const val STREAM_HLS = 1
+        private const val STREAM_DASH = 2
+        private const val STREAM_DIRECT = 3
+        private const val STREAM_HTML = 4
+        private const val STREAM_ERROR = 5
     }
 }

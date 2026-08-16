@@ -223,13 +223,26 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             lastStreamsTimeMs = System.currentTimeMillis() - started
             val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
             links
-                .filter { it.url.isNotBlank() && it.url != a.mainUrl }
+                .filter { it.url.isNotBlank() && it.url != a.mainUrl && it.type.name != "ERROR" }
                 .map { l ->
+                    // CloudStream keeps the Referer OUT of ExtractorLink.headers —
+                    // without it most anime CDNs answer with an anti-hotlink HTML
+                    // page and ExoPlayer reports PARSING_CONTAINER_UNSUPPORTED.
+                    // Merge referer in (keeping any Referer the extractor set),
+                    // and carry the container type so the player can pick HLS/DASH.
+                    val headers = LinkedHashMap<String, String>()
+                    l.headers?.forEach { (k, v) -> headers[k] = v }
+                    val ref = l.referer
+                    if (!ref.isNullOrBlank()) {
+                        headers.putIfAbsent("Referer", ref)
+                    }
                     StreamSource(
                         name = l.name.ifBlank { "Stream" },
                         url = l.url,
-                        headers = l.headers,
+                        headers = headers,
                         subtitles = subSources,
+                        isM3u8 = l.isM3u8,
+                        isMpd = l.isDash,
                     )
                 }
         }

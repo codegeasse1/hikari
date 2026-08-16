@@ -185,6 +185,8 @@ fun DetailScreen(
                                             .put("name", s.name)
                                             .put("url", s.url)
                                             .put("headers", JSONObject(s.headers))
+                                            .put("isM3u8", s.isM3u8)
+                                            .put("isMpd", s.isMpd)
                                             .put(
                                                 "subtitles",
                                                 JSONArray().apply {

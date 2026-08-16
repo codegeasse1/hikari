@@ -69,6 +69,8 @@ data class StreamSource(
     val subtitles: List<SubtitleSource> = emptyList(),
     val isTorrent: Boolean = false,
     val infoHash: String? = null,
+    val isM3u8: Boolean = false,
+    val isMpd: Boolean = false,
 )
 
 data class CatalogRef(
