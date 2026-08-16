@@ -220,7 +220,7 @@ class PlayerActivity : ComponentActivity() {
                 ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
                 items.add(label)
                 indexMap[items.size - 1] = group to i
-                if (checked == 0 && override != null && override.streamKeys.any { it.trackIndex == i }) {
+                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
                     checked = base + i
                 }
             }

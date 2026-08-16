@@ -40,7 +40,7 @@ class HikariApp : Application() {
         Http.init()
         CoroutineScope(Dispatchers.IO).launch {
             providers.refresh()
-            providers.value
+            providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
         }
