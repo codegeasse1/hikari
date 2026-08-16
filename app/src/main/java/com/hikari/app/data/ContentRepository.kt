@@ -9,8 +9,10 @@ import kotlinx.coroutines.withContext
 
 class ContentRepository(private val manager: ProviderManager) {
 
-    suspend fun homeRows(): List<CatalogRow> = withContext(Dispatchers.IO) {
-        val active = manager.providers.value.filter { it.config.enabled }
+    suspend fun homeRows(providerId: String? = null): List<CatalogRow> = withContext(Dispatchers.IO) {
+        val active = manager.providers.value.filter {
+            it.config.enabled && (providerId == null || it.config.id == providerId)
+        }
         coroutineScope {
             active.map { p ->
                 async {
@@ -26,8 +28,10 @@ class ContentRepository(private val manager: ProviderManager) {
         }
     }
 
-    suspend fun searchAll(query: String, page: Int = 1): List<MediaItem> = withContext(Dispatchers.IO) {
-        val active = manager.providers.value.filter { it.config.enabled }
+    suspend fun searchAll(query: String, page: Int = 1, providerId: String? = null): List<MediaItem> = withContext(Dispatchers.IO) {
+        val active = manager.providers.value.filter {
+            it.config.enabled && (providerId == null || it.config.id == providerId)
+        }
         coroutineScope {
             active.map { p ->
                 async {

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -692,6 +693,7 @@ private fun RepoBrowserView(
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
 ) {
+    var extFilter by remember { mutableStateOf("") }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
@@ -811,17 +813,35 @@ private fun RepoBrowserView(
         }
 
         item { SectionHeader("Installed extensions") }
-        if (providers.isEmpty()) {
+        item {
+            OutlinedTextField(
+                value = extFilter,
+                onValueChange = { extFilter = it },
+                placeholder = { Text("Search installed extensions…") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        val filteredProviders = providers.filter {
+            extFilter.isBlank() || it.config.name.contains(extFilter, ignoreCase = true)
+        }
+        if (filteredProviders.isEmpty()) {
             item {
                 EmptyState(
-                    title = "No extensions yet",
-                    subtitle = "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file.",
+                    title = if (providers.isEmpty()) "No extensions yet" else "No matches",
+                    subtitle = if (providers.isEmpty())
+                        "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file."
+                    else
+                        "No installed extension matches \"$extFilter\".",
                     actionLabel = null,
                     action = null
                 )
             }
         }
-        items(providers, key = { it.config.id }) { p ->
+        items(filteredProviders, key = { it.config.id }) { p ->
             ProviderCard(
                 p = p,
                 onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },

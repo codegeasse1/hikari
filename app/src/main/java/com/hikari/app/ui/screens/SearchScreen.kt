@@ -9,13 +9,16 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -38,6 +41,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
+import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.FlowPreview
@@ -45,6 +49,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -52,10 +57,16 @@ import kotlinx.coroutines.launch
 
 @OptIn(FlowPreview::class)
 class SearchViewModel(app: Application) : AndroidViewModel(app) {
-    private val repo = ContentRepository((app as HikariApp).providers)
+    private val manager = (app as HikariApp).providers
+    private val repo = ContentRepository(manager)
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
+
+    private val _selectedProvider = MutableStateFlow<String?>(null)
+    val selectedProvider: StateFlow<String?> = _selectedProvider.asStateFlow()
+
+    val providers: StateFlow<List<ContentProvider>> = manager.providers
 
     private val _results = MutableStateFlow<List<MediaItem>>(emptyList())
     val results: StateFlow<List<MediaItem>> = _results.asStateFlow()
@@ -65,9 +76,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            _query
-                .debounce(400)
-                .distinctUntilChanged()
+            combine(_query.debounce(400).distinctUntilChanged(), _selectedProvider) { q, _ -> q }
                 .collectLatest { q ->
                     if (q.isBlank()) {
                         _results.value = emptyList()
@@ -75,7 +84,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                         return@collectLatest
                     }
                     _searching.value = true
-                    _results.value = repo.searchAll(q)
+                    _results.value = repo.searchAll(q, providerId = _selectedProvider.value)
                     _searching.value = false
                 }
         }
@@ -83,6 +92,10 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setQuery(q: String) {
         _query.value = q
+    }
+
+    fun selectProvider(id: String?) {
+        _selectedProvider.value = id
     }
 }
 
@@ -92,6 +105,8 @@ fun SearchScreen(nav: NavHostController) {
     val query by vm.query.collectAsState()
     val results by vm.results.collectAsState()
     val searching by vm.searching.collectAsState()
+    val selected by vm.selectedProvider.collectAsState()
+    val providers by vm.providers.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -111,6 +126,27 @@ fun SearchScreen(nav: NavHostController) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         )
+        if (providers.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = selected == null,
+                        onClick = { vm.selectProvider(null) },
+                        label = { Text("All") }
+                    )
+                }
+                items(providers, key = { it.config.id }) { p ->
+                    FilterChip(
+                        selected = selected == p.config.id,
+                        onClick = { vm.selectProvider(p.config.id) },
+                        label = { Text(p.config.name) }
+                    )
+                }
+            }
+        }
         if (searching) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
@@ -122,6 +158,7 @@ fun SearchScreen(nav: NavHostController) {
                 action = null
             )
         } else {
+            val namesById = providers.associateBy({ it.config.id }, { it.config.name })
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 modifier = Modifier.fillMaxSize(),
@@ -153,6 +190,15 @@ fun SearchScreen(nav: NavHostController) {
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 4.dp)
                         )
+                        namesById[item.providerId]?.let { name ->
+                            Text(
+                                name,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }

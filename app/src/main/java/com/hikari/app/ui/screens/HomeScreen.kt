@@ -5,7 +5,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +27,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,15 +43,32 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
+    private val _selectedProvider = MutableStateFlow<String?>(null)
+    val selectedProvider: StateFlow<String?> = _selectedProvider.asStateFlow()
+
+    val providers: StateFlow<List<ContentProvider>> = manager.providers
+
     init {
         viewModelScope.launch {
-            manager.providers.collect { loadInternal() }
+            manager.providers.collect { ps ->
+                val sel = _selectedProvider.value
+                if (sel != null && ps.none { it.config.id == sel }) {
+                    _selectedProvider.value = null
+                }
+                loadInternal()
+            }
         }
+    }
+
+    fun selectProvider(id: String?) {
+        if (_selectedProvider.value == id) return
+        _selectedProvider.value = id
+        viewModelScope.launch { loadInternal() }
     }
 
     private suspend fun loadInternal() {
         _loading.value = true
-        _rows.value = repo.homeRows()
+        _rows.value = repo.homeRows(_selectedProvider.value)
         _loading.value = false
     }
 
@@ -62,6 +82,8 @@ fun HomeScreen(nav: NavHostController) {
     val vm: HomeViewModel = viewModel()
     val rows by vm.rows.collectAsState()
     val loading by vm.loading.collectAsState()
+    val selected by vm.selectedProvider.collectAsState()
+    val providers by vm.providers.collectAsState()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -81,6 +103,29 @@ fun HomeScreen(nav: NavHostController) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
+        }
+        if (providers.isNotEmpty()) {
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        FilterChip(
+                            selected = selected == null,
+                            onClick = { vm.selectProvider(null) },
+                            label = { Text("All") }
+                        )
+                    }
+                    items(providers, key = { it.config.id }) { p ->
+                        FilterChip(
+                            selected = selected == p.config.id,
+                            onClick = { vm.selectProvider(p.config.id) },
+                            label = { Text(p.config.name) }
+                        )
+                    }
+                }
+            }
         }
         if (loading && rows.isEmpty()) {
             items(4) { ShimmerRow() }

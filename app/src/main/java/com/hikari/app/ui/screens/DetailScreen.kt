@@ -154,6 +154,40 @@ fun DetailScreen(
         scope.launch {
             streams = vm.getStreams(ep)
             loadingStreams = false
+            val playable = streams.filter { !it.isTorrent && it.url.isNotBlank() }
+            if (playable.isNotEmpty()) {
+                showSheet = false
+                context.startActivity(
+                    Intent(context, PlayerActivity::class.java).apply {
+                        putExtra("title", m?.title ?: title)
+                        putExtra(
+                            "sources",
+                            JSONArray().apply {
+                                playable.forEach { s ->
+                                    put(
+                                        JSONObject()
+                                            .put("name", s.name)
+                                            .put("url", s.url)
+                                            .put("headers", JSONObject(s.headers))
+                                            .put(
+                                                "subtitles",
+                                                JSONArray().apply {
+                                                    s.subtitles.forEach {
+                                                        put(
+                                                            JSONObject()
+                                                                .put("lang", it.lang)
+                                                                .put("url", it.url)
+                                                        )
+                                                    }
+                                                }
+                                            )
+                                    )
+                                }
+                            }.toString()
+                        )
+                    }
+                )
+            }
         }
     }
 
@@ -318,7 +352,7 @@ fun DetailScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     items(streams, key = { it.url + it.name }) { s ->
-                        val enabled = !s.isTorrent
+                        val enabled = !s.isTorrent && s.url.isNotBlank()
                         ListItem(
                             headlineContent = { Text(s.name) },
                             supportingContent = {
@@ -337,31 +371,7 @@ fun DetailScreen(
                                     tint = if (enabled) MaterialTheme.colorScheme.primary
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                            },
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable(enabled = enabled) {
-                                    showSheet = false
-                                    context.startActivity(
-                                        Intent(context, PlayerActivity::class.java).apply {
-                                            putExtra("title", m?.title ?: title)
-                                            putExtra("url", s.url)
-                                            putExtra("headers", JSONObject(s.headers).toString())
-                                            putExtra(
-                                                "subtitles",
-                                                JSONArray().apply {
-                                                    s.subtitles.forEach {
-                                                        put(
-                                                            JSONObject()
-                                                                .put("lang", it.lang)
-                                                                .put("url", it.url)
-                                                        )
-                                                    }
-                                                }.toString()
-                                            )
-                                        }
-                                    )
-                                }
+                            }
                         )
                     }
                 }
