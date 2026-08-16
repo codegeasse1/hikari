@@ -18,11 +18,11 @@ class ContentRepository(private val manager: ProviderManager) {
             active.map { p ->
                 async {
                     runCatching {
-                        withTimeoutOrNull(20_000) {
+                        withTimeoutOrNull(60_000) {
                             p.catalogs().take(8).map { c ->
-                                val items = runCatching {
-                                    withTimeoutOrNull(15_000) { p.getCatalog(c, 1) }?.take(24) ?: emptyList()
-                                }.getOrDefault(emptyList())
+                                val items = runCatching { p.getCatalog(c, 1) }
+                                    .getOrDefault(emptyList())
+                                    .take(24)
                                 CatalogRow(p.config.name, c.name, items)
                             }
                         } ?: emptyList()
@@ -40,7 +40,7 @@ class ContentRepository(private val manager: ProviderManager) {
             active.map { p ->
                 async {
                     runCatching {
-                        withTimeoutOrNull(30_000) { p.search(query, page) } ?: emptyList()
+                        withTimeoutOrNull(45_000) { p.search(query, page) } ?: emptyList()
                     }.getOrDefault(emptyList())
                 }
             }.awaitAll().flatten().distinctBy { it.uniqueId }

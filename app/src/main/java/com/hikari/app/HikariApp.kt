@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.security.Security
+import java.util.concurrent.TimeUnit
 
 class HikariApp : Application() {
 
@@ -37,7 +38,12 @@ class HikariApp : Application() {
         store = AppStore(this)
         providers = ProviderManager(store)
         Http.init()
-        CoroutineScope(Dispatchers.IO).launch { providers.refresh() }
+        CoroutineScope(Dispatchers.IO).launch {
+            providers.refresh()
+            providers.value
+                .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
+                .forEach { it.warm() }
+        }
     }
 
     private fun initCloudStream(context: Context) {
@@ -52,11 +58,16 @@ class HikariApp : Application() {
 
             // Accessing the jar's MainActivityKt initializes its own default
             // nicehttp Requests (jackson responseParser + CloudStream user-agent).
-            // Wire up the real okhttp client (redirects, 50MiB cache, optional
-            // SSL-ignore) exactly like CloudStream's buildDefaultClient.
+            // Wire up the real okhttp client (redirects, generous timeouts +
+            // connection retry exactly like CloudStream's buildDefaultClient,
+            // 50MiB cache, optional SSL-ignore) so slow anime sites don't throw
+            // on the 10s okhttp defaults.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .retryOnConnectionFailure(true)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
                 .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
                 .build()

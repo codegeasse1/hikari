@@ -38,6 +38,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
         @Volatile
         var lastStreamsTimeMs: Long = 0L
+
+        /** Per-provider reason why its home catalog failed (empty = it works). */
+        val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
     }
 
     private val api: MainAPI? by lazy {
@@ -49,6 +52,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
             apis.getOrNull(index)
         }
+    }
+
+    /** Force the plugin dex to load now (called at app startup so the first
+     *  home/catalog request doesn't race with class loading). */
+    fun warm() {
+        runCatching { api }
     }
 
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
@@ -69,27 +78,64 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            val a = api ?: return@withContext emptyList()
+            val a = api
+            if (a == null) {
+                catalogErrors[config.id] = apiFailureReason()
+                return@withContext emptyList()
+            }
             val resp = try {
-                withTimeoutOrNull(15_000) {
-                    a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
-                }
+                a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
             } catch (e: Throwable) {
-                null
-            } ?: return@withContext emptyList()
-            resp.items.orEmpty().flatMap { row -> row.list.orEmpty().mapNotNull { it.toMediaItem() } }
+                // A brand-new plugin instance can fail its very first network
+                // call while the runtime/session initializes — retry once.
+                try {
+                    a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                } catch (e2: Throwable) {
+                    catalogErrors[config.id] = fullCause(e2)
+                    return@withContext emptyList()
+                }
+            }
+            if (resp == null) {
+                catalogErrors[config.id] = "getMainPage returned null for ${ref.id}"
+                return@withContext emptyList()
+            }
+            val items = resp.items.orEmpty().flatMap { row ->
+                row.list.orEmpty().mapNotNull { it.toMediaItem() }
+            }
+            if (items.isEmpty()) {
+                catalogErrors[config.id] = "Page fetched but no items parsed from ${ref.id}"
+            } else {
+                catalogErrors.remove(config.id)
+            }
+            items
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
             val found = try {
-                withTimeoutOrNull(30_000) { a.search(query) }
+                a.search(query)
             } catch (e: Throwable) {
                 emptyList()
             }
             found.orEmpty().mapNotNull { it.toMediaItem() }
         }
+
+    /** Human-readable reason why this provider's API object is unavailable. */
+    private fun apiFailureReason(): String {
+        val file = File(config.url)
+        if (!file.exists()) {
+            return "Plugin file is missing — open Extensions and reinstall this one."
+        }
+        val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
+        val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
+        if (index >= apis.size) {
+            return "Plugin loaded ${apis.size} provider(s), but this entry needs #$index. Reinstall the plugin."
+        }
+        val detail = Cs3PluginManager.lastError
+        return if (detail.isNullOrBlank()) "Plugin did not register this provider. Reinstall the plugin."
+        else "Plugin failed to load:\n$detail"
+    }
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
         if (item.overview != null && item.genres.isNotEmpty()) return item

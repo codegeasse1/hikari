@@ -54,7 +54,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             manager.providers.collect { ps ->
                 val sel = _selectedProvider.value
-                if (sel != null && ps.none { it.config.id == sel }) {
+                if (sel != null && ps.none { it.config.enabled && it.config.id == sel }) {
                     _selectedProvider.value = null
                 }
                 loadInternal()
@@ -91,6 +91,7 @@ fun HomeScreen(nav: NavHostController) {
     val loading by vm.loading.collectAsState()
     val selected by vm.selectedProvider.collectAsState()
     val providers by vm.providers.collectAsState()
+    val activeProviders = providers.filter { it.config.enabled }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -111,7 +112,7 @@ fun HomeScreen(nav: NavHostController) {
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
-        if (providers.isNotEmpty()) {
+        if (activeProviders.isNotEmpty()) {
             item {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
@@ -124,7 +125,7 @@ fun HomeScreen(nav: NavHostController) {
                             label = { Text("All") }
                         )
                     }
-                    items(providers, key = { it.config.id }) { p ->
+                    items(activeProviders, key = { it.config.id }) { p ->
                         FilterChip(
                             selected = selected == p.config.id,
                             onClick = { vm.selectProvider(p.config.id) },
@@ -152,9 +153,12 @@ fun HomeScreen(nav: NavHostController) {
             item {
                 if (selected != null) {
                     val name = providers.firstOrNull { it.config.id == selected }?.config?.name
+                    val reason =
+                        com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
                     EmptyState(
                         title = "Couldn't load ${name ?: "this extension"}",
-                        subtitle = "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
+                        subtitle = reason
+                            ?: "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
                         actionLabel = "Retry",
                         action = { vm.refresh() }
                     )

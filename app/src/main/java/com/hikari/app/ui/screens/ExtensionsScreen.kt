@@ -844,6 +844,7 @@ private fun RepoBrowserView(
         items(filteredProviders, key = { it.config.id }) { p ->
             ProviderCard(
                 p = p,
+                status = pluginStatus(p),
                 onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                 onDelete = { onDeleteProvider(p.config.id) }
             )
@@ -971,6 +972,7 @@ private fun RepoPluginsView(
 @Composable
 private fun ProviderCard(
     p: ContentProvider,
+    status: String?,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -1004,6 +1006,16 @@ private fun ProviderCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
+                if (status != null) {
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             Switch(checked = p.config.enabled, onCheckedChange = onToggle)
             IconButton(onClick = onDelete) {
@@ -1145,4 +1157,12 @@ private fun PluginRow(
             Button(onClick = onInstall) { Text("Install") }
         }
     }
+}
+
+private fun pluginStatus(p: ContentProvider): String? {
+    if (p.config.type != ProviderType.CS3) return null
+    val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
+    if (err != null) return err.take(200)
+    if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
+    return null
 }

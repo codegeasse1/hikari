@@ -1,5 +1,6 @@
 package com.hikari.app.player
 
+import android.app.AlertDialog
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -11,7 +12,6 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -53,6 +53,7 @@ class PlayerActivity : ComponentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+    private var topBar: View? = null
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
@@ -60,7 +61,8 @@ class PlayerActivity : ComponentActivity() {
 
     private var speedChip: TextView? = null
     private var rotateChip: TextView? = null
-    private var sourcesRow: LinearLayout? = null
+    private var qualityBtn: TextView? = null
+    private var sourcesBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
@@ -83,9 +85,11 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        topBar = findViewById(R.id.top_bar)
         speedChip = findViewById(R.id.speed_btn)
         rotateChip = findViewById(R.id.rotate_btn)
-        sourcesRow = findViewById(R.id.sources_row)
+        qualityBtn = findViewById(R.id.quality_btn)
+        sourcesBtn = findViewById(R.id.sources_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
@@ -95,6 +99,8 @@ class PlayerActivity : ComponentActivity() {
 
         speedChip?.setOnClickListener { cycleSpeed() }
         rotateChip?.setOnClickListener { cycleRotation() }
+        qualityBtn?.setOnClickListener { showQualityDialog() }
+        sourcesBtn?.setOnClickListener { showSourcesDialog() }
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
@@ -112,6 +118,15 @@ class PlayerActivity : ComponentActivity() {
             }
             false
         }
+
+        // Hide our top bar whenever the media3 controller hides, so the screen
+        // stays clean while watching. Tapping the video brings controls back.
+        @Suppress("DEPRECATION")
+        playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
+            override fun onVisibilityChanged(visibility: Int) {
+                topBar?.visibility = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
+            }
+        })
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -145,7 +160,6 @@ class PlayerActivity : ComponentActivity() {
             .followSslRedirects(true)
             .build()
 
-        buildChips()
         playSource(0)
     }
 
@@ -170,6 +184,69 @@ class PlayerActivity : ComponentActivity() {
         p.playbackParameters = p.playbackParameters.withSpeed(speed)
     }
 
+    private fun showSourcesDialog() {
+        if (sources.isEmpty()) return
+        val names = sources.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Select server")
+            .setSingleChoiceItems(names, currentIndex) { d, which ->
+                if (which != currentIndex) {
+                    autoFallback = true
+                    playSource(which)
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showQualityDialog() {
+        val p = player ?: return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        val items = mutableListOf<String>()
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        items.add("Auto (adaptive)")
+        var base = 1
+        var checked = 0
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            val override = p.trackSelectionParameters.overrides[mediaGroup]
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = listOfNotNull(
+                    f.height.takeIf { it > 0 }?.let { "${it}p" },
+                    f.width.takeIf { it > 0 }?.let { "${it}px" },
+                    f.averageBitrate.takeIf { it > 0 }?.let { "${it / 1000}kbps" }
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
+                items.add(label)
+                indexMap[items.size - 1] = group to i
+                if (checked == 0 && override != null && override.streamKeys.any { it.trackIndex == i }) {
+                    checked = base + i
+                }
+            }
+            base += mediaGroup.length
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Video quality")
+            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
+                if (which == 0) {
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                        .build()
+                } else {
+                    val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(
+                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                        )
+                        .build()
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun playSource(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
@@ -178,6 +255,7 @@ class PlayerActivity : ComponentActivity() {
         currentIndex = index
         val src = sources[index]
 
+        sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
 
         player?.let { old ->
@@ -240,8 +318,6 @@ class PlayerActivity : ComponentActivity() {
             p.setMediaItem(item.build(), false)
             p.prepare()
         }
-
-        updateChips()
     }
 
     /**
@@ -301,35 +377,6 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun buildChips() {
-        sourcesRow?.removeAllViews()
-        sources.forEachIndexed { i, src ->
-            val chip = TextView(this).apply {
-                text = src.name
-                textSize = 13f
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(dp(14), dp(8), dp(14), dp(8))
-                setOnClickListener {
-                    autoFallback = false
-                    errorPanel?.visibility = View.GONE
-                    playSource(i)
-                }
-            }
-            sourcesRow?.addView(chip, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = dp(4); marginEnd = dp(4) })
-        }
-        updateChips()
-    }
-
-    private fun updateChips() {
-        for (i in 0 until (sourcesRow?.childCount ?: 0)) {
-            val chip = sourcesRow?.getChildAt(i) as? TextView ?: continue
-            chip.setBackgroundColor(if (i == currentIndex) 0xFF1E88E5.toInt() else 0x66000000)
-        }
-    }
-
     private fun showError(message: String, hasNext: Boolean) {
         errorText?.text = message
         nextBtn?.text = if (hasNext) "Try next server" else "Close"
@@ -363,8 +410,6 @@ class PlayerActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     override fun onDestroy() {
         player?.let { p ->

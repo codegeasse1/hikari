@@ -10,6 +10,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Top bar: hidden by default; PlayerActivity shows/hides it together
+         with the media3 controller so controls appear on tap and fade away. -->
     <LinearLayout
         android:id="@+id/top_bar"
         android:layout_width="match_parent"
@@ -18,7 +20,8 @@
         android:gravity="center_vertical"
         android:background="#CC000000"
         android:paddingTop="8dp"
-        android:paddingBottom="8dp">
+        android:paddingBottom="8dp"
+        android:visibility="gone">
 
         <TextView
             android:id="@+id/back_btn"
@@ -27,8 +30,8 @@
             android:text="‹"
             android:textSize="34sp"
             android:textColor="#FFFFFF"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
             android:background="?android:attr/selectableItemBackground" />
 
         <TextView
@@ -36,21 +39,47 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textSize="16sp"
+            android:textSize="15sp"
             android:textColor="#FFFFFF"
             android:maxLines="1"
             android:ellipsize="end"
             android:gravity="center_vertical" />
 
         <TextView
+            android:id="@+id/sources_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Server"
+            android:textSize="13sp"
+            android:textColor="#FFFFFF"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <TextView
+            android:id="@+id/quality_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Quality"
+            android:textSize="13sp"
+            android:textColor="#FFFFFF"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <TextView
             android:id="@+id/speed_btn"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="1x"
-            android:textSize="15sp"
+            android:textSize="13sp"
             android:textColor="#FFFFFF"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:paddingTop="6dp"
             android:paddingBottom="6dp"
             android:background="?android:attr/selectableItemBackground" />
@@ -60,30 +89,14 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="↻"
-            android:textSize="22sp"
+            android:textSize="20sp"
             android:textColor="#FFFFFF"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="14dp"
             android:paddingTop="4dp"
             android:paddingBottom="4dp"
             android:background="?android:attr/selectableItemBackground" />
     </LinearLayout>
-
-    <HorizontalScrollView
-        android:id="@+id/sources_scroll"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="58dp"
-        android:scrollbars="none">
-
-        <LinearLayout
-            android:id="@+id/sources_row"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:background="#99000000"
-            android:padding="6dp" />
-    </HorizontalScrollView>
 
     <LinearLayout
         android:id="@+id/error_panel"
