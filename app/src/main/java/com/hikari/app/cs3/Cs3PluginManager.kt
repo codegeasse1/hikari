@@ -72,11 +72,14 @@ object Cs3PluginManager {
 
         val names = try {
             @Suppress("DEPRECATION")
-            DexFile(file).use { dex ->
+            val dex = DexFile(file)
+            try {
                 val list = ArrayList<String>()
                 val it = dex.entries()
                 while (it.hasMoreElements()) list.add(it.nextElement())
                 list
+            } finally {
+                dex.close()
             }
         } catch (e: Throwable) {
             record("DexFile enumeration failed, using fallback parser", e)
