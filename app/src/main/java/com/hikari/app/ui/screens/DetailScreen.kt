@@ -26,12 +26,15 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -139,6 +143,8 @@ fun DetailScreen(
     var selectedEp by remember { mutableStateOf<Episode?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
+    var rangeStart by rememberSaveable { mutableStateOf<Int?>(null) }
+    var rangeExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(providerId, mediaId) {
         vm.load(providerId, type, mediaId, title)
@@ -268,15 +274,59 @@ fun DetailScreen(
                     }
                 }
                 if (m?.type == MediaType.SERIES) {
-                    item {
-                        Text(
-                            "Episodes",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
+                    val sortedEps = remember(episodes) { episodes.orEmpty().sortedBy { it.number } }
+                    val ranges = remember(sortedEps) {
+                        if (sortedEps.isEmpty()) emptyList()
+                        else {
+                            val lo = sortedEps.minOf { it.number }
+                            val hi = sortedEps.maxOf { it.number }
+                            (lo..hi step 30).map { s -> s to minOf(s + 29, hi) }
+                        }
                     }
-                    if (episodes.isNullOrEmpty()) {
+                    item {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Episodes (${sortedEps.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (ranges.size > 1) {
+                                Box {
+                                    OutlinedButton(onClick = { rangeExpanded = true }) {
+                                        Text(
+                                            rangeStart?.let { s -> "$s - ${s + 29}" }
+                                                ?: "All episodes"
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = rangeExpanded,
+                                        onDismissRequest = { rangeExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("All episodes") },
+                                            onClick = { rangeStart = null; rangeExpanded = false }
+                                        )
+                                        ranges.forEach { (start, end) ->
+                                            DropdownMenuItem(
+                                                text = { Text("$start - $end") },
+                                                onClick = {
+                                                    rangeStart = start
+                                                    rangeExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (sortedEps.isEmpty()) {
                         item {
                             Text(
                                 "No episode list available.",
@@ -286,7 +336,11 @@ fun DetailScreen(
                             )
                         }
                     } else {
-                        items(episodes!!, key = { it.number }) { ep ->
+                        val shownEps = if (rangeStart == null) sortedEps
+                        else sortedEps.filter {
+                            it.number >= rangeStart!! && it.number <= rangeStart!! + 29
+                        }
+                        items(shownEps, key = { it.number }) { ep ->
                             EpisodeRow(ep) { openStreams(ep) }
                         }
                     }

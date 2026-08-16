@@ -63,8 +63,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
     override suspend fun catalogs(): List<CatalogRef> = withContext(Dispatchers.IO) {
-        api?.mainPage?.map { (url, label) ->
-            CatalogRef(config.id, catalogType(), url, label.ifBlank { url })
+        // CloudStream's MainPageData field order is (name, data, horizontalImages),
+        // so use the fields explicitly — destructuring (url, label) would swap them
+        // and getMainPage would then try to fetch the catalog's *name* as the URL.
+        api?.mainPage?.map { page ->
+            CatalogRef(config.id, catalogType(), page.data, page.name.ifBlank { page.data })
         } ?: emptyList()
     }
 
