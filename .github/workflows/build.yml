@@ -47,12 +47,7 @@ jobs:
           else
             gh release create continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" \
               --title "Continuous build" \
-              --notes "Latest debug APK, auto-built from main.
-
-Install:
-- Download **hikari-debug.apk** below and open it on the phone.
-- In the app: Extensions -> \"Install .cs3 from URL\" and paste e.g.
-  https://github.com/codegeasse1/codegeasse-cloudstream-repos/raw/builds/JustAnimeProvider.cs3" || true
+              --notes "Latest debug APK, auto-built from main." || true
           fi
 
       - name: Push debug APK to build branch
