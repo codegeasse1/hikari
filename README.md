@@ -22,7 +22,9 @@ Download it on the phone and open it (allow "install unknown apps").
 
 **Stremio addon:** Extensions → *Add Stremio addon* → paste the addon URL (it must serve `manifest.json`).
 
-**Universal scraper:** Extensions → *Add scraper* → paste a JSON config. Format:
+**Universal scraper:** Extensions → *Add scraper* → paste a JSON config. Two modes — **HTML mode** for classic sites with server-rendered pages, and **JSON-API mode** for single-page apps that only serve data through a JSON API.
+
+### HTML mode — selector rules
 
 ```json
 {
@@ -58,6 +60,96 @@ Download it on the phone and open it (allow "install unknown apps").
 ```
 
 Rules use CSS selectors; `element@attr` means read an attribute instead of text. `{query}`, `{page}`, `{href}` are substituted at runtime. Streams can be direct `video`/m3u8 or hidden inside an `iframe` (followed recursively).
+
+### JSON-API mode — for SPA / API-only sites
+
+Many modern streaming sites (JustAnime, etc.) are React/Vue single-page apps: their pages return an empty `<div id="root">`, so there is no HTML to scrape. Everything comes from a JSON API. For those, add an `"api"` block — the scraper talks to the API instead of parsing HTML. It sends the configured `headers` on every call (many APIs reject requests without the right `Origin`/`Referer`/`User-Agent`), and can route through the site's own proxy when the API is Cloudflare-gated.
+
+```json
+{
+  "name": "JustAnime",
+  "baseUrl": "https://justanime.to",
+  "api": {
+    "base": "https://core.justanime.to/api",
+    "proxy": "https://neko.justanime.to/m3u8-proxy",
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Referer": "https://justanime.to/",
+      "Origin": "https://justanime.to"
+    },
+    "catalogs": [
+      { "id": "trending", "name": "Trending", "type": "series" },
+      { "id": "popular", "name": "Popular", "type": "series" },
+      { "id": "latestEpisode", "name": "Latest Episodes", "type": "series" },
+      { "id": "airing", "name": "Airing Now", "type": "series" },
+      { "id": "upcoming", "name": "Upcoming", "type": "series" },
+      { "id": "favourite", "name": "Favourites", "type": "series" }
+    ],
+    "homePath": "/home",
+    "searchPath": "/search",
+    "searchResults": "results",
+    "detailPath": "/anime/{id}",
+    "detailData": "data",
+    "episodesPath": "/anime/{id}/episodes",
+    "episodesPageParam": "page",
+    "episodesItems": "episodes",
+    "episodesHasNext": "hasNextPage",
+    "episodesMaxPages": 30,
+    "episodeNumber": "number",
+    "episodeName": "title",
+    "streamsPath": "/watch/{id}/episode/{ep}/anineko/{lang}/hd1",
+    "streamsLangs": "sub,dub",
+    "streamsSources": "sources",
+    "streamsUrl": "url",
+    "streamsQuality": "quality",
+    "streamsIsM3u8": "isM3U8",
+    "streamsSubtitles": "subtitles",
+    "streamsSubUrl": "url",
+    "streamsSubLang": "lang",
+    "streamsHeaders": "headers",
+    "proxyStreams": true
+  }
+}
+```
+
+This is a working config — paste it into *Add scraper* and JustAnime appears in Home/Search.
+
+#### `api` field reference
+
+| field | default | meaning |
+|---|---|---|
+| `base` | — (required) | API root URL, e.g. `https://core.justanime.to/api`. |
+| `proxy` | — | Optional URL that fetches the API on the site's behalf. The scraper tries `base` directly first, then falls back to `proxy?url=…&headers=…` (twice). Also used to wrap stream URLs when `proxyStreams` is on. |
+| `headers` | — | HTTP headers sent with every API call — include `Origin`, `Referer`, `User-Agent`, `Accept`. |
+| `catalogs` | — | Array of `{ id, name, type }` (`type`: `movie` or `series`) shown as Home rows. |
+| `homePath` | `/home` | Endpoint that returns each home section as a keyed array; the catalog `id` is used as the array key. |
+| `searchPath` | `/search` | Search endpoint. |
+| `searchResults` | `results` | Response key holding the results array. |
+| `searchQueryParam` / `searchPageParam` | `query` / `page` | Query and page parameter names. |
+| `detailPath` | `/anime/{id}` | Detail endpoint (`{id}` = the item's numeric/string id). |
+| `detailData` | — | Optional wrapper key the detail object sits under (e.g. `data`). |
+| `episodesPath` | `/anime/{id}/episodes` | Paginated episode endpoint. |
+| `episodesPageParam` | `page` | Page parameter name. |
+| `episodesItems` | `episodes` | Response key holding the episode array. |
+| `episodesHasNext` | `hasNextPage` | Boolean key that says "there's another page". |
+| `episodesMaxPages` | `30` | Maximum pages to walk before giving up. |
+| `episodeNumber` / `episodeName` | `number` / `title` | Episode fields for the number and name. |
+| `streamsPath` | `/watch/{id}/episode/{ep}/anineko/{lang}/hd1` | Watch endpoint; placeholders `{id}`, `{ep}`, `{lang}`. |
+| `streamsLangs` | `sub,dub` | Comma-separated language keys to try (each becomes a watch request). |
+| `streamsSources` | `sources` | Response key holding the sources array. |
+| `streamsUrl` / `streamsQuality` / `streamsIsM3u8` | `url` / `quality` / `isM3U8` | Fields on each source object. |
+| `streamsSubtitles` | `subtitles` | Response key holding subtitles. |
+| `streamsSubUrl` / `streamsSubLang` | `url` / `lang` | Subtitle fields. |
+| `streamsHeaders` | `headers` | Key of an object of per-stream headers (e.g. `Referer`/`Origin`) the player must send to the CDN. |
+| `proxyStreams` | `true` | Also emit each stream wrapped through `proxy` — for CDNs that only serve the site's own player. |
+
+#### API-mode conventions
+
+- List items carry `id`, `title` (either a string or `{ "english": …, "romaji": … }`), and a poster found from `cover` → `coverImage.extraLarge` → `bannerImage` (first hit wins).
+- Detail responses use `format` (or `type`): `MOVIE` → movie, anything else → series. `description`, `genres`, `seasonYear`/`year` and `bannerImage` are picked up automatically.
+- Episode ids are built as `{animeId}|{episodeNumber}` — used to fetch streams.
+- Streams get the per-source `headers` attached (plus `User-Agent`), so hotlink-protected CDNs still play. Subtitles ride along on every source.
 
 **CloudStream .cs3 plugins (repos):** Extensions → *Add plugin repo* → paste a CloudStream-style `repo.json` URL, e.g.:
 
