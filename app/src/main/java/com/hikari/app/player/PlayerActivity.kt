@@ -75,7 +75,7 @@ class PlayerActivity : ComponentActivity() {
 
         val mime = when {
             url.contains(".m3u8", true) -> MimeTypes.APPLICATION_M3U8
-            url.contains(".mpd", true) -> MimeTypes.APPLICATION_DASH_XML
+            url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
             else -> null
         }
         val itemBuilder = MediaItem.Builder()

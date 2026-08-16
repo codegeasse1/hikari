@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
@@ -129,6 +130,7 @@ fun DetailScreen(
     val episodes by vm.episodes.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
+    val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -165,24 +167,24 @@ fun DetailScreen(
                 item {
                     Column(Modifier.padding(horizontal = 16.dp)) {
                         Text(
-                            meta?.title ?: title,
+                            m?.title ?: title,
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
-                        if (meta?.year != null) {
+                        if (m?.year != null) {
                             Text(
-                                "${meta.year}  ·  ${meta.type.name.lowercase()}",
+                                "${m.year}  ·  ${m.type.name.lowercase()}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp)
                             )
                         }
-                        if (!meta?.genres.isNullOrEmpty()) {
+                        if (!m?.genres.isNullOrEmpty()) {
                             Row(
                                 Modifier.padding(top = 8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                meta!!.genres.take(4).forEach { g ->
+                                m!!.genres.take(4).forEach { g ->
                                     Box(
                                         Modifier
                                             .clip(RoundedCornerShape(20.dp))
@@ -198,10 +200,10 @@ fun DetailScreen(
                                 }
                             }
                         }
-                        if (!meta?.overview.isNullOrBlank()) {
+                        if (!m?.overview.isNullOrBlank()) {
                             var expanded by remember { mutableStateOf(false) }
                             Text(
-                                meta!!.overview!!,
+                                m!!.overview!!,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = if (expanded) Int.MAX_VALUE else 4,
@@ -214,7 +216,7 @@ fun DetailScreen(
                         Spacer(Modifier.height(16.dp))
                     }
                 }
-                if (meta?.type == MediaType.MOVIE) {
+                if (m?.type == MediaType.MOVIE) {
                     item {
                         Button(
                             onClick = { openStreams(null) },
@@ -228,7 +230,7 @@ fun DetailScreen(
                         }
                     }
                 }
-                if (meta?.type == MediaType.SERIES) {
+                if (m?.type == MediaType.SERIES) {
                     item {
                         Text(
                             "Episodes",
@@ -266,7 +268,7 @@ fun DetailScreen(
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
             Text(
-                meta?.title ?: title,
+                m?.title ?: title,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -318,7 +320,7 @@ fun DetailScreen(
                                     showSheet = false
                                     context.startActivity(
                                         Intent(context, PlayerActivity::class.java).apply {
-                                            putExtra("title", meta?.title ?: title)
+                                            putExtra("title", m?.title ?: title)
                                             putExtra("url", s.url)
                                             putExtra("headers", JSONObject(s.headers).toString())
                                             putExtra(
