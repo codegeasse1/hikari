@@ -132,7 +132,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun installCs3FromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
         val bytes = runCatching {
-            getApplication().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
         val name = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "plugin.cs3"
         installCs3Bytes(bytes, name)
@@ -144,11 +144,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         val clean = rawName.substringAfterLast('/').ifBlank { "plugin.cs3" }
             .let { if (it.endsWith(".cs3", true)) it else "$it.cs3" }
-        val dir = File(getApplication().filesDir, "cs3").apply { mkdirs() }
+        val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
         val file = File(dir, clean)
         file.writeBytes(bytes)
 
-        val apis = Cs3PluginManager.reload(getApplication(), file)
+        val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
         if (apis.isEmpty()) {
             file.delete()
             return Result.failure(Exception("No CloudStream plugin found in this .cs3 file"))

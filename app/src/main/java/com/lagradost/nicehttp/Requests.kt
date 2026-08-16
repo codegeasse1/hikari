@@ -122,7 +122,7 @@ class Requests {
 
             val body: RequestBody? = when {
                 requestBody != null -> requestBody
-                method == "POST" && isJson -> JSONObject(data ?: emptyMap()).toString()
+                method == "POST" && isJson -> JSONObject(data ?: emptyMap<String, String>()).toString()
                     .toRequestBody("application/json".toMediaType())
                 method == "POST" -> buildFormBody(data ?: emptyMap())
                 else -> null

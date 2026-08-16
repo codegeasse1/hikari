@@ -24,8 +24,9 @@ class NiceResponse(
         fun from(r: okhttp3.Response): NiceResponse {
             val text = r.body?.string().orEmpty()
             val cookies = LinkedHashMap<String, String>()
-            r.headers.forEach { name, value ->
-                if (name.equals("Set-Cookie", ignoreCase = true)) {
+            for (i in 0 until r.headers.size) {
+                if (r.headers.name(i).equals("Set-Cookie", ignoreCase = true)) {
+                    val value = r.headers.value(i)
                     val eq = value.indexOf('=')
                     if (eq > 0) {
                         cookies[value.substring(0, eq).trim()] =
@@ -45,6 +46,6 @@ class NiceResponse(
         }
 
         fun failure(code: Int, text: String, url: String): NiceResponse =
-            NiceResponse(null, text, code, url, false, Headers.of(), emptyMap())
+            NiceResponse(null, text, code, url, false, Headers.headersOf(), emptyMap())
     }
 }
