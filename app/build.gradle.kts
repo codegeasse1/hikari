@@ -64,7 +64,7 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
-    implementation(files(cloudstreamCleanJar)) { builtBy(cloudstreamCleanJar) }
+    implementation(files(cloudstreamCleanJar))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
