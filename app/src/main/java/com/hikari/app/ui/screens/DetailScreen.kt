@@ -146,6 +146,16 @@ fun DetailScreen(
     var rangeStart by rememberSaveable { mutableStateOf<Int?>(null) }
     var rangeExpanded by remember { mutableStateOf(false) }
 
+    val sortedEps = remember(episodes) { episodes.orEmpty().sortedBy { it.number } }
+    val ranges = remember(sortedEps) {
+        if (sortedEps.isEmpty()) emptyList()
+        else {
+            val lo = sortedEps.minOf { it.number }
+            val hi = sortedEps.maxOf { it.number }
+            (lo..hi step 30).map { s -> s to minOf(s + 29, hi) }
+        }
+    }
+
     LaunchedEffect(providerId, mediaId) {
         vm.load(providerId, type, mediaId, title)
     }
@@ -274,15 +284,6 @@ fun DetailScreen(
                     }
                 }
                 if (m?.type == MediaType.SERIES) {
-                    val sortedEps = remember(episodes) { episodes.orEmpty().sortedBy { it.number } }
-                    val ranges = remember(sortedEps) {
-                        if (sortedEps.isEmpty()) emptyList()
-                        else {
-                            val lo = sortedEps.minOf { it.number }
-                            val hi = sortedEps.maxOf { it.number }
-                            (lo..hi step 30).map { s -> s to minOf(s + 29, hi) }
-                        }
-                    }
                     item {
                         Row(
                             Modifier
