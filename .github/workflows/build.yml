@@ -30,9 +30,9 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build debug APK
+      - name: Build APKs (debug + release)
         run: |
-          gradle assembleDebug --no-daemon --stacktrace > gradle-build.log 2>&1
+          gradle assembleDebug assembleRelease --no-daemon --stacktrace > gradle-build.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
             echo "==== BUILD FAILED (exit $code) ===="
@@ -51,24 +51,51 @@ jobs:
           path: gradle-build.log
           if-no-files-found: ignore
 
-      - name: Upload APK
+      - name: Sign Android Release
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: hikari-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            ${{ steps.sign_app.outputs.signedReleaseFile }}
           if-no-files-found: error
 
-      - name: Publish APK to GitHub Release
+      - name: Publish signed APK to continuous release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk hikari-debug.apk
+          cp "${{ steps.sign_app.outputs.signedReleaseFile }}" hikari-signed.apk
           if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create continuous hikari-debug.apk --repo "$GITHUB_REPOSITORY" \
+            gh release create continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" \
               --title "Continuous build" \
-              --notes "Latest debug APK, auto-built from main." || true
+              --notes "Signed release APK, auto-built from main." || true
+          fi
+
+      - name: Publish main release (signed APK)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
+          TAG="v${VERSION:-0.1.0}"
+          cp "${{ steps.sign_app.outputs.signedReleaseFile }}" hikari.apk
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Hikari $VERSION" \
+              --notes "Signed release APK, auto-built from main." || true
           fi
 
       - name: Push debug APK to build branch
