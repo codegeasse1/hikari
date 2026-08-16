@@ -181,7 +181,6 @@ class PlayerActivity : ComponentActivity() {
 
         val dataSourceFactory = OkHttpDataSource.Factory(client)
             .setUserAgent("Hikari/" + Http.UA)
-            .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(src.headers)
 
         val player = ExoPlayer.Builder(this)
@@ -254,7 +253,6 @@ class PlayerActivity : ComponentActivity() {
                 textSize = 13f
                 setTextColor(0xFFFFFFFF.toInt())
                 setPadding(dp(14), dp(8), dp(14), dp(8))
-                background = getDrawable(android.R.drawable.selectableItemBackground)
                 setOnClickListener {
                     autoFallback = false
                     errorPanel?.visibility = View.GONE
