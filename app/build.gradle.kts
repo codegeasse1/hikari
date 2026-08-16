@@ -47,17 +47,19 @@ android {
     }
 }
 
-// cloudstream3.jar is a precompiled library that ships compiled androidx R
-// classes (androidx/activity/compose/R.class, androidx/activity/R.class, ...).
-// Those collide with the real AAR R classes during release dex merging
-// ("Type androidx.activity.compose.R is defined multiple times"). Strip them
-// before the jar reaches the classpath — the real AARs provide the R classes.
+// cloudstream3.jar is a precompiled library that ships compiled R classes for
+// every namespace it touches (androidx/activity/compose/R.class,
+// com.fleeksoft.charset.R, ...). Those collide with the real dependencies' R
+// classes during release dex merging ("Type ...R is defined multiple times").
+// Strip ALL R classes before the jar reaches the classpath — a bare jar has no
+// resource table, so its R classes are dead scaffolding; the real libraries
+// provide the R classes at runtime.
 val cloudstreamRawJar = file("libs/cloudstream3.jar")
 val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("cloudstreamJarClean") {
     archiveFileName.set("cloudstream3-clean.jar")
     destinationDirectory.set(layout.buildDirectory.dir("intermediates/cloudstream-clean"))
     from(zipTree(cloudstreamRawJar)) {
-        exclude("androidx/**/R.class", "androidx/**/R\$*.class")
+        exclude("**/R.class", "**/R\$*.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }
