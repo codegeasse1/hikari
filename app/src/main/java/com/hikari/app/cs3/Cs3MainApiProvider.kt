@@ -148,6 +148,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
                 year = resp.year ?: item.year,
+                posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             )
             is AnimeLoadResponse -> item.copy(
@@ -155,12 +156,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
                 year = resp.year ?: item.year,
+                posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             )
             is TvSeriesLoadResponse -> item.copy(
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
                 year = resp.year ?: item.year,
+                posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             )
             else -> item

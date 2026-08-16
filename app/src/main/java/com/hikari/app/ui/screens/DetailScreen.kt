@@ -443,7 +443,8 @@ private fun Hero(meta: MediaItem?, onBack: () -> Unit) {
             .fillMaxWidth()
             .height(240.dp)
     ) {
-        val img = meta?.backdropUrl ?: meta?.posterUrl
+        val img = (meta?.backdropUrl ?: meta?.posterUrl)
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
         if (img != null) {
             AsyncImage(
                 model = img,
@@ -482,18 +483,30 @@ private fun EpisodeRow(ep: Episode, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                ep.number.toString(),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
+        val thumb = ep.image?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        if (thumb != null) {
+            AsyncImage(
+                model = thumb,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Crop
             )
+        } else {
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    ep.number.toString(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Text(

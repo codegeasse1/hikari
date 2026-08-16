@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -52,12 +54,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3PluginManager
 import com.hikari.app.data.Cs3Repo
@@ -160,6 +165,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         bytes: ByteArray,
         rawName: String,
         sourceUrl: String? = null,
+        iconUrl: String? = null,
     ): Result<Int> {
         if (bytes.size > 10 * 1024 * 1024) {
             return Result.failure(Exception("File too large (max 10MB)"))
@@ -192,6 +198,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     name = name,
                     type = ProviderType.CS3,
                     url = file.absolutePath,
+                    iconUrl = iconUrl,
                     extra = sourceUrl ?: clean,
                 )
             )
@@ -304,7 +311,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val fileName = plugin.name.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: "plugin"
-        installCs3Bytes(bytes, "$fileName.cs3", sourceUrl = plugin.url)
+        installCs3Bytes(bytes, "$fileName.cs3", sourceUrl = plugin.url, iconUrl = plugin.iconUrl)
     }
 
     private fun sha256Hex(bytes: ByteArray): String {
@@ -970,6 +977,38 @@ private fun RepoPluginsView(
 }
 
 @Composable
+private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
+    val safe = url
+        ?.replace("%size%", "48")
+        ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    if (safe == null) {
+        Icon(
+            Icons.Filled.Extension,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = modifier
+        )
+        return
+    }
+    SubcomposeAsyncImage(
+        model = safe,
+        contentDescription = null,
+        modifier = modifier
+    ) {
+        when (painter.state) {
+            is AsyncImagePainter.State.Error, is AsyncImagePainter.State.Loading ->
+                Icon(
+                    Icons.Filled.Extension,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = modifier
+                )
+            else -> SubcomposeAsyncImageContent()
+        }
+    }
+}
+
+@Composable
 private fun ProviderCard(
     p: ContentProvider,
     status: String?,
@@ -987,9 +1026,8 @@ private fun ProviderCard(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = p.config.iconUrl,
-                    contentDescription = null,
+                ExtensionIcon(
+                    url = p.config.iconUrl,
                     modifier = Modifier.size(32.dp)
                 )
             }
@@ -1120,9 +1158,8 @@ private fun PluginRow(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            AsyncImage(
-                model = p.iconUrl?.replace("%size%", "48"),
-                contentDescription = null,
+            ExtensionIcon(
+                url = p.iconUrl,
                 modifier = Modifier.size(28.dp)
             )
         }
@@ -1154,7 +1191,11 @@ private fun PluginRow(
                 Text("Uninstall", color = MaterialTheme.colorScheme.error)
             }
         } else {
-            Button(onClick = onInstall) { Text("Install") }
+            Button(onClick = onInstall) {
+                Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Install")
+            }
         }
     }
 }
