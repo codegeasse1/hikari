@@ -908,7 +908,7 @@ private fun RepoPluginsView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(horizontal = 16.dp, bottom = 24.dp)
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)
         ) {
             when {
                 state.loading && plugins.isEmpty() -> item {
@@ -1006,10 +1006,10 @@ private fun RepoCard(
     onRemoveRepo: () -> Unit,
 ) {
     Card(
-        Modifier
+        onClick = onClick,
+        modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        onClick = onClick
+            .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
         Row(
             Modifier
