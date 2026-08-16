@@ -64,17 +64,18 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             } catch (e: Throwable) {
                 return@withContext emptyList()
             }
-            resp.items.flatMap { list -> list.list.mapNotNull { it.toMediaItem() } }
+            resp?.items.orEmpty().flatMap { row -> row.list.orEmpty().mapNotNull { it.toMediaItem() } }
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
-            try {
+            val found = try {
                 a.search(query)
             } catch (e: Throwable) {
                 emptyList()
-            }.mapNotNull { it.toMediaItem() }
+            }
+            found.orEmpty().mapNotNull { it.toMediaItem() }
         }
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
@@ -152,8 +153,8 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         val r = try {
             a.load(id)
         } catch (e: Throwable) {
-            return null
-        }
+            null
+        } ?: return null
         loadCache[id] = r
         return r
     }

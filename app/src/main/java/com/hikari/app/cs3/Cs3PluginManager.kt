@@ -111,12 +111,8 @@ object Cs3PluginManager {
 
         // Drop any earlier registrations from this exact file (reinstall).
         try {
-            APIHolder.allProviders.withLock {
-                APIHolder.allProviders.removeAll { it.sourcePlugin == path }
-            }
-            extractorApis.withLock {
-                extractorApis.removeAll { it.sourcePlugin == path }
-            }
+            APIHolder.allProviders.removeAll { it.sourcePlugin == path }
+            extractorApis.removeAll { it.sourcePlugin == path }
         } catch (e: Throwable) {
             record("cleanup old registrations failed", e)
         }

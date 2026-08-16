@@ -5,9 +5,9 @@ import android.content.Context
 import com.hikari.app.data.AppStore
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ProviderManager
-import com.lagradost.cloudstream3.MainActivityKt
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SettingsJson
+import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.ignoreAllSSLErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,11 +40,10 @@ class HikariApp : Application() {
 
     private fun initCloudStream(context: Context) {
         try {
-            // Accessing MainActivityKt.app/insecureApp initializes the jar's own
-            // default nicehttp Requests (jackson responseParser + user-agent).
-            // Wire up the real okhttp client (redirects, 50MiB cache) exactly
-            // like CloudStream's buildDefaultClient, but without its R.string
-            // lookups (the jar's R resources aren't in this APK).
+            // Accessing the jar's MainActivityKt initializes its own default
+            // nicehttp Requests (jackson responseParser + CloudStream user-agent).
+            // Wire up the real okhttp client (redirects, 50MiB cache, optional
+            // SSL-ignore) exactly like CloudStream's buildDefaultClient.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
                 .followRedirects(true)
                 .followSslRedirects(true)
@@ -52,8 +51,13 @@ class HikariApp : Application() {
                 .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
                 .build()
 
-            MainActivityKt.app.baseClient = build(false)
-            MainActivityKt.insecureApp.baseClient = build(true)
+            val kt = Class.forName("com.lagradost.cloudstream3.MainActivityKt")
+            fun wire(getter: String, ignoreSSL: Boolean) {
+                val req = kt.getMethod(getter).invoke(null) as Requests
+                req.baseClient = build(ignoreSSL)
+            }
+            wire("getApp", ignoreSSL = false)
+            wire("getInsecureApp", ignoreSSL = true)
             MainAPI.settingsForProvider = SettingsJson()
         } catch (t: Throwable) {
             android.util.Log.e("HikariApp", "CloudStream runtime init failed", t)
