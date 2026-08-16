@@ -80,5 +80,8 @@ dependencies {
     implementation(libs.rhino)
     implementation(libs.ktor.http)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.ksoup)
+    implementation(libs.kotlinx.datetime)
+    implementation(libs.atomicfu)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

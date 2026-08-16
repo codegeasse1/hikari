@@ -29,6 +29,12 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider {
 
+    companion object {
+        /** Last loadLinks failure (shown in the UI so users see the real reason). */
+        @Volatile
+        var lastStreamsError: String? = null
+    }
+
     private val api: MainAPI? by lazy {
         val file = File(config.url)
         if (!file.exists()) {
@@ -132,7 +138,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val data = episode?.id ?: item.id
             try {
                 a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                lastStreamsError = null
             } catch (e: Throwable) {
+                // NoClassDefFoundError/NoSuchMethodError from extractor machinery
+                // escapes loadExtractor's Exception-catch; surface it in the UI.
+                lastStreamsError =
+                    "${e.javaClass.simpleName}: ${e.message}\n" +
+                        e.stackTrace.take(4).joinToString("\n") { "    at $it" }
+                android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
             }
             val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
             links

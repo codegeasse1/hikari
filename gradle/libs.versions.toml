@@ -20,6 +20,9 @@ preferenceKtx = "1.2.1"
 rhino = "1.8.1"
 ktor = "3.5.0"
 coroutines = "1.11.0"
+ksoup = "0.2.6"
+datetime = "0.8.0"
+atomicfu = "0.33.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -54,6 +57,9 @@ androidx-preference-ktx = { group = "androidx.preference", name = "preference-kt
 rhino = { group = "org.mozilla", name = "rhino", version.ref = "rhino" }
 ktor-http = { group = "io.ktor", name = "ktor-http", version.ref = "ktor" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+ksoup = { group = "com.fleeksoft.ksoup", name = "ksoup", version.ref = "ksoup" }
+kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime", version.ref = "datetime" }
+atomicfu = { group = "org.jetbrains.kotlinx", name = "atomicfu", version.ref = "atomicfu" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

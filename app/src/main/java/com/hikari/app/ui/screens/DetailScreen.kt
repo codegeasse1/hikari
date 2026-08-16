@@ -283,12 +283,24 @@ fun DetailScreen(
                 ) {
                     CircularProgressIndicator()
                 }
-                streams.isEmpty() -> Text(
-                    "No playable sources found.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(24.dp)
-                )
+                streams.isEmpty() -> Column(
+                    Modifier.padding(24.dp)
+                ) {
+                    Text(
+                        "No playable sources found.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val streamErr = com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
+                    if (streamErr != null) {
+                        Text(
+                            streamErr,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
                 else -> LazyColumn(
                     modifier = Modifier.heightIn(max = 420.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
