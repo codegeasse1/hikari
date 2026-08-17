@@ -108,7 +108,7 @@ class PlayerActivity : ComponentActivity() {
             return true
         }
 
-        override fun onScroll(e1: MotionEvent, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
             val p = player ?: return false
             val dx = e2.rawX - gestureStartX
             val dy = e2.rawY - gestureStartY
@@ -159,6 +159,8 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    private val playerGestureDetector by lazy { GestureDetector(this, playerGestures) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
@@ -200,7 +202,7 @@ class PlayerActivity : ComponentActivity() {
         // on the left half for brightness and the right half for volume, and
         // drag horizontally to seek.
         playerView?.setOnTouchListener { _, event ->
-            playerGestures.onTouchEvent(event)
+            playerGestureDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
                 applySpeed(SPEEDS[speedIndex])
             }
