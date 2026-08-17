@@ -480,9 +480,10 @@ fun DetailScreen(
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }
-                    if (streamError != null) {
+                    val err = streamError
+                    if (err != null) {
                         Text(
-                            streamError,
+                            err,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(top = 8.dp)
