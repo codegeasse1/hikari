@@ -169,6 +169,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun toggle(id: String, enabled: Boolean) {
         store.setEnabled(id, enabled)
+        // The providers StateFlow is the source of truth for the switch state —
+        // without a refresh the toggle saves but the UI never moves.
+        manager.refresh()
     }
 
     suspend fun remove(id: String) {

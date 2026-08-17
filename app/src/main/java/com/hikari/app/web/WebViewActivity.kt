@@ -122,6 +122,8 @@ class WebViewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
+            // True fullscreen: no status bar, no nav bar (swipe to reveal).
+            hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
@@ -173,7 +175,7 @@ class WebViewActivity : ComponentActivity() {
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP or Gravity.END
-                ).apply { topMargin = dp(2) + statusBarHeight() }
+                ).apply { topMargin = dp(2) }
             )
             addView(
                 videoChip,
@@ -551,12 +553,6 @@ class WebViewActivity : ComponentActivity() {
         }
         menu.show()
     }
-
-    private fun statusBarHeight(): Int =
-        runCatching {
-            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
-            if (id > 0) resources.getDimensionPixelSize(id) else 0
-        }.getOrDefault(0)
 
     /** Host of the page currently shown (or being loaded). */
     private fun currentPageHost(): String? = runCatching {
