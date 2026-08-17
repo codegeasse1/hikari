@@ -238,32 +238,19 @@ class WebViewActivity : ComponentActivity() {
             Toast.makeText(this, "No playable video found", Toast.LENGTH_SHORT).show()
             return
         }
-        val sources = JSONArray()
-        unique.forEach { u ->
-            val headers = JSONObject()
-            if (!referer.isNullOrBlank()) headers.put("Referer", referer)
-            headers.put("User-Agent", Http.UA)
-            sources.put(
-                JSONObject()
-                    .put("name", "Web · ${urlHost(u)}")
-                    .put("url", u)
-                    .put("headers", headers)
-                    .put("isM3u8", u.contains(".m3u8", true))
-                    .put("isMpd", u.contains(".mpd", true))
-                    .put("subtitles", JSONArray())
-            )
-        }
+        val u = unique.first()
+        val headers = JSONObject()
+        if (!referer.isNullOrBlank()) headers.put("Referer", referer)
+        headers.put("User-Agent", Http.UA)
         startActivity(
             Intent(this, PlayerActivity::class.java).apply {
                 putExtra("title", titleText.text.toString())
-                putExtra("sources", sources.toString())
+                putExtra("url", u)
+                putExtra("headers", headers.toString())
+                putExtra("subtitles", JSONArray().toString())
             }
         )
     }
-
-    private fun urlHost(u: String): String = runCatching {
-        java.net.URI(u).host ?: u.take(48)
-    }.getOrDefault(u.take(48))
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
