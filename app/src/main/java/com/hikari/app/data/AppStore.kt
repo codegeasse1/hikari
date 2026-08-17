@@ -29,6 +29,8 @@ class AppStore(private val ctx: Context) {
         val AD_LISTS = stringPreferencesKey("adLists")
         val AD_BLOCK = stringPreferencesKey("adBlock")
         val AD_WHITE = stringPreferencesKey("adWhite")
+        val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
+        val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
     }
 
     fun themeFlow(): Flow<String> =
@@ -76,6 +78,26 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAdWhite(list: List<String>) {
         store.edit { it[K.AD_WHITE] = encodeStringList(list) }
+    }
+
+    // ---- WebView safety (redirect + popup protection; default ON) ----
+
+    fun webviewRedirectFlow(): Flow<Boolean> =
+        store.data.map { it[K.WEBVIEW_REDIRECT] ?: true }
+
+    suspend fun webviewRedirect(): Boolean = webviewRedirectFlow().first()
+
+    suspend fun setWebviewRedirect(enabled: Boolean) {
+        store.edit { it[K.WEBVIEW_REDIRECT] = enabled }
+    }
+
+    fun webviewPopupFlow(): Flow<Boolean> =
+        store.data.map { it[K.WEBVIEW_POPUP] ?: true }
+
+    suspend fun webviewPopup(): Boolean = webviewPopupFlow().first()
+
+    suspend fun setWebviewPopup(enabled: Boolean) {
+        store.edit { it[K.WEBVIEW_POPUP] = enabled }
     }
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {

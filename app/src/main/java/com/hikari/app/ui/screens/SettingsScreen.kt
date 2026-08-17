@@ -62,7 +62,9 @@ import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.theme.HikariThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen() {
@@ -233,6 +235,16 @@ fun SettingsScreen() {
                     .padding(top = 12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
+                WebViewSafetyCard(app)
+            }
+        }
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
                         "Roadmap",
@@ -295,6 +307,78 @@ fun SettingsScreen() {
             onDismiss = { showUpdateDialog = false },
             initialStatus = updateStatus,
         )
+    }
+}
+
+@Composable
+private fun WebViewSafetyCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var redirectProtection by remember { mutableStateOf(true) }
+    var popupProtection by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        redirectProtection = app.store.webviewRedirect()
+        popupProtection = app.store.webviewPopup()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "WebView safety",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Stops sites from redirecting or popping you out to ad pages. " +
+                "Only pages/popups that belong to the site itself are allowed. " +
+                "Turn off if a site's player opens in another tab on a different domain.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Block redirects to other sites",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Same-site pages & subdomains still load normally.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = redirectProtection,
+                onCheckedChange = {
+                    redirectProtection = it
+                    scope.launch { runCatching { app.store.setWebviewRedirect(it) } }
+                }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Block popups from other sites",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Only popups opened by the site itself can appear.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = popupProtection,
+                onCheckedChange = {
+                    popupProtection = it
+                    scope.launch { runCatching { app.store.setWebviewPopup(it) } }
+                }
+            )
+        }
     }
 }
 
@@ -378,9 +462,9 @@ private fun AdBlockingCard(app: HikariApp) {
                                 lists.filterNot { it.url == preset.url } + preset
                             }
                             lists = next
-                            scope.launch {
-                                app.store.setAdLists(next)
-                                AdBlocker.download(preset.url, context)
+                            scope.launch(Dispatchers.IO) {
+                                runCatching { app.store.setAdLists(next) }
+                                runCatching { AdBlocker.download(preset.url, context) }
                             }
                         }
                     ) {
@@ -429,10 +513,20 @@ private fun AdBlockingCard(app: HikariApp) {
                     onClick = {
                         updating = true
                         updateStatus = null
-                        scope.launch {
-                            val total = AdBlocker.refreshAll(lists, context)
-                            updating = false
-                            updateStatus = "$total blocked domains ready"
+                        // Downloads are blocking okhttp + retries — must NOT run
+                        // on the main thread (it froze the app / ANR-crashed).
+                        // One bad list can never abort the rest or crash.
+                        scope.launch(Dispatchers.IO) {
+                            val total = runCatching { AdBlocker.refreshAll(lists, context) }
+                                .getOrDefault(emptySet()).size
+                            withContext(Dispatchers.Main) {
+                                updating = false
+                                updateStatus = if (total > 0) {
+                                    "$total blocked domains ready"
+                                } else {
+                                    "Couldn't update lists — check connection"
+                                }
+                            }
                         }
                     },
                     enabled = !updating && lists.isNotEmpty()
@@ -615,9 +709,9 @@ private fun AdBlockingCard(app: HikariApp) {
                         val next = lists.filterNot { it.url == u } + list
                         lists = next
                         showAddListDialog = false
-                        scope.launch {
-                            app.store.setAdLists(next)
-                            AdBlocker.download(u, context)
+                        scope.launch(Dispatchers.IO) {
+                            runCatching { app.store.setAdLists(next) }
+                            runCatching { AdBlocker.download(u, context) }
                         }
                     } else {
                         showAddListDialog = false

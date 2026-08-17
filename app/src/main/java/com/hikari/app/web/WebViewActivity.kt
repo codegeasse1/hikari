@@ -81,6 +81,18 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var whitelistDomains: Set<String> = emptySet()
 
+    // WebView safety toggles (Settings → WebView safety). Default ON:
+    //  - redirectProtection: the main frame can only navigate within the site
+    //    it was opened for — ad-hijack redirects (ad.twinrdengine.com & co)
+    //    are cancelled before they load.
+    //  - popupProtection: window.open() popups are only relayed into the view
+    //    when they belong to the same site; ad popups/popunders are dropped.
+    @Volatile
+    private var redirectProtection = true
+    @Volatile
+    private var popupProtection = true
+    private var blockedToastShown = false
+
     // Guards the auto hand-off to the external player: a page that genuinely
     // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
     // on every navigation), so the user never stares at an infinite spinner.
@@ -186,6 +198,9 @@ class WebViewActivity : ComponentActivity() {
         // applies to WebView requests only — the ExoPlayer is untouched.
         lifecycleScope.launch(Dispatchers.IO) {
             val app = applicationContext as HikariApp
+            // Safety toggles from Settings.
+            redirectProtection = app.store.webviewRedirect()
+            popupProtection = app.store.webviewPopup()
             val enabled = app.store.adEnabled()
             if (enabled) {
                 val lists = app.store.adLists()
@@ -252,6 +267,27 @@ class WebViewActivity : ComponentActivity() {
         }
 
         webView.setWebViewClient(object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest
+            ): Boolean {
+                // Redirect protection: cancel main-frame navigations away from
+                // the site before they load (ad-hijack redirects). Same-site
+                // pages, subdomains and whitelisted hosts still work.
+                if (redirectProtection && request.isForMainFrame) {
+                    val host = request.url.host
+                    val cur = currentPageHost()
+                    if (host != null && cur != null && host != cur &&
+                        !AdBlocker.matches(host, whitelistDomains) &&
+                        !isSameSite(host, cur)
+                    ) {
+                        showBlockedToast("Blocked redirect to $host")
+                        return true
+                    }
+                }
+                return super.shouldOverrideUrlLoading(view, request)
+            }
+
             override fun shouldInterceptRequest(
                 view: WebView?,
                 request: WebResourceRequest
@@ -280,6 +316,24 @@ class WebViewActivity : ComponentActivity() {
                 if (VIDEO_URL_RE.containsMatchIn(u)) {
                     maybeAddVideo(u)
                 }
+                // Redirect protection: never let an ad hijack navigate the main
+                // frame away to a foreign domain (the twinrdengine.com-class
+                // redirects). Same-site pages, subdomains and whitelisted hosts
+                // still navigate normally; turning the toggle off disables this
+                // entirely.
+                if (redirectProtection && request.isForMainFrame) {
+                    val host = request.url.host
+                    val cur = currentPageHost()
+                    if (host != null && cur != null && host != cur &&
+                        !AdBlocker.matches(host, whitelistDomains) &&
+                        !isSameSite(host, cur)
+                    ) {
+                        showBlockedToast("Blocked redirect to $host")
+                        return WebResourceResponse(
+                            "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                        )
+                    }
+                }
                 return null
             }
 
@@ -289,6 +343,7 @@ class WebViewActivity : ComponentActivity() {
                 autoLaunched = false
                 scanHandler.removeCallbacksAndMessages(null)
                 progressBar.visibility = View.VISIBLE
+                blockedToastShown = false
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -359,6 +414,20 @@ class WebViewActivity : ComponentActivity() {
                         private fun relay(url: String?) {
                             if (relayed || url.isNullOrBlank()) return
                             relayed = true
+                            // Popup protection: only relay popups that belong to
+                            // the site (same host/subdomain or whitelisted).
+                            // about:blank popunders and foreign ad popups are
+                            // dropped entirely.
+                            if (popupProtection) {
+                                val host = runCatching { java.net.URI(url).host }.getOrNull()
+                                val cur = currentPageHost()
+                                if (host == null || cur == null ||
+                                    (host != cur && !AdBlocker.matches(host, whitelistDomains) && !isSameSite(host, cur))
+                                ) {
+                                    showBlockedToast("Blocked popup")
+                                    return
+                                }
+                            }
                             runOnUiThread { webView.loadUrl(url) }
                         }
 
@@ -488,6 +557,22 @@ class WebViewActivity : ComponentActivity() {
             val id = resources.getIdentifier("status_bar_height", "dimen", "android")
             if (id > 0) resources.getDimensionPixelSize(id) else 0
         }.getOrDefault(0)
+
+    /** Host of the page currently shown (or being loaded). */
+    private fun currentPageHost(): String? = runCatching {
+        java.net.URI(pageUrl ?: webView.url).host
+    }.getOrNull()
+
+    /** Same host or one being a subdomain of the other (registrable-domain-ish). */
+    private fun isSameSite(host: String, current: String): Boolean =
+        host == current || host.endsWith("." + current) || current.endsWith("." + host)
+
+    /** One toast per page so ad spam doesn't toast-spam the user. */
+    private fun showBlockedToast(msg: String) {
+        if (blockedToastShown) return
+        blockedToastShown = true
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
 
     private fun hideSystemBars() {
         WindowInsetsControllerCompat(window, window.decorView).apply {

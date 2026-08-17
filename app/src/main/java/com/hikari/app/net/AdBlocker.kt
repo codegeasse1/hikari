@@ -92,13 +92,14 @@ object AdBlocker {
         return runCatching { parseHosts(f.readText()) }.getOrDefault(emptySet())
     }
 
-    /** (re)downloads every configured list, returning total domains. */
-    suspend fun refreshAll(lists: List<HostList>, context: Context): Int {
-        var total = 0
+    /** (re)downloads every configured list, returning the combined domain set.
+     *  A single failing list is skipped, never fatal. */
+    suspend fun refreshAll(lists: List<HostList>, context: Context): Set<String> {
+        val all = HashSet<String>()
         for (l in lists) {
-            total += download(l.url, context).size
+            runCatching { download(l.url, context) }.getOrDefault(emptySet()).let { all.addAll(it) }
         }
-        return total
+        return all
     }
 
     /**
