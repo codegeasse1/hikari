@@ -211,7 +211,6 @@ class WebViewActivity : ComponentActivity() {
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
-            setAcceptFileSchemeCookies(false)
         }
 
         webView.setWebViewClient(object : WebViewClient() {
