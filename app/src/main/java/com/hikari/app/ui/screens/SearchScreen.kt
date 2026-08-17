@@ -63,8 +63,9 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
-    private val _selectedProvider = MutableStateFlow<String?>(null)
-    val selectedProvider: StateFlow<String?> = _selectedProvider.asStateFlow()
+    /** Selected provider ids to search in. EMPTY = search ALL providers. */
+    private val _selectedProviders = MutableStateFlow<Set<String>>(emptySet())
+    val selectedProviders: StateFlow<Set<String>> = _selectedProviders.asStateFlow()
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
 
@@ -76,7 +77,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            combine(_query.debounce(400).distinctUntilChanged(), _selectedProvider) { q, _ -> q }
+            combine(_query.debounce(400).distinctUntilChanged(), _selectedProviders) { q, _ -> q }
                 .collectLatest { q ->
                     if (q.isBlank()) {
                         _results.value = emptyList()
@@ -84,7 +85,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                         return@collectLatest
                     }
                     _searching.value = true
-                    _results.value = repo.searchAll(q, providerId = _selectedProvider.value)
+                    _results.value = repo.searchAll(q, providerIds = _selectedProviders.value)
                     _searching.value = false
                 }
         }
@@ -94,8 +95,17 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         _query.value = q
     }
 
-    fun selectProvider(id: String?) {
-        _selectedProvider.value = id
+    /** "All sources" — empty set means every provider. */
+    fun selectAll() {
+        _selectedProviders.value = emptySet()
+    }
+
+    /** Toggle one provider in/out of the multi-select. Refuses to empty the
+     *  selection (which would silently become "All"); use selectAll() for that. */
+    fun toggleProvider(id: String) {
+        val cur = _selectedProviders.value
+        val next = if (id in cur) cur - id else cur + id
+        if (next.isNotEmpty()) _selectedProviders.value = next
     }
 }
 
@@ -105,14 +115,19 @@ fun SearchScreen(nav: NavHostController) {
     val query by vm.query.collectAsState()
     val results by vm.results.collectAsState()
     val searching by vm.searching.collectAsState()
-    val selected by vm.selectedProvider.collectAsState()
+    val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
             onValueChange = vm::setQuery,
-            placeholder = { Text("Search across all providers…") },
+            placeholder = {
+                Text(
+                    if (selected.isEmpty()) "Search across all providers…"
+                    else "Search in ${selected.size} selected provider${if (selected.size == 1) "" else "s"}…"
+                )
+            },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
@@ -127,24 +142,33 @@ fun SearchScreen(nav: NavHostController) {
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         )
         if (providers.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                item {
-                    FilterChip(
-                        selected = selected == null,
-                        onClick = { vm.selectProvider(null) },
-                        label = { Text("All") }
-                    )
+            Column {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        FilterChip(
+                            selected = selected.isEmpty(),
+                            onClick = { vm.selectAll() },
+                            label = { Text("All") }
+                        )
+                    }
+                    items(providers, key = { it.config.id }) { p ->
+                        FilterChip(
+                            selected = p.config.id in selected,
+                            onClick = { vm.toggleProvider(p.config.id) },
+                            label = { Text(p.config.name) }
+                        )
+                    }
                 }
-                items(providers, key = { it.config.id }) { p ->
-                    FilterChip(
-                        selected = selected == p.config.id,
-                        onClick = { vm.selectProvider(p.config.id) },
-                        label = { Text(p.config.name) }
-                    )
-                }
+                Text(
+                    if (selected.isEmpty()) "Searching every source"
+                    else "${selected.size} source${if (selected.size == 1) "" else "s"} selected",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                )
             }
         }
         if (searching) {

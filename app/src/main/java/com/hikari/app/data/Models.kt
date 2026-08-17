@@ -55,6 +55,10 @@ data class MediaItem(
     val overview: String? = null,
     val genres: List<String> = emptyList(),
     val backdropUrl: String? = null,
+    /** The addon's OWN type string (e.g. "tv", "anime", "channel"). The Stremio
+     *  protocol puts this literal string in /catalog /meta /stream URLs, and
+     *  many addons refuse requests sent with a different type segment. */
+    val rawType: String = "",
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
 }
@@ -93,6 +97,8 @@ data class CatalogRef(
     val type: MediaType,
     val id: String,
     val name: String,
+    /** Addon's literal catalog type string — used verbatim in Stremio URLs. */
+    val rawType: String = "",
 )
 
 data class CatalogRow(

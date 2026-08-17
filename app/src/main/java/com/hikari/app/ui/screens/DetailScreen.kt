@@ -437,7 +437,10 @@ fun DetailScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    val streamErr = com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
+                    val streamErr = m?.providerId?.let { pid ->
+                        com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
+                            ?: com.hikari.app.providers.StremioAddon.streamErrors[pid]
+                    }
                     if (streamErr != null) {
                         Text(
                             streamErr,

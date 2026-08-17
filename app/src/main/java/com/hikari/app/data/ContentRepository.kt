@@ -59,9 +59,15 @@ class ContentRepository(private val manager: ProviderManager) {
         }
     }
 
-    suspend fun searchAll(query: String, page: Int = 1, providerId: String? = null): List<MediaItem> = withContext(Dispatchers.IO) {
+    /** Searches across every enabled provider, or only the given subset.
+     *  `null`/empty = all providers. */
+    suspend fun searchAll(
+        query: String,
+        page: Int = 1,
+        providerIds: Set<String>? = null,
+    ): List<MediaItem> = withContext(Dispatchers.IO) {
         val active = manager.providers.value.filter {
-            it.config.enabled && (providerId == null || it.config.id == providerId)
+            it.config.enabled && (providerIds.isNullOrEmpty() || it.config.id in providerIds)
         }
         coroutineScope {
             active.map { p ->

@@ -30,12 +30,22 @@ import java.util.concurrent.ConcurrentHashMap
  * fallback, the optional `/manifest.json` suffix and query params (addon
  * config keys) are preserved, and torrent streams carry their infoHash +
  * fileIdx + trackers so the player's TorrServer engine can actually play them.
+ *
+ * Type handling: the protocol's {type} URL segment is the addon's OWN literal
+ * type string ("movie", "series", but also "tv", "anime", "channel", or any
+ * custom type), NOT a normalized name. We keep the raw string end-to-end and
+ * only normalize to MediaType for the UI, treating anything unknown as SERIES
+ * so catalogs are never dropped as "no usable catalogs".
  */
 class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = ConcurrentHashMap<String, String>()
+
+        /** Per-provider reason why source lookup came back empty. Displayed in
+         *  the playback sheet so "no playable sources found" is explainable. */
+        val streamErrors = ConcurrentHashMap<String, String>()
     }
 
     // ------------------------------------------------------------------
@@ -99,15 +109,37 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return m
     }
 
+    /** Normalizes any addon type string to a MediaType. The Stremio client
+     *  accepts arbitrary type strings; we map obvious movies to MOVIE and
+     *  EVERYTHING else to SERIES so no catalog is ever dropped. */
     private fun typeOf(t: String): MediaType = when (t.lowercase()) {
-        "movie" -> MediaType.MOVIE
-        "series", "channel", "tv", "anime" -> MediaType.SERIES
-        else -> MediaType.UNKNOWN
+        "movie", "movies", "film", "feature-film", "feature" -> MediaType.MOVIE
+        else -> MediaType.SERIES
     }
 
     private fun catalogsOf(m: JSONObject): List<JSONObject> {
         val arr = m.optJSONArray("catalogs") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+    }
+
+    /** The literal type segment to use in URLs — the addon's own string. */
+    private fun typeSegment(rawType: String, type: MediaType): String =
+        rawType.ifBlank { type.name.lowercase() }
+
+    /** Whether the manifest declares the given resource. Addons that only list
+     *  catalog/meta are metadata-only and will never produce streams. */
+    private fun hasResource(m: JSONObject, name: String): Boolean {
+        val arr = m.optJSONArray("resources") ?: return true // unknown → assume yes
+        for (i in 0 until arr.length()) {
+            val r = arr.opt(i)
+            val n = when (r) {
+                is String -> r
+                is JSONObject -> r.optString("name")
+                else -> null
+            }
+            if (n != null && n.equals(name, ignoreCase = true)) return true
+        }
+        return false
     }
 
     override suspend fun catalogs(): List<CatalogRef> {
@@ -120,11 +152,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val out = LinkedHashMap<String, CatalogRef>()
         for (c in catalogsOf(m)) {
             val t = typeOf(c.optString("type"))
-            if (t == MediaType.UNKNOWN) continue
             val id = c.optString("id")
             val name = c.optString("name").ifBlank { id }
             if (id.isBlank()) continue
-            out["$t|$id"] = CatalogRef(config.id, t, id, name)
+            val raw = c.optString("type").lowercase()
+            out["$t|$id"] = CatalogRef(config.id, t, id, name, raw)
         }
         if (out.isEmpty()) {
             catalogErrors[config.id] =
@@ -137,8 +169,8 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
         val extra = if (page > 1) "skip=${(page - 1) * 100}" else null
-        val url = resUrl("catalog", ref.type.name.lowercase(), ref.id, extra)
-        val items = parseMetas(getJson(url))
+        val url = resUrl("catalog", typeSegment(ref.rawType, ref.type), ref.id, extra)
+        val items = parseMetas(getJson(url), ref.rawType)
         if (items.isEmpty()) {
             catalogErrors[config.id] =
                 "Catalog '${ref.name}' returned no items from ${url.take(140)}…"
@@ -152,12 +184,15 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val out = mutableListOf<MediaItem>()
         for (c in catalogs().distinctBy { it.id }) {
             val extra = "search=${encode(query)}" + if (page > 1) "&skip=${(page - 1) * 100}" else ""
-            out += parseMetas(getJson(resUrl("catalog", c.type.name.lowercase(), c.id, extra)))
+            out += parseMetas(
+                getJson(resUrl("catalog", typeSegment(c.rawType, c.type), c.id, extra)),
+                c.rawType,
+            )
         }
         return out.distinctBy { it.uniqueId }
     }
 
-    private fun parseMetas(json: JSONObject?): List<MediaItem> {
+    private fun parseMetas(json: JSONObject?, catalogRawType: String = ""): List<MediaItem> {
         json ?: return emptyList()
         val metas = json.optJSONArray("metas") ?: return emptyList()
         val out = mutableListOf<MediaItem>()
@@ -166,25 +201,32 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             val id = m.optString("id")
             val title = m.optString("name")
             if (id.isBlank() || title.isBlank()) continue
-            val type = typeOf(m.optString("type"))
-            if (type == MediaType.UNKNOWN) continue
-            out += metaToItem(m, id, title, type)
+            // Items usually carry their own type; fall back to the catalog's.
+            val raw = m.optString("type").ifBlank { catalogRawType }
+            val type = typeOf(raw)
+            out += metaToItem(m, id, title, type, raw)
         }
         return out
     }
 
-    private fun metaToItem(m: JSONObject, id: String, title: String, type: MediaType): MediaItem =
-        MediaItem(
-            providerId = config.id,
-            id = id,
-            title = title,
-            type = type,
-            posterUrl = m.optString("poster").ifBlank { null },
-            backdropUrl = m.optString("background").ifBlank { m.optString("backdrop").ifBlank { null } },
-            year = yearFromRelease(m.optString("releaseInfo")),
-            overview = m.optString("description").ifBlank { null },
-            genres = stringArray(m, "genres"),
-        )
+    private fun metaToItem(
+        m: JSONObject,
+        id: String,
+        title: String,
+        type: MediaType,
+        rawType: String,
+    ): MediaItem = MediaItem(
+        providerId = config.id,
+        id = id,
+        title = title,
+        type = type,
+        posterUrl = m.optString("poster").ifBlank { null },
+        backdropUrl = m.optString("background").ifBlank { m.optString("backdrop").ifBlank { null } },
+        year = yearFromRelease(m.optString("releaseInfo")),
+        overview = m.optString("description").ifBlank { null },
+        genres = stringArray(m, "genres"),
+        rawType = rawType,
+    )
 
     private fun yearFromRelease(releaseInfo: String): Int? =
         Regex("""(19|20)\d{2}""").find(releaseInfo)?.value?.toIntOrNull()
@@ -195,7 +237,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         } ?: emptyList()
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
-        val url = resUrl("meta", item.type.name.lowercase(), item.id)
+        val url = resUrl("meta", typeSegment(item.rawType, item.type), item.id)
         val json = getJson(url) ?: return item
         val m = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: return item
         return item.copy(
@@ -209,7 +251,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
         if (item.type != MediaType.SERIES) return null
-        val json = getJson(resUrl("meta", "series", item.id)) ?: return null
+        val json = getJson(resUrl("meta", typeSegment(item.rawType, item.type), item.id)) ?: return null
         val meta = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: return null
         val videos = meta.optJSONArray("videos") ?: return null
         val out = mutableListOf<Episode>()
@@ -233,9 +275,60 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
+        val m = loadManifest()
+        val typeRaw = typeSegment(item.rawType, item.type)
         val idPart = episode?.id ?: item.id
-        val url = resUrl("stream", item.type.name.lowercase(), idPart)
-        val json = getJson(url) ?: return emptyList()
+
+        // Metadata-only addons (Cinemeta-style: catalogs + meta but no stream
+        // resource) will never produce sources — say so instead of failing
+        // silently for every item.
+        if (m != null && !hasResource(m, "stream")) {
+            streamErrors[config.id] =
+                "This addon provides no streams (catalog/metadata only). " +
+                    "Install a playback addon and open the title from it instead."
+            return emptyList()
+        }
+
+        // Try the exact URL first, then progressively looser variants so
+        // addons with stricter matching still resolve: base id without the
+        // :season:episode suffix, then common type segments.
+        val attempts = linkedSetOf<String>()
+        attempts += resUrl("stream", typeRaw, idPart)
+        val baseId = stripVideoSuffix(idPart)
+        if (baseId != idPart) attempts += resUrl("stream", typeRaw, baseId)
+        for (alt in listOf("movie", "series", "tv", "anime", "channel")) {
+            if (alt != typeRaw) attempts += resUrl("stream", alt, idPart)
+        }
+
+        val reasons = mutableListOf<String>()
+        for (u in attempts) {
+            val json = getJson(u) ?: run {
+                reasons += "no response from ${u.take(120)}"
+                continue
+            }
+            val streams = parseStreams(json)
+            if (streams.isNotEmpty()) {
+                streamErrors.remove(config.id)
+                return streams
+            }
+            val n = json.optJSONArray("streams")?.length() ?: -1
+            reasons += if (n >= 0) "addon returned $n empty stream rows from ${u.take(120)}"
+            else "no 'streams' field in ${u.take(120)}"
+        }
+
+        streamErrors[config.id] = reasons.take(2).joinToString(" • ")
+            .ifBlank { "Addon returned no playable streams." }
+        return emptyList()
+    }
+
+    /** Strips a trailing season:episode (or season-episode) suffix from a video
+     *  id so we can also try the bare movie/base id. */
+    private fun stripVideoSuffix(id: String): String = id
+        .replace(Regex(":\\d+:\\d+$"), "")
+        .replace(Regex("-\\d+-\\d+$"), "")
+        .replace(Regex(":\\d+$"), "")
+
+    private fun parseStreams(json: JSONObject): List<StreamSource> {
         val arr = json.optJSONArray("streams") ?: return emptyList()
         val out = mutableListOf<StreamSource>()
         for (i in 0 until arr.length()) {
