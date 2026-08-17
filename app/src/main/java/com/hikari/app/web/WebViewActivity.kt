@@ -81,8 +81,9 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var whitelistDomains: Set<String> = emptySet()
 
-    // The toolbar auto-hides so it never covers the site's own header/search;
-    // the floating ⋯ pill in the corner brings it back.
+    // The toolbar is HIDDEN by default so it never covers the site's own
+    // header/search (it only appears via the floating ⋯ pill) and auto-hides
+    // again shortly after being shown.
     private val toolbarHandler = Handler(Looper.getMainLooper())
     private val hideToolbarTask = Runnable {
         val t = toolbar ?: return@Runnable
@@ -93,6 +94,11 @@ class WebViewActivity : ComponentActivity() {
             }.start()
         }
     }
+
+    // Guards the auto hand-off to the external player: a page that genuinely
+    // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
+    // on every navigation), so the user never stares at an infinite spinner.
+    private var autoLaunched = false
 
     // Fullscreen HTML5 video support
     private var customView: View? = null
@@ -120,6 +126,8 @@ class WebViewActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(0xFF1A1A1A.toInt())
             setPadding(dp(4), dp(2) + statusBarHeight(), dp(4), dp(2))
+            // Hidden until the user taps the ⋯ pill — never blocks site UI.
+            visibility = View.GONE
         }
         this.toolbar = toolbar
 
@@ -172,6 +180,11 @@ class WebViewActivity : ComponentActivity() {
         }
 
         webView = WebView(this)
+        // JS → Kotlin bridge for the auto hand-off: when a page's own <video>
+        // is stuck buffering forever (common on WebView-hostile tube sites),
+        // the page calls HikariBridge.stuckVideo(url) and we hand the real
+        // source to Hikari's ExoPlayer so playback actually starts.
+        webView.addJavascriptInterface(HikariJsBridge(), "HikariBridge")
 
         // Small floating ⋯ pill in the top-right corner — the only always-visible
         // control. Tapping it shows/hides the nav toolbar without covering the
@@ -300,7 +313,13 @@ class WebViewActivity : ComponentActivity() {
                         return null
                     }
                     if (AdBlocker.matches(host, blockedDomains)) {
-                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                        // NEVER block actual media — blocklists routinely contain
+                        // tube-site CDN domains (phncdn.com, …) that serve the
+                        // actual video. Blocking those turns "video loads" into
+                        // "video buffering forever" (the Pornhub-style stall).
+                        if (!isMediaRequest(request)) {
+                            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                        }
                     }
                 }
                 // Only count it as a video if it actually IS one: probe the
@@ -315,10 +334,17 @@ class WebViewActivity : ComponentActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 pageUrl = url
                 detectedVideos.clear()
+                autoLaunched = false
                 scanHandler.removeCallbacksAndMessages(null)
-                // Bring the nav toolbar back when a new page starts loading,
-                // then let it fade so it never blocks the site's own header.
-                showToolbar()
+                // Keep the nav toolbar hidden while browsing — it only appears
+                // via the floating ⋯ pill, so the site's own header/search are
+                // never covered.
+                toolbar?.let { t ->
+                    toolbarHandler.removeCallbacks(hideToolbarTask)
+                    t.animate().cancel()
+                    t.visibility = View.GONE
+                    t.alpha = 1f
+                }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -326,6 +352,7 @@ class WebViewActivity : ComponentActivity() {
                 progressBar.visibility = View.GONE
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
+                view?.evaluateJavascript(STUCK_MONITOR_JS, null)
                 // Some players create <video> from JS without a network URL we
                 // can see — scan the DOM for the real element too. The runnable
                 // keeps re-scanning so single-page-app players (which swap the
@@ -335,6 +362,7 @@ class WebViewActivity : ComponentActivity() {
                     override fun run() {
                         val v = webView
                         if (v == null) return
+                        v.evaluateJavascript(STUCK_MONITOR_JS, null)
                         v.evaluateJavascript(VIDEO_SCAN_JS) { res ->
                             for (u in extractUrls(res)) maybeAddVideo(u)
                         }
@@ -503,6 +531,23 @@ class WebViewActivity : ComponentActivity() {
         }.start()
     }
 
+    /**
+     * True for requests that carry actual media (a Range request, a video
+     * Accept header, or a media-looking URL). The ad-blocker never blocks
+     * these: blocklists contain video-CDN domains (tube-site CDNs especially)
+     * and blocking the media itself is what makes videos spin forever.
+     */
+    private fun isMediaRequest(request: WebResourceRequest): Boolean {
+        val h = request.requestHeaders
+        if (h?.containsKey("Range") == true) return true
+        val accept = h?.get("Accept")?.lowercase().orEmpty()
+        if (accept.contains("video/") || accept.contains("application/octet-stream")) return true
+        val u = request.url.toString().lowercase()
+        return u.contains(".mp4") || u.contains(".m3u8") || u.contains(".mpd") ||
+            u.contains(".ts?") || u.contains("videoplayback") || u.contains("/videos/") ||
+            u.contains("/media/") || u.contains("phncdn") || u.contains("streamable")
+    }
+
     /** Fetches a few bytes and decides whether [url] is actual video content. */
     private fun isRealVideo(url: String): Boolean {
         // Share the WebView's cookie jar with the probe request — Cloudflare /
@@ -603,6 +648,27 @@ class WebViewActivity : ComponentActivity() {
         java.net.URI(u).host ?: u.take(48)
     }.getOrDefault(u.take(48))
 
+    /**
+     * Handed to the page as `window.HikariBridge`. Called by STUCK_MONITOR_JS
+     * when a real <video> on the page has been trying to play for ~9s without
+     * producing a single frame — the site's player is never going to start on
+     * this WebView, so hand the exact source to Hikari's ExoPlayer (with the
+     * page as Referer + shared cookies) and let it play there instead.
+     */
+    private inner class HikariJsBridge {
+        @android.webkit.JavascriptInterface
+        fun stuckVideo(url: String) {
+            if (autoLaunched || url.isBlank()) return
+            autoLaunched = true
+            runOnUiThread {
+                detectedVideos.add(url)
+                videoChip.text = "\u25B6 Opening external player…"
+                videoChip.visibility = View.VISIBLE
+                launchPlayer(listOf(url), pageUrl ?: webView.url)
+            }
+        }
+    }
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun lp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
@@ -668,6 +734,10 @@ class WebViewActivity : ComponentActivity() {
               window.__hikariHlsInit=true;
               function attach(v){
                 try{
+                  // Play inline instead of fullscreen — some players never
+                  // start when the WebView tries to promote them.
+                  v.setAttribute('playsinline','');
+                  v.setAttribute('webkit-playsinline','');
                   if(v.__hikariHlsAttached)return;
                   var src=v.currentSrc||v.src||(v.querySelector('source')&&v.querySelector('source').src)||(v.getAttribute('data-src')||'');
                   if(!src||src.indexOf('.m3u8')<0)return;
@@ -730,6 +800,49 @@ class WebViewActivity : ComponentActivity() {
                 document.querySelectorAll('video source').forEach(function(s){if(s.src&&s.src.indexOf('blob:')!==0)out.push(s.src);});
               }catch(e){}
               return JSON.stringify(out);
+            })();
+        """.trimIndent()
+
+        /**
+         * Watches every <video> on the page. If one has a real http(s) source
+         * but has spent ~9 seconds trying to play without producing a single
+         * frame (or failed outright), the site's player is never going to start
+         * on this WebView — hand the exact source to the app so it plays in
+         * Hikari's ExoPlayer instead of spinning forever.
+         */
+        private val STUCK_MONITOR_JS = """
+            (function(){
+              if(window.__hikariStuckMon)return;
+              window.__hikariStuckMon=true;
+              var state=new Map();
+              var FIRE_AFTER=9000;
+              function fire(v,src){
+                if(v.__hikariStuckFired)return;
+                v.__hikariStuckFired=true;
+                try{HikariBridge.stuckVideo(src);}catch(e){}
+              }
+              function tick(){
+                try{
+                  document.querySelectorAll('video').forEach(function(v){
+                    try{
+                      var src=v.currentSrc||v.src||(v.querySelector('source')&&v.querySelector('source').src)||'';
+                      if(!src||src.indexOf('http')!==0){state.delete(v);return;}
+                      var prev=v.__hikariSrc;
+                      if(prev!==src){v.__hikariSrc=src;v.__hikariStuckFired=false;state.delete(v);}
+                      var stuck=(v.error!==null)||(!v.paused&&v.readyState<2&&!v.videoWidth);
+                      if(stuck){
+                        var st=state.get(v);
+                        if(!st){st={since:Date.now()};state.set(v,st);}
+                        if(Date.now()-st.since>=FIRE_AFTER)fire(v,src);
+                      }else{
+                        state.delete(v);
+                      }
+                    }catch(e){}
+                  });
+                }catch(e){}
+              }
+              setInterval(tick,2000);
+              tick();
             })();
         """.trimIndent()
     }

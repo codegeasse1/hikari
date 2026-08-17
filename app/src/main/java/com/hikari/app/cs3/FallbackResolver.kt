@@ -90,12 +90,12 @@ object FallbackResolver {
         val needsMegaPlay = isMegaPlayPage(pageUrl)
         if (embeds.isNotEmpty() || needsMegaPlay) {
             runCatching {
-                withTimeoutOrNull(30_000) {
+                withTimeoutOrNull(14_000) {
                     coroutineScope {
                         val jobs = embeds.map { embed ->
                             async {
                                 runCatching {
-                                    withTimeoutOrNull(13_000) {
+                                    withTimeoutOrNull(8_000) {
                                         resolveEmbed(embed, pageUrl, rawsSync, subsSync)
                                     }
                                 }
@@ -107,7 +107,7 @@ object FallbackResolver {
                         val megaJobs = if (needsMegaPlay) {
                             listOf(async {
                                 runCatching {
-                                    withTimeoutOrNull(13_000) {
+                                    withTimeoutOrNull(10_000) {
                                         megaPlayFromPage(pageUrl, rawsSync, subsSync)
                                     }
                                 }
@@ -128,7 +128,7 @@ object FallbackResolver {
                 runCatching { subs += scanSubtitles(text) }
             } else {
                 runCatching {
-                    withTimeoutOrNull(10_000) {
+                    withTimeoutOrNull(7_000) {
                         loadExtractor(pageUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
                     }
                 }
@@ -171,7 +171,7 @@ object FallbackResolver {
         // run it instead of only as a last resort. A broken plugin-side
         // resolver for a host can then never lose a server the jar knows.
         runCatching {
-            withTimeoutOrNull(12_000) {
+            withTimeoutOrNull(7_000) {
                 loadExtractor(embedUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
             }
         }
@@ -183,7 +183,7 @@ object FallbackResolver {
         return html.replace("\\/", "/").replace("\\u002F", "/")
     }
 
-    private fun scanForUrls(text: String, referer: String, raws: MutableMap<String, RawStream>) {
+    private suspend fun scanForUrls(text: String, referer: String, raws: MutableMap<String, RawStream>) {
         for (m in M3U8_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
         for (m in TXT_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
         for (m in MP4_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
@@ -198,7 +198,7 @@ object FallbackResolver {
      * keep the ones that actually answer with `#EXTM3U` / `#EXT-X` (or an
      * MP4 box header).
      */
-    private fun probeCandidates(text: String, referer: String, raws: MutableMap<String, RawStream>) {
+    private suspend fun probeCandidates(text: String, referer: String, raws: MutableMap<String, RawStream>) {
         val candidates = ALL_URL_RE.findAll(text)
             .map { it.value.replace("\\/", "/").trim().trimEnd('"', '\'', ',', ';', ')', '}') }
             .filter { it.startsWith("http") && !JUNK.any { j -> it.contains(j, ignoreCase = true) } }
@@ -212,8 +212,12 @@ object FallbackResolver {
             .distinct()
             .take(8)
         for (u in candidates) {
+            // One slow host must not stall the whole embed resolve — each probe
+            // gets a short budget (3s) and the rest just gets skipped.
             val bytes = runCatching {
-                Http.getBytes(u, mapOf("Range" to "bytes=0-511", "Referer" to referer, "User-Agent" to Http.UA))
+                kotlinx.coroutines.withTimeoutOrNull(3_000) {
+                    Http.getBytes(u, mapOf("Range" to "bytes=0-511", "Referer" to referer, "User-Agent" to Http.UA))
+                }
             }.getOrNull() ?: continue
             if (bytes.isEmpty()) continue
             val head = String(bytes, 0, min(bytes.size, 512), Charsets.ISO_8859_1)
@@ -376,18 +380,33 @@ object FallbackResolver {
             app.get("$base/ajax/server/list?servers=$siteIds", headers = ajax).text
         }.getOrNull() ?: return
         val doc = runCatching { Jsoup.parse(parseAjaxResult(serverList)) }.getOrNull() ?: return
-        for (li in doc.select("li[data-link-id], li[data-id]")) {
-            val linkId = li.attr("data-link-id").ifBlank { li.attr("data-id") }
-            if (linkId.isBlank()) continue
-            val serverHtml = runCatching {
-                app.get("$base/ajax/server?get=$linkId", headers = ajax).text
-            }.getOrNull() ?: continue
-            val text = parseAjaxResult(serverHtml)
-            val embedUrl = Regex("""https?://[^\s"'<>\\]{8,}""").findAll(text)
-                .map { it.value.replace("\\/", "/") }
-                .firstOrNull { isMegaPlayHost(it) }
-            if (embedUrl != null) {
-                megaPlayEmbedExtract(embedUrl, raws, subs)
+        val linkIds = doc.select("li[data-link-id], li[data-id]").mapNotNull { li ->
+            li.attr("data-link-id").ifBlank { li.attr("data-id") }.takeIf { it.isNotBlank() }
+        }
+        if (linkIds.isEmpty()) return
+        // Resolve every server's embed IN PARALLEL (the old sequential loop
+        // added ~1s per server — a 4-server page could stall the player for
+        // 10s while sources sat one request away).
+        runCatching {
+            withTimeoutOrNull(9_000) {
+                coroutineScope {
+                    linkIds.map { linkId ->
+                        async {
+                            runCatching {
+                                withTimeoutOrNull(7_000) {
+                                    val serverHtml = app.get("$base/ajax/server?get=$linkId", headers = ajax).text
+                                    val text = parseAjaxResult(serverHtml)
+                                    val embedUrl = Regex("""https?://[^\s"'<>\\]{8,}""").findAll(text)
+                                        .map { it.value.replace("\\/", "/") }
+                                        .firstOrNull { isMegaPlayHost(it) }
+                                    if (embedUrl != null) {
+                                        megaPlayEmbedExtract(embedUrl, raws, subs)
+                                    }
+                                }
+                            }
+                        }
+                    }.forEach { it.await() }
+                }
             }
         }
     }

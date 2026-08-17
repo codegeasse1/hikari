@@ -2,9 +2,12 @@ package com.hikari.app.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.ExperimentalLayoutApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -296,6 +299,7 @@ fun SettingsScreen() {
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun AdBlockingCard(app: HikariApp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -357,7 +361,13 @@ private fun AdBlockingCard(app: HikariApp) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(6.dp))
-            Row {
+            // FlowRow so all three presets stay visible (the third wraps to a
+            // second line instead of overflowing off the right edge), with no
+            // dead space between the chips and the row below.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 AdBlocker.PRESETS.forEach { preset ->
                     val isAdded = lists.any { it.url == preset.url }
                     OutlinedButton(
@@ -372,8 +382,7 @@ private fun AdBlockingCard(app: HikariApp) {
                                 app.store.setAdLists(next)
                                 AdBlocker.download(preset.url, context)
                             }
-                        },
-                        modifier = Modifier.padding(end = 6.dp)
+                        }
                     ) {
                         Text(if (isAdded) "✓ ${preset.name}" else "+ ${preset.name}")
                     }

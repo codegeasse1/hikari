@@ -288,12 +288,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val result = try {
                 val pluginJob = scope.async {
                     try {
-                        val completed = withTimeoutOrNull(25_000) {
+                        val completed = withTimeoutOrNull(12_000) {
                             a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
                         }
                         if (completed == null) {
                             lastStreamsError =
-                                "Timed out after 25s — the provider hung while resolving sources.\n" +
+                                "Timed out after 12s — the provider hung while resolving sources.\n" +
                                     "Stuck on thread '${worker.name}':\n" +
                                     worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                         } else {
@@ -315,7 +315,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
                 val fallbackJob = scope.async {
                     try {
-                        withTimeoutOrNull(25_000) { FallbackResolver.resolve(data) } ?: emptyList()
+                        withTimeoutOrNull(12_000) { FallbackResolver.resolve(data) } ?: emptyList()
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()
@@ -334,7 +334,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + 28_000
+                val deadline = started + 14_000
                 var firstSourceAt = -1L
                 while (true) {
                     for (s in pluginSources()) merged.putIfAbsent(s.url, s)
@@ -345,13 +345,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val now = System.currentTimeMillis()
                     if (merged.isNotEmpty()) {
                         if (firstSourceAt < 0) firstSourceAt = now
-                        // Fallback done but plugin still going: the universal
-                        // engine already gave us playable servers — stop
-                        // waiting for a hung plugin after a short grace.
-                        // Plugin done but fallback still going: wait a little
-                        // longer so the fallback's servers (Rumble…) join.
-                        val grace = if (fallbackDone) 3_000L else 5_000L
-                        if ((pluginDone || fallbackDone) && now - firstSourceAt >= grace) break
+                        // Once either engine has given us playable servers, stop
+                        // waiting for the other one after a short grace so the
+                        // player opens fast — extra servers are a nice-to-have,
+                        // playback speed is the point.
+                        if ((pluginDone || fallbackDone) && now - firstSourceAt >= 2_000L) break
                     }
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
