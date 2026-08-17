@@ -19,9 +19,11 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -139,11 +141,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val resp = try {
                 a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
             } catch (e: Throwable) {
+                if (e is CancellationException) throw e
                 // A brand-new plugin instance can fail its very first network
                 // call while the runtime/session initializes — retry once.
                 try {
                     a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
                 } catch (e2: Throwable) {
+                    if (e2 is CancellationException) throw e2
                     catalogErrors[config.id] = fullCause(e2)
                     return@withContext emptyList()
                 }
@@ -169,6 +173,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val found = try {
                 a.search(query)
             } catch (e: Throwable) {
+                if (e is CancellationException) throw e
                 emptyList()
             }
             found.orEmpty().mapNotNull { it.toMediaItem() }
@@ -263,19 +268,24 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val data = episode?.id ?: item.id
             val started = System.currentTimeMillis()
 
-            // Run the plugin's own extraction and our independent fallback
-            // engine IN PARALLEL. CloudStream's plugin path can hang for a long
-            // time on a dead embed; the fallback often answers in seconds, so
-            // waiting for the plugin first (up to 90s) then the fallback (60s)
-            // made playback feel broken. Whichever yields usable sources first
-            // wins.
+            // The plugin's own extraction and our universal engine (jar
+            // extractor registry + Rumble/Dood scraping + packed unpacking)
+            // run IN PARALLEL and their results are MERGED — so a host the
+            // plugin resolves and a host it misses (Rumble, ok.ru, …) both
+            // appear, just like CloudStream's source picker. Neither engine is
+            // allowed to block the other: once one finishes, the other gets a
+            // short grace window and then we play what we have.
             val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
             val subs = mutableListOf<SubtitleFile>()
             val worker = Thread.currentThread()
-            // Launch both paths INSIDE one coroutineScope so they genuinely run
-            // in parallel; then await both.
-            val (pluginJob, fallbackJob) = coroutineScope {
-                val pluginJob = async {
+
+            // Deliberately NOT coroutineScope: it waits for children to finish
+            // cancelling, which would block here while a hung plugin drains its
+            // native network call. A detached scope returns the moment we have
+            // sources; the abandoned engine keeps running on IO in the background.
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val result = try {
+                val pluginJob = scope.async {
                     try {
                         val completed = withTimeoutOrNull(50_000) {
                             a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
@@ -296,69 +306,118 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         }
                         links.toList()
                     } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
                         lastStreamsError = fullCause(e)
                         android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
                         emptyList()
                     }
                 }
-                val fallbackJob = async {
+                val fallbackJob = scope.async {
                     try {
                         withTimeoutOrNull(50_000) { FallbackResolver.resolve(data) } ?: emptyList()
                     } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
                         emptyList()
                     }
                 }
-                pluginJob to fallbackJob
-            }
 
-            // Prefer the plugin's own links when it actually produced some;
-            // otherwise use the fallback's. Both ran concurrently so the total
-            // wait is ~the slower of the two, never their sum.
-            val jarSources = pluginJob.await()
-                .filter { it.url.isNotBlank() && it.url != a.mainUrl && it.type.name != "ERROR" }
-                .map { l ->
-                    // CloudStream keeps the Referer OUT of ExtractorLink.headers —
-                    // without it most anime CDNs answer with an anti-hotlink HTML
-                    // page and ExoPlayer reports PARSING_CONTAINER_UNSUPPORTED.
-                    // Merge referer in (keeping any Referer the extractor set),
-                    // and carry the container type so the player can pick HLS/DASH.
-                    val headers = LinkedHashMap<String, String>()
-                    l.headers?.forEach { (k, v) -> headers[k] = v }
-                    val ref = l.referer
-                    if (!ref.isNullOrBlank()) {
-                        headers.putIfAbsent("Referer", ref)
+                fun pluginSources(): List<StreamSource> =
+                    if (pluginJob.isCompleted) {
+                        runCatching { toStreamSources(links.toList(), subs.toList()) }
+                            .getOrDefault(emptyList())
+                    } else emptyList()
+
+                fun fallbackSources(): List<StreamSource> =
+                    if (fallbackJob.isCompleted) {
+                        runCatching { fallbackJob.getCompleted() }.getOrDefault(emptyList())
+                    } else emptyList()
+
+                val merged = LinkedHashMap<String, StreamSource>()
+                val deadline = started + 55_000
+                var firstSourceAt = -1L
+                while (true) {
+                    for (s in pluginSources()) merged.putIfAbsent(s.url, s)
+                    for (s in fallbackSources()) merged.putIfAbsent(s.url, s)
+                    val pluginDone = pluginJob.isCompleted
+                    val fallbackDone = fallbackJob.isCompleted
+                    if (pluginDone && fallbackDone) break
+                    val now = System.currentTimeMillis()
+                    if (merged.isNotEmpty()) {
+                        if (firstSourceAt < 0) firstSourceAt = now
+                        // Fallback done but plugin still going: the universal
+                        // engine already gave us playable servers — stop
+                        // waiting for a hung plugin after a short grace.
+                        // Plugin done but fallback still going: wait a little
+                        // longer so the fallback's servers (Rumble…) join.
+                        val grace = if (fallbackDone) 4_000L else 8_000L
+                        if ((pluginDone || fallbackDone) && now - firstSourceAt >= grace) break
                     }
-                    val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
-                    // Magnet / .torrent links go through the same TorrServer
-                    // engine as Stremio infoHash streams.
-                    val isTorrent = l.type.name == "MAGNET" || l.type.name == "TORRENT" ||
-                        l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true)
-                    StreamSource(
-                        name = l.name.ifBlank { "Stream" },
-                        // Google Drive share/download links answer with an HTML
-                        // virus-scan page, not video bytes — normalize them to
-                        // the direct drive.usercontent download form so the
-                        // player gets raw HLS/MP4 (MoviesMod & friends).
-                        url = if (isTorrent) l.url else Http.normalizeDriveUrl(l.url),
-                        headers = headers,
-                        subtitles = subSources,
-                        isM3u8 = l.isM3u8,
-                        isMpd = l.isDash,
-                        isTorrent = isTorrent,
-                        infoHash = if (isTorrent) infoHashOf(l.url) else null,
-                        fileIdx = magnetIndex(l.url),
-                        trackers = magnetTrackers(l.url),
-                    )
+                    if (now > deadline) break
+                    kotlinx.coroutines.delay(80)
                 }
-
-            val fallback = fallbackJob.await()
-            if (jarSources.isEmpty() && fallback.isNotEmpty()) {
-                lastStreamsError = null
-                return@withContext fallback
+                if (!pluginJob.isCompleted) pluginJob.cancel()
+                if (!fallbackJob.isCompleted) fallbackJob.cancel()
+                merged.values.toList()
+            } finally {
+                scope.cancel()
             }
+
+            if (result.isNotEmpty()) lastStreamsError = null
             lastStreamsTimeMs = System.currentTimeMillis() - started
-            jarSources
+            result
         }
+
+    /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
+     *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
+    private fun toStreamSources(
+        rawLinks: List<com.lagradost.cloudstream3.utils.ExtractorLink>,
+        rawSubs: List<SubtitleFile>,
+    ): List<StreamSource> {
+        val a = api
+        return rawLinks
+            .filter { it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" }
+            .map { l ->
+                // CloudStream keeps the Referer OUT of ExtractorLink.headers —
+                // without it most anime CDNs answer with an anti-hotlink HTML
+                // page and ExoPlayer reports PARSING_CONTAINER_UNSUPPORTED.
+                // Merge referer in (keeping any Referer the extractor set),
+                // and carry the container type so the player can pick HLS/DASH.
+                val headers = LinkedHashMap<String, String>()
+                l.headers?.forEach { (k, v) -> headers[k] = v }
+                val ref = l.referer
+                if (!ref.isNullOrBlank()) {
+                    headers.putIfAbsent("Referer", ref)
+                }
+                val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
+                // Magnet / .torrent links go through the same TorrServer
+                // engine as Stremio infoHash streams.
+                val isTorrent = l.type.name == "MAGNET" || l.type.name == "TORRENT" ||
+                    l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true)
+                val qualityLabel = com.lagradost.cloudstream3.utils.Qualities.getStringByInt(l.quality)
+                val baseName = l.name.ifBlank { "Stream" }
+                StreamSource(
+                    name = if (qualityLabel.isNotBlank() && !baseName.contains(qualityLabel, ignoreCase = true)) {
+                        "$baseName $qualityLabel"
+                    } else {
+                        baseName
+                    },
+                    // Google Drive share/download links answer with an HTML
+                    // virus-scan page, not video bytes — normalize them to
+                    // the direct drive.usercontent download form so the
+                    // player gets raw HLS/MP4 (MoviesMod & friends).
+                    url = if (isTorrent) l.url else Http.normalizeDriveUrl(l.url),
+                    headers = headers,
+                    subtitles = subSources,
+                    isM3u8 = l.isM3u8,
+                    isMpd = l.isDash,
+                    isTorrent = isTorrent,
+                    infoHash = if (isTorrent) infoHashOf(l.url) else null,
+                    fileIdx = magnetIndex(l.url),
+                    trackers = magnetTrackers(l.url),
+                )
+            }
+            .distinctBy { it.url }
+    }
 
     private fun fullCause(e: Throwable): String {
         val sb = StringBuilder()
@@ -382,6 +441,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         val r = try {
             withTimeoutOrNull(45_000) { a.load(id) }
         } catch (e: Throwable) {
+            if (e is CancellationException) throw e
             null
         } ?: return null
         loadCache[id] = r

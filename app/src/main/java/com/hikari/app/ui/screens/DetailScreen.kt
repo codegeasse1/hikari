@@ -71,6 +71,8 @@ import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -89,6 +91,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _episodes = MutableStateFlow<List<Episode>?>(null)
     val episodes: StateFlow<List<Episode>?> = _episodes.asStateFlow()
+
+    /** True while the origin addon is still listing episodes (so the UI shows
+     *  a spinner instead of a misleading "no episodes" for the first seconds). */
+    private val _episodesLoading = MutableStateFlow(false)
+    val episodesLoading: StateFlow<Boolean> = _episodesLoading.asStateFlow()
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -155,8 +162,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _meta.value = base
             _loading.value = false
             withContext(Dispatchers.IO) {
-                runCatching { _meta.value = repo.metaFor(base) }
-                runCatching { _episodes.value = repo.episodesFor(base) }
+                // meta + episode list fetch in PARALLEL so the episode grid
+                // appears as fast as the banner (sequential made it feel
+                // like 5-10s of nothing).
+                coroutineScope {
+                    async { runCatching { _meta.value = repo.metaFor(base) } }
+                    async {
+                        _episodesLoading.value = true
+                        try {
+                            runCatching { _episodes.value = repo.episodesFor(base) }
+                        } finally {
+                            _episodesLoading.value = false
+                        }
+                    }
+                }
             }
             prefetchFirstStreams(base)
         }
@@ -216,6 +235,7 @@ fun DetailScreen(
     val vm: DetailViewModel = viewModel()
     val meta by vm.meta.collectAsState()
     val episodes by vm.episodes.collectAsState()
+    val episodesLoading by vm.episodesLoading.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
     val streamsReady by vm.streamsReady.collectAsState()
@@ -417,12 +437,30 @@ fun DetailScreen(
                     }
                     if (sortedEps.isEmpty()) {
                         item {
-                            Text(
-                                "No episode list available.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
+                            if (episodesLoading) {
+                                Row(
+                                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        "Loading episodes…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    "No episode list available.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
                         }
                     } else {
                         val shownEps = if (rangeStart == null) sortedEps

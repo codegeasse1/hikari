@@ -1,6 +1,7 @@
 package com.hikari.app.cs3
 
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
@@ -51,39 +52,58 @@ object FallbackResolver {
         "javascript:", "blob:", "data:image"
     )
 
-    /** Resolve every embed on a plugin video page into playable StreamSources. */
+    private data class RawStream(
+        val url: String,
+        val referer: String,
+        val name: String,
+        val quality: Int,
+        val isM3u8: Boolean,
+    )
+
+    /** Resolve every embed on a plugin video page into playable StreamSources.
+     *  Runs BOTH our own scraping AND the jar's full extractor registry — the
+     *  same `loadExtractor` every CloudStream plugin delegates to — on every
+     *  embed it finds, so the resulting server list matches CloudStream's
+     *  regardless of which plugin produced the page or whether that plugin's
+     *  own resolver for a host (Rumble, ok.ru, dailymotion…) is broken. */
     suspend fun resolve(pageUrl: String): List<StreamSource> {
         val html = runCatching {
             app.get(pageUrl, referer = pageUrl).text
         }.getOrNull() ?: return emptyList()
 
-        val pairs = LinkedHashSet<Pair<String, String>>() // url -> referer
+        val raws = LinkedHashMap<String, RawStream>()
         val subs = mutableListOf<SubtitleSource>()
 
-        for (embed in collectEmbeds(html, pageUrl).take(10)) {
+        for (embed in collectEmbeds(html, pageUrl).take(12)) {
             runCatching {
-                withTimeoutOrNull(12_000) { resolveEmbed(embed, pageUrl, pairs, subs) }
+                withTimeoutOrNull(14_000) { resolveEmbed(embed, pageUrl, raws, subs) }
             }
-            if (pairs.size >= 10) break
+            if (raws.size >= 12) break
         }
 
-        // Last resort: some pages embed the stream directly (no iframes) —
-        // scan the video page itself too.
-        if (pairs.isEmpty()) {
+        // Some pages embed the stream directly (no iframes) — scan the video
+        // page itself too, and let the jar registry have a crack at it.
+        if (raws.isEmpty()) {
             val text = getAndUnpack(html)
-            scanForUrls(text, pageUrl, pairs)
-            if (pairs.isNotEmpty()) {
+            scanForUrls(text, pageUrl, raws)
+            if (raws.isNotEmpty()) {
                 runCatching { subs += scanSubtitles(text) }
+            } else {
+                runCatching {
+                    withTimeoutOrNull(10_000) {
+                        loadExtractor(pageUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
+                    }
+                }
             }
         }
 
-        return pairs.map { (url, ref) ->
+        return raws.values.map { r ->
             StreamSource(
-                name = "Hikari Auto",
-                url = url,
-                headers = mapOf("Referer" to ref, "User-Agent" to Http.UA),
+                name = r.name,
+                url = r.url,
+                headers = mapOf("Referer" to r.referer, "User-Agent" to Http.UA),
                 subtitles = subs.distinctBy { it.url },
-                isM3u8 = url.contains(".m3u8", true) || url.contains("master.txt", true),
+                isM3u8 = r.isM3u8 || r.url.contains(".m3u8", true) || r.url.contains("master.txt", true),
             )
         }
     }
@@ -91,32 +111,30 @@ object FallbackResolver {
     private suspend fun resolveEmbed(
         embedUrl: String,
         pageUrl: String,
-        out: MutableSet<Pair<String, String>>,
+        raws: MutableMap<String, RawStream>,
         subs: MutableList<SubtitleSource>,
     ) {
         val html = runCatching { app.get(embedUrl, referer = pageUrl).text }.getOrNull()
         if (html.isNullOrBlank()) return
 
         val text = getAndUnpack(html)
-        scanForUrls(text, embedUrl, out)
+        scanForUrls(text, embedUrl, raws)
         runCatching { subs += scanSubtitles(text) }
 
         if (isDoodHost(embedUrl)) {
-            runCatching { doodExtract(embedUrl, out) }
+            runCatching { doodExtract(embedUrl, raws) }
+        }
+        if (isRumbleUrl(embedUrl)) {
+            runCatching { rumbleExtract(embedUrl, raws) }
         }
 
-        // The full jar registry (incl. aliases) as a final attempt — some hosts
-        // need a specialized extractor (Byse AES, etc.).
-        if (out.isEmpty()) {
-            runCatching {
-                val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
-                withTimeoutOrNull(10_000) {
-                    loadExtractor(embedUrl, pageUrl, { }, { links.add(it) })
-                }
-                for (l in links) {
-                    val u = cleanUrl(l.url) ?: continue
-                    out.add(u to (l.referer ?: embedUrl))
-                }
+        // The full jar registry (incl. aliases) — CloudStream plugins get their
+        // OkRuSSL/Dailymotion/… servers through this exact call, so we always
+        // run it instead of only as a last resort. A broken plugin-side
+        // resolver for a host can then never lose a server the jar knows.
+        runCatching {
+            withTimeoutOrNull(12_000) {
+                loadExtractor(embedUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
             }
         }
     }
@@ -127,12 +145,12 @@ object FallbackResolver {
         return html.replace("\\/", "/").replace("\\u002F", "/")
     }
 
-    private fun scanForUrls(text: String, referer: String, out: MutableSet<Pair<String, String>>) {
-        for (m in M3U8_RE.findAll(text)) addUrl(m.value, referer, out)
-        for (m in TXT_RE.findAll(text)) addUrl(m.value, referer, out)
-        for (m in MP4_RE.findAll(text)) addUrl(m.value, referer, out)
-        for (m in QUOTED_RE.findAll(text)) addUrl(m.groupValues[1], referer, out)
-        if (out.size < 10) probeCandidates(text, referer, out)
+    private fun scanForUrls(text: String, referer: String, raws: MutableMap<String, RawStream>) {
+        for (m in M3U8_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
+        for (m in TXT_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
+        for (m in MP4_RE.findAll(text)) addRaw(m.value, referer, streamNameFor(m.value), raws)
+        for (m in QUOTED_RE.findAll(text)) addRaw(m.groupValues[1], referer, streamNameFor(m.groupValues[1]), raws)
+        if (raws.size < 10) probeCandidates(text, referer, raws)
     }
 
     /**
@@ -142,14 +160,14 @@ object FallbackResolver {
      * keep the ones that actually answer with `#EXTM3U` / `#EXT-X` (or an
      * MP4 box header).
      */
-    private fun probeCandidates(text: String, referer: String, out: MutableSet<Pair<String, String>>) {
+    private fun probeCandidates(text: String, referer: String, raws: MutableMap<String, RawStream>) {
         val candidates = ALL_URL_RE.findAll(text)
             .map { it.value.replace("\\/", "/").trim().trimEnd('"', '\'', ',', ';', ')', '}') }
             .filter { it.startsWith("http") && !JUNK.any { j -> it.contains(j, ignoreCase = true) } }
             .filter { u ->
                 // Skip URLs we already found via patterns, and known non-video
                 // file types.
-                !out.any { it.first == u } &&
+                !raws.containsKey(u) &&
                     !Regex("\\.(js|css|png|jpg|jpeg|gif|svg|webp|ico|json|xml|html?)(\\?.*)?$", RegexOption.IGNORE_CASE)
                         .containsMatchIn(u)
             }
@@ -163,7 +181,7 @@ object FallbackResolver {
             val head = String(bytes, 0, min(bytes.size, 512), Charsets.ISO_8859_1)
             val isStream = head.startsWith("#EXTM3U") || head.contains("#EXT-X") ||
                 head.contains("<mpd", ignoreCase = true) || looksLikeMp4(bytes)
-            if (isStream) out.add(u to referer)
+            if (isStream) addRaw(u, referer, streamNameFor(u), raws)
         }
     }
 
@@ -174,11 +192,52 @@ object FallbackResolver {
             head.startsWith("styp")
     }
 
-    private fun addUrl(raw: String, referer: String, out: MutableSet<Pair<String, String>>) {
+    private fun addRaw(
+        raw: String,
+        referer: String,
+        name: String,
+        raws: MutableMap<String, RawStream>,
+    ) {
         val u = cleanUrl(raw) ?: return
-        if (out.size >= 10) return
-        out.add(u to referer)
+        raws.putIfAbsent(
+            u,
+            RawStream(u, referer, name, Qualities.Unknown.value, u.contains(".m3u8", true))
+        )
     }
+
+    private fun addRaw(
+        l: com.lagradost.cloudstream3.utils.ExtractorLink,
+        pageUrl: String,
+        raws: MutableMap<String, RawStream>,
+    ) {
+        val u = cleanUrl(l.url) ?: return
+        val q = Qualities.getStringByInt(l.quality)
+        val base = l.name.ifBlank { streamNameFor(u) }
+        val name = if (q.isNotBlank() && !base.contains(q, ignoreCase = true)) "$base $q" else base
+        raws.putIfAbsent(
+            u,
+            RawStream(u, l.referer?.takeIf { it.isNotBlank() } ?: pageUrl, name, l.quality, l.isM3u8)
+        )
+    }
+
+    /** Human-readable server name for a bare stream URL (the jar's extractors
+     *  name their own links; scanned URLs get a host-based name that matches
+     *  what CloudStream shows in its source picker). */
+    private fun streamNameFor(url: String): String {
+        val h = url.lowercase()
+        return when {
+            h.contains("rumble") || h.contains("rmbl.ws") || h.contains("rumble.cloud") -> "Rumble"
+            h.contains("ok.ru") || h.contains("odnoklassniki") || h.contains("okcdn") -> "OkRuSSL"
+            h.contains("dailymotion") || h.contains("dai.ly") -> "Dailymotion"
+            h.contains("dood") || h.contains("playmogo") || h.contains("ds2play") || h.contains("doood") ||
+                h.contains("d000") || h.contains("doods") || h.contains("myvidplay") || h.contains("vide0") ||
+                h.contains("dsvplay") -> "Dood"
+            else -> "Hikari Auto"
+        }
+    }
+
+    private fun isRumbleUrl(url: String): Boolean =
+        url.lowercase().contains("rumble")
 
     private fun scanSubtitles(text: String): List<SubtitleSource> {
         val out = mutableListOf<SubtitleSource>()
@@ -235,7 +294,7 @@ object FallbackResolver {
             h.contains("myvidplay") || h.contains("vide0") || h.contains("dsvplay")
     }
 
-    private suspend fun doodExtract(embedUrl: String, out: MutableSet<Pair<String, String>>) {
+    private suspend fun doodExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
         val embed = embedUrl.replace("/d/", "/e/")
         val req = runCatching { app.get(embed) }.getOrNull() ?: return
         val host = baseOf(req.url)
@@ -256,8 +315,36 @@ object FallbackResolver {
         if (bytes != null && bytes.isNotEmpty()) {
             val head = String(bytes, 0, min(bytes.size, 64), Charsets.ISO_8859_1)
             if (head.startsWith("#EXTM3U")) {
-                out.add(finalUrl to "$host/")
+                addRaw(finalUrl, "$host/", "Dood", raws)
             }
+        }
+    }
+
+    /**
+     * Rumble embeds (rumble.com/embed/… and rumble.com/v/…). The jar has no
+     * Rumble extractor, so plugins either scrape the embed page themselves
+     * (and break when their regex misses) or can't offer Rumble at all — which
+     * is why Rumble servers show up in CloudStream but not in Hikari. This is
+     * core-level: fetch with the rumble referer and find the HLS/mp4 URLs in
+     * the player config, exactly like CloudStream's rumble sources do.
+     */
+    private suspend fun rumbleExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
+        val html = runCatching {
+            app.get(embedUrl, referer = "https://rumble.com/").text
+        }.getOrNull() ?: return
+        val text = getAndUnpack(html)
+        val m3u8 = Regex("""\"hls\"\s*:\s*\{[^}]*\"url\"\s*:\s*\"([^\"]+\.m3u8[^\"]*)\"""").find(text)?.groupValues?.get(1)
+            ?: Regex("""https?://rumble\.com/hls-vod/[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(text)?.value
+            ?: Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(text)?.value
+        if (m3u8 != null && m3u8.startsWith("http")) {
+            addRaw(m3u8, "https://rumble.com/", "Rumble", raws)
+        }
+        if (raws.isEmpty()) {
+            // mp4 fallback: the config has {"mp4":{"1080":["https://…mp4"],…}}
+            for (m in Regex("""\"mp4\"\s*:\s*\{\s*\"\d+\"\s*:\s*\[\s*\"([^\"]+\.mp4[^\"]*)\"""").findAll(text)) {
+                addRaw(m.groupValues[1], "https://rumble.com/", "Rumble", raws)
+            }
+            if (raws.isEmpty()) scanForUrls(text, "https://rumble.com/", raws)
         }
     }
 

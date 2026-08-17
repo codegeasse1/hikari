@@ -8,6 +8,8 @@ import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -64,7 +66,14 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
-    private var autoFallback = true
+
+    /** True while the current source is retried with text tracks disabled
+     *  (its HLS manifest carried a garbage subtitle track that made media3
+     *  crash with "Expected WEBVTT. Got 1"). */
+    private var noSubsRetry = false
+
+    private val bufferingWatchdog = Handler(Looper.getMainLooper())
+    private var watchdogTask: Runnable? = null
 
     private var speedChip: TextView? = null
     private var rotateChip: TextView? = null
@@ -113,7 +122,7 @@ class PlayerActivity : ComponentActivity() {
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
-                autoFallback = true
+                noSubsRetry = false
                 playSource(currentIndex + 1)
             } else {
                 finish()
@@ -173,6 +182,8 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
         }.getOrDefault(emptyList())
+            // The same video surfaced by both extraction engines / addons = one entry.
+            .distinctBy { it.url }
 
         if (sources.isEmpty()) {
             showError("No playable sources received.", false)
@@ -217,7 +228,7 @@ class PlayerActivity : ComponentActivity() {
             .setTitle("Select server")
             .setSingleChoiceItems(names, currentIndex) { d, which ->
                 if (which != currentIndex) {
-                    autoFallback = true
+                    noSubsRetry = false
                     playSource(which)
                 }
                 d.dismiss()
@@ -338,12 +349,12 @@ class PlayerActivity : ComponentActivity() {
             res.onFailure { e ->
                 val msg = rootMessage(e)
                 val hasNext = currentIndex + 1 < sources.size
-                if (autoFallback && hasNext) {
-                    autoFallback = false
+                if (hasNext) {
+                    noSubsRetry = false
                     Toast.makeText(this@PlayerActivity, "Torrent failed — trying next", Toast.LENGTH_SHORT).show()
                     playSource(currentIndex + 1)
                 } else {
-                    showError("Torrent playback failed:\n$msg", hasNext)
+                    showError("Torrent playback failed:\n$msg", false)
                 }
             }
         }
@@ -428,6 +439,13 @@ class PlayerActivity : ComponentActivity() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()
         this.player = player
+        if (noSubsRetry) {
+            // The previous attempt crashed on a garbage in-manifest subtitle
+            // track — disable text tracks for this retry.
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+        }
         player.addListener(listener)
         playerView?.player = player
 
@@ -449,6 +467,9 @@ class PlayerActivity : ComponentActivity() {
         player.prepare()
         player.playWhenReady = true
         applySpeed(SPEEDS[speedIndex])
+        scheduleBufferingWatchdog()
+
+        if (noSubsRetry) return@playDirect
 
         val playedIndex = index
         lifecycleScope.launch {
@@ -475,6 +496,34 @@ class PlayerActivity : ComponentActivity() {
             p.setMediaItem(item.build(), false)
             p.prepare()
         }
+    }
+
+    /**
+     * If the current server still hasn't started delivering video 8s after
+     * prepare, skip to the next one — CloudStream plays in ~5s, a dead or
+     * starving HLS stream shouldn't make the user stare at a spinner. Only
+     * fires while nothing has been played yet.
+     */
+    private fun scheduleBufferingWatchdog() {
+        watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        watchdogTask = null
+        val task = Runnable {
+            watchdogTask = null
+            val p = player ?: return@Runnable
+            if (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_IDLE) {
+                if (p.currentPosition > 0) return@Runnable
+                val hasNext = currentIndex + 1 < sources.size
+                if (hasNext) {
+                    noSubsRetry = false
+                    Toast.makeText(this, "Server too slow — trying next", Toast.LENGTH_SHORT).show()
+                    playSource(currentIndex + 1)
+                } else {
+                    showError("Server is not responding (still buffering after 8s).", false)
+                }
+            }
+        }
+        watchdogTask = task
+        bufferingWatchdog.postDelayed(task, 8_000)
     }
 
     /**
@@ -507,7 +556,15 @@ class PlayerActivity : ComponentActivity() {
 
     private val listener = object : Player.Listener {
         override fun onTracksChanged(tracks: Tracks) {
+            if (noSubsRetry) return
             selectFirstTextTrack(player ?: return, tracks)
+        }
+
+        override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
+                watchdogTask = null
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -523,13 +580,31 @@ class PlayerActivity : ComponentActivity() {
                     depth++
                 }
             }
+            // HLS manifests often declare a subtitle track whose URL returns
+            // junk ("Expected WEBVTT. Got 1" / contentIsMalformed). media3
+            // treats that as a fatal parse error — retry the SAME server with
+            // text tracks disabled before giving up on it.
+            val code = error.errorCode
+            val subtitleIssue = !noSubsRetry &&
+                (code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+                    code == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED) &&
+                (details.contains("WEBVTT", true) || details.contains("Expected", true) ||
+                    details.contains("subtitle", true) || details.contains("TextDecoder", true))
+            if (subtitleIssue) {
+                Toast.makeText(this@PlayerActivity, "Bad subtitle track — retrying without subtitles", Toast.LENGTH_SHORT).show()
+                noSubsRetry = true
+                playSource(currentIndex)
+                return
+            }
+            // Like CloudStream: never strand the user — keep trying the next
+            // server automatically on every failure.
             val hasNext = currentIndex + 1 < sources.size
-            if (autoFallback && hasNext) {
-                autoFallback = false
+            if (hasNext) {
+                noSubsRetry = false
                 Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
-                showError(details, hasNext)
+                showError(details, false)
             }
         }
     }
@@ -583,6 +658,8 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        watchdogTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
         player?.let { p ->

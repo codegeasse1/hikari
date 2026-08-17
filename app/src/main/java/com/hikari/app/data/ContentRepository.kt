@@ -1,7 +1,9 @@
 package com.hikari.app.data
 
 import com.hikari.app.providers.ProviderManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -81,35 +83,66 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
-     * Fetches streams for a title the way the real Stremio client does: every
-     * installed Stremio addon is asked in parallel — a catalog-only addon
-     * (Cinemeta, Streaming Catalogs) contributes nothing, while playback
-     * addons (Torrentio, Comet, Novastream…) contribute their sources. The
-     * origin provider is always included too, so CS3 plugins and universal
-     * scrapers keep their own single-provider pipeline.
+     * Fetches streams the way the real Stremio client does: every installed
+     * Stremio addon is asked in parallel — a catalog-only addon contributes
+     * nothing, while playback addons (Torrentio, Comet…) contribute their
+     * sources. The origin provider is always included too, so CS3 plugins /
+     * universal scrapers keep their own single-provider pipeline.
+     *
+     * Two speed rules (this is why CloudStream starts in seconds while a
+     * multi-addon Stremio lookup used to take 25-45s):
+     *  - a CS3/universal origin is queried ALONE — the other addons don't know
+     *    its ids and only waste time timing out;
+     *  - Stremio results use FIRST-NON-EMPTY-WINS: as soon as any addon
+     *    returns sources, the rest are cancelled and playback starts. Only if
+     *    every addon comes up empty do we wait for all of them.
      */
     suspend fun streamsFor(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
-            // Every Stremio addon that declares streams is asked — like the real
-            // client. The origin provider is always included too, so CS3
-            // plugins / universal scrapers keep their own pipeline. No
-            // idPrefixes filtering: titles come from many catalogs with many
-            // id schemes, and the addons themselves only resolve ids they know,
-            // so the worst case of asking is a fast empty response.
-            val targets = all.filter { p ->
-                p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
+            val origin = manager.byId(item.providerId)
+            val targets = if (origin?.config?.type == ProviderType.STREMIO) {
+                // Like the real client: ask every Stremio addon plus the origin.
+                all.filter { p ->
+                    p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
+                }
+            } else {
+                // CS3 plugin / universal scraper: only the origin can resolve
+                // its own ids, so asking the Stremio addons just adds latency.
+                listOfNotNull(origin)
             }
-            coroutineScope {
-                targets.map { p ->
-                    async {
+            if (targets.isEmpty()) return@withContext emptyList()
+
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            try {
+                val jobs = targets.map { p ->
+                    scope.async {
                         runCatching {
                             withTimeoutOrNull(45_000) { p.getStreams(item, episode) }.orEmpty()
                         }.getOrDefault(emptyList())
                     }
-                }.awaitAll().flatten()
-                    // Same torrent/video surfaced by several addons = one entry.
-                    .distinctBy { it.infoHash ?: it.url }
+                }
+                var result: List<StreamSource> = emptyList()
+                val started = System.currentTimeMillis()
+                while (true) {
+                    for (j in jobs) {
+                        if (j.isCompleted) {
+                            val r = runCatching { j.getCompleted() }.getOrDefault(emptyList())
+                            if (r.isNotEmpty()) {
+                                result = r
+                                break
+                            }
+                        }
+                    }
+                    if (result.isNotEmpty() || jobs.all { it.isCompleted }) break
+                    if (System.currentTimeMillis() - started > 45_000) break
+                    kotlinx.coroutines.delay(80)
+                }
+                jobs.forEach { it.cancel() }
+                // Same torrent/video surfaced by several addons = one entry.
+                result.distinctBy { it.infoHash ?: it.url }
+            } finally {
+                scope.cancel()
             }
         }
 
