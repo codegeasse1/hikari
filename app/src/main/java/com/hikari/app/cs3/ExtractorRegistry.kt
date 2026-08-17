@@ -3,19 +3,19 @@
 package com.hikari.app.cs3
 
 import com.hikari.app.net.Http
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.extractors.ByseSX
 import com.lagradost.cloudstream3.extractors.LuluStream
 import com.lagradost.cloudstream3.extractors.StreamWishExtractor
 import com.lagradost.cloudstream3.extractors.VidHidePro
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.SubtitleFile
 import com.lagradost.cloudstream3.utils.extractorApis
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.newSubtitleFile
 
 /**
  * The real CloudStream-3 runtime ships ~200 battle-tested extractors inside
@@ -100,12 +100,12 @@ private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() 
         referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
-    ): Boolean? {
+    ) {
         val clean = url.replace("\\/", "/")
-        val host = runCatching { java.net.URI(clean).host }.getOrNull() ?: return false
+        val host = runCatching { java.net.URI(clean).host }.getOrNull() ?: return
         val epId = Regex("""/stream/s-\d+/(\d+)""").find(clean)?.groupValues?.get(1)
             ?: Regex("""[?&]id=(\d+)""").find(clean)?.groupValues?.get(1)
-            ?: return false
+            ?: return
         val headers = mapOf(
             "X-Requested-With" to "XMLHttpRequest",
             "Referer" to "https://$host/",
@@ -115,8 +115,8 @@ private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() 
         )
         val text = runCatching {
             app.get("https://$host/stream/getSources?id=$epId", headers = headers).text
-        }.getOrNull() ?: return false
-        if (text.isBlank() || text.contains("Forbidden")) return false
+        }.getOrNull() ?: return
+        if (text.isBlank() || text.contains("Forbidden")) return
         val ref = "https://$host/"
         var found = false
 
@@ -159,6 +159,7 @@ private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() 
             }
         }
 
+        // Not JSON / empty arrays — scan the raw response instead.
         if (!found) {
             for (m in Regex("""https?://[^\s"'<>\\]+\.(?:m3u8|mp4)(?:[^\s"'<>\\]*)""").findAll(text)) {
                 callback(
@@ -173,10 +174,8 @@ private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() 
                         this.headers = mapOf("Referer" to ref, "User-Agent" to Http.UA)
                     }
                 )
-                found = true
             }
         }
-        return found
     }
 }
 

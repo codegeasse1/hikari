@@ -17,8 +17,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.GitHub
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -75,7 +75,7 @@ fun SettingsScreen() {
         }
         item {
             ListItem(
-                leading = {
+                leadingContent = {
                     Icon(
                         Icons.Filled.CheckCircle,
                         contentDescription = null,
@@ -89,7 +89,7 @@ fun SettingsScreen() {
         item {
             Box {
                 ListItem(
-                    leading = {
+                    leadingContent = {
                         Icon(
                             if (currentTheme == HikariThemeMode.LIGHT) Icons.Filled.LightMode
                             else Icons.Filled.DarkMode,
@@ -136,7 +136,7 @@ fun SettingsScreen() {
         }
         item {
             ListItem(
-                leading = {
+                leadingContent = {
                     Icon(
                         Icons.Filled.SystemUpdate,
                         contentDescription = null,
@@ -173,9 +173,9 @@ fun SettingsScreen() {
         }
         item {
             ListItem(
-                leading = {
+                leadingContent = {
                     Icon(
-                        Icons.Filled.GitHub,
+                        Icons.Filled.OpenInNew,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
