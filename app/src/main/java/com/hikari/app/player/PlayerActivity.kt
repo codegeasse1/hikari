@@ -499,10 +499,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * If the current server still hasn't started delivering video 8s after
-     * prepare, skip to the next one — CloudStream plays in ~5s, a dead or
-     * starving HLS stream shouldn't make the user stare at a spinner. Only
-     * fires while nothing has been played yet.
+     * If the current server still hasn't started delivering video 20s after
+     * prepare, skip to the next one — CloudStream plays in ~5s, but some
+     * servers genuinely take 15-20s to spin up (cold CDN edge, slow origin),
+     * so give them that long before declaring them too slow. Only fires while
+     * nothing has been played yet.
      */
     private fun scheduleBufferingWatchdog() {
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
@@ -518,12 +519,12 @@ class PlayerActivity : ComponentActivity() {
                     Toast.makeText(this, "Server too slow — trying next", Toast.LENGTH_SHORT).show()
                     playSource(currentIndex + 1)
                 } else {
-                    showError("Server is not responding (still buffering after 8s).", false)
+                    showError("Server is not responding (still buffering after 20s).", false)
                 }
             }
         }
         watchdogTask = task
-        bufferingWatchdog.postDelayed(task, 8_000)
+        bufferingWatchdog.postDelayed(task, 20_000)
     }
 
     /**

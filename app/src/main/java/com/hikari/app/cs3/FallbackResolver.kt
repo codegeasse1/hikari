@@ -6,6 +6,8 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.min
 
@@ -73,12 +75,33 @@ object FallbackResolver {
 
         val raws = LinkedHashMap<String, RawStream>()
         val subs = mutableListOf<SubtitleSource>()
+        // The synchronized views keep the parallel embed resolves safe to
+        // update from multiple coroutines at once.
+        val rawsSync = java.util.Collections.synchronizedMap(raws)
+        val subsSync = java.util.Collections.synchronizedList(subs)
 
-        for (embed in collectEmbeds(html, pageUrl).take(12)) {
+        // Embeds resolve IN PARALLEL (CloudStream fires all its extractors at
+        // once too) — the old sequential loop could take 12 × 14s = 3 minutes
+        // of nothing before the player opened. Now the slowest single embed
+        // bounds the whole pass.
+        val embeds = collectEmbeds(html, pageUrl).take(12)
+        if (embeds.isNotEmpty()) {
             runCatching {
-                withTimeoutOrNull(14_000) { resolveEmbed(embed, pageUrl, raws, subs) }
+                withTimeoutOrNull(30_000) {
+                    coroutineScope {
+                        val jobs = embeds.map { embed ->
+                            async {
+                                runCatching {
+                                    withTimeoutOrNull(13_000) {
+                                        resolveEmbed(embed, pageUrl, rawsSync, subsSync)
+                                    }
+                                }
+                            }
+                        }
+                        jobs.forEach { it.await() }
+                    }
+                }
             }
-            if (raws.size >= 12) break
         }
 
         // Some pages embed the stream directly (no iframes) — scan the video

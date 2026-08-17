@@ -288,12 +288,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val result = try {
                 val pluginJob = scope.async {
                     try {
-                        val completed = withTimeoutOrNull(50_000) {
+                        val completed = withTimeoutOrNull(25_000) {
                             a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
                         }
                         if (completed == null) {
                             lastStreamsError =
-                                "Timed out after 50s — the provider hung while resolving sources.\n" +
+                                "Timed out after 25s — the provider hung while resolving sources.\n" +
                                     "Stuck on thread '${worker.name}':\n" +
                                     worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                         } else {
@@ -315,7 +315,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
                 val fallbackJob = scope.async {
                     try {
-                        withTimeoutOrNull(50_000) { FallbackResolver.resolve(data) } ?: emptyList()
+                        withTimeoutOrNull(25_000) { FallbackResolver.resolve(data) } ?: emptyList()
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()
@@ -334,7 +334,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + 55_000
+                val deadline = started + 28_000
                 var firstSourceAt = -1L
                 while (true) {
                     for (s in pluginSources()) merged.putIfAbsent(s.url, s)
@@ -350,7 +350,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // waiting for a hung plugin after a short grace.
                         // Plugin done but fallback still going: wait a little
                         // longer so the fallback's servers (Rumble…) join.
-                        val grace = if (fallbackDone) 4_000L else 8_000L
+                        val grace = if (fallbackDone) 3_000L else 5_000L
                         if ((pluginDone || fallbackDone) && now - firstSourceAt >= grace) break
                     }
                     if (now > deadline) break
