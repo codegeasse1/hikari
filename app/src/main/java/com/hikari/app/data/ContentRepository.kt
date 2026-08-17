@@ -1,7 +1,6 @@
 package com.hikari.app.data
 
 import com.hikari.app.providers.ProviderManager
-import com.hikari.app.providers.StremioAddon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -92,14 +91,14 @@ class ContentRepository(private val manager: ProviderManager) {
     suspend fun streamsFor(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
-            // Every Stremio addon that recognizes this id, plus the origin
-            // provider itself (CS3 plugins / universal scrapers keep their own
-            // single-provider pipeline, and an origin addon always serves its
-            // own titles).
+            // Every Stremio addon that declares streams is asked — like the real
+            // client. The origin provider is always included too, so CS3
+            // plugins / universal scrapers keep their own pipeline. No
+            // idPrefixes filtering: titles come from many catalogs with many
+            // id schemes, and the addons themselves only resolve ids they know,
+            // so the worst case of asking is a fast empty response.
             val targets = all.filter { p ->
-                if (p.config.id == item.providerId) true
-                else if (p.config.type != ProviderType.STREMIO) false
-                else !(p is StremioAddon && !p.acceptsId(item.id))
+                p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
             }
             coroutineScope {
                 targets.map { p ->
@@ -113,4 +112,48 @@ class ContentRepository(private val manager: ProviderManager) {
                     .distinctBy { it.infoHash ?: it.url }
             }
         }
+
+    /** Enriches an item with the origin addon's full meta (backdrop, overview,
+     *  genres, year). If that addon's meta is thin, the next addon that knows
+     *  the title fills in the gaps — so a banner/detail never stay blank just
+     *  because one catalog addon serves minimal metadata. */
+    suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
+        var result = manager.byId(item.providerId)
+            ?.let { withTimeoutOrNull(15_000) { runCatching { it.getMeta(item) }.getOrDefault(item) } }
+            ?: item
+        if (result.backdropUrl != null && result.overview != null) return@withContext result
+        val others = manager.providers.value.filter {
+            it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
+        }
+        for (alt in others) {
+            val r = withTimeoutOrNull(8_000) { runCatching { alt.getMeta(result) }.getOrDefault(result) }
+                ?: continue
+            if (result.backdropUrl == null && r.backdropUrl != null) {
+                result = result.copy(backdropUrl = r.backdropUrl)
+            }
+            if (result.overview == null && r.overview != null) result = result.copy(overview = r.overview)
+            if (result.genres.isEmpty() && r.genres.isNotEmpty()) result = result.copy(genres = r.genres)
+            if (result.year == null && r.year != null) result = result.copy(year = r.year)
+            if (result.backdropUrl != null && result.overview != null) break
+        }
+        result
+    }
+
+    /** Episodes from the origin addon, falling back to the first other addon
+     *  that can list them (some catalog addons serve videos for series via a
+     *  different addon, e.g. Cinemeta-backed ids). */
+    suspend fun episodesFor(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        if (item.type != MediaType.SERIES) return@withContext null
+        val others = manager.providers.value.filter {
+            it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
+        }
+        val ordered = listOfNotNull(manager.byId(item.providerId)) + others
+        for (p in ordered) {
+            val eps = withTimeoutOrNull(12_000) {
+                runCatching { p.getEpisodes(item) }.getOrNull()?.orEmpty()
+            }?.orEmpty()
+            if (eps.isNotEmpty()) return@withContext eps
+        }
+        null
+    }
 }

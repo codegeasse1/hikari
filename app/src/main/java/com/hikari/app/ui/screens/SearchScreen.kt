@@ -195,7 +195,9 @@ fun SearchScreen(nav: NavHostController) {
                         Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable {
-                                nav.navigate(Routes.detail(item.providerId, item.type, item.id, item.title))
+                                nav.navigate(
+                                    Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                )
                             }
                     ) {
                         AsyncImage(

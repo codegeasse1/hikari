@@ -107,7 +107,14 @@ fun HomeScreen(nav: NavHostController) {
     val loading by vm.loading.collectAsState()
     val selected by vm.selectedProvider.collectAsState()
     val providers by vm.providers.collectAsState()
-    val activeProviders = providers.filter { it.config.enabled }
+    // Stream-only Stremio addons (Torrentio, NovaStream…) have no catalog to
+    // browse, so like in Stremio they don't appear here at all — only addons
+    // that can fill the home screen do. CS3 plugins / universal scrapers are
+    // always shown (their catalogs are dynamic).
+    val activeProviders = providers.filter {
+        it.config.enabled && (it.config.type != com.hikari.app.data.ProviderType.STREMIO ||
+            com.hikari.app.providers.StremioAddon.streamOnlyAddons[it.config.id] != true)
+    }
     var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
 
     LazyColumn(
@@ -216,7 +223,9 @@ fun HomeScreen(nav: NavHostController) {
                     providerName = row.providerName,
                     items = row.items
                 ) { item ->
-                    nav.navigate(Routes.detail(item.providerId, item.type, item.id, item.title))
+                    nav.navigate(
+                        Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                    )
                 }
             }
         }

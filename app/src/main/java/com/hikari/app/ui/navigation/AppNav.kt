@@ -37,10 +37,21 @@ object Routes {
     const val SEARCH = "search"
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
-    const val DETAIL = "detail/{providerId}/{type}/{mediaId}?title={title}"
+    const val DETAIL = "detail/{providerId}/{type}/{mediaId}?title={title}&poster={poster}&rawType={rawType}"
 
-    fun detail(providerId: String, type: MediaType, mediaId: String, title: String): String =
-        "detail/$providerId/${type.name}/${Uri.encode(mediaId)}?title=${Uri.encode(title)}"
+    fun detail(
+        providerId: String,
+        type: MediaType,
+        mediaId: String,
+        title: String,
+        posterUrl: String? = null,
+        rawType: String = "",
+    ): String {
+        var s = "detail/$providerId/${type.name}/${Uri.encode(mediaId)}?title=${Uri.encode(title)}"
+        if (!posterUrl.isNullOrBlank()) s += "&poster=${Uri.encode(posterUrl)}"
+        if (rawType.isNotBlank()) s += "&rawType=${Uri.encode(rawType)}"
+        return s
+    }
 }
 
 private data class Tab(
@@ -102,6 +113,8 @@ fun AppRoot() {
                     navArgument("type") { type = NavType.StringType },
                     navArgument("mediaId") { type = NavType.StringType },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("poster") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("rawType") { type = NavType.StringType; defaultValue = "" },
                 )
             ) { entry ->
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
@@ -110,7 +123,9 @@ fun AppRoot() {
                 }.getOrDefault(MediaType.UNKNOWN)
                 val mediaId = Uri.decode(entry.arguments?.getString("mediaId").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
-                DetailScreen(nav, providerId, type, mediaId, title)
+                val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty()).ifBlank { null }
+                val rawType = Uri.decode(entry.arguments?.getString("rawType").orEmpty())
+                DetailScreen(nav, providerId, type, mediaId, title, poster, rawType)
             }
         }
     }

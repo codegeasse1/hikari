@@ -132,31 +132,33 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun load(providerId: String, type: MediaType, mediaId: String, title: String) {
+    fun load(providerId: String, type: MediaType, mediaId: String, title: String, posterUrl: String?, rawType: String) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _streamsReady.value = false
             _streamError.value = null
-            val provider = manager.byId(providerId)
-            if (provider == null) {
+            if (manager.byId(providerId) == null) {
                 _error.value = "Provider not found"
                 _loading.value = false
                 return@launch
             }
-            val base = MediaItem(providerId, mediaId, title, type)
-            var metaDone = false
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    _meta.value = provider.getMeta(base)
-                    _episodes.value = provider.getEpisodes(base)
-                }.onFailure {
-                    _error.value = it.message ?: "Failed to load"
-                }
-                metaDone = true
-            }
+            // The catalog row already carries the poster — render the page
+            // immediately instead of waiting on the origin's /meta (which may
+            // be slow or minimal). rawType keeps the addon's own type string
+            // for meta/episode/stream URLs.
+            val base = MediaItem(
+                providerId, mediaId, title, type,
+                posterUrl = posterUrl,
+                rawType = rawType,
+            )
+            _meta.value = base
             _loading.value = false
-            if (metaDone) prefetchFirstStreams(base)
+            withContext(Dispatchers.IO) {
+                runCatching { _meta.value = repo.metaFor(base) }
+                runCatching { _episodes.value = repo.episodesFor(base) }
+            }
+            prefetchFirstStreams(base)
         }
     }
 
@@ -208,6 +210,8 @@ fun DetailScreen(
     type: MediaType,
     mediaId: String,
     title: String,
+    posterUrl: String? = null,
+    rawType: String = "",
 ) {
     val vm: DetailViewModel = viewModel()
     val meta by vm.meta.collectAsState()
@@ -240,7 +244,7 @@ fun DetailScreen(
     }
 
     LaunchedEffect(providerId, mediaId) {
-        vm.load(providerId, type, mediaId, title)
+        vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
     val openStreams: (Episode?) -> Unit = { ep ->
