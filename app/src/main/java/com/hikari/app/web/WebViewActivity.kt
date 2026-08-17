@@ -98,6 +98,12 @@ class WebViewActivity : ComponentActivity() {
     private val scanHandler = Handler(Looper.getMainLooper())
     private var scanRunnable: Runnable? = null
 
+    // Temporary child WebView that relays window.open() popups into the main
+    // view. Android CRASHES with "Parent WebView cannot host its own popup
+    // window" if a popup's transport targets the parent WebView itself, so the
+    // popup URL is captured in a throwaway child and loaded in the main view.
+    private var popupChild: WebView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Never allow a window title bar — the app draws no header anywhere.
         window.requestFeature(Window.FEATURE_NO_TITLE)
@@ -288,6 +294,9 @@ class WebViewActivity : ComponentActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageUrl = url
                 progressBar.visibility = View.GONE
+                // The popup relay child (if any) served its purpose — free it.
+                popupChild?.let { runCatching { it.destroy() } }
+                popupChild = null
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
@@ -333,9 +342,41 @@ class WebViewActivity : ComponentActivity() {
                 resultMsg: Message?
             ): Boolean {
                 // Route popups (some players open in window.open) into this
-                // same web view so video keeps working.
+                // same web view so video keeps working. The transport CANNOT
+                // target the parent WebView itself — Android throws
+                // "Parent WebView cannot host its own popup window". Instead a
+                // throwaway child WebView captures the popup's URL and loads it
+                // in the main view.
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                transport.webView = webView
+                val child = WebView(this@WebViewActivity).apply {
+                    setBackgroundColor(0xFF000000.toInt())
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.userAgentString = Http.WEBVIEW_UA
+                    webViewClient = object : WebViewClient() {
+                        private var relayed = false
+
+                        private fun relay(url: String?) {
+                            if (relayed || url.isNullOrBlank()) return
+                            relayed = true
+                            runOnUiThread { webView.loadUrl(url) }
+                        }
+
+                        override fun shouldOverrideUrlLoading(
+                            v: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            relay(request?.url?.toString())
+                            return true
+                        }
+
+                        override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
+                            relay(url)
+                        }
+                    }
+                }
+                popupChild = child
+                transport.webView = child
                 resultMsg?.sendToTarget()
                 return true
             }
@@ -614,6 +655,8 @@ class WebViewActivity : ComponentActivity() {
 
     override fun onDestroy() {
         scanHandler.removeCallbacksAndMessages(null)
+        runCatching { popupChild?.destroy() }
+        popupChild = null
         runCatching { CookieManager.getInstance().flush() }
         runCatching { webView.destroy() }
         super.onDestroy()
