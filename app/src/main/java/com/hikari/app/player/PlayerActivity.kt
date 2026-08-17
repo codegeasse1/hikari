@@ -243,14 +243,20 @@ class PlayerActivity : ComponentActivity() {
             return
         }
 
-        client = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
+        runCatching {
+            client = OkHttpClient.Builder()
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
 
-        playSource(0)
+            playSource(0)
+        }.onFailure { t ->
+            // Never die on an unexpected setup error — show it instead.
+            android.util.Log.e("Player", "setup failed", t)
+            showError("${t.javaClass.simpleName}: ${t.message}", false)
+        }
     }
 
     /** The controller chips live inside the custom controller layout, which

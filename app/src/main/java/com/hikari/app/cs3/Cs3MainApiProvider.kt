@@ -42,6 +42,20 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /**
+         * CloudStream plugins set `posterHeaders` (e.g. LeakPorner demands
+         * `Referer: https://leakporner.org/` for its 58img.top thumbnails), but
+         * the app's image loader never saw them, so posters 403'd into blank
+         * placeholders. This map lets the global Coil loader apply the exact
+         * headers the provider declared for a poster URL.
+         */
+        val imageHeaders = ConcurrentHashMap<String, Map<String, String>>()
+
+        private fun recordPosterHeaders(url: String?, headers: Map<String, String>?) {
+            if (url.isNullOrBlank() || headers.isNullOrEmpty()) return
+            imageHeaders[url.trim()] = headers
+        }
     }
 
     private val api: MainAPI? by lazy {
@@ -160,7 +174,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 year = resp.year ?: item.year,
                 posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
-            )
+            ).also { recordRespHeaders(resp) }
             is AnimeLoadResponse -> item.copy(
                 type = mt,
                 title = resp.engName?.takeIf { it.isNotBlank() } ?: item.title,
@@ -169,7 +183,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 year = resp.year ?: item.year,
                 posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
-            )
+            ).also { recordRespHeaders(resp) }
             is TvSeriesLoadResponse -> item.copy(
                 type = mt,
                 overview = resp.plot ?: item.overview,
@@ -177,9 +191,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 year = resp.year ?: item.year,
                 posterUrl = resp.posterUrl ?: item.posterUrl,
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
-            )
+            ).also { recordRespHeaders(resp) }
             else -> item
         }
+    }
+
+    private fun recordRespHeaders(resp: LoadResponse) {
+        recordPosterHeaders(resp.posterUrl, resp.posterHeaders)
+        recordPosterHeaders(resp.backgroundPosterUrl, resp.posterHeaders)
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
@@ -191,11 +210,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 else eps
                     .sortedBy { it.episode ?: Int.MAX_VALUE }
                     .distinctBy { it.data ?: it.episode ?: 0 }
-                    .map { it.toHikari() }
+                    .map { it.toHikari(resp.posterHeaders) }
             }
             is TvSeriesLoadResponse -> {
                 if (resp.episodes.isEmpty()) null
-                else resp.episodes.map { it.toHikari() }
+                else resp.episodes
+                    .distinctBy { it.data ?: it.episode ?: 0 }
+                    .map { it.toHikari(resp.posterHeaders) }
             }
             else -> null
         }
@@ -240,7 +261,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             }
             lastStreamsTimeMs = System.currentTimeMillis() - started
             val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
-            links
+            val jarSources = links
                 .filter { it.url.isNotBlank() && it.url != a.mainUrl && it.type.name != "ERROR" }
                 .map { l ->
                     // CloudStream keeps the Referer OUT of ExtractorLink.headers —
@@ -267,6 +288,22 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         isMpd = l.isDash,
                     )
                 }
+
+            // The plugin runtime reported "done" but produced nothing usable.
+            // CloudStream plays the same video — so drive our own extraction
+            // engine (port of CloudStream's embed logic) as the safety net.
+            if (jarSources.isEmpty()) {
+                val fallback = try {
+                    withTimeoutOrNull(60_000) { FallbackResolver.resolve(data) }
+                } catch (t: Throwable) {
+                    null
+                } ?: emptyList()
+                if (fallback.isNotEmpty()) {
+                    lastStreamsError = null
+                    return@withContext fallback
+                }
+            }
+            jarSources
         }
 
     private fun fullCause(e: Throwable): String {
@@ -320,16 +357,16 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             type = mt,
             posterUrl = posterUrl,
             year = year,
-        )
+        ).also { recordPosterHeaders(posterUrl, posterHeaders) }
     }
 
-    private fun com.lagradost.cloudstream3.Episode.toHikari(): Episode {
+    private fun com.lagradost.cloudstream3.Episode.toHikari(respHeaders: Map<String, String>?): Episode {
         val num = episode ?: data?.substringAfterLast("|")?.toIntOrNull() ?: 1
         return Episode(
             number = num,
             id = data ?: num.toString(),
             name = name ?: "Episode $num",
             image = posterUrl,
-        )
+        ).also { recordPosterHeaders(posterUrl, respHeaders) }
     }
 }

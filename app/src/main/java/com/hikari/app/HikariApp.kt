@@ -26,6 +26,11 @@ class HikariApp : Application() {
     companion object {
         lateinit var instance: HikariApp
             private set
+
+        /** Stack trace of the last uncaught crash (shown as a Home banner). */
+        @Volatile
+        var lastCrash: String? = null
+            private set
     }
 
     lateinit var store: AppStore
@@ -36,17 +41,48 @@ class HikariApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        installCrashHandler()
         initCloudStream(this)
         store = AppStore(this)
         providers = ProviderManager(store)
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
+            // Registering extractor aliases initializes the jar's full extractor
+            // registry — do it off the main thread.
+            com.hikari.app.cs3.HikariExtractorRegistry.register()
             providers.refresh()
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
         }
+    }
+
+    /**
+     * Never let an uncaught exception (main or background thread) die silently:
+     * write the stack to a file, and surface it on the next launch as a banner
+     * (see HomeScreen) so crashes get reported instead of guessed at.
+     */
+    private fun installCrashHandler() {
+        runCatching {
+            val file = File(cacheDir, "crash.log")
+            if (file.exists()) lastCrash = file.readText().take(1600)
+        }
+        Thread.setDefaultUncaughtExceptionHandler { thread, t ->
+            runCatching {
+                val trace = "${t.javaClass.simpleName}: ${t.message}\n" +
+                    t.stackTrace.take(12).joinToString("\n") { "    at $it" }
+                File(cacheDir, "crash.log").writeText(trace)
+                lastCrash = trace
+            }
+            android.util.Log.e("HikariCrash", "Uncaught on ${thread.name}", t)
+        }
+    }
+
+    /** Clear the persisted crash banner after the user dismisses it. */
+    fun clearCrash() {
+        lastCrash = null
+        runCatching { File(cacheDir, "crash.log").delete() }
     }
 
     /**
@@ -65,9 +101,18 @@ class HikariApp : Application() {
                     val req = chain.request()
                     val builder = req.newBuilder()
                         .header("User-Agent", Http.UA)
-                    val host = req.url.host
-                    if (host.isNotBlank()) {
-                        builder.header("Referer", "${req.url.scheme}://$host/")
+                    // Plugins declare per-poster headers (e.g. LeakPorner's
+                    // 58img.top needs `Referer: https://leakporner.org/`). Use
+                    // the exact headers when known, else fall back to a
+                    // same-origin Referer (hotlink protection).
+                    val exact = com.hikari.app.cs3.Cs3MainApiProvider.imageHeaders[req.url.toString()]
+                    if (exact != null) {
+                        exact.forEach { (k, v) -> builder.header(k, v) }
+                    } else {
+                        val host = req.url.host
+                        if (host.isNotBlank()) {
+                            builder.header("Referer", "${req.url.scheme}://$host/")
+                        }
                     }
                     chain.proceed(builder.build())
                 }

@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import android.app.Application
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.FilterChip
@@ -17,11 +19,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -101,6 +108,7 @@ fun HomeScreen(nav: NavHostController) {
     val selected by vm.selectedProvider.collectAsState()
     val providers by vm.providers.collectAsState()
     val activeProviders = providers.filter { it.config.enabled }
+    var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -142,6 +150,32 @@ fun HomeScreen(nav: NavHostController) {
                         contentDescription = "Search",
                         tint = MaterialTheme.colorScheme.primary
                     )
+                }
+            }
+        }
+        if (showCrash && HikariApp.lastCrash != null) {
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "The app crashed on a previous launch:\n${HikariApp.lastCrash}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = {
+                        showCrash = false
+                        HikariApp.instance.clearCrash()
+                    }) {
+                        Text("Dismiss")
+                    }
                 }
             }
         }

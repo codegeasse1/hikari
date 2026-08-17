@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -172,39 +172,43 @@ fun DetailScreen(
             loadingStreams = false
             val playable = streams.filter { !it.isTorrent && it.url.isNotBlank() }
             if (playable.isNotEmpty()) {
-                showSheet = false
-                context.startActivity(
-                    Intent(context, PlayerActivity::class.java).apply {
-                        putExtra("title", m?.title ?: title)
-                        putExtra(
-                            "sources",
-                            JSONArray().apply {
-                                playable.forEach { s ->
-                                    put(
-                                        JSONObject()
-                                            .put("name", s.name)
-                                            .put("url", s.url)
-                                            .put("headers", JSONObject(s.headers))
-                                            .put("isM3u8", s.isM3u8)
-                                            .put("isMpd", s.isMpd)
-                                            .put(
-                                                "subtitles",
-                                                JSONArray().apply {
-                                                    s.subtitles.forEach {
-                                                        put(
-                                                            JSONObject()
-                                                                .put("lang", it.lang)
-                                                                .put("url", it.url)
-                                                        )
-                                                    }
-                                                }
-                                            )
+                // Build the intent payload defensively — a single bad header
+                // value must never crash the whole app.
+                val payload = runCatching {
+                    JSONArray().apply {
+                        playable.forEach { s ->
+                            put(
+                                JSONObject()
+                                    .put("name", s.name)
+                                    .put("url", s.url)
+                                    .put("headers", JSONObject(s.headers))
+                                    .put("isM3u8", s.isM3u8)
+                                    .put("isMpd", s.isMpd)
+                                    .put(
+                                        "subtitles",
+                                        JSONArray().apply {
+                                            s.subtitles.forEach {
+                                                put(
+                                                    JSONObject()
+                                                        .put("lang", it.lang)
+                                                        .put("url", it.url)
+                                                )
+                                            }
+                                        }
                                     )
-                                }
-                            }.toString()
-                        )
-                    }
-                )
+                            )
+                        }
+                    }.toString()
+                }.getOrNull()
+                if (payload != null && playable.isNotEmpty()) {
+                    showSheet = false
+                    context.startActivity(
+                        Intent(context, PlayerActivity::class.java).apply {
+                            putExtra("title", m?.title ?: title)
+                            putExtra("sources", payload)
+                        }
+                    )
+                }
             }
         }
     }
@@ -350,11 +354,13 @@ fun DetailScreen(
                         else sortedEps.filter {
                             it.number >= rangeStart!! && it.number <= rangeStart!! + 29
                         }
-                        // key must be unique across the WHOLE list — MoviesMod
-                        // emits the same episode numbers once per quality group,
-                        // and a duplicate Compose key crashes the screen.
-                        items(shownEps, key = { it.id + "#" + it.number }) { ep ->
-                            EpisodeRow(ep) { openStreams(ep) }
+                        // key MUST be unique — plugins (MoviesMod, …) emit
+                        // duplicate ids/numbers per quality group, and a
+                        // duplicate Compose key crashes the whole screen.
+                        shownEps.forEachIndexed { index, ep ->
+                            item(key = "ep-$index") {
+                                EpisodeRow(ep) { openStreams(ep) }
+                            }
                         }
                     }
                 }
@@ -418,7 +424,7 @@ fun DetailScreen(
                     modifier = Modifier.heightIn(max = 420.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
-                    items(streams, key = { it.url + it.name }) { s ->
+                    itemsIndexed(streams) { index, s ->
                         val enabled = !s.isTorrent && s.url.isNotBlank()
                         ListItem(
                             headlineContent = { Text(s.name) },
