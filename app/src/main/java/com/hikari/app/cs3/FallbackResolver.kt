@@ -169,13 +169,9 @@ object FallbackResolver {
 
     private fun looksLikeMp4(b: ByteArray): Boolean {
         if (b.size < 12) return false
-        val b4 = b[4].toInt() and 0xff
-        val b5 = b[5].toInt() and 0xff
-        val b6 = b[6].toInt() and 0xff
-        val b7 = b[7].toInt() and 0xff
-        return (b4 == 'f' && b5 == 't' && b6 == 'y' && b7 == 'p') ||
-            (b4 == 'm' && b5 == 'o' && b6 == 'o' && b7 == 'v') ||
-            (b4 == 'm' && b5 == 'd' && b6 == 'a' && b7 == 't')
+        val head = String(b, 4, min(8, b.size - 4), Charsets.ISO_8859_1)
+        return head.startsWith("ftyp") || head.startsWith("moov") || head.startsWith("mdat") ||
+            head.startsWith("styp")
     }
 
     private fun addUrl(raw: String, referer: String, out: MutableSet<Pair<String, String>>) {

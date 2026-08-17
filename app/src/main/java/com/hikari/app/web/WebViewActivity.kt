@@ -299,8 +299,8 @@ class WebViewActivity : ComponentActivity() {
         r.use { resp ->
             if (!resp.isSuccessful) return false
             val ct = resp.header("Content-Type")?.lowercase().orEmpty()
-            val body = resp.body?.bytes()?.take(2048) ?: return false
-            val head = String(body, Charsets.ISO_8859_1)
+            val body = resp.body?.bytes() ?: return false
+            val head = String(body, 0, minOf(body.size, 2048), Charsets.ISO_8859_1)
             return when {
                 head.startsWith("#EXTM3U") -> true // HLS manifest
                 ct.contains("application/dash+xml") || head.contains("<mpd") -> true // DASH
