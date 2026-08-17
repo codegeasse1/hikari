@@ -2,7 +2,9 @@ package com.hikari.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -18,12 +20,27 @@ import com.hikari.app.ui.theme.HikariThemeMode
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Edge-to-edge: the app draws behind the status + navigation bars so
+        // the dark background covers the whole screen (no color band at the
+        // top), like a real fullscreen streaming app. Light status icons for
+        // the dark themes.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         installSplashScreen()
         super.onCreate(savedInstanceState)
         val store = (application as HikariApp).store
         setContent {
             val themeKey by store.themeFlow().collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
+
+            LaunchedEffect(themeMode) {
+                // Dark status-bar icons on the light theme so they stay visible.
+                androidx.core.view.WindowCompat.getInsetsController(
+                    window, window.decorView
+                ).isAppearanceLightStatusBars = themeMode == HikariThemeMode.LIGHT
+            }
 
             var showUpdateDialog by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {

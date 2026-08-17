@@ -126,7 +126,10 @@ class PlayerActivity : ComponentActivity() {
                 noSubsRetry = false
                 playSource(currentIndex + 1)
             } else {
-                finish()
+                // Last server failed — retry the whole list (transient CDN
+                // hiccups / DNS glitches often clear on a second pass).
+                noSubsRetry = false
+                playSource(0)
             }
         }
 
@@ -616,8 +619,20 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun showError(message: String, hasNext: Boolean) {
-        errorText?.text = message
-        nextBtn?.text = if (hasNext) "Try next server" else "Close"
+        var text = message
+        // px.* / tracker domains that resolve to 0.0.0.0 are the signature of
+        // a system-level ad-blocker or DNS filter — tell the user, since it
+        // isn't something Hikari can fix from inside the app.
+        if (message.contains("0.0.0.0", true) ||
+            message.contains("Failed to connect", true) ||
+            message.contains("network connection failed", true)
+        ) {
+            text += "\n\nThis server's CDN is blocked or unreachable from your network " +
+                "(a system-level ad-blocker or DNS filter may be resolving it to 0.0.0.0). " +
+                "Pick another server, or retry."
+        }
+        errorText?.text = text
+        nextBtn?.text = if (hasNext) "Try next server" else "Retry all"
         errorPanel?.visibility = View.VISIBLE
     }
 

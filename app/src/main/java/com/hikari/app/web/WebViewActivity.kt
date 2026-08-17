@@ -30,8 +30,13 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
+import com.hikari.app.HikariApp
+import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Http
 import com.hikari.app.player.PlayerActivity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -65,8 +70,29 @@ class WebViewActivity : ComponentActivity() {
     private lateinit var videoChip: TextView
     private lateinit var titleText: TextView
     private lateinit var rootView: LinearLayout
+    private var toolbar: LinearLayout? = null
     private val detectedVideos = LinkedHashSet<String>()
     private var pageUrl: String? = null
+
+    // Ad blocking (WebView requests only) — resolved from the user's lists on
+    // launch, and never applied to the ExoPlayer's own network I/O.
+    @Volatile
+    private var blockedDomains: Set<String> = emptySet()
+    @Volatile
+    private var whitelistDomains: Set<String> = emptySet()
+
+    // The toolbar auto-hides so it never covers the site's own header/search;
+    // the floating ⋯ pill in the corner brings it back.
+    private val toolbarHandler = Handler(Looper.getMainLooper())
+    private val hideToolbarTask = Runnable {
+        val t = toolbar ?: return@Runnable
+        if (t.visibility == View.VISIBLE) {
+            t.animate().alpha(0f).setDuration(400).withEndAction {
+                t.visibility = View.GONE
+                t.alpha = 1f
+            }.start()
+        }
+    }
 
     // Fullscreen HTML5 video support
     private var customView: View? = null
@@ -93,8 +119,9 @@ class WebViewActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(0xFF1A1A1A.toInt())
-            setPadding(dp(4), dp(2), dp(4), dp(2))
+            setPadding(dp(4), dp(2) + statusBarHeight(), dp(4), dp(2))
         }
+        this.toolbar = toolbar
 
         fun navBtn(label: String): TextView = TextView(this).apply {
             text = label
@@ -146,8 +173,30 @@ class WebViewActivity : ComponentActivity() {
 
         webView = WebView(this)
 
+        // Small floating ⋯ pill in the top-right corner — the only always-visible
+        // control. Tapping it shows/hides the nav toolbar without covering the
+        // site's own header or search.
+        val togglePill = TextView(this).apply {
+            text = "\u22EF"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setBackgroundColor(0x661A1A1A.toInt())
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            isClickable = true
+            setOnClickListener { toggleToolbar() }
+        }
+
         val content = FrameLayout(this).apply {
             addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(
+                togglePill,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.END
+                ).apply { topMargin = dp(2) + statusBarHeight() }
+            )
             addView(
                 videoChip,
                 FrameLayout.LayoutParams(
@@ -166,6 +215,30 @@ class WebViewActivity : ComponentActivity() {
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         setContentView(rootView)
+
+        // Load the user's ad-blocking config (hosts lists are cached on disk;
+        // lists the user never downloaded get fetched lazily here). Blocking
+        // applies to WebView requests only — the ExoPlayer is untouched.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val app = applicationContext as HikariApp
+            val enabled = app.store.adEnabled()
+            if (enabled) {
+                val lists = app.store.adLists()
+                for (l in lists) {
+                    // Lazy first download of any list the user added but never
+                    // updated from Settings.
+                    if (AdBlocker.loadCached(l.url, app).isEmpty()) {
+                        runCatching { AdBlocker.download(l.url, app) }
+                    }
+                }
+                val (blocked, white) = AdBlocker.resolve(app, lists, app.store.adBlock(), app.store.adWhite())
+                blockedDomains = blocked
+                whitelistDomains = white
+            } else {
+                blockedDomains = emptySet()
+                whitelistDomains = emptySet()
+            }
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -220,8 +293,15 @@ class WebViewActivity : ComponentActivity() {
             ): WebResourceResponse? {
                 val u = request.url.toString()
                 val host = request.url.host ?: ""
-                if (AD_HOSTS.any { host.contains(it, ignoreCase = true) }) {
-                    return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                if (host.isNotBlank()) {
+                    // Whitelist wins first — a site the user unblocked keeps
+                    // all its subdomains usable.
+                    if (AdBlocker.matches(host, whitelistDomains)) {
+                        return null
+                    }
+                    if (AdBlocker.matches(host, blockedDomains)) {
+                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                    }
                 }
                 // Only count it as a video if it actually IS one: probe the
                 // content-type in the background so ad previews, gifs and
@@ -236,6 +316,9 @@ class WebViewActivity : ComponentActivity() {
                 pageUrl = url
                 detectedVideos.clear()
                 scanHandler.removeCallbacksAndMessages(null)
+                // Bring the nav toolbar back when a new page starts loading,
+                // then let it fade so it never blocks the site's own header.
+                showToolbar()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -369,6 +452,33 @@ class WebViewActivity : ComponentActivity() {
         customViewCallback = null
     }
 
+    private fun showToolbar() {
+        val t = toolbar ?: return
+        toolbarHandler.removeCallbacks(hideToolbarTask)
+        t.visibility = View.VISIBLE
+        t.alpha = 1f
+        toolbarHandler.postDelayed(hideToolbarTask, 4000)
+    }
+
+    private fun toggleToolbar() {
+        val t = toolbar ?: return
+        if (t.visibility == View.VISIBLE) {
+            toolbarHandler.removeCallbacks(hideToolbarTask)
+            t.animate().alpha(0f).setDuration(300).withEndAction {
+                t.visibility = View.GONE
+                t.alpha = 1f
+            }.start()
+        } else {
+            showToolbar()
+        }
+    }
+
+    private fun statusBarHeight(): Int =
+        runCatching {
+            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) resources.getDimensionPixelSize(id) else 0
+        }.getOrDefault(0)
+
     private fun hideSystemBars() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
@@ -499,6 +609,7 @@ class WebViewActivity : ComponentActivity() {
 
     override fun onDestroy() {
         scanHandler.removeCallbacksAndMessages(null)
+        toolbarHandler.removeCallbacksAndMessages(null)
         runCatching { CookieManager.getInstance().flush() }
         runCatching { webView.destroy() }
         super.onDestroy()
@@ -506,23 +617,6 @@ class WebViewActivity : ComponentActivity() {
 
     companion object {
         private const val FILE_CHOOSER_REQUEST = 4001
-
-        /** Request-level ad/tracker hosts — requests to these are answered with an empty body. */
-        private val AD_HOSTS = listOf(
-            "doubleclick.net", "googleadservices.com", "googlesyndication.com",
-            "googletagmanager.com", "googletagservices.com", "google-analytics.com",
-            "googletagmanager.com", "adservice.google", "2mdn.net", "adf.ly", "adfly",
-            "taboola.com", "outbrain.com", "adnxs.com", "criteo.com", "criteo.net",
-            "rubiconproject.com", "moatads.com", "quantserve.com", "scorecardresearch.com",
-            "amazon-adsystem.com", "adform.net", "smartadserver.com", "openx.net",
-            "pubmatic.com", "sovrn.com", "casalemedia.com", "lijit.com", "adsafeprotected.com",
-            "popads.net", "popunder", "adsterra.com", "propellerads.com", "adroll.com",
-            "media.net", "yieldmo.com", "adcolony.com", "inmobi.com", "admarvel.com",
-            "flurry.com", "startappservice.com", "smartyads.com", "admob.com",
-            "applovin.com", "unityads.unity3d.com", "vungle.com", "chartboost.com",
-            "mopub.com", "supersonicads.com", "revcontent.com", "adpushup.com",
-            "snigelweb.com", "adthrive.com", "ezoic.net", "mediavine.com", "akamaized.net/ads"
-        )
 
         /** HLS/DASH/MP4 URLs ending the request path (optional query). */
         private val VIDEO_URL_RE =

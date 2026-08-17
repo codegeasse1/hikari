@@ -1,9 +1,11 @@
 package com.hikari.app.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.hikari.app.net.AdBlocker
 import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -23,6 +25,10 @@ class AppStore(private val ctx: Context) {
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
         val SITES = stringPreferencesKey("sites")
         val THEME = stringPreferencesKey("theme")
+        val AD_ENABLED = booleanPreferencesKey("adEnabled")
+        val AD_LISTS = stringPreferencesKey("adLists")
+        val AD_BLOCK = stringPreferencesKey("adBlock")
+        val AD_WHITE = stringPreferencesKey("adWhite")
     }
 
     fun themeFlow(): Flow<String> =
@@ -32,6 +38,83 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTheme(key: String) {
         store.edit { it[K.THEME] = key }
+    }
+
+    // ---- Ad blocking (WebView only) ----
+
+    fun adEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.AD_ENABLED] ?: true }
+
+    suspend fun adEnabled(): Boolean = adEnabledFlow().first()
+
+    suspend fun setAdEnabled(enabled: Boolean) {
+        store.edit { it[K.AD_ENABLED] = enabled }
+    }
+
+    fun adListsFlow(): Flow<List<AdBlocker.HostList>> =
+        store.data.map { parseHostLists(it[K.AD_LISTS]) }
+
+    suspend fun adLists(): List<AdBlocker.HostList> = adListsFlow().first()
+
+    suspend fun setAdLists(list: List<AdBlocker.HostList>) {
+        store.edit { it[K.AD_LISTS] = encodeHostLists(list) }
+    }
+
+    fun adBlockFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.AD_BLOCK]) }
+
+    suspend fun adBlock(): List<String> = adBlockFlow().first()
+
+    suspend fun setAdBlock(list: List<String>) {
+        store.edit { it[K.AD_BLOCK] = encodeStringList(list) }
+    }
+
+    fun adWhiteFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.AD_WHITE]) }
+
+    suspend fun adWhite(): List<String> = adWhiteFlow().first()
+
+    suspend fun setAdWhite(list: List<String>) {
+        store.edit { it[K.AD_WHITE] = encodeStringList(list) }
+    }
+
+    private fun encodeHostLists(list: List<AdBlocker.HostList>): String {
+        val arr = JSONArray()
+        for (l in list) {
+            arr.put(JSONObject().put("name", l.name).put("url", l.url))
+        }
+        return arr.toString()
+    }
+
+    private fun parseHostLists(s: String?): List<AdBlocker.HostList> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val url = o.optString("url")
+                if (url.isBlank()) null
+                else AdBlocker.HostList(o.optString("name").ifBlank { url }, url)
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodeStringList(list: List<String>): String {
+        val arr = JSONArray()
+        for (s in list) arr.put(s)
+        return arr.toString()
+    }
+
+    private fun parseStringList(s: String?): List<String> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =

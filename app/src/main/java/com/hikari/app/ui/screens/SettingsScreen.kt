@@ -6,42 +6,56 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
+import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.theme.HikariThemeMode
@@ -206,6 +220,16 @@ fun SettingsScreen() {
                     .padding(top = 16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
+                AdBlockingCard(app)
+            }
+        }
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
                         "Roadmap",
@@ -267,6 +291,333 @@ fun SettingsScreen() {
             context = context,
             onDismiss = { showUpdateDialog = false },
             initialStatus = updateStatus,
+        )
+    }
+}
+
+@Composable
+private fun AdBlockingCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var enabled by remember { mutableStateOf(true) }
+    var lists by remember { mutableStateOf(listOf<AdBlocker.HostList>()) }
+    var blockList by remember { mutableStateOf(listOf<String>()) }
+    var whiteList by remember { mutableStateOf(listOf<String>()) }
+    var updating by remember { mutableStateOf(false) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var showAddListDialog by remember { mutableStateOf(false) }
+    var newBlockDomain by remember { mutableStateOf("") }
+    var newWhiteDomain by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        enabled = app.store.adEnabled()
+        lists = app.store.adLists()
+        blockList = app.store.adBlock()
+        whiteList = app.store.adWhite()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Ad Blocking",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Block ads & trackers in websites opened in the browser tab",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    scope.launch { app.store.setAdEnabled(it) }
+                }
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Applies only to WebView sites — the video player is never affected.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (enabled) {
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                "Blocklists (ad hosts)",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(6.dp))
+            Row {
+                AdBlocker.PRESETS.forEach { preset ->
+                    val isAdded = lists.any { it.url == preset.url }
+                    OutlinedButton(
+                        onClick = {
+                            val next = if (isAdded) {
+                                lists.filterNot { it.url == preset.url }
+                            } else {
+                                lists.filterNot { it.url == preset.url } + preset
+                            }
+                            lists = next
+                            scope.launch {
+                                app.store.setAdLists(next)
+                                AdBlocker.download(preset.url, context)
+                            }
+                        },
+                        modifier = Modifier.padding(end = 6.dp)
+                    ) {
+                        Text(if (isAdded) "✓ ${preset.name}" else "+ ${preset.name}")
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = { showAddListDialog = true }) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("Add custom list URL")
+            }
+            lists.forEach { list ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(list.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            list.url,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = {
+                        lists = lists.filterNot { it.url == list.url }
+                        scope.launch { app.store.setAdLists(lists) }
+                    }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Remove ${list.name}",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = {
+                        updating = true
+                        updateStatus = null
+                        scope.launch {
+                            val total = AdBlocker.refreshAll(lists, context)
+                            updating = false
+                            updateStatus = "$total blocked domains ready"
+                        }
+                    },
+                    enabled = !updating && lists.isNotEmpty()
+                ) {
+                    if (updating) {
+                        CircularProgressIndicator(
+                            Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Updating…")
+                    } else {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Update lists")
+                    }
+                }
+            }
+            if (updateStatus != null) {
+                Text(
+                    updateStatus!!,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                "Manual blocklist",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Add a domain to always block in the browser tab",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = newBlockDomain,
+                    onValueChange = { newBlockDomain = it },
+                    placeholder = { Text("ads.example.com") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    val d = AdBlocker.normalizeDomain(newBlockDomain)
+                    if (d.isNotBlank()) {
+                        val next = (blockList + d).distinct()
+                        blockList = next
+                        newBlockDomain = ""
+                        scope.launch { app.store.setAdBlock(next) }
+                    }
+                }) { Text("Add") }
+            }
+            blockList.forEach { domain ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        domain,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = {
+                        val next = blockList.filterNot { it == domain }
+                        blockList = next
+                        scope.launch { app.store.setAdBlock(next) }
+                    }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Unblock $domain",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                "Whitelist",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "If a site or video is wrongly blocked, whitelist its domain",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = newWhiteDomain,
+                    onValueChange = { newWhiteDomain = it },
+                    placeholder = { Text("video-site.example.com") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    val d = AdBlocker.normalizeDomain(newWhiteDomain)
+                    if (d.isNotBlank()) {
+                        val next = (whiteList + d).distinct()
+                        whiteList = next
+                        newWhiteDomain = ""
+                        scope.launch { app.store.setAdWhite(next) }
+                    }
+                }) { Text("Add") }
+            }
+            whiteList.forEach { domain ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        domain,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = {
+                        val next = whiteList.filterNot { it == domain }
+                        whiteList = next
+                        scope.launch { app.store.setAdWhite(next) }
+                    }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Remove $domain from whitelist",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddListDialog) {
+        var name by remember { mutableStateOf("") }
+        var url by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddListDialog = false },
+            title = { Text("Add blocklist") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Name") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        label = { Text("Hosts file URL") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val u = url.trim()
+                    if (name.isNotBlank() && u.startsWith("http")) {
+                        val list = AdBlocker.HostList(name.trim(), u)
+                        val next = lists.filterNot { it.url == u } + list
+                        lists = next
+                        showAddListDialog = false
+                        scope.launch {
+                            app.store.setAdLists(next)
+                            AdBlocker.download(u, context)
+                        }
+                    } else {
+                        showAddListDialog = false
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddListDialog = false }) { Text("Cancel") }
+            }
         )
     }
 }
