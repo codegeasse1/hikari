@@ -206,7 +206,11 @@ fun HomeScreen(nav: NavHostController) {
             items(4) { ShimmerRow() }
         }
         rows.forEach { row ->
-            item(key = "${row.providerName}|${row.title}") {
+            // row.key is unique per catalog (provider|type|catalogId) — an addon
+            // can expose several same-named catalogs, and a duplicate Compose
+            // key crashes the whole Home screen (crash we hit with
+            // "Streaming Catalogs|Netflix").
+            item(key = row.key.ifBlank { "${row.providerName}|${row.title}" }) {
                 MediaRow(
                     title = row.title,
                     providerName = row.providerName,

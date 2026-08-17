@@ -17,4 +17,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStart() {
+        super.onStart()
+        // The CloudStream runtime's Torrent engine needs an activity reference
+        // for its cache dir (it throws "No activity" otherwise).
+        com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
+    }
+
+    override fun onStop() {
+        if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
+            com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
+        }
+        super.onStop()
+    }
 }

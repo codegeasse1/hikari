@@ -77,6 +77,15 @@ data class StreamSource(
     val infoHash: String? = null,
     val isM3u8: Boolean = false,
     val isMpd: Boolean = false,
+    /** Torrent file index (from Stremio stream.fileIdx) — which file inside
+     *  the torrent to play. */
+    val fileIdx: Int? = null,
+    /** Extra peer sources: tracker URLs / DHT nodes (from Stremio stream.sources). */
+    val trackers: List<String> = emptyList(),
+    /** YouTube video id (from Stremio stream.ytId) — played in the web view. */
+    val ytId: String? = null,
+    /** True when the URL should be opened in a browser (externalUrl), not the player. */
+    val externalUrl: Boolean = false,
 )
 
 data class CatalogRef(
@@ -90,4 +99,9 @@ data class CatalogRow(
     val providerName: String,
     val title: String,
     val items: List<MediaItem>,
+    /** Stable unique key for LazyColumn rows — must never collide, even when an
+     *  addon exposes several catalogs with the same display name (e.g.
+     *  "Streaming Catalogs" has both a movies and a series catalog named
+     *  "Netflix"). */
+    val key: String = "",
 )

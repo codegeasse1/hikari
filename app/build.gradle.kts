@@ -78,6 +78,10 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(files(cloudstreamCleanJar))
+    // TorrServer — the Go torrent engine CloudStream's own Torrent object uses.
+    // Lets Stremio torrent addons (Torrentio, Comet, MediaFusion…) actually play:
+    // magnet/infoHash streams become HLS served from a local TorrServer process.
+    implementation("com.github.recloudstream:torrentserver:7861970")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

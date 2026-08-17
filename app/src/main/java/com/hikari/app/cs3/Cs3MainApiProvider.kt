@@ -72,6 +72,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
             }
         }
+
+        /** Extracts the btih info hash from a magnet/URL (hex or base32). */
+        fun infoHashOf(url: String): String? {
+            Regex("""[?&]xt=urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
+            Regex("""urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
+            return null
+        }
+
+        /** Torrent file index from a magnet `index=` param, if any. */
+        fun magnetIndex(url: String): Int? =
+            Regex("""[?&]index=(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+
+        /** Tracker URLs embedded in a magnet link. */
+        fun magnetTrackers(url: String): List<String> =
+            Regex("""[?&]tr=([^&]+)""").findAll(url)
+                .mapNotNull { m ->
+                    runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
+                }
+                .toList()
     }
 
     private val api: MainAPI? by lazy {
@@ -310,17 +329,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         headers.putIfAbsent("Referer", ref)
                     }
                     val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
+                    // Magnet / .torrent links go through the same TorrServer
+                    // engine as Stremio infoHash streams.
+                    val isTorrent = l.type.name == "MAGNET" || l.type.name == "TORRENT" ||
+                        l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true)
                     StreamSource(
                         name = l.name.ifBlank { "Stream" },
                         // Google Drive share/download links answer with an HTML
                         // virus-scan page, not video bytes — normalize them to
                         // the direct drive.usercontent download form so the
                         // player gets raw HLS/MP4 (MoviesMod & friends).
-                        url = Http.normalizeDriveUrl(l.url),
+                        url = if (isTorrent) l.url else Http.normalizeDriveUrl(l.url),
                         headers = headers,
                         subtitles = subSources,
                         isM3u8 = l.isM3u8,
                         isMpd = l.isDash,
+                        isTorrent = isTorrent,
+                        infoHash = if (isTorrent) infoHashOf(l.url) else null,
+                        fileIdx = magnetIndex(l.url),
+                        trackers = magnetTrackers(l.url),
                     )
                 }
 

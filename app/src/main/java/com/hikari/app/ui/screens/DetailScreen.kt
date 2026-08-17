@@ -67,6 +67,7 @@ import com.hikari.app.data.StreamSource
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -217,37 +218,15 @@ fun DetailScreen(
         scope.launch {
             streams = vm.getStreams(ep)
             loadingStreams = false
-            val playable = streams.filter { !it.isTorrent && it.url.isNotBlank() }
+            // Player-able sources: direct URLs AND torrents (the player boots
+            // the bundled TorrServer engine). YouTube/external sources open in
+            // the web view instead.
+            val playable = streams.filter { s ->
+                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
+            }
             if (playable.isNotEmpty()) {
-                // Build the intent payload defensively — a single bad header
-                // value must never crash the whole app.
-                val payload = runCatching {
-                    JSONArray().apply {
-                        playable.forEach { s ->
-                            put(
-                                JSONObject()
-                                    .put("name", s.name)
-                                    .put("url", s.url)
-                                    .put("headers", JSONObject(s.headers))
-                                    .put("isM3u8", s.isM3u8)
-                                    .put("isMpd", s.isMpd)
-                                    .put(
-                                        "subtitles",
-                                        JSONArray().apply {
-                                            s.subtitles.forEach {
-                                                put(
-                                                    JSONObject()
-                                                        .put("lang", it.lang)
-                                                        .put("url", it.url)
-                                                )
-                                            }
-                                        }
-                                    )
-                            )
-                        }
-                    }.toString()
-                }.getOrNull()
-                if (payload != null && playable.isNotEmpty()) {
+                val payload = playerPayload(playable)
+                if (payload != null) {
                     showSheet = false
                     context.startActivity(
                         Intent(context, PlayerActivity::class.java).apply {
@@ -482,13 +461,20 @@ fun DetailScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     itemsIndexed(streams) { index, s ->
-                        val enabled = !s.isTorrent && s.url.isNotBlank()
+                        val enabled = when {
+                            s.ytId != null -> true
+                            s.externalUrl -> s.url.isNotBlank()
+                            s.isTorrent -> true
+                            else -> s.url.isNotBlank()
+                        }
                         ListItem(
                             headlineContent = { Text(s.name) },
                             supportingContent = {
                                 Text(
                                     when {
-                                        s.isTorrent -> "Torrent — engine coming in Stage 2"
+                                        s.isTorrent -> "Torrent — streams from peers"
+                                        s.ytId != null -> "YouTube"
+                                        s.externalUrl -> "Opens in web view"
                                         s.url.contains(".m3u8", true) -> "HLS"
                                         else -> "Direct"
                                     }
@@ -505,39 +491,35 @@ fun DetailScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable(enabled = enabled) {
-                                    showSheet = false
-                                    context.startActivity(
-                                        Intent(context, PlayerActivity::class.java).apply {
-                                            putExtra("title", m?.title ?: title)
-                                            putExtra(
-                                                "sources",
-                                                runCatching {
-                                                    JSONArray().apply {
-                                                        put(
-                                                            JSONObject()
-                                                                .put("name", s.name)
-                                                                .put("url", s.url)
-                                                                .put("headers", JSONObject(s.headers))
-                                                                .put("isM3u8", s.isM3u8)
-                                                                .put("isMpd", s.isMpd)
-                                                                .put(
-                                                                    "subtitles",
-                                                                    JSONArray().apply {
-                                                                        s.subtitles.forEach {
-                                                                            put(
-                                                                                JSONObject()
-                                                                                    .put("lang", it.lang)
-                                                                                    .put("url", it.url)
-                                                                            )
-                                                                        }
-                                                                    }
-                                                                )
-                                                        )
-                                                    }.toString()
-                                                }.getOrNull().orEmpty()
+                                    when {
+                                        s.ytId != null -> {
+                                            showSheet = false
+                                            context.startActivity(
+                                                Intent(context, WebViewActivity::class.java).apply {
+                                                    putExtra("url", "https://www.youtube.com/watch?v=${s.ytId}")
+                                                    putExtra("title", (m?.title ?: title) + " — YouTube")
+                                                }
                                             )
                                         }
-                                    )
+                                        s.externalUrl -> {
+                                            showSheet = false
+                                            context.startActivity(
+                                                Intent(context, WebViewActivity::class.java).apply {
+                                                    putExtra("url", s.url)
+                                                    putExtra("title", m?.title ?: title)
+                                                }
+                                            )
+                                        }
+                                        else -> {
+                                            showSheet = false
+                                            context.startActivity(
+                                                Intent(context, PlayerActivity::class.java).apply {
+                                                    putExtra("title", m?.title ?: title)
+                                                    putExtra("sources", playerPayload(listOf(s)).orEmpty())
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                         )
                     }
@@ -547,6 +529,38 @@ fun DetailScreen(
         }
     }
 }
+
+/** Builds the PlayerActivity "sources" JSON payload for the given streams,
+ *  carrying torrent metadata so the player can spin up TorrServer. */
+private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
+    JSONArray().apply {
+        streams.forEach { s ->
+            put(
+                JSONObject()
+                    .put("name", s.name)
+                    .put("url", s.url)
+                    .put("headers", JSONObject(s.headers))
+                    .put("isM3u8", s.isM3u8)
+                    .put("isMpd", s.isMpd)
+                    .put("isTorrent", s.isTorrent)
+                    .put("infoHash", s.infoHash ?: "")
+                    .put("fileIdx", s.fileIdx ?: -1)
+                    .put(
+                        "trackers",
+                        JSONArray().apply { s.trackers.forEach { put(it) } }
+                    )
+                    .put(
+                        "subtitles",
+                        JSONArray().apply {
+                            s.subtitles.forEach {
+                                put(JSONObject().put("lang", it.lang).put("url", it.url))
+                            }
+                        }
+                    )
+            )
+        }
+    }.toString()
+}.getOrNull()
 
 @Composable
 private fun Hero(meta: MediaItem?, onBack: () -> Unit) {

@@ -1,6 +1,7 @@
 package com.hikari.app.player
 
 import android.app.AlertDialog
+import android.app.ProgressDialog
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -51,6 +52,10 @@ class PlayerActivity : ComponentActivity() {
         val subtitles: List<SubtitleSource>,
         val isM3u8: Boolean = false,
         val isMpd: Boolean = false,
+        val isTorrent: Boolean = false,
+        val infoHash: String? = null,
+        val fileIdx: Int? = null,
+        val trackers: List<String> = emptyList(),
     )
 
     private var player: ExoPlayer? = null
@@ -69,6 +74,8 @@ class PlayerActivity : ComponentActivity() {
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
     private var speedIndex = 2
+
+    private var torrentDialog: android.app.ProgressDialog? = null
 
     private lateinit var client: OkHttpClient
 
@@ -146,6 +153,10 @@ class PlayerActivity : ComponentActivity() {
                     val s = subsObj.getJSONObject(j)
                     SubtitleSource(s.optString("lang"), s.optString("url"))
                 }
+                val trackersObj = o.optJSONArray("trackers") ?: JSONArray()
+                val trackers = (0 until trackersObj.length()).mapNotNull { j ->
+                    trackersObj.optString(j).ifBlank { null }
+                }
                 PlayerSource(
                     o.optString("name", "Source ${i + 1}"),
                     // Normalize Google Drive URLs to the direct-download form so
@@ -155,6 +166,10 @@ class PlayerActivity : ComponentActivity() {
                     subs,
                     o.optBoolean("isM3u8"),
                     o.optBoolean("isMpd"),
+                    o.optBoolean("isTorrent"),
+                    o.optString("infoHash").ifBlank { null },
+                    o.optInt("fileIdx", -1).takeIf { it >= 0 },
+                    trackers,
                 )
             }
         }.getOrDefault(emptyList())
@@ -259,6 +274,136 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun playSource(index: Int) {
+        if (index < 0 || index >= sources.size) {
+            showError("No more servers to try.", false)
+            return
+        }
+        currentIndex = index
+        val src = sources[index]
+        if (src.isTorrent && src.infoHash != null) {
+            playTorrent(index)
+            return
+        }
+        playDirect(index)
+    }
+
+    /**
+     * Torrent source: builds a magnet link from the infoHash and hands it to the
+     * CloudStream runtime's Torrent engine (TorrServer, bundled in the APK).
+     * The engine boots once, fetches the torrent, and returns a local HLS URL
+     * that ExoPlayer then plays like any other stream.
+     */
+    @Suppress("DEPRECATION")
+    private fun playTorrent(index: Int) {
+        val src = sources[index]
+        sourcesBtn?.text = src.name
+        errorPanel?.visibility = View.GONE
+
+        torrentDialog?.let { runCatching { it.dismiss() } }
+        torrentDialog = ProgressDialog(this).apply {
+            setTitle("Torrent stream")
+            setMessage("Starting torrent engine…\nFirst play can take a few seconds.")
+            setCancelable(false)
+            setIndeterminate(true)
+            show()
+        }
+
+        lifecycleScope.launch {
+            val res = try {
+                Result.success(withContext(Dispatchers.IO) { transformTorrent(src) })
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+            torrentDialog?.let { runCatching { it.dismiss() } }
+            torrentDialog = null
+
+            res.onSuccess { playable ->
+                val converted = src.copy(
+                    url = playable.url,
+                    headers = playable.referer?.takeIf { it.isNotBlank() }
+                        ?.let { mapOf("Referer" to it) } ?: emptyMap(),
+                    isM3u8 = true, // TorrServer serves HLS
+                    isTorrent = false,
+                )
+                val list = sources.toMutableList()
+                list[index] = converted
+                sources = list
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "Torrent ready — streaming from peers",
+                    Toast.LENGTH_SHORT
+                ).show()
+                playDirect(index)
+            }
+            res.onFailure { e ->
+                val msg = rootMessage(e)
+                val hasNext = currentIndex + 1 < sources.size
+                if (autoFallback && hasNext) {
+                    autoFallback = false
+                    Toast.makeText(this@PlayerActivity, "Torrent failed — trying next", Toast.LENGTH_SHORT).show()
+                    playSource(currentIndex + 1)
+                } else {
+                    showError("Torrent playback failed:\n$msg", hasNext)
+                }
+            }
+        }
+    }
+
+    /** Builds a magnet and asks the CloudStream runtime's Torrent engine to
+     *  turn it into a local streamable URL. */
+    private suspend fun transformTorrent(src: PlayerSource): com.lagradost.cloudstream3.utils.ExtractorLink {
+        val magnet = buildMagnet(src)
+        val link = com.lagradost.cloudstream3.utils.newExtractorLink(
+            source = "Torrent",
+            name = src.name,
+            url = magnet,
+        )
+        val (playable, _) = com.lagradost.cloudstream3.ui.player.Torrent.transformLink(link)
+        return playable
+    }
+
+    private fun buildMagnet(src: PlayerSource): String {
+        // CS3 plugins sometimes hand us a ready magnet link — use it as-is,
+        // only making sure the file index is present.
+        if (src.url.startsWith("magnet:", true)) {
+            return if (src.fileIdx != null && !src.url.contains("index=")) {
+                src.url + (if (src.url.contains("?")) "&" else "?") + "index=" + src.fileIdx
+            } else src.url
+        }
+        val hash = src.infoHash ?: return ""
+        val sb = StringBuilder("magnet:?xt=urn:btih:$hash")
+        if (src.name.isNotBlank()) {
+            sb.append("&dn=").append(java.net.URLEncoder.encode(src.name, "UTF-8"))
+        }
+        val trackers = (src.trackers + TORRENT_TRACKERS).distinct()
+        for (t in trackers) {
+            val clean = t.removePrefix("tracker:")
+            if (clean.startsWith("http://") || clean.startsWith("https://") || clean.startsWith("udp://")) {
+                sb.append("&tr=").append(java.net.URLEncoder.encode(clean, "UTF-8"))
+            }
+        }
+        // TorrServer picks the video file inside the torrent by this index.
+        src.fileIdx?.let { sb.append("&index=").append(it) }
+        return sb.toString()
+    }
+
+    private fun rootMessage(e: Throwable): String {
+        var t: Throwable? = e
+        val sb = StringBuilder()
+        var depth = 0
+        while (t != null && depth < 4) {
+            val m = t.message
+            if (!m.isNullOrBlank()) {
+                if (sb.isNotEmpty()) sb.append(" → ")
+                sb.append(m)
+            }
+            t = t.cause
+            depth++
+        }
+        return sb.toString().ifBlank { e.javaClass.simpleName }
+    }
+
+    private fun playDirect(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
             return
@@ -423,7 +568,23 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // The CloudStream Torrent engine resolves its cache dir from the
+        // activity reference (throws "No activity" otherwise).
+        com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
+    }
+
+    override fun onStop() {
+        if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
+            com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
+        }
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        torrentDialog?.let { runCatching { it.dismiss() } }
+        torrentDialog = null
         player?.let { p ->
             p.removeListener(listener)
             p.release()
@@ -434,5 +595,15 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        /** Fallback public trackers for addons that don't ship their own. */
+        private val TORRENT_TRACKERS = listOf(
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.demonii.com:1337/announce",
+            "udp://tracker.openbittorrent.com:6969/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "https://tracker.gbitt.info:443/announce",
+            "http://tracker.openbittorrent.com:80/announce",
+        )
     }
 }
