@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.media3.ui.PlayerControlView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="#CC000000"
@@ -19,6 +20,7 @@
             android:layout_width="match_parent"
             android:layout_height="24dp"
             android:layout_gravity="center_vertical"
+            tools:ignore="Instantiatable"
             app:bar_height="3dp"
             app:played_color="#FFD54F"
             app:buffered_color="#66FFFFFF"
