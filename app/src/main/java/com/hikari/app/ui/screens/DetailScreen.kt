@@ -60,9 +60,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
+import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.providers.ContentProvider
@@ -80,6 +82,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
+    private val repo = ContentRepository(manager)
 
     private val _meta = MutableStateFlow<MediaItem?>(null)
     val meta: StateFlow<MediaItem?> = _meta.asStateFlow()
@@ -101,11 +104,40 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _streamsReady = MutableStateFlow(false)
     val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
 
+    /** How many addons were asked for sources on the last lookup. */
+    private val _searchedProviders = MutableStateFlow(0)
+    val searchedProviders: StateFlow<Int> = _searchedProviders.asStateFlow()
+
+    /** Reason the last lookup came up empty (origin addon's message). */
+    private val _streamError = MutableStateFlow<String?>(null)
+    val streamError: StateFlow<String?> = _streamError.asStateFlow()
+
+    /** The set of addons asked for sources, Stremio-style: every installed
+     *  Stremio addon plus the origin provider itself (so CS3 plugins and
+     *  universal scrapers keep their own pipeline). */
+    private fun streamTargets(item: MediaItem): List<ContentProvider> =
+        manager.providers.value.filter {
+            it.config.enabled &&
+                (it.config.type == ProviderType.STREMIO || it.config.id == item.providerId)
+        }
+
+    private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
+        _searchedProviders.value = streamTargets(item).size
+        if (result.isEmpty()) {
+            _streamError.value =
+                com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
+                    ?: com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
+        } else {
+            _streamError.value = null
+        }
+    }
+
     fun load(providerId: String, type: MediaType, mediaId: String, title: String) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _streamsReady.value = false
+            _streamError.value = null
             val provider = manager.byId(providerId)
             if (provider == null) {
                 _error.value = "Provider not found"
@@ -124,13 +156,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 metaDone = true
             }
             _loading.value = false
-            if (metaDone) prefetchFirstStreams(provider, base)
+            if (metaDone) prefetchFirstStreams(base)
         }
     }
 
     /** While the user is still reading the detail page, resolve sources for the
      *  movie or the first episode so the player starts immediately on tap. */
-    private suspend fun prefetchFirstStreams(provider: ContentProvider, base: MediaItem) {
+    private suspend fun prefetchFirstStreams(base: MediaItem) {
         val target = if (_episodes.value.isNullOrEmpty()) {
             base to null
         } else {
@@ -145,9 +177,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val result = withContext(Dispatchers.IO) {
-            runCatching { provider.getStreams(item, ep) }.getOrDefault(emptyList())
+            runCatching { repo.streamsFor(item, ep) }.getOrDefault(emptyList())
         }
         streamCache[key] = result
+        recordOutcome(result, item)
         _streamsReady.value = true
     }
 
@@ -158,11 +191,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         val m = _meta.value ?: return emptyList()
         val key = cacheKey(m, episode)
         streamCache[key]?.let { return it }
-        val provider = manager.byId(m.providerId) ?: return emptyList()
         val result = withContext(Dispatchers.IO) {
-            runCatching { provider.getStreams(m, episode) }.getOrDefault(emptyList())
+            runCatching { repo.streamsFor(m, episode) }.getOrDefault(emptyList())
         }
         streamCache[key] = result
+        recordOutcome(result, m)
         return result
     }
 }
@@ -182,6 +215,8 @@ fun DetailScreen(
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
     val streamsReady by vm.streamsReady.collectAsState()
+    val searchedProviders by vm.searchedProviders.collectAsState()
+    val streamError by vm.streamError.collectAsState()
     val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -437,24 +472,19 @@ fun DetailScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    val streamErr = m?.providerId?.let { pid ->
-                        com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
-                            ?: com.hikari.app.providers.StremioAddon.streamErrors[pid]
-                    }
-                    if (streamErr != null) {
+                    if (searchedProviders > 0) {
                         Text(
-                            streamErr,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            "Searched $searchedProviders addon${if (searchedProviders == 1) "" else "s"} for sources.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }
-                    val tookMs = com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsTimeMs
-                    if (tookMs > 0) {
+                    if (streamError != null) {
                         Text(
-                            "Looked for sources for ${tookMs / 1000}s",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            streamError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }

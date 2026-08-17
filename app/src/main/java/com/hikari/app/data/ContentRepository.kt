@@ -1,6 +1,7 @@
 package com.hikari.app.data
 
 import com.hikari.app.providers.ProviderManager
+import com.hikari.app.providers.StremioAddon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -79,4 +80,37 @@ class ContentRepository(private val manager: ProviderManager) {
             }.awaitAll().flatten().distinctBy { it.uniqueId }
         }
     }
+
+    /**
+     * Fetches streams for a title the way the real Stremio client does: every
+     * installed Stremio addon is asked in parallel — a catalog-only addon
+     * (Cinemeta, Streaming Catalogs) contributes nothing, while playback
+     * addons (Torrentio, Comet, Novastream…) contribute their sources. The
+     * origin provider is always included too, so CS3 plugins and universal
+     * scrapers keep their own single-provider pipeline.
+     */
+    suspend fun streamsFor(item: MediaItem, episode: Episode?): List<StreamSource> =
+        withContext(Dispatchers.IO) {
+            val all = manager.providers.value.filter { it.config.enabled }
+            // Every Stremio addon that recognizes this id, plus the origin
+            // provider itself (CS3 plugins / universal scrapers keep their own
+            // single-provider pipeline, and an origin addon always serves its
+            // own titles).
+            val targets = all.filter { p ->
+                if (p.config.id == item.providerId) true
+                else if (p.config.type != ProviderType.STREMIO) false
+                else !(p is StremioAddon && !p.acceptsId(item.id))
+            }
+            coroutineScope {
+                targets.map { p ->
+                    async {
+                        runCatching {
+                            withTimeoutOrNull(45_000) { p.getStreams(item, episode) }.orEmpty()
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+                    // Same torrent/video surfaced by several addons = one entry.
+                    .distinctBy { it.infoHash ?: it.url }
+            }
+        }
 }

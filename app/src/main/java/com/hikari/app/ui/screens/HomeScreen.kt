@@ -227,13 +227,26 @@ fun HomeScreen(nav: NavHostController) {
                     val reason =
                         com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
                             ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
-                    EmptyState(
-                        title = "Couldn't load ${name ?: "this extension"}",
-                        subtitle = reason
-                            ?: "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
-                        actionLabel = "Retry",
-                        action = { vm.refresh() }
-                    )
+                    val streamOnly =
+                        com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
+                    if (streamOnly) {
+                        EmptyState(
+                            title = "No catalog from ${name ?: "this addon"}",
+                            subtitle = "This addon doesn't provide a catalog to browse — it only " +
+                                "adds playback sources to titles opened from other addons. " +
+                                "Pick any movie or series and its streams will show up.",
+                            actionLabel = "Browse all",
+                            action = { vm.selectProvider(null) }
+                        )
+                    } else {
+                        EmptyState(
+                            title = "Couldn't load ${name ?: "this extension"}",
+                            subtitle = reason
+                                ?: "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
+                            actionLabel = "Retry",
+                            action = { vm.refresh() }
+                        )
+                    }
                 } else {
                     EmptyState(
                         title = "No content yet",

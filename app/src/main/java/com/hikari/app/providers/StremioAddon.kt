@@ -43,6 +43,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = ConcurrentHashMap<String, String>()
 
+        /** Set when a manifest loaded fine but declares NO catalogs — a normal
+         *  stream-only addon (Torrentio, Comet, Novastream…). Not an error; it
+         *  just contributes playback sources, never home rows. */
+        val streamOnlyAddons = ConcurrentHashMap<String, Boolean>()
+
         /** Per-provider reason why source lookup came back empty. Displayed in
          *  the playback sheet so "no playable sources found" is explainable. */
         val streamErrors = ConcurrentHashMap<String, String>()
@@ -147,6 +152,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             catalogErrors[config.id] =
                 "Could not load manifest from $base/manifest.json — the host may be down, " +
                     "blocking non-browser requests, or behind Cloudflare."
+            streamOnlyAddons.remove(config.id)
             return emptyList()
         }
         val out = LinkedHashMap<String, CatalogRef>()
@@ -159,10 +165,14 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             out["$t|$id"] = CatalogRef(config.id, t, id, name, raw)
         }
         if (out.isEmpty()) {
-            catalogErrors[config.id] =
-                "Manifest loaded but declared no usable catalogs (types supported: movie/series)."
+            // Zero catalogs is NOT an error — stream-only addons (Torrentio,
+            // Comet, Novastream…) are valid and common. They simply add
+            // playback sources to titles opened from other addons.
+            catalogErrors.remove(config.id)
+            streamOnlyAddons[config.id] = true
         } else {
             catalogErrors.remove(config.id)
+            streamOnlyAddons.remove(config.id)
         }
         return out.values.toList()
     }
@@ -274,18 +284,35 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return out.sortedBy { it.number }
     }
 
+    /** True if this addon claims to know this video id (via manifest
+     *  idPrefixes). The real client only queries addons whose prefix matches,
+     *  so e.g. Torrentio isn't asked about a non-`tt` id. Addons without
+     *  idPrefixes (or not yet loaded) accept everything. */
+    fun acceptsId(id: String): Boolean {
+        val m = manifest ?: return true
+        val arr = m.optJSONArray("idPrefixes") ?: return true
+        if (arr.length() == 0) return true
+        for (i in 0 until arr.length()) {
+            val p = arr.optString(i)
+            if (p.isNotEmpty() && id.startsWith(p)) return true
+        }
+        return false
+    }
+
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val m = loadManifest()
         val typeRaw = typeSegment(item.rawType, item.type)
         val idPart = episode?.id ?: item.id
 
-        // Metadata-only addons (Cinemeta-style: catalogs + meta but no stream
-        // resource) will never produce sources — say so instead of failing
-        // silently for every item.
+        // Metadata-only addons (Cinemeta/Streaming-Catalogs style: catalogs +
+        // meta but no stream resource) never answer /stream — exactly like the
+        // real Stremio client, which only asks addons that declare the stream
+        // resource. Sources for these titles come from the other installed
+        // playback addons (Torrentio, Comet, Novastream…).
         if (m != null && !hasResource(m, "stream")) {
             streamErrors[config.id] =
-                "This addon provides no streams (catalog/metadata only). " +
-                    "Install a playback addon and open the title from it instead."
+                "This addon provides no streams (catalog/metadata only) — " +
+                    "sources are fetched from your other playback addons."
             return emptyList()
         }
 
