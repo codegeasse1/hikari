@@ -20,6 +20,8 @@ import com.hikari.app.ui.theme.HikariThemeMode
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // No window title bar, ever — every screen is header-free by design.
+        window.requestFeature(android.view.Window.FEATURE_NO_TITLE)
         // Edge-to-edge: the app draws behind the status + navigation bars so
         // the dark background covers the whole screen (no color band at the
         // top), like a real fullscreen streaming app. Light status icons for

@@ -36,7 +36,7 @@
             android:exported="false"
             android:hardwareAccelerated="true"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
-            android:theme="@style/Theme.Hikari" />
+            android:theme="@style/Theme.Hikari.App" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

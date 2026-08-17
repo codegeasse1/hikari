@@ -11,6 +11,7 @@ import android.os.Message
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
@@ -68,11 +69,10 @@ class WebViewActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var videoChip: TextView
-    private lateinit var titleText: TextView
     private lateinit var rootView: LinearLayout
-    private var toolbar: LinearLayout? = null
     private val detectedVideos = LinkedHashSet<String>()
     private var pageUrl: String? = null
+    private var pageTitle: String = ""
 
     // Ad blocking (WebView requests only) — resolved from the user's lists on
     // launch, and never applied to the ExoPlayer's own network I/O.
@@ -81,24 +81,11 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var whitelistDomains: Set<String> = emptySet()
 
-    // The toolbar is HIDDEN by default so it never covers the site's own
-    // header/search (it only appears via the floating ⋯ pill) and auto-hides
-    // again shortly after being shown.
-    private val toolbarHandler = Handler(Looper.getMainLooper())
-    private val hideToolbarTask = Runnable {
-        val t = toolbar ?: return@Runnable
-        if (t.visibility == View.VISIBLE) {
-            t.animate().alpha(0f).setDuration(400).withEndAction {
-                t.visibility = View.GONE
-                t.alpha = 1f
-            }.start()
-        }
-    }
-
     // Guards the auto hand-off to the external player: a page that genuinely
     // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
     // on every navigation), so the user never stares at an infinite spinner.
     private var autoLaunched = false
+
 
     // Fullscreen HTML5 video support
     private var customView: View? = null
@@ -112,6 +99,8 @@ class WebViewActivity : ComponentActivity() {
     private var scanRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Never allow a window title bar — the app draws no header anywhere.
+        window.requestFeature(Window.FEATURE_NO_TITLE)
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -119,49 +108,7 @@ class WebViewActivity : ComponentActivity() {
         }
 
         val startUrl = intent.getStringExtra("url") ?: "https://www.google.com"
-        val startTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
-
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFF1A1A1A.toInt())
-            setPadding(dp(4), dp(2) + statusBarHeight(), dp(4), dp(2))
-            // Hidden until the user taps the ⋯ pill — never blocks site UI.
-            visibility = View.GONE
-        }
-        this.toolbar = toolbar
-
-        fun navBtn(label: String): TextView = TextView(this).apply {
-            text = label
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            gravity = Gravity.CENTER
-            isClickable = true
-        }
-
-        val backBtn = navBtn("\u2190")
-        backBtn.setOnClickListener { if (webView.canGoBack()) webView.goBack() }
-        val fwdBtn = navBtn("\u2192")
-        fwdBtn.setOnClickListener { if (webView.canGoForward()) webView.goForward() }
-        val reloadBtn = navBtn("\u21BB")
-        reloadBtn.setOnClickListener { webView.reload() }
-        val playBtn = navBtn("\u25B6")
-        playBtn.setOnClickListener { playVideo() }
-
-        titleText = TextView(this).apply {
-            text = startTitle
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }
-
-        toolbar.addView(backBtn, lp(dp(44), dp(42)))
-        toolbar.addView(fwdBtn, lp(dp(44), dp(42)))
-        toolbar.addView(reloadBtn, lp(dp(44), dp(42)))
-        toolbar.addView(playBtn, lp(dp(44), dp(42)))
-        toolbar.addView(titleText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        pageTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -187,8 +134,8 @@ class WebViewActivity : ComponentActivity() {
         webView.addJavascriptInterface(HikariJsBridge(), "HikariBridge")
 
         // Small floating ⋯ pill in the top-right corner — the only always-visible
-        // control. Tapping it shows/hides the nav toolbar without covering the
-        // site's own header or search.
+        // control. Tapping it opens a small menu (Back/Forward/Reload/Player) so
+        // the app never draws a header bar over the site's own header or search.
         val togglePill = TextView(this).apply {
             text = "\u22EF"
             textSize = 18f
@@ -197,7 +144,7 @@ class WebViewActivity : ComponentActivity() {
             setBackgroundColor(0x661A1A1A.toInt())
             setPadding(dp(8), dp(2), dp(8), dp(2))
             isClickable = true
-            setOnClickListener { toggleToolbar() }
+            setOnClickListener { showMenu(it) }
         }
 
         val content = FrameLayout(this).apply {
@@ -223,7 +170,6 @@ class WebViewActivity : ComponentActivity() {
         rootView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
-            addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)))
             addView(progressBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4)))
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -336,15 +282,7 @@ class WebViewActivity : ComponentActivity() {
                 detectedVideos.clear()
                 autoLaunched = false
                 scanHandler.removeCallbacksAndMessages(null)
-                // Keep the nav toolbar hidden while browsing — it only appears
-                // via the floating ⋯ pill, so the site's own header/search are
-                // never covered.
-                toolbar?.let { t ->
-                    toolbarHandler.removeCallbacks(hideToolbarTask)
-                    t.animate().cancel()
-                    t.visibility = View.GONE
-                    t.alpha = 1f
-                }
+                progressBar.visibility = View.VISIBLE
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -480,25 +418,28 @@ class WebViewActivity : ComponentActivity() {
         customViewCallback = null
     }
 
-    private fun showToolbar() {
-        val t = toolbar ?: return
-        toolbarHandler.removeCallbacks(hideToolbarTask)
-        t.visibility = View.VISIBLE
-        t.alpha = 1f
-        toolbarHandler.postDelayed(hideToolbarTask, 4000)
-    }
-
-    private fun toggleToolbar() {
-        val t = toolbar ?: return
-        if (t.visibility == View.VISIBLE) {
-            toolbarHandler.removeCallbacks(hideToolbarTask)
-            t.animate().alpha(0f).setDuration(300).withEndAction {
-                t.visibility = View.GONE
-                t.alpha = 1f
-            }.start()
-        } else {
-            showToolbar()
+    // The ⋯ pill opens this tiny menu — the app draws NO header bar, so the
+    // site's own header/search stay fully visible.
+    private fun showMenu(anchor: View) {
+        val menu = android.widget.PopupMenu(this, anchor, Gravity.END)
+        menu.menu.add(0, 1, 0, "\u2190 Back")
+        menu.menu.add(0, 2, 0, "\u2192 Forward")
+        menu.menu.add(0, 3, 0, "\u21BB Reload")
+        menu.menu.add(0, 4, 0, "\u25B6 Open in player")
+        menu.menu.add(0, 5, 0, "Open in browser")
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> if (webView.canGoBack()) webView.goBack()
+                2 -> if (webView.canGoForward()) webView.goForward()
+                3 -> webView.reload()
+                4 -> playVideo()
+                5 -> runCatching {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pageUrl ?: webView.url)))
+                }
+            }
+            true
         }
+        menu.show()
     }
 
     private fun statusBarHeight(): Int =
@@ -638,7 +579,7 @@ class WebViewActivity : ComponentActivity() {
         }
         startActivity(
             Intent(this, PlayerActivity::class.java).apply {
-                putExtra("title", titleText.text.toString())
+                putExtra("title", pageTitle)
                 putExtra("sources", sources.toString())
             }
         )
@@ -671,11 +612,8 @@ class WebViewActivity : ComponentActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun lp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
-
     override fun onDestroy() {
         scanHandler.removeCallbacksAndMessages(null)
-        toolbarHandler.removeCallbacksAndMessages(null)
         runCatching { CookieManager.getInstance().flush() }
         runCatching { webView.destroy() }
         super.onDestroy()
