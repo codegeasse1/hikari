@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000"
@@ -8,10 +9,12 @@
     <androidx.media3.ui.PlayerView
         android:id="@+id/player_view"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        app:controller_layout_id="@layout/player_controller"
+        app:show_buffering="when_playing" />
 
     <!-- Top bar: hidden by default; PlayerActivity shows/hides it together
-         with the media3 controller so controls appear on tap and fade away. -->
+         with the controller so controls appear on tap and fade away. -->
     <LinearLayout
         android:id="@+id/top_bar"
         android:layout_width="match_parent"
@@ -44,45 +47,6 @@
             android:maxLines="1"
             android:ellipsize="end"
             android:gravity="center_vertical" />
-
-        <TextView
-            android:id="@+id/sources_btn"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Server"
-            android:textSize="13sp"
-            android:textColor="#FFFFFF"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:background="?android:attr/selectableItemBackground" />
-
-        <TextView
-            android:id="@+id/quality_btn"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Quality"
-            android:textSize="13sp"
-            android:textColor="#FFFFFF"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:background="?android:attr/selectableItemBackground" />
-
-        <TextView
-            android:id="@+id/speed_btn"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="1x"
-            android:textSize="13sp"
-            android:textColor="#FFFFFF"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:background="?android:attr/selectableItemBackground" />
 
         <TextView
             android:id="@+id/rotate_btn"

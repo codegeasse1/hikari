@@ -120,13 +120,28 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun addStremio(url: String): Result<String> = withContext(Dispatchers.IO) {
-        val clean = url.trim().trimEnd('/')
+        var clean = url.trim().trimEnd('/')
         if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
-            return@withContext Result.failure(Exception("Must start with http(s)://"))
+            clean = "https://$clean"
         }
-        val manifest = Http.getString("$clean/manifest.json")
-            ?.let { runCatching { JSONObject(it) }.getOrNull() }
-            ?: return@withContext Result.failure(Exception("Not a Stremio addon (no manifest.json found)"))
+        if (clean.length < 10 || !clean.contains(".")) {
+            return@withContext Result.failure(Exception("That doesn't look like a URL"))
+        }
+        // Accept the URL with or without the /manifest.json suffix (users often
+        // paste the full manifest URL), and fall back to plain http if the
+        // https fetch fails.
+        val manifestUrl = if (clean.lowercase().endsWith("/manifest.json")) clean
+        else "$clean/manifest.json"
+        val text = listOf(manifestUrl, manifestUrl.replaceFirst("https://", "http://"))
+            .firstNotNullOfOrNull { Http.getString(it) }
+            ?: return@withContext Result.failure(
+                Exception("Could not fetch $manifestUrl — check the address or try again")
+            )
+        val manifest = runCatching { JSONObject(text) }.getOrElse {
+            return@withContext Result.failure(
+                Exception("Not a Stremio addon — the response from $manifestUrl isn't JSON: ${text.take(80)}")
+            )
+        }
         val name = manifest.optString("name").ifBlank {
             clean.removePrefix("https://").removePrefix("http://")
         }

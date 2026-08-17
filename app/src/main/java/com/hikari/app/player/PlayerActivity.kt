@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
@@ -41,6 +42,7 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 class PlayerActivity : ComponentActivity() {
 
@@ -65,6 +67,7 @@ class PlayerActivity : ComponentActivity() {
     private var rotateChip: TextView? = null
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
+    private var subtitleBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
@@ -72,12 +75,88 @@ class PlayerActivity : ComponentActivity() {
 
     private lateinit var client: OkHttpClient
 
-    private val longPressDetector: GestureDetector by lazy {
-        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onLongPress(e: MotionEvent) {
-                if (player?.playWhenReady == true) applySpeed(2f)
+    private val audioManager by lazy {
+        getSystemService(AUDIO_SERVICE) as AudioManager
+    }
+
+    // ---- gesture state ----
+    private var gestureStartPos = 0L
+    private var gestureStartX = 0f
+    private var gestureStartY = 0f
+    private var dragMode = 0
+    private var brightnessStart = 0.5f
+    private var volumeStart = 0
+
+    private val playerGestures = object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            gestureStartPos = player?.currentPosition ?: 0L
+            gestureStartX = e.rawX
+            gestureStartY = e.rawY
+            dragMode = 0
+            return true
+        }
+
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            val p = player ?: return false
+            val width = playerView?.width ?: 0
+            if (e.x < width / 2f) {
+                p.seekTo((p.currentPosition - 10000L).coerceAtLeast(0L))
+            } else {
+                val dur = p.duration
+                p.seekTo((p.currentPosition + 10000L).coerceAtMost(if (dur > 0) dur else Long.MAX_VALUE))
             }
-        })
+            return true
+        }
+
+        override fun onScroll(e1: MotionEvent, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            val p = player ?: return false
+            val dx = e2.rawX - gestureStartX
+            val dy = e2.rawY - gestureStartY
+            val width = playerView?.width ?: 1
+            val height = playerView?.height ?: 1
+            if (dragMode == 0) {
+                if (abs(dy) > abs(dx) && abs(dy) > 30f) {
+                    dragMode = if (e2.x < width / 2f) MODE_BRIGHTNESS else MODE_VOLUME
+                    if (dragMode == MODE_BRIGHTNESS) {
+                        val cur = window.attributes.screenBrightness
+                        brightnessStart = if (cur < 0f) 0.5f else cur
+                    } else {
+                        volumeStart = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    }
+                    return true
+                }
+                if (abs(dx) > abs(dy) && abs(dx) > 30f) {
+                    dragMode = MODE_SEEK
+                    return true
+                }
+            }
+            when (dragMode) {
+                MODE_BRIGHTNESS -> {
+                    val frac = (brightnessStart - dy / height).coerceIn(0f, 1f)
+                    window.attributes = window.attributes.apply { screenBrightness = frac }
+                    return true
+                }
+                MODE_VOLUME -> {
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    val v = (volumeStart - (dy / height * max)).toInt().coerceIn(0, max)
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                    return true
+                }
+                MODE_SEEK -> {
+                    val dur = p.duration
+                    val max = if (dur > 0) dur else 0L
+                    val target = gestureStartPos + (-dx * 1000L).toLong()
+                    p.seekTo(if (max > 0) target.coerceIn(0L, max) else target.coerceAtLeast(0L))
+                    return true
+                }
+            }
+            return false
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            // hold to temporarily boost to 2x
+            if (player?.playWhenReady == true) applySpeed(2f)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,21 +167,14 @@ class PlayerActivity : ComponentActivity() {
 
         playerView = findViewById(R.id.player_view)
         topBar = findViewById(R.id.top_bar)
-        speedChip = findViewById(R.id.speed_btn)
-        rotateChip = findViewById(R.id.rotate_btn)
-        qualityBtn = findViewById(R.id.quality_btn)
-        sourcesBtn = findViewById(R.id.sources_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
         findViewById<TextView>(R.id.title_text).text = intent.getStringExtra("title").orEmpty()
 
+        rotateChip = findViewById(R.id.rotate_btn)
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
-
-        speedChip?.setOnClickListener { cycleSpeed() }
         rotateChip?.setOnClickListener { cycleRotation() }
-        qualityBtn?.setOnClickListener { showQualityDialog() }
-        sourcesBtn?.setOnClickListener { showSourcesDialog() }
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
@@ -113,13 +185,7 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        playerView?.setOnTouchListener { _, event ->
-            longPressDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                applySpeed(SPEEDS[speedIndex])
-            }
-            false
-        }
+        playerView?.controllerShowTimeoutMs = 4000
 
         // Hide our top bar whenever the media3 controller hides, so the screen
         // stays clean while watching. Tapping the video brings controls back.
@@ -129,6 +195,17 @@ class PlayerActivity : ComponentActivity() {
                 topBar?.visibility = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
             }
         })
+
+        // CloudStream-style gestures: double-tap sides to seek ±10s, swipe up/down
+        // on the left half for brightness and the right half for volume, and
+        // drag horizontally to seek.
+        playerView?.setOnTouchListener { _, event ->
+            playerGestures.onTouchEvent(event)
+            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                applySpeed(SPEEDS[speedIndex])
+            }
+            false
+        }
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -172,6 +249,23 @@ class PlayerActivity : ComponentActivity() {
             .build()
 
         playSource(0)
+    }
+
+    /** The controller chips live inside the custom controller layout, which
+     *  media3 inflates when the player is attached — so wire them here, after
+     *  the PlayerView has built its controller. */
+    private fun bindControllerChips() {
+        val pv = playerView ?: return
+        speedChip = pv.findViewById(R.id.speed_btn)
+        qualityBtn = pv.findViewById(R.id.quality_btn)
+        subtitleBtn = pv.findViewById(R.id.subtitle_btn)
+        sourcesBtn = pv.findViewById(R.id.sources_btn)
+        speedChip?.setOnClickListener { cycleSpeed() }
+        qualityBtn?.setOnClickListener { showQualityDialog() }
+        subtitleBtn?.setOnClickListener { showSubtitleDialog() }
+        sourcesBtn?.setOnClickListener { showSourcesDialog() }
+        sourcesBtn?.text = sources.firstOrNull()?.name ?: "Server"
+        speedChip?.text = "${SPEEDS[speedIndex]}x"
     }
 
     private fun cycleSpeed() {
@@ -258,6 +352,51 @@ class PlayerActivity : ComponentActivity() {
             .show()
     }
 
+    private fun showSubtitleDialog() {
+        val p = player ?: return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        val items = mutableListOf<String>()
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        items.add("Off")
+        var base = 1
+        var checked = 0
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = f.language?.takeIf { it.isNotBlank() }
+                    ?: f.label?.takeIf { it.isNotBlank() }
+                    ?: "Track ${base + i}"
+                items.add(label)
+                indexMap[items.size - 1] = group to i
+                val override = p.trackSelectionParameters.overrides[mediaGroup]
+                if (override != null && override.trackIndices.any { it == i }) {
+                    checked = base + i
+                }
+            }
+            base += mediaGroup.length
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Subtitles")
+            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
+                if (which == 0) {
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .build()
+                } else {
+                    val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(
+                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                        )
+                        .build()
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun playSource(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
@@ -266,6 +405,7 @@ class PlayerActivity : ComponentActivity() {
         currentIndex = index
         val src = sources[index]
 
+        bindControllerChips()
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
 
@@ -491,6 +631,10 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        private const val MODE_BRIGHTNESS = 1
+        private const val MODE_VOLUME = 2
+        private const val MODE_SEEK = 3
 
         private const val STREAM_HLS = 1
         private const val STREAM_DASH = 2

@@ -223,7 +223,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                             "Stuck on thread '${worker.name}':\n" +
                             worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                 } else {
-                    lastStreamsError = null
+                    lastStreamsError = when {
+                        !completed -> "The provider could not resolve any sources for this title " +
+                            "(it found no stream links on the page)."
+                        links.isEmpty() -> "The provider resolved links, but every one of them " +
+                            "was unusable (blank, or a dead type)."
+                        else -> null
+                    }
                 }
             } catch (e: Throwable) {
                 // NoClassDefFoundError/NoSuchMethodError from extractor machinery

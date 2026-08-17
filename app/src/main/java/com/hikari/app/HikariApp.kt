@@ -2,6 +2,8 @@ package com.hikari.app
 
 import android.app.Application
 import android.content.Context
+import coil.Coil
+import coil.ImageLoader
 import com.hikari.app.data.AppStore
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ProviderManager
@@ -38,11 +40,43 @@ class HikariApp : Application() {
         store = AppStore(this)
         providers = ProviderManager(store)
         Http.init()
+        setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
             providers.refresh()
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
+        }
+    }
+
+    /**
+     * Most provider CDNs refuse to serve posters to a bare okhttp client: they
+     * require a browser User-Agent and a same-site Referer (hotlink protection).
+     * Coil's default loader sends neither, so every poster 403s into a blank
+     * placeholder. Wire a global loader that sends a browser UA plus a Referer
+     * derived from the image's own origin.
+     */
+    private fun setupImageLoader() {
+        runCatching {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    val builder = req.newBuilder()
+                        .header("User-Agent", Http.UA)
+                    val host = req.url.host
+                    if (host.isNotBlank()) {
+                        builder.header("Referer", "${req.url.scheme}://$host/")
+                    }
+                    chain.proceed(builder.build())
+                }
+                .build()
+            val loader = ImageLoader.Builder(this)
+                .okHttpClient(client)
+                .crossfade(true)
+                .build()
+            Coil.setImageLoader(loader)
         }
     }
 
