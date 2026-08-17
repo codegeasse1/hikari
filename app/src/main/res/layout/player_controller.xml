@@ -71,7 +71,7 @@
                     android:background="?android:attr/selectableItemBackgroundBorderless"
                     android:contentDescription="Play"
                     android:scaleType="centerInside"
-                    android:src="@drawable/exo_controls_play"
+                    android:src="@android:drawable/ic_media_play"
                     android:tint="#FFFFFF" />
 
                 <ImageButton
@@ -81,7 +81,7 @@
                     android:background="?android:attr/selectableItemBackgroundBorderless"
                     android:contentDescription="Pause"
                     android:scaleType="centerInside"
-                    android:src="@drawable/exo_controls_pause"
+                    android:src="@android:drawable/ic_media_pause"
                     android:tint="#FFFFFF" />
             </FrameLayout>
 
@@ -92,7 +92,7 @@
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Back 10 seconds"
                 android:scaleType="centerInside"
-                android:src="@drawable/exo_controls_rewind"
+                android:src="@android:drawable/ic_media_rew"
                 android:tint="#FFFFFF" />
 
             <ImageButton
@@ -102,7 +102,7 @@
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Forward 10 seconds"
                 android:scaleType="centerInside"
-                android:src="@drawable/exo_controls_fastforward"
+                android:src="@android:drawable/ic_media_ff"
                 android:tint="#FFFFFF" />
 
             <TextView
