@@ -15,6 +15,7 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -76,7 +77,7 @@ class PlayerActivity : ComponentActivity() {
     private var watchdogTask: Runnable? = null
 
     private var speedChip: TextView? = null
-    private var rotateChip: TextView? = null
+    private var rotateBtn: ImageButton? = null
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
     private var errorPanel: View? = null
@@ -105,7 +106,7 @@ class PlayerActivity : ComponentActivity() {
         playerView = findViewById(R.id.player_view)
         topBar = findViewById(R.id.top_bar)
         speedChip = findViewById(R.id.speed_btn)
-        rotateChip = findViewById(R.id.rotate_btn)
+        rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
         errorPanel = findViewById(R.id.error_panel)
@@ -116,7 +117,7 @@ class PlayerActivity : ComponentActivity() {
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
 
         speedChip?.setOnClickListener { cycleSpeed() }
-        rotateChip?.setOnClickListener { cycleRotation() }
+        rotateBtn?.setOnClickListener { cycleRotation() }
         qualityBtn?.setOnClickListener { showQualityDialog() }
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
 
@@ -213,7 +214,11 @@ class PlayerActivity : ComponentActivity() {
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
         requestedOrientation = next
-        rotateChip?.text = if (next == SCREEN_ORIENTATION_PORTRAIT) "⤡" else "↻"
+        // Phone-tilt icon tints gold while forced-landscape so the state is
+        // readable at a glance (white = free/portrait).
+        val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
+        val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
+        rotateBtn?.imageTintList = if (next == SCREEN_ORIENTATION_PORTRAIT) white else gold
     }
 
     private fun applySpeed(speed: Float) {

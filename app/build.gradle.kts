@@ -14,8 +14,12 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        // CI injects the exact commit SHA the APK was built from, so the
+        // in-app update checker can compare it against main's HEAD.
+        val gitSha = System.getenv("GIT_SHA") ?: "unknown"
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
 
     buildTypes {
@@ -49,6 +53,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

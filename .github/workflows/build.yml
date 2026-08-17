@@ -50,6 +50,7 @@ jobs:
 
       - name: Build APKs (debug + release)
         env:
+          GIT_SHA: ${{ github.sha }}
           SIGNING_STORE_PATH: ${{ env.SIGNING_STORE_PATH }}
           SIGNING_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}

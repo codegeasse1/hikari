@@ -9,6 +9,8 @@ import com.hikari.app.net.Http
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import org.jsoup.Jsoup
 import kotlin.math.min
 
 /**
@@ -85,7 +87,8 @@ object FallbackResolver {
         // of nothing before the player opened. Now the slowest single embed
         // bounds the whole pass.
         val embeds = collectEmbeds(html, pageUrl).take(12)
-        if (embeds.isNotEmpty()) {
+        val needsMegaPlay = isMegaPlayPage(pageUrl)
+        if (embeds.isNotEmpty() || needsMegaPlay) {
             runCatching {
                 withTimeoutOrNull(30_000) {
                     coroutineScope {
@@ -98,7 +101,19 @@ object FallbackResolver {
                                 }
                             }
                         }
-                        jobs.forEach { it.await() }
+                        // Anikoto & friends resolve their servers via AJAX (not
+                        // iframes) — replicate the getSources dance in parallel
+                        // so a stalled plugin can never leave the user empty.
+                        val megaJobs = if (needsMegaPlay) {
+                            listOf(async {
+                                runCatching {
+                                    withTimeoutOrNull(13_000) {
+                                        megaPlayFromPage(pageUrl, rawsSync, subsSync)
+                                    }
+                                }
+                            })
+                        } else emptyList()
+                        (jobs + megaJobs).forEach { it.await() }
                     }
                 }
             }
@@ -305,6 +320,153 @@ object FallbackResolver {
             out = out.replace(Regex("\\b" + Regex.escape(b36(i)) + "\\b"), word)
         }
         return out
+    }
+
+    // ------------------------------------------------------------------
+    //  megaplay family (megaplay.buzz / megacloud / rapid-cloud / vidplay…)
+    //  — the `getSources` AJAX dance anime plugins use. The jar ships NO
+    //  megaplay extractor and plugins' own resolver can stall or 403 in-app,
+    //  so this core fallback hits the same endpoints with the same XHR
+    //  headers — "no source available" in Hikari while CloudStream plays.
+    // ------------------------------------------------------------------
+    private fun isMegaPlayPage(pageUrl: String): Boolean {
+        val lower = pageUrl.lowercase()
+        if (lower.contains("anikoto")) return true
+        return Regex("""[?&]embed=([^&]+)""").containsMatchIn(pageUrl) &&
+            Regex("""[?&]ep=(\d+)""").containsMatchIn(pageUrl)
+    }
+
+    private fun isMegaPlayHost(url: String): Boolean {
+        val h = url.lowercase()
+        return h.contains("megaplay") || h.contains("megacloud") ||
+            h.contains("rapid-cloud") || h.contains("vidplay") ||
+            h.contains("vidtube") || h.contains("vidwish") ||
+            h.contains("mikora") || h.contains("watching.onl") ||
+            h.contains("shiora")
+    }
+
+    /**
+     * Anikoto-style episode pages: the megaplay fast path straight from the
+     * api's `embed` id, plus the site's own ajax server list (`ids` param →
+     * `/ajax/server/list` → `/ajax/server?get=` → megaplay embeds). Mirrors
+     * AnikotoProvider.loadLinks so the fallback engine yields the SAME servers
+     * as CloudStream even when the plugin's own resolver comes up empty.
+     */
+    private suspend fun megaPlayFromPage(
+        pageUrl: String,
+        raws: MutableMap<String, RawStream>,
+        subs: MutableList<SubtitleSource>,
+    ) {
+        val embedId = Regex("""[?&]embed=([^&]+)""").find(pageUrl)?.groupValues?.get(1)?.trim().orEmpty()
+        val lang = Regex("""[?&]lang=(sub|dub)""").find(pageUrl)?.groupValues?.get(1) ?: "sub"
+        if (embedId.isNotBlank()) {
+            megaPlayEmbedExtract("https://megaplay.buzz/stream/s-2/$embedId/$lang", raws, subs)
+        }
+
+        val siteIds = Regex("""[?&]ids=([^&]+)""").find(pageUrl)?.groupValues?.get(1)?.trim().orEmpty()
+        val watchUrl = pageUrl.substringBefore("?")
+        if (siteIds.isBlank()) return
+        val base = baseOf(watchUrl)
+        val ajax = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "Accept" to "application/json, text/javascript, */*; q=0.01",
+            "Referer" to watchUrl,
+        )
+        val serverList = runCatching {
+            app.get("$base/ajax/server/list?servers=$siteIds", headers = ajax).text
+        }.getOrNull() ?: return
+        val doc = runCatching { Jsoup.parse(parseAjaxResult(serverList)) }.getOrNull() ?: return
+        for (li in doc.select("li[data-link-id], li[data-id]")) {
+            val linkId = li.attr("data-link-id").ifBlank { li.attr("data-id") }
+            if (linkId.isBlank()) continue
+            val serverHtml = runCatching {
+                app.get("$base/ajax/server?get=$linkId", headers = ajax).text
+            }.getOrNull() ?: continue
+            val text = parseAjaxResult(serverHtml)
+            val embedUrl = Regex("""https?://[^\s"'<>\\]{8,}""").findAll(text)
+                .map { it.value.replace("\\/", "/") }
+                .firstOrNull { isMegaPlayHost(it) }
+            if (embedUrl != null) {
+                megaPlayEmbedExtract(embedUrl, raws, subs)
+            }
+        }
+    }
+
+    /**
+     * The getSources dance: GET {host}/stream/getSources?id={epId} with the
+     * XHR header megaplay requires (a plain fetch answers 403 "AJAX requests
+     * only"). Emits the JSON `sources` as MegaPlay servers + `tracks` subs.
+     */
+    private suspend fun megaPlayEmbedExtract(
+        embedUrl: String,
+        raws: MutableMap<String, RawStream>,
+        subs: MutableList<SubtitleSource>,
+    ) {
+        val clean = embedUrl.replace("\\/", "/")
+        val host = runCatching { java.net.URI(clean).host }.getOrNull() ?: return
+        val epId = Regex("""/stream/s-\d+/(\d+)""").find(clean)?.groupValues?.get(1)
+            ?: Regex("""[?&]id=(\d+)""").find(clean)?.groupValues?.get(1)
+            ?: return
+        val headers = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to "https://$host/",
+            "Origin" to "https://$host",
+            "Accept" to "application/json, text/javascript, */*; q=0.01",
+        )
+        val text = runCatching {
+            app.get("https://$host/stream/getSources?id=$epId", headers = headers).text
+        }.getOrNull() ?: return
+        if (text.isBlank() || text.contains("Forbidden")) return
+        val ref = "https://$host/"
+
+        runCatching {
+            val j = JSONObject(text)
+            val tracks = j.optJSONArray("tracks")
+            if (tracks != null) {
+                for (i in 0 until tracks.length()) {
+                    val t = tracks.optJSONObject(i) ?: continue
+                    val subUrl = t.optString("file")
+                    if (subUrl.isBlank() || !subUrl.startsWith("http")) continue
+                    subs.add(
+                        SubtitleSource(
+                            t.optString("label", "English"),
+                            subUrl.replace("\\/", "/")
+                        )
+                    )
+                }
+            }
+            val sources = j.optJSONArray("sources")
+            if (sources != null) {
+                for (i in 0 until sources.length()) {
+                    val s = sources.optJSONObject(i) ?: continue
+                    val file = s.optString("file")
+                    if (file.isBlank() || !file.startsWith("http")) continue
+                    val label = s.optString("label").ifBlank { s.optString("quality") }.ifBlank { "HD" }
+                    addRaw(file.replace("\\/", "/"), ref, "MegaPlay $label", raws)
+                }
+            }
+        }
+
+        // Not JSON / empty arrays — scan the raw response instead.
+        if (raws.isEmpty()) {
+            for (m in Regex("""https?://[^\s"'<>\\]+\.(?:m3u8|mp4)(?:[^\s"'<>\\]*)""").findAll(text)) {
+                addRaw(m.value.replace("\\/", "/"), ref, "MegaPlay", raws)
+            }
+        }
+    }
+
+    /** Unwraps the {status, result} ajax wrapper the anime sites use. */
+    private fun parseAjaxResult(body: String): String {
+        val trimmed = body.trim()
+        if (trimmed.startsWith("{")) {
+            return try {
+                val j = JSONObject(trimmed)
+                if (j.optInt("status", 500) == 200) j.optString("result", trimmed) else ""
+            } catch (e: Exception) {
+                trimmed
+            }
+        }
+        return trimmed
     }
 
     // ------------------------------------------------------------------

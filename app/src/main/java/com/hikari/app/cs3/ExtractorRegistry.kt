@@ -2,12 +2,20 @@
 
 package com.hikari.app.cs3
 
+import com.hikari.app.net.Http
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.extractors.ByseSX
 import com.lagradost.cloudstream3.extractors.LuluStream
 import com.lagradost.cloudstream3.extractors.StreamWishExtractor
 import com.lagradost.cloudstream3.extractors.VidHidePro
 import com.lagradost.cloudstream3.utils.ExtractorApi
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.SubtitleFile
 import com.lagradost.cloudstream3.utils.extractorApis
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.newSubtitleFile
 
 /**
  * The real CloudStream-3 runtime ships ~200 battle-tested extractors inside
@@ -65,6 +73,110 @@ object HikariExtractorRegistry {
         add("https://bysezoxexe.com") { HikariByseHost("https://bysezoxexe.com") }
         add("https://bysezoxexe.net") { HikariByseHost("https://bysezoxexe.net") }
         add("https://bysezoxexe.org") { HikariByseHost("https://bysezoxexe.org") }
+
+        // --- megaplay family (getSources AJAX) — the jar ships no megaplay
+        //     extractor; plugins either reimplement it (and can stall/403
+        //     in-app) or fall to loadExtractor and get nothing. Registering
+        //     this lets every plugin's loadExtractor resolve megaplay embeds. ---
+        add("https://megaplay.buzz") { HikariMegaPlayHost("https://megaplay.buzz") }
+        add("https://megacloud.tv") { HikariMegaPlayHost("https://megacloud.tv") }
+        add("https://rapid-cloud.co") { HikariMegaPlayHost("https://rapid-cloud.co") }
+        add("https://vidplay.site") { HikariMegaPlayHost("https://vidplay.site") }
+    }
+}
+
+/**
+ * megaplay family — the `getSources` JSON dance anime CDNs use. Mirrors the
+ * resolver Anikoto & friends implement in their plugins (XHR header required,
+ * otherwise megaplay answers 403 "AJAX requests only"), so Hikari's player
+ * gets the same MegaPlay servers CloudStream shows.
+ */
+private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() {
+    override val name = "MegaPlay"
+    override val requiresReferer = true
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean? {
+        val clean = url.replace("\\/", "/")
+        val host = runCatching { java.net.URI(clean).host }.getOrNull() ?: return false
+        val epId = Regex("""/stream/s-\d+/(\d+)""").find(clean)?.groupValues?.get(1)
+            ?: Regex("""[?&]id=(\d+)""").find(clean)?.groupValues?.get(1)
+            ?: return false
+        val headers = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to "https://$host/",
+            "Origin" to "https://$host",
+            "Accept" to "application/json, text/javascript, */*; q=0.01",
+            "User-Agent" to Http.UA,
+        )
+        val text = runCatching {
+            app.get("https://$host/stream/getSources?id=$epId", headers = headers).text
+        }.getOrNull() ?: return false
+        if (text.isBlank() || text.contains("Forbidden")) return false
+        val ref = "https://$host/"
+        var found = false
+
+        runCatching {
+            val j = org.json.JSONObject(text)
+            val tracks = j.optJSONArray("tracks")
+            if (tracks != null) {
+                for (i in 0 until tracks.length()) {
+                    val t = tracks.optJSONObject(i) ?: continue
+                    val subUrl = t.optString("file")
+                    if (subUrl.isBlank() || !subUrl.startsWith("http")) continue
+                    subtitleCallback(
+                        newSubtitleFile(t.optString("label", "English"), subUrl.replace("\\/", "/")) {
+                            this.headers = mapOf("Referer" to ref, "User-Agent" to Http.UA)
+                        }
+                    )
+                }
+            }
+            val sources = j.optJSONArray("sources")
+            if (sources != null) {
+                for (i in 0 until sources.length()) {
+                    val s = sources.optJSONObject(i) ?: continue
+                    val file = s.optString("file")
+                    if (file.isBlank() || !file.startsWith("http")) continue
+                    val label = s.optString("label").ifBlank { s.optString("quality") }.ifBlank { "HD" }
+                    callback(
+                        newExtractorLink(
+                            source = name,
+                            name = "MegaPlay $label",
+                            url = file.replace("\\/", "/"),
+                            type = ExtractorLinkType.M3U8,
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                            this.referer = ref
+                            this.headers = mapOf("Referer" to ref, "User-Agent" to Http.UA)
+                        }
+                    )
+                    found = true
+                }
+            }
+        }
+
+        if (!found) {
+            for (m in Regex("""https?://[^\s"'<>\\]+\.(?:m3u8|mp4)(?:[^\s"'<>\\]*)""").findAll(text)) {
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = "MegaPlay",
+                        url = m.value.replace("\\/", "/"),
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                        this.referer = ref
+                        this.headers = mapOf("Referer" to ref, "User-Agent" to Http.UA)
+                    }
+                )
+                found = true
+            }
+        }
+        return found
     }
 }
 

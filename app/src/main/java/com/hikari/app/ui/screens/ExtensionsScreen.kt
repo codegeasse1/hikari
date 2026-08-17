@@ -518,7 +518,7 @@ fun ExtensionsScreen() {
     if (showRepoDialog) {
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
-            title = { Text("Add plugin repo") },
+            title = { Text("Add CloudStream repo") },
             text = {
                 Column {
                     Text(
@@ -844,7 +844,7 @@ private fun RepoBrowserView(
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("Add plugin repo")
+                Text("Add CloudStream repo")
             }
         }
         item {
@@ -958,11 +958,11 @@ private fun RepoBrowserView(
             }
         }
 
-        item { SectionHeader("Plugin repos") }
+        item { SectionHeader("CloudStream repos") }
         if (repos.isEmpty()) {
             item {
                 EmptyState(
-                    title = "No plugin repos yet",
+                    title = "No CloudStream repos yet",
                     subtitle = "Add a CloudStream-style repo to browse and install extensions.",
                     actionLabel = null,
                     action = null
@@ -1000,7 +1000,7 @@ private fun RepoBrowserView(
                 EmptyState(
                     title = if (providers.isEmpty()) "No extensions yet" else "No matches",
                     subtitle = if (providers.isEmpty())
-                        "Add a plugin repo (CloudStream-style), a Stremio addon, a universal scraper, or a single .cs3 file."
+                        "Add a CloudStream repo, a Stremio addon, a universal scraper, or a single .cs3 file."
                     else
                         "No installed extension matches \"$extFilter\".",
                     actionLabel = null,

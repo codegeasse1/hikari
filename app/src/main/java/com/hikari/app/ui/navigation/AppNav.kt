@@ -1,6 +1,9 @@
 package com.hikari.app.ui.navigation
 
 import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Extension
@@ -16,6 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -31,6 +37,7 @@ import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
+import com.hikari.app.ui.theme.HikariThemeMode
 
 object Routes {
     const val HOME = "home"
@@ -68,14 +75,35 @@ private val Tabs = listOf(
 )
 
 @Composable
-fun AppRoot() {
+fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val showBar = currentRoute in Tabs.map { it.route }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+    Box(Modifier.fillMaxSize()) {
+        // Dark Glass UI backdrop — a vivid gradient sits behind the translucent
+        // surfaces so cards/nav bar read as frosted glass. Solid themes draw
+        // nothing (the Scaffold's background color covers it).
+        if (themeKey == HikariThemeMode.GLASS.key) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF2A1440),
+                                Color(0xFF1B2A4A),
+                                Color(0xFF0B0E1A),
+                            ),
+                            start = Offset.Zero,
+                            end = Offset.Infinite,
+                        )
+                    )
+            )
+        }
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (showBar) {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
@@ -127,6 +155,7 @@ fun AppRoot() {
                 val rawType = Uri.decode(entry.arguments?.getString("rawType").orEmpty())
                 DetailScreen(nav, providerId, type, mediaId, title, poster, rawType)
             }
+        }
         }
     }
 }

@@ -45,6 +45,41 @@ object Http {
             null
         }
 
+    /**
+     * Streams a download to [dest], reporting (downloadedBytes, totalBytes) through
+     * [onProgress] on each chunk. totalBytes is -1 when unknown. Returns true on success.
+     */
+    fun downloadTo(
+        url: String,
+        dest: java.io.File,
+        headers: Map<String, String> = emptyMap(),
+        onProgress: ((Long, Long) -> Unit)? = null,
+    ): Boolean = try {
+        get(url, headers).use { resp ->
+            if (!resp.isSuccessful) return false
+            val body = resp.body ?: return false
+            val total = body.contentLength()
+            dest.parentFile?.mkdirs()
+            body.byteStream().use { input ->
+                dest.outputStream().use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        output.write(buf, 0, n)
+                        done += n
+                        onProgress?.invoke(done, total)
+                    }
+                }
+            }
+            true
+        }
+    } catch (e: Exception) {
+        dest.delete()
+        false
+    }
+
     fun getStringStrict(url: String, headers: Map<String, String> = emptyMap()): Result<String> =
         try {
             get(url, headers).use { r ->

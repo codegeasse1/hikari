@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -21,6 +22,16 @@ class AppStore(private val ctx: Context) {
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
         val SITES = stringPreferencesKey("sites")
+        val THEME = stringPreferencesKey("theme")
+    }
+
+    fun themeFlow(): Flow<String> =
+        store.data.map { it[K.THEME] ?: HikariThemeMode.DARK.key }
+
+    suspend fun theme(): String = themeFlow().first()
+
+    suspend fun setTheme(key: String) {
+        store.edit { it[K.THEME] = key }
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =
