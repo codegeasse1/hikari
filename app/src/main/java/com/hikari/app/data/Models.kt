@@ -39,6 +39,12 @@ data class RepoLoadState(
 
 enum class MediaType { MOVIE, SERIES, UNKNOWN }
 
+/** A user-added website opened in the ad-free web view. */
+data class Site(
+    val name: String,
+    val url: String,
+)
+
 data class MediaItem(
     val providerId: String,
     val id: String,

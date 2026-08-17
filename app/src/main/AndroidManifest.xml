@@ -29,6 +29,13 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:theme="@style/Theme.Hikari.Player" />
+
+        <activity
+            android:name=".web.WebViewActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.Hikari" />
     </application>
 
 </manifest>

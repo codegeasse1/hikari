@@ -271,7 +271,14 @@ fun DetailScreen(
                         Spacer(Modifier.height(16.dp))
                     }
                 }
-                if (m?.type == MediaType.MOVIE) {
+                // Type reporting varies wildly across .cs3 plugins, so only use
+                // it as a hint: show the episode list whenever the item is a
+                // series OR the provider actually returned episodes, and always
+                // give mislabeled/unknown items a Play button so nothing is
+                // ever unplayable.
+                val isSeries = m?.type == MediaType.SERIES || (episodes?.isNotEmpty() == true)
+                val canPlay = m?.type != MediaType.SERIES || episodes.isNullOrEmpty()
+                if (canPlay) {
                     item {
                         Button(
                             onClick = { openStreams(null) },
@@ -285,7 +292,7 @@ fun DetailScreen(
                         }
                     }
                 }
-                if (m?.type == MediaType.SERIES) {
+                if (isSeries) {
                     item {
                         Row(
                             Modifier
@@ -343,7 +350,10 @@ fun DetailScreen(
                         else sortedEps.filter {
                             it.number >= rangeStart!! && it.number <= rangeStart!! + 29
                         }
-                        items(shownEps, key = { it.number }) { ep ->
+                        // key must be unique across the WHOLE list — MoviesMod
+                        // emits the same episode numbers once per quality group,
+                        // and a duplicate Compose key crashes the screen.
+                        items(shownEps, key = { it.id + "#" + it.number }) { ep ->
                             EpisodeRow(ep) { openStreams(ep) }
                         }
                     }

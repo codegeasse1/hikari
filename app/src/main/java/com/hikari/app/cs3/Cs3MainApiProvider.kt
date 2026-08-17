@@ -8,6 +8,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -74,7 +75,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private fun catalogType(): MediaType {
         val types = api?.supportedTypes ?: return MediaType.SERIES
         val movieOnly = types.isNotEmpty() && types.all {
-            it == TvType.Movie || it == TvType.AnimeMovie
+            it == TvType.Movie || it == TvType.AnimeMovie || it == TvType.NSFW
         }
         return if (movieOnly) MediaType.MOVIE else MediaType.SERIES
     }
@@ -141,10 +142,19 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
-        if (item.overview != null && item.genres.isNotEmpty()) return item
+        // Always run the provider's load() and correct the type from the actual
+        // LoadResponse — many plugins report a broad/odd TvType on their search
+        // results (e.g. NSFW) that would otherwise leave the detail screen with
+        // neither a Play button nor an episode list.
         val resp = loadResponse(item.id) ?: return item
+        val mt = when (resp) {
+            is MovieLoadResponse -> MediaType.MOVIE
+            is TvSeriesLoadResponse, is AnimeLoadResponse -> MediaType.SERIES
+            else -> item.type
+        }
         return when (resp) {
             is MovieLoadResponse -> item.copy(
+                type = mt,
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
                 year = resp.year ?: item.year,
@@ -152,6 +162,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             )
             is AnimeLoadResponse -> item.copy(
+                type = mt,
                 title = resp.engName?.takeIf { it.isNotBlank() } ?: item.title,
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
@@ -160,6 +171,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             )
             is TvSeriesLoadResponse -> item.copy(
+                type = mt,
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
                 year = resp.year ?: item.year,
@@ -238,7 +250,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     }
                     StreamSource(
                         name = l.name.ifBlank { "Stream" },
-                        url = l.url,
+                        // Google Drive share/download links answer with an HTML
+                        // virus-scan page, not video bytes — normalize them to
+                        // the direct drive.usercontent download form so the
+                        // player gets raw HLS/MP4 (MoviesMod & friends).
+                        url = Http.normalizeDriveUrl(l.url),
                         headers = headers,
                         subtitles = subSources,
                         isM3u8 = l.isM3u8,
@@ -264,8 +280,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private suspend fun loadResponse(id: String): LoadResponse? {
         loadCache[id]?.let { return it }
         val a = api ?: return null
+        // Some providers' load() walks many pages (e.g. PimpBunny model pages
+        // paginate up to 50) — cap it so the detail screen can never hang.
         val r = try {
-            a.load(id)
+            withTimeoutOrNull(45_000) { a.load(id) }
         } catch (e: Throwable) {
             null
         } ?: return null
@@ -276,7 +294,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private fun SearchResponse.toMediaItem(): MediaItem? {
         if (url.isBlank() || name.isBlank()) return null
         val mt = when (type) {
-            TvType.Movie, TvType.AnimeMovie -> MediaType.MOVIE
+            // NSFW providers (LeakPorner, KanAV, …) label their single-video
+            // results NSFW — treat as movies; getMeta later corrects actor
+            // pages to SERIES from the LoadResponse type.
+            TvType.Movie, TvType.AnimeMovie, TvType.NSFW -> MediaType.MOVIE
             TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama -> MediaType.SERIES
             else -> MediaType.UNKNOWN
         }

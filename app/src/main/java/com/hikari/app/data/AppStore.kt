@@ -20,6 +20,7 @@ class AppStore(private val ctx: Context) {
         val PROVIDERS = stringPreferencesKey("providers")
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
+        val SITES = stringPreferencesKey("sites")
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =
@@ -71,6 +72,42 @@ class AppStore(private val ctx: Context) {
 
     suspend fun removeFavorite(id: String) {
         store.edit { it[K.FAVORITES] = encodeMedia(favorites().filter { f -> f.uniqueId != id }) }
+    }
+
+    fun sitesFlow(): Flow<List<Site>> =
+        store.data.map { parseSites(it[K.SITES]) }
+
+    suspend fun sites(): List<Site> = sitesFlow().first()
+
+    suspend fun addSite(s: Site) {
+        store.edit { it[K.SITES] = encodeSites(sites().filter { it.url != s.url } + s) }
+    }
+
+    suspend fun removeSite(url: String) {
+        store.edit { it[K.SITES] = encodeSites(sites().filter { it.url != url }) }
+    }
+
+    private fun encodeSites(list: List<Site>): String {
+        val arr = JSONArray()
+        for (s in list) {
+            arr.put(JSONObject().put("name", s.name).put("url", s.url))
+        }
+        return arr.toString()
+    }
+
+    private fun parseSites(s: String?): List<Site> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val url = o.optString("url")
+                if (url.isBlank()) null
+                else Site(name = o.optString("name").ifBlank { url }, url = url)
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     suspend fun clearAll() {

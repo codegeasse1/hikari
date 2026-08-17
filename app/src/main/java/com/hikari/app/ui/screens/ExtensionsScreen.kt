@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -55,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -70,10 +74,12 @@ import com.hikari.app.data.Cs3RepoPlugin
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoLoadState
+import com.hikari.app.data.Site
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -92,13 +98,25 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val pluginsByRepo = MutableStateFlow<Map<String, List<Cs3RepoPlugin>>>(emptyMap())
     val installedUrls = MutableStateFlow<Set<String>>(emptySet())
     val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
+    val sites = MutableStateFlow<List<Site>>(emptyList())
 
     init {
         viewModelScope.launch {
             manager.refresh()
             repos.value = store.repos()
+            sites.value = store.sites()
             reloadInstalled()
         }
+    }
+
+    suspend fun addSite(name: String, url: String) {
+        store.addSite(Site(name.ifBlank { url }, url))
+        sites.value = store.sites()
+    }
+
+    suspend fun removeSite(url: String) {
+        store.removeSite(url)
+        sites.value = store.sites()
     }
 
     suspend fun addStremio(url: String): Result<String> = withContext(Dispatchers.IO) {
@@ -361,7 +379,13 @@ fun ExtensionsScreen() {
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
     val repoState by vm.repoState.collectAsState()
+    val sites by vm.sites.collectAsState()
     val openRepo = repos.firstOrNull { it.url == openRepoUrl }
+    val context = LocalContext.current
+
+    var showSite by remember { mutableStateOf(false) }
+    var siteName by remember { mutableStateOf("") }
+    var siteUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         vm.repos.value.forEach { repo -> vm.refreshRepoPlugins(repo) }
@@ -429,6 +453,7 @@ fun ExtensionsScreen() {
             pluginsByRepo = pluginsByRepo,
             repoState = repoState,
             providers = providers,
+            sites = sites,
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -443,6 +468,21 @@ fun ExtensionsScreen() {
             onAddStremio = { errorMsg = null; showStremio = true },
             onAddScraper = { errorMsg = null; showScraper = true },
             onAddCs3Url = { errorMsg = null; showCs3Url = true },
+            onAddSite = { errorMsg = null; showSite = true },
+            onOpenSite = { site ->
+                context.startActivity(
+                    Intent(context, WebViewActivity::class.java).apply {
+                        putExtra("url", site.url)
+                        putExtra("title", site.name)
+                    }
+                )
+            },
+            onRemoveSite = { url ->
+                scope.launch {
+                    vm.removeSite(url)
+                    successMsg = "Website removed"
+                }
+            },
             onPickCs3File = {
                 errorMsg = null
                 successMsg = null
@@ -668,6 +708,77 @@ fun ExtensionsScreen() {
             }
         )
     }
+
+    if (showSite) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showSite = false },
+            title = { Text("Add website") },
+            text = {
+                Column {
+                    Text(
+                        "Paste the URL of any movie/streaming website. It opens in an " +
+                            "ad-free web view — ads, trackers and popups are blocked, " +
+                            "and videos can be handed to the built-in player."
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = siteName,
+                        onValueChange = { siteName = it },
+                        placeholder = { Text("Name (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = siteUrl,
+                        onValueChange = { siteUrl = it },
+                        placeholder = { Text("https://example.com") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        val clean = siteUrl.trim()
+                        val withScheme = if (clean.startsWith("http://") || clean.startsWith("https://"))
+                            clean
+                        else
+                            "https://$clean"
+                        if (withScheme.isBlank() || withScheme == "https://") {
+                            errorMsg = "Enter a valid URL"
+                        } else {
+                            scope.launch {
+                                busy = true
+                                busyMsg = "Adding website…"
+                                errorMsg = null
+                                successMsg = null
+                                vm.addSite(siteName.trim(), withScheme)
+                                busy = false
+                                showSite = false
+                                siteUrl = ""
+                                siteName = ""
+                                successMsg = "Website added"
+                            }
+                        }
+                    }
+                ) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showSite = false }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -686,6 +797,7 @@ private fun RepoBrowserView(
     pluginsByRepo: Map<String, List<Cs3RepoPlugin>>,
     repoState: Map<String, RepoLoadState>,
     providers: List<ContentProvider>,
+    sites: List<Site>,
     busy: Boolean,
     busyMsg: String,
     successMsg: String?,
@@ -699,6 +811,9 @@ private fun RepoBrowserView(
     onRemoveRepo: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
+    onAddSite: () -> Unit,
+    onOpenSite: (Site) -> Unit,
+    onRemoveSite: (String) -> Unit,
 ) {
     var extFilter by remember { mutableStateOf("") }
     LazyColumn(
@@ -766,6 +881,36 @@ private fun RepoBrowserView(
                     Text("Pick .cs3 file")
                 }
             }
+        }
+        item {
+            Button(
+                onClick = onAddSite,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Add website (ad-free web view)")
+            }
+        }
+        item { SectionHeader("Websites") }
+        if (sites.isEmpty()) {
+            item {
+                EmptyState(
+                    title = "No websites yet",
+                    subtitle = "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
+                    actionLabel = null,
+                    action = null
+                )
+            }
+        }
+        items(sites, key = { it.url }) { site ->
+            SiteRow(
+                site = site,
+                onOpen = { onOpenSite(site) },
+                onRemove = { onRemoveSite(site.url) }
+            )
         }
         if (busy) {
             item {
@@ -1206,4 +1351,61 @@ private fun pluginStatus(p: ContentProvider): String? {
     if (err != null) return err.take(200)
     if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
     return null
+}
+
+@Composable
+private fun SiteRow(
+    site: Site,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Card(Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Public,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    site.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    site.url,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = onOpen) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Open")
+            }
+            IconButton(onClick = onRemove) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Remove website",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+    }
 }

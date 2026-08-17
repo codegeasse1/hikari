@@ -148,7 +148,9 @@ class PlayerActivity : ComponentActivity() {
                 }
                 PlayerSource(
                     o.optString("name", "Source ${i + 1}"),
-                    o.optString("url"),
+                    // Normalize Google Drive URLs to the direct-download form so
+                    // the player never hits the drive virus-scan HTML page.
+                    Http.normalizeDriveUrl(o.optString("url")),
                     headers,
                     subs,
                     o.optBoolean("isM3u8"),

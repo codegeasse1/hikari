@@ -101,4 +101,23 @@ object Http {
         }
         return null
     }
+
+    /**
+     * Turns Google Drive share/download URLs into the direct-download form that
+     * serves raw file bytes (no virus-scan HTML page). Handles:
+     *   drive.google.com/uc?export=download&id=X
+     *   drive.google.com/open?id=X
+     *   drive.google.com/file/d/<id>/view
+     */
+    fun normalizeDriveUrl(url: String): String {
+        val u = url.trim().trim('"', '\'')
+        if (u.isBlank()) return u
+        val id = Regex("""drive\.google\.com/(?:uc|open)\?(?:.*&)?id=([^&\s"']+)""")
+            .find(u)?.groupValues?.get(1)
+            ?: Regex("""drive\.google\.com/file/d/([^/\s"']+)""")
+                .find(u)?.groupValues?.get(1)
+        return if (id != null) {
+            "https://drive.usercontent.google.com/download?id=$id&export=download&confirm=t"
+        } else u
+    }
 }
