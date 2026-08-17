@@ -149,9 +149,9 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         val ordered = listOfNotNull(manager.byId(item.providerId)) + others
         for (p in ordered) {
-            val eps = withTimeoutOrNull(12_000) {
-                runCatching { p.getEpisodes(item) }.getOrNull()?.orEmpty()
-            }?.orEmpty()
+            val eps = (withTimeoutOrNull(12_000) {
+                runCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
+            }) ?: emptyList()
             if (eps.isNotEmpty()) return@withContext eps
         }
         null
