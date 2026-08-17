@@ -170,6 +170,46 @@ fun DetailScreen(
         scope.launch {
             streams = vm.getStreams(ep)
             loadingStreams = false
+            val playable = streams.filter { !it.isTorrent && it.url.isNotBlank() }
+            if (playable.isNotEmpty()) {
+                // Build the intent payload defensively — a single bad header
+                // value must never crash the whole app.
+                val payload = runCatching {
+                    JSONArray().apply {
+                        playable.forEach { s ->
+                            put(
+                                JSONObject()
+                                    .put("name", s.name)
+                                    .put("url", s.url)
+                                    .put("headers", JSONObject(s.headers))
+                                    .put("isM3u8", s.isM3u8)
+                                    .put("isMpd", s.isMpd)
+                                    .put(
+                                        "subtitles",
+                                        JSONArray().apply {
+                                            s.subtitles.forEach {
+                                                put(
+                                                    JSONObject()
+                                                        .put("lang", it.lang)
+                                                        .put("url", it.url)
+                                                )
+                                            }
+                                        }
+                                    )
+                            )
+                        }
+                    }.toString()
+                }.getOrNull()
+                if (payload != null && playable.isNotEmpty()) {
+                    showSheet = false
+                    context.startActivity(
+                        Intent(context, PlayerActivity::class.java).apply {
+                            putExtra("title", m?.title ?: title)
+                            putExtra("sources", payload)
+                        }
+                    )
+                }
+            }
         }
     }
 
@@ -412,19 +452,32 @@ fun DetailScreen(
                                     context.startActivity(
                                         Intent(context, PlayerActivity::class.java).apply {
                                             putExtra("title", m?.title ?: title)
-                                            putExtra("url", s.url)
-                                            putExtra("headers", JSONObject(s.headers).toString())
                                             putExtra(
-                                                "subtitles",
-                                                JSONArray().apply {
-                                                    s.subtitles.forEach {
+                                                "sources",
+                                                runCatching {
+                                                    JSONArray().apply {
                                                         put(
                                                             JSONObject()
-                                                                .put("lang", it.lang)
-                                                                .put("url", it.url)
+                                                                .put("name", s.name)
+                                                                .put("url", s.url)
+                                                                .put("headers", JSONObject(s.headers))
+                                                                .put("isM3u8", s.isM3u8)
+                                                                .put("isMpd", s.isMpd)
+                                                                .put(
+                                                                    "subtitles",
+                                                                    JSONArray().apply {
+                                                                        s.subtitles.forEach {
+                                                                            put(
+                                                                                JSONObject()
+                                                                                    .put("lang", it.lang)
+                                                                                    .put("url", it.url)
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                )
                                                         )
-                                                    }
-                                                }.toString()
+                                                    }.toString()
+                                                }.getOrNull().orEmpty()
                                             )
                                         }
                                     )

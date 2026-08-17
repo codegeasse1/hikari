@@ -41,6 +41,7 @@ object FallbackResolver {
         """(?:file|src|url|source|video_url|playlist_url|hls\d?)\s*[:=]\s*["']([^"'\s<>]+\.(?:m3u8|mp4|txt)[^"'\s<>]*)["']""",
         RegexOption.IGNORE_CASE
     )
+    private val ALL_URL_RE = Regex("""https?://[^\s"'<>{}\\]{6,}""", RegexOption.IGNORE_CASE)
 
     private val ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -131,6 +132,50 @@ object FallbackResolver {
         for (m in TXT_RE.findAll(text)) addUrl(m.value, referer, out)
         for (m in MP4_RE.findAll(text)) addUrl(m.value, referer, out)
         for (m in QUOTED_RE.findAll(text)) addUrl(m.groupValues[1], referer, out)
+        if (out.size < 10) probeCandidates(text, referer, out)
+    }
+
+    /**
+     * Many anime/NSFW CDNs serve extensionless HLS (the playlist URL has no
+     * `.m3u8` suffix — the CDN sniffs the request). URL patterns can't catch
+     * those, so probe the most promising http(s) URLs in the page text and
+     * keep the ones that actually answer with `#EXTM3U` / `#EXT-X` (or an
+     * MP4 box header).
+     */
+    private fun probeCandidates(text: String, referer: String, out: MutableSet<Pair<String, String>>) {
+        val candidates = ALL_URL_RE.findAll(text)
+            .map { it.value.replace("\\/", "/").trim().trimEnd('"', '\'', ',', ';', ')', '}') }
+            .filter { it.startsWith("http") && !JUNK.any { j -> it.contains(j, ignoreCase = true) } }
+            .filter { u ->
+                // Skip URLs we already found via patterns, and known non-video
+                // file types.
+                !out.any { it.first == u } &&
+                    !Regex("\\.(js|css|png|jpg|jpeg|gif|svg|webp|ico|json|xml|html?)(\\?.*)?$", RegexOption.IGNORE_CASE)
+                        .containsMatchIn(u)
+            }
+            .distinct()
+            .take(8)
+        for (u in candidates) {
+            val bytes = runCatching {
+                Http.getBytes(u, mapOf("Range" to "bytes=0-511", "Referer" to referer, "User-Agent" to Http.UA))
+            }.getOrNull() ?: continue
+            if (bytes.isEmpty()) continue
+            val head = String(bytes, 0, min(bytes.size, 512), Charsets.ISO_8859_1)
+            val isStream = head.startsWith("#EXTM3U") || head.contains("#EXT-X") ||
+                head.contains("<mpd", ignoreCase = true) || looksLikeMp4(bytes)
+            if (isStream) out.add(u to referer)
+        }
+    }
+
+    private fun looksLikeMp4(b: ByteArray): Boolean {
+        if (b.size < 12) return false
+        val b4 = b[4].toInt() and 0xff
+        val b5 = b[5].toInt() and 0xff
+        val b6 = b[6].toInt() and 0xff
+        val b7 = b[7].toInt() and 0xff
+        return (b4 == 'f' && b5 == 't' && b6 == 'y' && b7 == 'p') ||
+            (b4 == 'm' && b5 == 'o' && b6 == 'o' && b7 == 'v') ||
+            (b4 == 'm' && b5 == 'd' && b6 == 'a' && b7 == 't')
     }
 
     private fun addUrl(raw: String, referer: String, out: MutableSet<Pair<String, String>>) {

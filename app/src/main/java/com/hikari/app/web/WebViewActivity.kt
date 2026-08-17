@@ -34,10 +34,13 @@ import java.io.ByteArrayInputStream
  * Ad-free web view for user-added movie/streaming websites:
  *  - Ads, trackers and popups are blocked (request-level host filtering +
  *    DOM cleanup injected on every page).
- *  - HTML5 video plays inline with zero interaction required.
- *  - A floating ▶ button hands any detected HLS/DASH/MP4 source straight to
- *    Hikari's player, carrying the current page URL as the Referer so
- *    hotlink-protected CDNs accept it.
+ *  - Full browser features enabled (DOM storage, database, cookies, mixed
+ *    content, popups, fullscreen) so sites' own HTML5 players work exactly
+ *    like in a real browser.
+ *  - A floating ▶ button hands any REAL detected HLS/DASH/MP4 source straight
+ *    to Hikari's player, carrying the current page URL as the Referer so
+ *    hotlink-protected CDNs accept it. Detection probes the content-type so
+ *    ad previews / gifs are never counted as video.
  */
 class WebViewActivity : ComponentActivity() {
 
@@ -45,8 +48,13 @@ class WebViewActivity : ComponentActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var videoChip: TextView
     private lateinit var titleText: TextView
+    private lateinit var rootView: LinearLayout
     private val detectedVideos = LinkedHashSet<String>()
     private var pageUrl: String? = null
+
+    // Fullscreen HTML5 video support
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -127,18 +135,22 @@ class WebViewActivity : ComponentActivity() {
             )
         }
 
-        val root = LinearLayout(this).apply {
+        rootView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
             addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)))
             addView(progressBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4)))
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
-        setContentView(root)
+        setContentView(rootView)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack() else finish()
+                when {
+                    customView != null -> hideCustomView()
+                    webView.canGoBack() -> webView.goBack()
+                    else -> finish()
+                }
             }
         })
 
@@ -149,11 +161,22 @@ class WebViewActivity : ComponentActivity() {
         val ws = webView.settings
         ws.javaScriptEnabled = true
         ws.domStorageEnabled = true
+        ws.databaseEnabled = true
+        ws.setSupportMultipleWindows(true)
+        ws.javaScriptCanOpenWindowsAutomatically = true
+        ws.allowFileAccess = true
+        ws.allowContentAccess = true
+        ws.setSupportZoom(true)
+        ws.builtInZoomControls = true
+        ws.displayZoomControls = false
+        ws.loadWithOverviewMode = true
+        ws.useWideViewPort = true
         ws.mediaPlaybackRequiresUserGesture = false
-        ws.setSupportMultipleWindows(false)
-        ws.javaScriptCanOpenWindowsAutomatically = false
-        ws.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
+        // A real Chrome UA (not the bare "Version/4.0 webview" string) so sites
+        // serve their normal HTML5 player instead of a mobile/fallback page.
+        ws.userAgentString = Http.UA.replace("Linux; Android 13", "Linux; Android 14; Pixel 8")
 
         webView.setWebViewClient(object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -165,26 +188,29 @@ class WebViewActivity : ComponentActivity() {
                 if (AD_HOSTS.any { host.contains(it, ignoreCase = true) }) {
                     return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
+                // Only count it as a video if it actually IS one: probe the
+                // content-type in the background so ad previews, gifs and
+                // image placeholders never populate the chip.
                 if (VIDEO_URL_RE.containsMatchIn(u)) {
-                    runOnUiThread {
-                        if (detectedVideos.add(u)) {
-                            videoChip.text = "\u25B6 ${detectedVideos.size} video" +
-                                if (detectedVideos.size > 1) "s" else ""
-                            videoChip.visibility = View.VISIBLE
-                        }
-                    }
+                    maybeAddVideo(u)
                 }
                 return null
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 pageUrl = url
+                detectedVideos.clear()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageUrl = url
                 progressBar.visibility = View.GONE
                 view?.evaluateJavascript(AD_REMOVER_JS, null)
+                // Some players create <video> from JS without a network URL we
+                // can see — scan the DOM for the real element too.
+                view?.evaluateJavascript(VIDEO_SCAN_JS) { res ->
+                    for (u in extractUrls(res)) maybeAddVideo(u)
+                }
             }
         })
 
@@ -194,7 +220,37 @@ class WebViewActivity : ComponentActivity() {
                 isDialog: Boolean,
                 isUserGesture: Boolean,
                 resultMsg: Message?
-            ): Boolean = false
+            ): Boolean {
+                // Route popups (some players open in window.open) into this
+                // same web view so video keeps working.
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                transport.webView = webView
+                resultMsg?.sendToTarget()
+                return true
+            }
+
+            override fun onShowCustomView(
+                view: View?,
+                callback: CustomViewCallback?
+            ) {
+                if (customView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+                customView = view
+                customViewCallback = callback
+                view?.let { v ->
+                    rootView.addView(
+                        v,
+                        ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    )
+                }
+                hideSystemBars()
+            }
+
+            override fun onHideCustomView() {
+                hideCustomView()
+            }
 
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressBar.progress = newProgress
@@ -203,6 +259,65 @@ class WebViewActivity : ComponentActivity() {
         }
 
         webView.loadUrl(startUrl)
+    }
+
+    private fun hideCustomView() {
+        customView?.let { v -> rootView.removeView(v) }
+        customView = null
+        customViewCallback?.let { runCatching { it.onCustomViewHidden() } }
+        customViewCallback = null
+    }
+
+    private fun hideSystemBars() {
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    /** Adds [url] to the detected set ONLY after confirming it serves real video. */
+    private fun maybeAddVideo(url: String) {
+        if (detectedVideos.contains(url)) return
+        Thread {
+            val isVideo = isRealVideo(url)
+            if (isVideo) {
+                runOnUiThread {
+                    if (detectedVideos.add(url)) {
+                        videoChip.text = "\u25B6 ${detectedVideos.size} video" +
+                            if (detectedVideos.size > 1) "s" else ""
+                        videoChip.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** Fetches a few bytes and decides whether [url] is actual video content. */
+    private fun isRealVideo(url: String): Boolean {
+        val headers = mapOf("Range" to "bytes=0-2047", "Referer" to (pageUrl ?: url))
+        val r = runCatching { Http.get(url, headers) }.getOrNull() ?: return false
+        r.use { resp ->
+            if (!resp.isSuccessful) return false
+            val ct = resp.header("Content-Type")?.lowercase().orEmpty()
+            val body = resp.body?.bytes()?.take(2048) ?: return false
+            val head = String(body, Charsets.ISO_8859_1)
+            return when {
+                head.startsWith("#EXTM3U") -> true // HLS manifest
+                ct.contains("application/dash+xml") || head.contains("<mpd") -> true // DASH
+                ct.contains("video/") -> true // mp4/webm/etc
+                ct.contains("application/octet-stream") && looksLikeMp4(body) -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun looksLikeMp4(b: ByteArray): Boolean {
+        if (b.size < 12) return false
+        // MP4 boxes start with a size then "ftyp" / "moov" / "mdat" / "styp"
+        return b.size >= 12 &&
+            ((b[4] == 'f'.code.toByte() && b[5] == 't'.code.toByte() && b[6] == 'y'.code.toByte() && b[7] == 'p'.code.toByte()) ||
+                (b[4] == 'm'.code.toByte() && b[5] == 'o'.code.toByte() && b[6] == 'o'.code.toByte() && b[7] == 'v'.code.toByte()) ||
+                (b[4] == 'm'.code.toByte() && b[5] == 'd'.code.toByte() && b[6] == 'a'.code.toByte() && b[7] == 't'.code.toByte()))
     }
 
     private fun playVideo() {
@@ -238,19 +353,32 @@ class WebViewActivity : ComponentActivity() {
             Toast.makeText(this, "No playable video found", Toast.LENGTH_SHORT).show()
             return
         }
-        val u = unique.first()
-        val headers = JSONObject()
-        if (!referer.isNullOrBlank()) headers.put("Referer", referer)
-        headers.put("User-Agent", Http.UA)
+        val sources = JSONArray()
+        unique.forEach { u ->
+            val headers = JSONObject()
+            if (!referer.isNullOrBlank()) headers.put("Referer", referer)
+            headers.put("User-Agent", Http.UA)
+            sources.put(
+                JSONObject()
+                    .put("name", "Web · ${urlHost(u)}")
+                    .put("url", u)
+                    .put("headers", headers)
+                    .put("isM3u8", u.contains(".m3u8", true))
+                    .put("isMpd", u.contains(".mpd", true))
+                    .put("subtitles", JSONArray())
+            )
+        }
         startActivity(
             Intent(this, PlayerActivity::class.java).apply {
                 putExtra("title", titleText.text.toString())
-                putExtra("url", u)
-                putExtra("headers", headers.toString())
-                putExtra("subtitles", JSONArray().toString())
+                putExtra("sources", sources.toString())
             }
         )
     }
+
+    private fun urlHost(u: String): String = runCatching {
+        java.net.URI(u).host ?: u.take(48)
+    }.getOrDefault(u.take(48))
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -295,7 +423,7 @@ class WebViewActivity : ComponentActivity() {
                   '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]'
                 ];
                 for(var i=0;i<sel.length;i++){
-                  try{var el=document.querySelectorAll(sel[i]);for(var j=0;j<el.length;j++){var e=el[j];if(e&&e.parentNode)e.parentNode.removeChild(e);}}catch(e){}
+                  try{var el=document.querySelectorAll(sel[i]);for(var j=0;j<el.length;j++){var e=el[j];if(e&&e.parentNode&&!e.closest('video'))e.parentNode.removeChild(e);}}catch(e){}
                 }
                 document.querySelectorAll('video').forEach(function(v){
                   v.setAttribute('controls','');v.setAttribute('playsinline','');v.muted=false;

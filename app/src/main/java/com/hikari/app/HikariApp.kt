@@ -105,13 +105,22 @@ class HikariApp : Application() {
                     // 58img.top needs `Referer: https://leakporner.org/`). Use
                     // the exact headers when known, else fall back to a
                     // same-origin Referer (hotlink protection).
-                    val exact = com.hikari.app.cs3.Cs3MainApiProvider.imageHeaders[req.url.toString()]
+                    val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
+                    val exact = cs3.imageHeaders[req.url.toString()]
                     if (exact != null) {
                         exact.forEach { (k, v) -> builder.header(k, v) }
                     } else {
-                        val host = req.url.host
-                        if (host.isNotBlank()) {
-                            builder.header("Referer", "${req.url.scheme}://$host/")
+                        // URL may differ from the recorded one (scheme/query/
+                        // params) — apply the Referer the provider declared
+                        // for this image host.
+                        val hostRef = req.url.host?.let { cs3.imageHostReferers[it.lowercase()] }
+                        if (hostRef != null) {
+                            builder.header("Referer", hostRef)
+                        } else {
+                            val host = req.url.host
+                            if (host.isNotBlank()) {
+                                builder.header("Referer", "${req.url.scheme}://$host/")
+                            }
                         }
                     }
                     chain.proceed(builder.build())

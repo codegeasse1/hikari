@@ -52,9 +52,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          */
         val imageHeaders = ConcurrentHashMap<String, Map<String, String>>()
 
+        /** Per image-host Referer fallback: records `Referer` for a host so a
+         *  poster whose URL differs slightly (query params, www, scheme) still
+         *  gets the right referer. */
+        val imageHostReferers = ConcurrentHashMap<String, String>()
+
         private fun recordPosterHeaders(url: String?, headers: Map<String, String>?) {
             if (url.isNullOrBlank() || headers.isNullOrEmpty()) return
-            imageHeaders[url.trim()] = headers
+            val trimmed = url.trim()
+            imageHeaders[trimmed] = headers
+            headers["Referer"]?.let { ref ->
+                runCatching {
+                    val host = java.net.URI(trimmed).host ?: return@runCatching
+                    imageHostReferers[host.lowercase()] = ref
+                    // Also cover the scheme-relative/wrapped variants
+                    imageHostReferers["www." + host.lowercase()] = ref
+                }
+            }
         }
     }
 
