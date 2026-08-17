@@ -20,6 +20,8 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -239,43 +241,61 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
-            val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
-            val subs = mutableListOf<SubtitleFile>()
             val data = episode?.id ?: item.id
             val started = System.currentTimeMillis()
-            // The CloudStream runtime resolves embeds through several network
-            // calls that can each take ~10s; give it a hard cap so the UI can
-            // never silently hang. On timeout, dump the stuck thread's stack so
-            // the red error text tells us EXACTLY which call is blocking.
+
+            // Run the plugin's own extraction and our independent fallback
+            // engine IN PARALLEL. CloudStream's plugin path can hang for a long
+            // time on a dead embed; the fallback often answers in seconds, so
+            // waiting for the plugin first (up to 90s) then the fallback (60s)
+            // made playback feel broken. Whichever yields usable sources first
+            // wins.
+            val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
+            val subs = mutableListOf<SubtitleFile>()
             val worker = Thread.currentThread()
-            try {
-                val completed = withTimeoutOrNull(90_000) {
-                    a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
-                }
-                if (completed == null) {
-                    lastStreamsError =
-                        "Timed out after 90s — the provider hung while resolving sources.\n" +
-                            "Stuck on thread '${worker.name}':\n" +
-                            worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
-                } else {
-                    lastStreamsError = when {
-                        !completed -> "The provider could not resolve any sources for this title " +
-                            "(it found no stream links on the page)."
-                        links.isEmpty() -> "The provider resolved links, but every one of them " +
-                            "was unusable (blank, or a dead type)."
-                        else -> null
+            // Launch both paths INSIDE one coroutineScope so they genuinely run
+            // in parallel; then await both.
+            val (pluginJob, fallbackJob) = coroutineScope {
+                val pluginJob = async {
+                    try {
+                        val completed = withTimeoutOrNull(50_000) {
+                            a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                        }
+                        if (completed == null) {
+                            lastStreamsError =
+                                "Timed out after 50s — the provider hung while resolving sources.\n" +
+                                    "Stuck on thread '${worker.name}':\n" +
+                                    worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
+                        } else {
+                            lastStreamsError = when {
+                                !completed -> "The provider could not resolve any sources for this title " +
+                                    "(it found no stream links on the page)."
+                                links.isEmpty() -> "The provider resolved links, but every one of them " +
+                                    "was unusable (blank, or a dead type)."
+                                else -> null
+                            }
+                        }
+                        links.toList()
+                    } catch (e: Throwable) {
+                        lastStreamsError = fullCause(e)
+                        android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
+                        emptyList()
                     }
                 }
-            } catch (e: Throwable) {
-                // NoClassDefFoundError/NoSuchMethodError from extractor machinery
-                // escapes loadExtractor's Exception-catch; surface the full cause
-                // chain in the UI.
-                lastStreamsError = fullCause(e)
-                android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
+                val fallbackJob = async {
+                    try {
+                        withTimeoutOrNull(50_000) { FallbackResolver.resolve(data) } ?: emptyList()
+                    } catch (t: Throwable) {
+                        emptyList()
+                    }
+                }
+                pluginJob to fallbackJob
             }
-            lastStreamsTimeMs = System.currentTimeMillis() - started
-            val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
-            val jarSources = links
+
+            // Prefer the plugin's own links when it actually produced some;
+            // otherwise use the fallback's. Both ran concurrently so the total
+            // wait is ~the slower of the two, never their sum.
+            val jarSources = pluginJob.await()
                 .filter { it.url.isNotBlank() && it.url != a.mainUrl && it.type.name != "ERROR" }
                 .map { l ->
                     // CloudStream keeps the Referer OUT of ExtractorLink.headers —
@@ -289,6 +309,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     if (!ref.isNullOrBlank()) {
                         headers.putIfAbsent("Referer", ref)
                     }
+                    val subSources = subs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
                     StreamSource(
                         name = l.name.ifBlank { "Stream" },
                         // Google Drive share/download links answer with an HTML
@@ -303,20 +324,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     )
                 }
 
-            // The plugin runtime reported "done" but produced nothing usable.
-            // CloudStream plays the same video — so drive our own extraction
-            // engine (port of CloudStream's embed logic) as the safety net.
-            if (jarSources.isEmpty()) {
-                val fallback = try {
-                    withTimeoutOrNull(60_000) { FallbackResolver.resolve(data) }
-                } catch (t: Throwable) {
-                    null
-                } ?: emptyList()
-                if (fallback.isNotEmpty()) {
-                    lastStreamsError = null
-                    return@withContext fallback
-                }
+            val fallback = fallbackJob.await()
+            if (jarSources.isEmpty() && fallback.isNotEmpty()) {
+                lastStreamsError = null
+                return@withContext fallback
             }
+            lastStreamsTimeMs = System.currentTimeMillis() - started
             jarSources
         }
 

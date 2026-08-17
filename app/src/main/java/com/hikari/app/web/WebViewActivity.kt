@@ -3,11 +3,17 @@ package com.hikari.app.web
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Message
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -31,16 +37,26 @@ import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
 /**
- * Ad-free web view for user-added movie/streaming websites:
- *  - Ads, trackers and popups are blocked (request-level host filtering +
- *    DOM cleanup injected on every page).
- *  - Full browser features enabled (DOM storage, database, cookies, mixed
- *    content, popups, fullscreen) so sites' own HTML5 players work exactly
- *    like in a real browser.
+ * Ad-free web view for user-added movie/streaming websites.
+ *
+ * Everything is tuned to behave like a real Chrome browser so the sites' own
+ * HTML5 players work:
+ *  - Full cookie support INCLUDING third-party cookies (CDN auth cookies and
+ *    Cloudflare cf_clearance are set/read cross-origin), flushed to disk so
+ *    they survive activity restarts.
+ *  - A current desktop-class Chrome user agent (sites serve their normal
+ *    player instead of a mobile/fallback page, and Cloudflare challenges get
+ *    the least suspicious fingerprint possible).
+ *  - An hls.js polyfill: Android's WebView CANNOT decode HLS (.m3u8) in a
+ *    <video> tag, which is exactly why "the site loads but the video buffers
+ *    forever". The polyfill injects hls.js and attaches it to any m3u8 video
+ *    the page creates (their own hls.js is detected and left alone).
+ *  - Ads are HIDDEN (never removed, and never touching <video>), so scripts
+ *    that reference ad elements keep working and the player is never torn
+ *    down by our cleanup.
  *  - A floating ▶ button hands any REAL detected HLS/DASH/MP4 source straight
- *    to Hikari's player, carrying the current page URL as the Referer so
- *    hotlink-protected CDNs accept it. Detection probes the content-type so
- *    ad previews / gifs are never counted as video.
+ *    to Hikari's ExoPlayer as a fallback when a site's player won't cooperate,
+ *    carrying cookies + the page URL as Referer for hotlink-protected CDNs.
  */
 class WebViewActivity : ComponentActivity() {
 
@@ -55,6 +71,13 @@ class WebViewActivity : ComponentActivity() {
     // Fullscreen HTML5 video support
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
+    // File uploads (sites with <input type=file>)
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    // Periodic re-scan for SPA players that add <video> without a navigation
+    private val scanHandler = Handler(Looper.getMainLooper())
+    private var scanRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -174,9 +197,22 @@ class WebViewActivity : ComponentActivity() {
         ws.mediaPlaybackRequiresUserGesture = false
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
-        // A real Chrome UA (not the bare "Version/4.0 webview" string) so sites
-        // serve their normal HTML5 player instead of a mobile/fallback page.
-        ws.userAgentString = Http.UA.replace("Linux; Android 13", "Linux; Android 14; Pixel 8")
+        ws.offscreenPreRaster = true
+        // A real current Chrome UA (not the bare "Version/4.0 webview" string):
+        // sites serve their normal HTML5 player instead of a fallback page, and
+        // Cloudflare sees an ordinary Chrome Mobile fingerprint.
+        ws.userAgentString = Http.WEBVIEW_UA
+
+        // Cookies are the backbone of most streaming CDNs (session tokens) and
+        // Cloudflare (cf_clearance). Accept them, accept THIRD-party ones (the
+        // player page is site A, the CDN is site B), and flush to disk so they
+        // survive activity restarts — this is what makes "works in my browser"
+        // actually work in the app.
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+            setAcceptFileSchemeCookies(false)
+        }
 
         webView.setWebViewClient(object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -200,17 +236,44 @@ class WebViewActivity : ComponentActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 pageUrl = url
                 detectedVideos.clear()
+                scanHandler.removeCallbacksAndMessages(null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageUrl = url
                 progressBar.visibility = View.GONE
-                view?.evaluateJavascript(AD_REMOVER_JS, null)
+                view?.evaluateJavascript(AD_CLEAN_JS, null)
+                view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 // Some players create <video> from JS without a network URL we
-                // can see — scan the DOM for the real element too.
-                view?.evaluateJavascript(VIDEO_SCAN_JS) { res ->
-                    for (u in extractUrls(res)) maybeAddVideo(u)
+                // can see — scan the DOM for the real element too. The runnable
+                // keeps re-scanning so single-page-app players (which swap the
+                // player without a full navigation) still light the chip.
+                scanRunnable?.let { scanHandler.removeCallbacks(it) }
+                val r = object : Runnable {
+                    override fun run() {
+                        val v = webView
+                        if (v == null) return
+                        v.evaluateJavascript(VIDEO_SCAN_JS) { res ->
+                            for (u in extractUrls(res)) maybeAddVideo(u)
+                        }
+                        scanHandler.postDelayed(this, 2500)
+                    }
                 }
+                scanRunnable = r
+                scanHandler.postDelayed(r, 1500)
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                // The renderer crashed (often a heavyweight site) — relaunch the
+                // activity instead of showing a dead white screen.
+                runCatching {
+                    finish()
+                    startActivity(intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                }
+                return true
             }
         })
 
@@ -227,6 +290,27 @@ class WebViewActivity : ComponentActivity() {
                 transport.webView = webView
                 resultMsg?.sendToTarget()
                 return true
+            }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileChooserCallback = filePathCallback
+                val intent = runCatching { fileChooserParams?.createIntent() }.getOrNull()
+                return if (intent != null) {
+                    try {
+                        startActivityForResult(intent, FILE_CHOOSER_REQUEST)
+                        true
+                    } catch (e: Exception) {
+                        fileChooserCallback = null
+                        false
+                    }
+                } else {
+                    fileChooserCallback = null
+                    false
+                }
             }
 
             override fun onShowCustomView(
@@ -259,6 +343,24 @@ class WebViewActivity : ComponentActivity() {
         }
 
         webView.loadUrl(startUrl)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != FILE_CHOOSER_REQUEST) return
+        val cb = fileChooserCallback ?: return
+        fileChooserCallback = null
+        if (resultCode == RESULT_OK && data != null) {
+            val results = if (data.clipData != null) {
+                (0 until data.clipData!!.itemCount).mapNotNull { data.clipData!!.getItemAt(it).uri }
+            } else {
+                data.data?.let { listOf(it) }.orEmpty()
+            }
+            cb.onReceiveValue(results.toTypedArray())
+        } else {
+            cb.onReceiveValue(null)
+        }
     }
 
     private fun hideCustomView() {
@@ -294,7 +396,15 @@ class WebViewActivity : ComponentActivity() {
 
     /** Fetches a few bytes and decides whether [url] is actual video content. */
     private fun isRealVideo(url: String): Boolean {
-        val headers = mapOf("Range" to "bytes=0-2047", "Referer" to (pageUrl ?: url))
+        // Share the WebView's cookie jar with the probe request — Cloudflare /
+        // auth-token CDNs answer with a 403 (or a challenge page) without it.
+        val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+        val headers = buildMap {
+            put("Range", "bytes=0-2047")
+            put("Referer", pageUrl ?: url)
+            put("User-Agent", Http.WEBVIEW_UA)
+            if (!cookie.isNullOrBlank()) put("Cookie", cookie)
+        }
         val r = runCatching { Http.get(url, headers) }.getOrNull() ?: return false
         r.use { resp ->
             if (!resp.isSuccessful) return false
@@ -353,11 +463,15 @@ class WebViewActivity : ComponentActivity() {
             Toast.makeText(this, "No playable video found", Toast.LENGTH_SHORT).show()
             return
         }
+        val cookie = runCatching {
+            unique.firstNotNullOfOrNull { CookieManager.getInstance().getCookie(it) }
+        }.getOrNull()
         val sources = JSONArray()
         unique.forEach { u ->
             val headers = JSONObject()
             if (!referer.isNullOrBlank()) headers.put("Referer", referer)
             headers.put("User-Agent", Http.UA)
+            if (!cookie.isNullOrBlank()) headers.put("Cookie", cookie)
             sources.put(
                 JSONObject()
                     .put("name", "Web · ${urlHost(u)}")
@@ -385,11 +499,15 @@ class WebViewActivity : ComponentActivity() {
     private fun lp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
 
     override fun onDestroy() {
+        scanHandler.removeCallbacksAndMessages(null)
+        runCatching { CookieManager.getInstance().flush() }
         runCatching { webView.destroy() }
         super.onDestroy()
     }
 
     companion object {
+        private const val FILE_CHOOSER_REQUEST = 4001
+
         /** Request-level ad/tracker hosts — requests to these are answered with an empty body. */
         private val AD_HOSTS = listOf(
             "doubleclick.net", "googleadservices.com", "googlesyndication.com",
@@ -411,27 +529,99 @@ class WebViewActivity : ComponentActivity() {
         private val VIDEO_URL_RE =
             Regex("""\.(m3u8|mpd|mp4)(\?[^\s"']*)?$""", RegexOption.IGNORE_CASE)
 
-        /** Injected after every page load; keeps the DOM free of ad containers. */
-        private val AD_REMOVER_JS = """
+        /** Hides ad containers. HIDING (not removing) keeps page scripts that
+         *  query these elements working, and videos are never touched — the
+         *  site's own player stays intact. */
+        private val AD_CLEAN_JS = """
             (function(){
-              function kill(){
-                var sel=[
-                  '[id^="google_ads"]','.adsbygoogle','[class*="adsense"]','[class*="advert"]','[id*="advert"]',
-                  '[class*="ad-banner"]','[id*="ad-banner"]','div[data-ad]','[class*="sponsored"]','[class*="ad-placeholder"]',
-                  'iframe[src*="doubleclick"]','iframe[src*="googlesyndication"]','iframe[src*="googleads"]',
-                  'iframe[src*="advertising"]','iframe[src*="adserver"]','iframe[src*="2mdn"]',
-                  '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]'
-                ];
-                for(var i=0;i<sel.length;i++){
-                  try{var el=document.querySelectorAll(sel[i]);for(var j=0;j<el.length;j++){var e=el[j];if(e&&e.parentNode&&!e.closest('video'))e.parentNode.removeChild(e);}}catch(e){}
+              var SEL=[
+                '[id^="google_ads"]','.adsbygoogle','ins.adsbygoogle','[class*="adsense"]','[class*="advert"]','[id*="advert"]',
+                '[class*="ad-banner"]','[id*="ad-banner"]','div[data-ad]','[class*="sponsored"]','[class*="ad-placeholder"]',
+                'iframe[src*="doubleclick"]','iframe[src*="googlesyndication"]','iframe[src*="googleads"]',
+                'iframe[src*="advertising"]','iframe[src*="adserver"]','iframe[src*="2mdn"]',
+                '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]'
+              ];
+              function clean(){
+                for(var i=0;i<SEL.length;i++){
+                  try{
+                    var els=document.querySelectorAll(SEL[i]);
+                    for(var j=0;j<els.length;j++){
+                      var e=els[j];
+                      if(!e||!e.parentNode)continue;
+                      if(e.closest('video')||e.querySelector('video'))continue;
+                      e.style.setProperty('display','none','important');
+                    }
+                  }catch(e){}
                 }
-                document.querySelectorAll('video').forEach(function(v){
-                  v.setAttribute('controls','');v.setAttribute('playsinline','');v.muted=false;
-                  try{v.play&&v.play().catch(function(){})}catch(e){}
-                });
               }
-              kill();
-              setInterval(kill,1500);
+              clean();
+              try{
+                new MutationObserver(clean).observe(document.documentElement,{childList:true,subtree:true});
+              }catch(e){}
+            })();
+        """.trimIndent()
+
+        /**
+         * hls.js polyfill. Android WebView CANNOT decode HLS in a <video>, so
+         * sites that feed the player a plain .m3u8 buffer forever. If the page
+         * already runs its own hls.js (window.Hls exists) we reuse it; otherwise
+         * we load hls.js from CDN and attach it to every m3u8 video, including
+         * ones the site creates later. Videos the page already plays via a
+         * blob: src (their own hls.js) are skipped so we never double-attach.
+         */
+        private val VIDEO_POLYFILL_JS = """
+            (function(){
+              if(window.__hikariHlsInit)return;
+              window.__hikariHlsInit=true;
+              function attach(v){
+                try{
+                  if(v.__hikariHlsAttached)return;
+                  var src=v.currentSrc||v.src||(v.querySelector('source')&&v.querySelector('source').src)||(v.getAttribute('data-src')||'');
+                  if(!src||src.indexOf('.m3u8')<0)return;
+                  if(src.indexOf('blob:')===0)return;
+                  if(v.canPlayType('application/vnd.apple.mpegurl'))return;
+                  if(!window.Hls||!window.Hls.isSupported())return;
+                  var hls=new window.Hls({enableWorker:true,lowLatencyMode:true});
+                  hls.loadSource(src);
+                  hls.attachMedia(v);
+                  v.__hikariHlsAttached=hls;
+                }catch(e){}
+              }
+              function scan(){
+                try{
+                  var vs=document.querySelectorAll('video');
+                  for(var i=0;i<vs.length;i++)attach(vs[i]);
+                  var ss=document.querySelectorAll('video source');
+                  for(var i=0;i<ss.length;i++){
+                    var s=ss[i];
+                    if(s.src&&s.src.indexOf('.m3u8')>=0&&s.parentElement)attach(s.parentElement);
+                  }
+                }catch(e){}
+              }
+              function boot(){
+                scan();
+                setInterval(scan,2000);
+                try{
+                  new MutationObserver(scan).observe(document.body||document.documentElement,{childList:true,subtree:true});
+                }catch(e){}
+              }
+              if(window.Hls){boot();}
+              else{
+                var tried=[];
+                function loadLib(src){
+                  if(tried.indexOf(src)>=0)return;
+                  tried.push(src);
+                  var s=document.createElement('script');
+                  s.src=src;
+                  s.async=true;
+                  s.onload=function(){boot();};
+                  s.onerror=function(){};
+                  document.head.appendChild(s);
+                }
+                loadLib('https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js');
+                setTimeout(function(){loadLib('https://unpkg.com/hls.js@1.5.13/dist/hls.min.js');},3500);
+                setTimeout(function(){loadLib('https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js');},7000);
+              }
             })();
         """.trimIndent()
 
@@ -441,7 +631,7 @@ class WebViewActivity : ComponentActivity() {
               var out=[];
               try{
                 document.querySelectorAll('video').forEach(function(v){
-                  var s=v.currentSrc||v.src||(v.querySelector('source')&&v.querySelector('source').src);
+                  var s=v.currentSrc||v.src||(v.querySelector('source')&&v.querySelector('source').src)||(v.getAttribute('data-src')||'');
                   if(s&&s.indexOf('blob:')!==0)out.push(s);
                 });
                 document.querySelectorAll('video source').forEach(function(s){if(s.src&&s.src.indexOf('blob:')!==0)out.push(s.src);});

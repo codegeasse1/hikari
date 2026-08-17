@@ -12,13 +12,35 @@ import org.json.JSONObject
 
 class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
-    private val base: String get() = config.url.trimEnd('/')
+    companion object {
+        /** Per-provider reason why its home catalog failed (empty = it works). */
+        val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+    }
+
+    /** Addon base, tolerating a pasted `/manifest.json` suffix (users copy the
+     *  full manifest URL from Stremio). */
+    private val base: String get() {
+        var b = config.url.trim().trimEnd('/')
+        if (b.lowercase().endsWith("/manifest.json")) b = b.dropLast("/manifest.json".length)
+        return b.trimEnd('/')
+    }
     private var manifest: JSONObject? = null
+
+    private suspend fun getJson(url: String): JSONObject? {
+        // A browser-like Accept header matters: several addon hosts answer 403
+        // to bare requests, and http/https mirrors often differ in behaviour.
+        val headers = mapOf("Accept" to "application/json, text/plain, */*")
+        for (u in listOf(url, url.replaceFirst("https://", "http://")).distinct()) {
+            val body = Http.getString(u, headers)
+            val json = body?.let { runCatching { JSONObject(it) }.getOrNull() }
+            if (json != null) return json
+        }
+        return null
+    }
 
     private suspend fun loadManifest(): JSONObject? {
         manifest?.let { return it }
-        val m = Http.getString("$base/manifest.json")
-            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val m = getJson("$base/manifest.json")
         manifest = m
         return m
     }
@@ -30,7 +52,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun catalogs(): List<CatalogRef> {
-        val m = loadManifest() ?: return emptyList()
+        val m = loadManifest() ?: run {
+            catalogErrors[config.id] =
+                "Could not load manifest from ${base}manifest.json (host may be down or blocking non-browser requests)"
+            return emptyList()
+        }
         val arr = m.optJSONArray("catalogs") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
             val c = arr.optJSONObject(i) ?: return@mapNotNull null
@@ -43,7 +69,14 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
         val url = "$base/catalog/${ref.type.name.lowercase()}/${ref.id}.json" +
             if (page > 1) "?page=$page" else ""
-        return parseItems(url)
+        val items = parseItems(url)
+        if (items.isEmpty()) {
+            catalogErrors[config.id] =
+                "Catalog '${ref.name}' returned no items from ${url.take(120)}…"
+        } else {
+            catalogErrors.remove(config.id)
+        }
+        return items
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> {
@@ -57,8 +90,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     private suspend fun parseItems(url: String): List<MediaItem> {
-        val s = Http.getString(url) ?: return emptyList()
-        val json = runCatching { JSONObject(s) }.getOrNull() ?: return emptyList()
+        val json = getJson(url) ?: return emptyList()
         val metas = json.optJSONArray("metas") ?: return emptyList()
         val out = mutableListOf<MediaItem>()
         for (i in 0 until metas.length()) {
@@ -85,7 +117,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getMeta(item: MediaItem): MediaItem {
         if (item.overview != null || item.genres.isNotEmpty()) return item
         val url = "$base/meta/${item.type.name.lowercase()}/${item.id}.json"
-        val json = Http.getString(url)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return item
+        val json = getJson(url) ?: return item
         val m = json.optJSONObject("meta") ?: return item
         return item.copy(
             overview = m.optString("description").ifBlank { item.overview },
@@ -98,8 +130,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
         if (item.type != MediaType.SERIES) return null
-        val json = Http.getString("$base/meta/series/${item.id}.json")
-            ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
+        val json = getJson("$base/meta/series/${item.id}.json") ?: return null
         val meta = json.optJSONObject("meta") ?: return null
         val videos = meta.optJSONArray("videos") ?: return null
         val out = mutableListOf<Episode>()
@@ -121,8 +152,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val idPart = episode?.id ?: item.id
         val url = "$base/stream/${item.type.name.lowercase()}/$idPart.json"
-        val json = Http.getString(url)?.let { runCatching { JSONObject(it) }.getOrNull() }
-            ?: return emptyList()
+        val json = getJson(url) ?: return emptyList()
         val arr = json.optJSONArray("streams") ?: return emptyList()
         val subs = getSubtitles(item, episode)
         val out = mutableListOf<StreamSource>()
@@ -150,8 +180,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     private suspend fun getSubtitles(item: MediaItem, episode: Episode?): List<SubtitleSource> {
         if (item.type != MediaType.SERIES) return emptyList()
         val idPart = episode?.id ?: item.id
-        val json = Http.getString("$base/subtitles/${item.type.name.lowercase()}/$idPart.json")
-            ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return emptyList()
+        val json = getJson("$base/subtitles/${item.type.name.lowercase()}/$idPart.json") ?: return emptyList()
         val arr = json.optJSONArray("subtitles") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
             val st = arr.optJSONObject(i) ?: return@mapNotNull null

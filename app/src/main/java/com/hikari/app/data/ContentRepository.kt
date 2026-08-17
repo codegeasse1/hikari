@@ -19,16 +19,27 @@ class ContentRepository(private val manager: ProviderManager) {
                 async {
                     runCatching {
                         withTimeoutOrNull(60_000) {
-                            p.catalogs().take(8).map { c ->
-                                val items = runCatching { p.getCatalog(c, 1) }
-                                    .getOrDefault(emptyList())
-                                    .take(24)
-                                CatalogRow(p.config.name, c.name, items)
+                            // Fetch each catalog IN PARALLEL. Sequential fetches
+                            // let a slow addon with many catalogs (e.g. Streaming
+                            // Catalogs) blow the whole 60s budget, so the provider
+                            // looks "down" on Home while the same addon works in
+                            // Stremio. Each catalog gets its own budget instead.
+                            val catalogs = p.catalogs().take(8)
+                            coroutineScope {
+                                catalogs.map { c ->
+                                    async {
+                                        val items = runCatching { p.getCatalog(c, 1) }
+                                            .getOrDefault(emptyList())
+                                            .take(24)
+                                        if (items.isEmpty()) null
+                                        else CatalogRow(p.config.name, c.name, items)
+                                    }
+                                }.awaitAll().filterNotNull()
                             }
                         } ?: emptyList()
                     }.getOrDefault(emptyList())
                 }
-            }.awaitAll().flatten().filter { it.items.isNotEmpty() }
+            }.awaitAll().flatten()
         }
     }
 

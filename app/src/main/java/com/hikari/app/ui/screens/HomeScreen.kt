@@ -222,6 +222,7 @@ fun HomeScreen(nav: NavHostController) {
                     val name = providers.firstOrNull { it.config.id == selected }?.config?.name
                     val reason =
                         com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
+                            ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
                     EmptyState(
                         title = "Couldn't load ${name ?: "this extension"}",
                         subtitle = reason

@@ -65,6 +65,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.player.PlayerActivity
+import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.components.EmptyState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,6 +75,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
@@ -90,33 +92,77 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** Streams resolved ahead of time (first episode / movie) so tapping Play
+     *  or the first episode starts instantly instead of waiting 20-30s for
+     *  extraction. Keyed by the target id. */
+    private val streamCache = ConcurrentHashMap<String, List<StreamSource>>()
+
+    private val _streamsReady = MutableStateFlow(false)
+    val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
+
     fun load(providerId: String, type: MediaType, mediaId: String, title: String) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
+            _streamsReady.value = false
             val provider = manager.byId(providerId)
             if (provider == null) {
                 _error.value = "Provider not found"
                 _loading.value = false
                 return@launch
             }
+            val base = MediaItem(providerId, mediaId, title, type)
+            var metaDone = false
             withContext(Dispatchers.IO) {
-                val base = MediaItem(providerId, mediaId, title, type)
                 runCatching {
                     _meta.value = provider.getMeta(base)
                     _episodes.value = provider.getEpisodes(base)
                 }.onFailure {
                     _error.value = it.message ?: "Failed to load"
                 }
+                metaDone = true
             }
             _loading.value = false
+            if (metaDone) prefetchFirstStreams(provider, base)
         }
     }
 
-    suspend fun getStreams(episode: Episode?): List<StreamSource> = withContext(Dispatchers.IO) {
-        val m = _meta.value ?: return@withContext emptyList()
-        val provider = manager.byId(m.providerId) ?: return@withContext emptyList()
-        runCatching { provider.getStreams(m, episode) }.getOrDefault(emptyList())
+    /** While the user is still reading the detail page, resolve sources for the
+     *  movie or the first episode so the player starts immediately on tap. */
+    private suspend fun prefetchFirstStreams(provider: ContentProvider, base: MediaItem) {
+        val target = if (_episodes.value.isNullOrEmpty()) {
+            base to null
+        } else {
+            val first = _episodes.value!!.sortedBy { it.number }.firstOrNull()
+            if (first == null) return
+            base to first
+        }
+        val (item, ep) = target
+        val key = cacheKey(item, ep)
+        if (streamCache.containsKey(key)) {
+            _streamsReady.value = true
+            return
+        }
+        val result = withContext(Dispatchers.IO) {
+            runCatching { provider.getStreams(item, ep) }.getOrDefault(emptyList())
+        }
+        streamCache[key] = result
+        _streamsReady.value = true
+    }
+
+    private fun cacheKey(item: MediaItem, ep: Episode?): String =
+        item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
+
+    suspend fun getStreams(episode: Episode?): List<StreamSource> {
+        val m = _meta.value ?: return emptyList()
+        val key = cacheKey(m, episode)
+        streamCache[key]?.let { return it }
+        val provider = manager.byId(m.providerId) ?: return emptyList()
+        val result = withContext(Dispatchers.IO) {
+            runCatching { provider.getStreams(m, episode) }.getOrDefault(emptyList())
+        }
+        streamCache[key] = result
+        return result
     }
 }
 
@@ -134,6 +180,7 @@ fun DetailScreen(
     val episodes by vm.episodes.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
+    val streamsReady by vm.streamsReady.collectAsState()
     val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -292,7 +339,17 @@ fun DetailScreen(
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Play")
+                            if (streamsReady) {
+                                Text("Play")
+                            } else {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Preparing…")
+                            }
                         }
                     }
                 }
