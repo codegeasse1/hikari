@@ -65,8 +65,6 @@ class PlayerActivity : ComponentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
-    private var topBar: View? = null
-    private var bottomBar: View? = null
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
@@ -108,8 +106,6 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
-        topBar = findViewById(R.id.top_bar)
-        bottomBar = findViewById(R.id.bottom_bar)
         speedChip = findViewById(R.id.speed_btn)
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
@@ -148,16 +144,9 @@ class PlayerActivity : ComponentActivity() {
             false
         }
 
-        // Hide our top bar whenever the media3 controller hides, so the screen
-        // stays clean while watching. Tapping the video brings controls back.
-        @Suppress("DEPRECATION")
-        playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
-            override fun onVisibilityChanged(visibility: Int) {
-                val v = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
-                topBar?.visibility = v
-                bottomBar?.visibility = v
-            }
-        })
+        // All our controls (Back/Title/Server/Speed on top, Quality/Sub/Rotate
+        // at the bottom) live INSIDE the media3 controller layout now, so they
+        // appear and fade together with the playback controls on tap.
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -520,9 +509,15 @@ class PlayerActivity : ComponentActivity() {
         }
         playerView?.player = null
 
+        // Send the SOURCE's own User-Agent when it declares one (extractors like
+        // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
+        // requires), falling back to our Chrome UA. Never brand-mangle it with
+        // a "Hikari/" prefix — a malformed UA gets those hosts to answer 403.
+        val sourceHeaders = src.headers
+        val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
         val dataSourceFactory = OkHttpDataSource.Factory(client)
-            .setUserAgent("Hikari/" + Http.UA)
-            .setDefaultRequestProperties(src.headers)
+            .setUserAgent(ua)
+            .setDefaultRequestProperties(sourceHeaders)
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))

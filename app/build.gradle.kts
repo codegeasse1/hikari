@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 15
-        versionName = "0.3.12"
+        versionCode = 16
+        versionName = "0.3.13"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -88,6 +88,10 @@ dependencies {
     // magnet/infoHash streams become HLS served from a local TorrServer process.
     implementation("com.github.recloudstream:torrentserver:7861970")
     implementation(libs.androidx.core.ktx)
+    // Phisher/Kotlin plugins (Anikoto, …) are compiled against Gson and call it
+    // at runtime (e.g. AnikotoExtractors.extractMegaPlayUrl) — without it they
+    // die with NoClassDefFoundError: com.google.gson.JsonObject.
+    implementation("com.google.code.gson:gson:2.11.0")
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

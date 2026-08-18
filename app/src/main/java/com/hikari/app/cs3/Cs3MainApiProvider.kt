@@ -349,14 +349,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         }
                         if (completed == null) {
                             lastStreamsError =
-                                "Timed out after ${pluginTimeout / 1000}s — the provider hung while resolving sources.\n" +
+                                "${a.name} timed out after ${pluginTimeout / 1000}s — the provider hung while resolving sources.\n" +
                                     "Stuck on thread '${worker.name}':\n" +
                                     worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                         } else {
+                            val dataLabel = if (data.length > 96) data.take(96) + "…" else data
+                            val who = "${a.name} [$dataLabel]"
                             lastStreamsError = when {
-                                !completed -> "The provider could not resolve any sources for this title " +
-                                    "(it found no stream links on the page)."
-                                links.isEmpty() -> "The provider resolved links, but every one of them " +
+                                !completed -> "$who: no stream links found on the page."
+                                links.isEmpty() -> "$who: resolved links, but every one of them " +
                                     "was unusable (blank, or a dead type)."
                                 else -> null
                             }
