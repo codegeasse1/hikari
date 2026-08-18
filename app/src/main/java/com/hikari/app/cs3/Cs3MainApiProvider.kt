@@ -362,7 +362,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // transient miss can never sink the whole source list.
                         var completed: Boolean? = null
                         var elapsedMs = 0L
-                        fun runOnce(budget: Long) {
+                        suspend fun runOnce(budget: Long) {
                             val s = System.currentTimeMillis()
                             completed = withTimeoutOrNull(budget) {
                                 a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
@@ -385,7 +385,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                             val dataLabel = if (data.length > 96) data.take(96) + "…" else data
                             val who = "${a.name} [$dataLabel]"
                             lastStreamsError = when {
-                                !completed -> "$who: no stream links found on the page."
+                                completed != true -> "$who: no stream links found on the page."
                                 links.isEmpty() -> "$who: page parsed OK, but produced no stream links."
                                 else -> null
                             }
