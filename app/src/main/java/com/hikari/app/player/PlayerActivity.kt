@@ -150,7 +150,7 @@ class PlayerActivity : ComponentActivity() {
         // Keep our own mirror of the controller visibility (media3's
         // PlayerControlView field is private) for the tap-to-toggle logic.
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
-            override fun onVisibilityChange(visibility: Int) {
+            override fun onVisibilityChanged(visibility: Int) {
                 controllerVisible = visibility == View.VISIBLE
             }
         })
