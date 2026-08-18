@@ -220,6 +220,19 @@ class WebViewActivity : ComponentActivity() {
                 blockedDomains = emptySet()
                 whitelistDomains = emptySet()
             }
+            // Userscripts (Tampermonkey-style, WebView only). Loaded here so
+            // they're ready before the first page finishes; if the page already
+            // started loading, inject the document-start scripts for it now.
+            UserscriptManager.reload(app)
+            val startUrlNow = webView.url ?: pageUrl
+            if (startUrlNow != null) {
+                val inject = UserscriptManager.scriptsFor(startUrlNow, atStart = true)
+                if (inject.isNotEmpty()) {
+                    runOnUiThread {
+                        for (js in inject) runCatching { webView.evaluateJavascript(js, null) }
+                    }
+                }
+            }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -346,6 +359,13 @@ class WebViewActivity : ComponentActivity() {
                 scanHandler.removeCallbacksAndMessages(null)
                 progressBar.visibility = View.VISIBLE
                 blockedToastShown = false
+                // Userscripts declaring @run-at document-start run before the
+                // page's own scripts.
+                if (UserscriptManager.isLoaded() && url != null) {
+                    for (js in UserscriptManager.scriptsFor(url, atStart = true)) {
+                        runCatching { view?.evaluateJavascript(js, null) }
+                    }
+                }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -354,6 +374,11 @@ class WebViewActivity : ComponentActivity() {
                 // The popup relay child (if any) served its purpose — free it.
                 popupChild?.let { runCatching { it.destroy() } }
                 popupChild = null
+                if (UserscriptManager.isLoaded() && url != null) {
+                    for (js in UserscriptManager.scriptsFor(url, atStart = false)) {
+                        runCatching { view?.evaluateJavascript(js, null) }
+                    }
+                }
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
@@ -730,6 +755,25 @@ class WebViewActivity : ComponentActivity() {
                 launchPlayer(listOf(url), pageUrl ?: webView.url)
             }
         }
+
+        // ---- Userscript GM_* value storage (WebView only) ----
+        @android.webkit.JavascriptInterface
+        fun userscriptGet(scriptId: String, key: String): String? =
+            UserscriptManager.getValue(applicationContext, scriptId, key)
+
+        @android.webkit.JavascriptInterface
+        fun userscriptSet(scriptId: String, key: String, valueJson: String) {
+            UserscriptManager.setValue(applicationContext, scriptId, key, valueJson)
+        }
+
+        @android.webkit.JavascriptInterface
+        fun userscriptDelete(scriptId: String, key: String) {
+            UserscriptManager.deleteValue(applicationContext, scriptId, key)
+        }
+
+        @android.webkit.JavascriptInterface
+        fun userscriptList(scriptId: String): String =
+            UserscriptManager.listValues(applicationContext, scriptId)
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()

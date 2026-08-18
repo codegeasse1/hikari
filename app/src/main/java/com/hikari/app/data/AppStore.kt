@@ -6,8 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
-import com.hikari.app.ui.theme.HikariThemeMode
-import kotlinx.coroutines.flow.Flow
+import com.hikari.app.ui.theme.HikariThemeModeimport kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
@@ -24,6 +23,7 @@ class AppStore(private val ctx: Context) {
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
         val SITES = stringPreferencesKey("sites")
+        val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
         val AD_LISTS = stringPreferencesKey("adLists")
@@ -137,6 +137,53 @@ class AppStore(private val ctx: Context) {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // ---- Userscripts (run inside the WebView only) ----
+
+    fun userscriptsFlow(): Flow<List<Userscript>> =
+        store.data.map { parseUserscripts(it[K.USERS]) }
+
+    suspend fun userscripts(): List<Userscript> = userscriptsFlow().first()
+
+    suspend fun setUserscripts(list: List<Userscript>) {
+        store.edit { it[K.USERS] = encodeUserscripts(list) }
+    }
+
+    private fun parseUserscripts(s: String?): List<Userscript> {
+        if (s.isNullOrBlank()) return emptyList()
+        val out = mutableListOf<Userscript>()
+        try {
+            val arr = JSONArray(s)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val code = o.optString("code")
+                if (code.isBlank()) continue
+                out += Userscript(
+                    id = o.optString("id"),
+                    name = o.optString("name").ifBlank { "Userscript" },
+                    enabled = o.optBoolean("enabled", true),
+                    code = code,
+                )
+            }
+        } catch (e: Exception) {
+            return emptyList()
+        }
+        return out
+    }
+
+    private fun encodeUserscripts(list: List<Userscript>): String {
+        val arr = JSONArray()
+        for (u in list) {
+            arr.put(
+                JSONObject()
+                    .put("id", u.id)
+                    .put("name", u.name)
+                    .put("enabled", u.enabled)
+                    .put("code", u.code)
+            )
+        }
+        return arr.toString()
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =

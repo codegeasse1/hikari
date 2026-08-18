@@ -145,8 +145,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val name = manifest.optString("name").ifBlank {
             clean.removePrefix("https://").removePrefix("http://")
         }
+        val iconUrl = manifest.optString("icon").ifBlank { null }
         val id = "stremio|" + (clean.hashCode().toLong().let { if (it < 0) -it else it })
-        store.addProvider(ProviderConfig(id, name, ProviderType.STREMIO, clean))
+        store.addProvider(ProviderConfig(id, name, ProviderType.STREMIO, clean, iconUrl = iconUrl))
         manager.refresh()
         Result.success(name)
     }
@@ -1172,6 +1173,23 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun ProviderIcon(p: ContentProvider, modifier: Modifier = Modifier) {
+    // Lazily resolve icons for providers that shipped without one (Stremio
+    // addons installed before the manifest icon was saved, CS3 plugins whose
+    // repo lists no icon). CS3 falls back to the site's favicon synchronously;
+    // Stremio needs one manifest fetch, so resolve it off the main thread.
+    var icon by remember(p.config.id) { mutableStateOf(p.config.iconUrl) }
+    LaunchedEffect(p.config.id) {
+        if (icon == null) {
+            icon = withContext(Dispatchers.IO) {
+                com.hikari.app.ui.ExtensionIcons.forConfig(p.config)
+            }
+        }
+    }
+    ExtensionIcon(url = icon, modifier = modifier)
+}
+
+@Composable
 private fun ProviderCard(
     p: ContentProvider,
     status: String?,
@@ -1189,8 +1207,8 @@ private fun ProviderCard(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                ExtensionIcon(
-                    url = p.config.iconUrl,
+                ProviderIcon(
+                    p = p,
                     modifier = Modifier.size(32.dp)
                 )
             }

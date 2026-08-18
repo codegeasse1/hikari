@@ -103,6 +103,28 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
                 }
                 .toList()
+
+        private val iconFallbackCache = ConcurrentHashMap<String, String?>()
+
+        /** Extensions without a repo icon still get one: the provider's own
+         *  mainUrl favicon via Google's favicon service (the same trick the
+         *  plugin repos themselves use). Never throws. */
+        fun iconFallback(config: ProviderConfig): String? {
+            iconFallbackCache[config.id]?.let { return it }
+            val result = runCatching {
+                val file = File(config.url)
+                if (!file.exists()) return@runCatching null
+                val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
+                val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
+                val mainUrl = apis.getOrNull(index)?.mainUrl?.takeIf { it.startsWith("http") }
+                    ?: return@runCatching null
+                val host = java.net.URI(mainUrl).host ?: return@runCatching null
+                "https://www.google.com/s2/favicons?domain=$host&sz=64"
+            }.getOrNull()
+            // ConcurrentHashMap forbids null values — only cache hits.
+            if (result != null) iconFallbackCache[config.id] = result
+            return result
+        }
     }
 
     private val api: MainAPI? by lazy {

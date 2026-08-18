@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,10 +59,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
+import com.hikari.app.data.Userscript
 import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.theme.HikariThemeMode
+import com.hikari.app.web.UserscriptManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -245,6 +248,16 @@ fun SettingsScreen() {
                     .padding(top = 12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
+                UserscriptsCard(app)
+            }
+        }
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
                         "Roadmap",
@@ -379,6 +392,142 @@ private fun WebViewSafetyCard(app: HikariApp) {
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun UserscriptsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var scripts by remember { mutableStateOf<List<Userscript>>(emptyList()) }
+    var editing by remember { mutableStateOf<Userscript?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        scripts = runCatching { app.store.userscripts() }.getOrDefault(emptyList())
+    }
+
+    fun persist(list: List<Userscript>) {
+        scripts = list
+        scope.launch { runCatching { app.store.setUserscripts(list) } }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Userscripts",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Tampermonkey-style scripts that run ONLY inside the app's WebView " +
+                "(@match/@include/@run-at + GM_getValue/setValue). Add as many as you like.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        if (scripts.isEmpty()) {
+            Text(
+                "No userscripts yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+        } else {
+            scripts.forEach { s ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            s.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                        Text(
+                            if (s.enabled) "Active in WebView" else "Paused",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = s.enabled,
+                        onCheckedChange = { on ->
+                            persist(scripts.map {
+                                if (it.id == s.id) it.copy(enabled = on) else it
+                            })
+                        }
+                    )
+                    TextButton(onClick = { draft = s.code; editing = s }) { Text("Edit") }
+                    IconButton(onClick = { persist(scripts.filterNot { it.id == s.id }) }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+        OutlinedButton(onClick = { draft = ""; adding = true }) {
+            Icon(Icons.Filled.Add, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Add userscript")
+        }
+    }
+
+    if (adding || editing != null) {
+        AlertDialog(
+            onDismissRequest = { adding = false; editing = null },
+            title = { Text(if (editing != null) "Edit userscript" else "Add userscript") },
+            text = {
+                Column {
+                    Text(
+                        "Paste a userscript with a // ==UserScript== header " +
+                            "(name, @match, @run-at…). It runs only in the WebView.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 200.dp),
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        placeholder = { Text("// ==UserScript==\n// @name   My Script\n// @match  https://example.com/*\n// @run-at document-start\n// ==/UserScript==\n\nconsole.log('hello');") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val code = draft.trim()
+                    if (code.isNotEmpty()) {
+                        val name = UserscriptManager.parse(code).name
+                        val editId = editing?.id
+                        persist(
+                            if (editId != null) {
+                                scripts.map {
+                                    if (it.id == editId) it.copy(name = name, code = code) else it
+                                }
+                            } else {
+                                scripts + Userscript(
+                                    id = "us" + System.currentTimeMillis(),
+                                    name = name,
+                                    code = code
+                                )
+                            }
+                        )
+                    }
+                    adding = false
+                    editing = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { adding = false; editing = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 

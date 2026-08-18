@@ -45,6 +45,14 @@ data class Site(
     val url: String,
 )
 
+/** A Tampermonkey-style userscript that runs inside the WebView only. */
+data class Userscript(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = true,
+    val code: String,
+)
+
 data class MediaItem(
     val providerId: String,
     val id: String,

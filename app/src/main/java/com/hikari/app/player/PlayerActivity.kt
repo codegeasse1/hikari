@@ -59,6 +59,8 @@ class PlayerActivity : ComponentActivity() {
         val infoHash: String? = null,
         val fileIdx: Int? = null,
         val trackers: List<String> = emptyList(),
+        /** True once the source is a TorrServer URL (raw file streaming). */
+        val torrentStream: Boolean = false,
     )
 
     private var player: ExoPlayer? = null
@@ -337,12 +339,19 @@ class PlayerActivity : ComponentActivity() {
             torrentDialog = null
 
             res.onSuccess { playable ->
+                // TorrServer's /stream/<file>?…&play endpoint serves the torrent
+                // file as RAW BYTES (progressive download with Range support) —
+                // NOT an HLS manifest. Forcing isM3u8 made ExoPlayer parse the
+                // video bytes as a playlist ("Input does not start with the
+                // #EXTM3U header"). Leave the mime unset and let ExoPlayer sniff
+                // the container, exactly like CloudStream/Aniyomi do.
                 val converted = src.copy(
                     url = playable.url,
                     headers = playable.referer?.takeIf { it.isNotBlank() }
                         ?.let { mapOf("Referer" to it) } ?: emptyMap(),
-                    isM3u8 = true, // TorrServer serves HLS
+                    isM3u8 = false,
                     isTorrent = false,
+                    torrentStream = true,
                 )
                 val list = sources.toMutableList()
                 list[index] = converted
@@ -511,11 +520,15 @@ class PlayerActivity : ComponentActivity() {
      * prepare, skip to the next one — CloudStream plays in ~5s, but some
      * servers genuinely take 15-20s to spin up (cold CDN edge, slow origin),
      * so give them that long before declaring them too slow. Only fires while
-     * nothing has been played yet.
+     * nothing has been played yet. Torrents get a longer budget: TorrServer
+     * must discover peers and pull the first pieces from cold, which regularly
+     * takes 30s+.
      */
     private fun scheduleBufferingWatchdog() {
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
+        val torrent = currentIndex in sources.indices && sources[currentIndex].torrentStream
+        val budget = if (torrent) 50_000L else 20_000L
         val task = Runnable {
             watchdogTask = null
             val p = player ?: return@Runnable
@@ -524,15 +537,24 @@ class PlayerActivity : ComponentActivity() {
                 val hasNext = currentIndex + 1 < sources.size
                 if (hasNext) {
                     noSubsRetry = false
-                    Toast.makeText(this, "Server too slow — trying next", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        if (torrent) "Torrent still fetching from peers — trying next"
+                        else "Server too slow — trying next",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     playSource(currentIndex + 1)
                 } else {
-                    showError("Server is not responding (still buffering after 20s).", false)
+                    showError(
+                        if (torrent) "Torrent did not start streaming (no peers?)"
+                        else "Server is not responding (still buffering after 20s).",
+                        false
+                    )
                 }
             }
         }
         watchdogTask = task
-        bufferingWatchdog.postDelayed(task, 20_000)
+        bufferingWatchdog.postDelayed(task, budget)
     }
 
     /**

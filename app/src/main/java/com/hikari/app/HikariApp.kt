@@ -129,6 +129,10 @@ class HikariApp : Application() {
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
+                .diskCache {
+                    directory(File(cacheDir, "coil_image_cache"))
+                    maxSizeBytes(250L * 1024 * 1024)
+                }
                 .build()
             Coil.setImageLoader(loader)
         }
