@@ -188,8 +188,11 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
         }.getOrDefault(emptyList())
-            // The same video surfaced by both extraction engines / addons = one entry.
-            .distinctBy { it.url }
+            // The same video surfaced by both extraction engines / addons = one
+            // entry. Torrents carry url="" and share their identity by infoHash,
+            // so keying on url alone would collapse every torrent source into a
+            // single row.
+            .distinctBy { it.infoHash ?: it.url }
 
         if (sources.isEmpty()) {
             showError("No playable sources received.", false)
