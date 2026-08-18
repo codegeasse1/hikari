@@ -325,6 +325,7 @@ class AppStore(private val ctx: Context) {
                     .put("url", r.url)
                     .put("name", r.name)
                     .put("description", r.description)
+                    .put("kind", r.kind.name)
             )
         }
         return arr.toString()
@@ -340,6 +341,8 @@ class AppStore(private val ctx: Context) {
                     url = o.optString("url"),
                     name = o.optString("name").ifBlank { o.optString("url") },
                     description = o.optString("description"),
+                    kind = runCatching { RepoKind.valueOf(o.optString("kind", "CS3")) }
+                        .getOrDefault(RepoKind.CS3),
                 )
             }.filter { it.url.isNotBlank() }
         } catch (e: Exception) {

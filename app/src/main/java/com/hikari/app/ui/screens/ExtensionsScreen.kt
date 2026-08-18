@@ -74,6 +74,7 @@ import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.Cs3RepoPlugin
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RepoKind
 import com.hikari.app.data.RepoLoadState
 import com.hikari.app.data.Site
 import com.hikari.app.net.Http
@@ -251,6 +252,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             added++
         }
         manager.refresh()
+        reloadInstalled()
         return Result.success(added)
     }
 
@@ -321,13 +323,23 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun reloadInstalled() {
-        installedUrls.value = store.providers()
-            .filter { it.type == ProviderType.CS3 && (it.extra?.startsWith("http") == true) }
-            .mapNotNull { it.extra }
-            .toSet()
+        installedUrls.value = buildSet {
+            store.providers().forEach { p ->
+                val extra = p.extra ?: return@forEach
+                when (p.type) {
+                    ProviderType.CS3 -> if (extra.startsWith("http")) add(extra)
+                    ProviderType.HIKARI -> if (extra.startsWith("http")) add(extra.substringBeforeLast('|'))
+                    else -> {}
+                }
+            }
+        }
     }
 
-    suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> {
+    suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
+
+    suspend fun addHikiRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.HIKARI)
+
+    private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
         val url = rawUrl.trim()
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             return Result.failure(Exception("Must start with http(s)://"))
@@ -340,6 +352,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     url = url,
                     name = obj.optString("name").ifBlank { url },
                     description = obj.optString("description"),
+                    kind = kind,
                 )
                 store.addCs3Repo(repo)
                 repos.value = store.repos()
@@ -446,6 +459,45 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** Installs a .hiki extension listed in a Hikari repo. */
+    suspend fun installHikiPlugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = Http.fetchBytesRobust(plugin.url)
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        val hash = plugin.fileHash
+        if (hash != null && hash.startsWith("sha256-")) {
+            val expected = hash.removePrefix("sha256-").lowercase()
+            val actual = sha256Hex(bytes)
+            if (actual != expected) {
+                return@withContext Result.failure(
+                    Exception("Checksum mismatch — the extension file is corrupted or modified")
+                )
+            }
+        }
+        val fileName = plugin.name.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: "extension"
+        installHikiBytes(bytes, "$fileName.hiki", sourceUrl = plugin.url)
+    }
+
+    /** Removes every HIKARI provider that came from [pluginUrl]. */
+    suspend fun uninstallHikiPlugin(pluginUrl: String) {
+        fun fromPlugin(p: ProviderConfig) =
+            p.type == ProviderType.HIKARI &&
+                (p.extra == pluginUrl || p.extra?.startsWith("$pluginUrl|") == true)
+        val all = store.providers()
+        val paths = all.filter { fromPlugin(it) }.map { it.url }.toSet()
+        store.saveProviders(all.filter { !fromPlugin(it) })
+        manager.refresh()
+        reloadInstalled()
+        withContext(Dispatchers.IO) {
+            val remaining = store.providers().map { it.url }.toSet()
+            val base = getApplication<Application>().filesDir.absolutePath
+            paths.forEach { p ->
+                if (p.startsWith(base) && p !in remaining) {
+                    runCatching { File(p).delete() }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -459,6 +511,7 @@ fun ExtensionsScreen() {
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
     var showRepoDialog by remember { mutableStateOf(false) }
+    var repoDialogKind by remember { mutableStateOf(RepoKind.CS3) }
     var showHikiUrl by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
@@ -516,13 +569,16 @@ fun ExtensionsScreen() {
         }
     }
 
-    fun installPlugin(p: Cs3RepoPlugin) {
+    fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         scope.launch {
             busy = true
             busyMsg = "Installing ${p.name}…"
             errorMsg = null
             successMsg = null
-            val r = vm.installCs3Plugin(p)
+            val r = when (kind) {
+                RepoKind.CS3 -> vm.installCs3Plugin(p)
+                RepoKind.HIKARI -> vm.installHikiPlugin(p)
+            }
             busy = false
             r.onSuccess { n ->
                 successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
@@ -531,13 +587,16 @@ fun ExtensionsScreen() {
         }
     }
 
-    fun uninstallPlugin(p: Cs3RepoPlugin) {
+    fun uninstallPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         scope.launch {
             busy = true
             busyMsg = "Uninstalling ${p.name}…"
             errorMsg = null
             successMsg = null
-            vm.uninstallCs3Plugin(p.url)
+            when (kind) {
+                RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
+                RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
+            }
             busy = false
             successMsg = "Uninstalled ${p.name}"
         }
@@ -554,8 +613,8 @@ fun ExtensionsScreen() {
             successMsg = successMsg,
             errorMsg = errorMsg,
             onBack = { openRepoUrl = null; errorMsg = null; successMsg = null },
-            onInstall = ::installPlugin,
-            onUninstall = ::uninstallPlugin,
+            onInstall = { installPlugin(it, openRepo.kind) },
+            onUninstall = { uninstallPlugin(it, openRepo.kind) },
         )
     } else {
         RepoBrowserView(
@@ -574,7 +633,8 @@ fun ExtensionsScreen() {
                 successMsg = null
                 if (repoState[repo.url] == null) scope.launch { vm.refreshRepoPlugins(repo) }
             },
-            onAddRepo = { errorMsg = null; successMsg = null; showRepoDialog = true },
+            onAddRepo = { errorMsg = null; successMsg = null; repoDialogKind = RepoKind.CS3; showRepoDialog = true },
+            onAddHikiRepo = { errorMsg = null; successMsg = null; repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
             onAddStremio = { errorMsg = null; showStremio = true },
             onAddScraper = { errorMsg = null; showScraper = true },
             onAddCs3Url = { errorMsg = null; showCs3Url = true },
@@ -617,14 +677,19 @@ fun ExtensionsScreen() {
     }
 
     if (showRepoDialog) {
+        val isHikari = repoDialogKind == RepoKind.HIKARI
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
-            title = { Text("Add CloudStream repo") },
+            title = { Text(if (isHikari) "Add Hikari repo" else "Add CloudStream repo") },
             text = {
                 Column {
                     Text(
-                        "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
-                            "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
+                        if (isHikari)
+                            "Paste a Hikari-style repo URL (a repo.json). For example:\n" +
+                                "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/main/repo.json"
+                        else
+                            "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
+                                "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -653,7 +718,7 @@ fun ExtensionsScreen() {
                             busyMsg = "Fetching repo…"
                             errorMsg = null
                             successMsg = null
-                            val r = vm.addCs3Repo(repoUrl)
+                            val r = if (isHikari) vm.addHikiRepo(repoUrl) else vm.addCs3Repo(repoUrl)
                             busy = false
                             r.onSuccess { repo ->
                                 showRepoDialog = false
@@ -977,6 +1042,7 @@ private fun RepoBrowserView(
     errorMsg: String?,
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
+    onAddHikiRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onAddScraper: () -> Unit,
     onAddCs3Url: () -> Unit,
@@ -996,15 +1062,28 @@ private fun RepoBrowserView(
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         item {
-            Button(
-                onClick = onAddRepo,
-                modifier = Modifier
+            Row(
+                Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Add CloudStream repo")
+                Button(
+                    onClick = onAddRepo,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add CloudStream repo")
+                }
+                Button(
+                    onClick = onAddHikiRepo,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Extension, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add Hikari repo")
+                }
             }
         }
         item {
@@ -1143,12 +1222,12 @@ private fun RepoBrowserView(
             }
         }
 
-        item { SectionHeader("CloudStream repos") }
+        item { SectionHeader("Extension repos") }
         if (repos.isEmpty()) {
             item {
                 EmptyState(
-                    title = "No CloudStream repos yet",
-                    subtitle = "Add a CloudStream-style repo to browse and install extensions.",
+                    title = "No extension repos yet",
+                    subtitle = "Add a CloudStream or Hikari repo to browse and install extensions.",
                     actionLabel = null,
                     action = null
                 )
@@ -1246,8 +1325,9 @@ private fun RepoPluginsView(
                     )
                 }
             }
+            val unit = if (repo.kind == RepoKind.HIKARI) "extension" else "plugin"
             Text(
-                "${plugins.size} plugin${if (plugins.size == 1) "" else "s"}",
+                "${plugins.size} ${unit}${if (plugins.size == 1) "" else "s"}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -1465,12 +1545,28 @@ private fun RepoCard(
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    repo.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        repo.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        when (repo.kind) {
+                            RepoKind.CS3 -> "CloudStream"
+                            RepoKind.HIKARI -> "Hikari"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
                 Text(
                     when {
                         state?.loading == true -> "Loading plugins…"

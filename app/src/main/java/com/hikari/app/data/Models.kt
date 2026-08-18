@@ -13,10 +13,14 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
+enum class RepoKind { CS3, HIKARI }
+
+/** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(
     val url: String,
     val name: String,
     val description: String = "",
+    val kind: RepoKind = RepoKind.CS3,
 )
 
 /** A single installable plugin entry from a CloudStream repository. */
