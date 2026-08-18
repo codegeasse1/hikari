@@ -316,7 +316,8 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
             val subs = mutableListOf<SubtitleFile>()
             val worker = Thread.currentThread()
-            val pluginTimeout = (a.loadLinksTimeoutMs.takeIf { it in 1..120_000 } ?: 30_000L)
+            val rawTimeout = a.loadLinksTimeoutMs
+            val pluginTimeout = if (rawTimeout in 1..120_000L) rawTimeout else 30_000L
 
             // Deliberately NOT coroutineScope: it waits for children to finish
             // cancelling, which would block here while a hung plugin drains its
