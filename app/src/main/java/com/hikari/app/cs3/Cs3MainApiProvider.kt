@@ -52,6 +52,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          *  needs several requests, so it's deliberately roomy). */
         private const val FALLBACK_CAP_MS = 20_000L
 
+        /** Matches a provider payload whose stream URL came back empty
+         *  (iStreamFlare: `{"id":"…","url": null}`) — the load() API lookup
+         *  failed, so loadLinks has nothing to resolve. */
+        private val HOLLOW_URL_RE = Regex("\"url\"\\s*:\\s*(null|\"\")", RegexOption.IGNORE_CASE)
+
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -362,19 +367,44 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // transient miss can never sink the whole source list.
                         var completed: Boolean? = null
                         var elapsedMs = 0L
-                        suspend fun runOnce(budget: Long) {
+                        suspend fun runOnce(budget: Long, url: String) {
                             val s = System.currentTimeMillis()
                             completed = withTimeoutOrNull(budget) {
-                                a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                                a.loadLinks(url, false, { subs.add(it) }, { links.add(it) })
                             }
                             elapsedMs += System.currentTimeMillis() - s
                         }
-                        runOnce(pluginTimeout)
+                        runOnce(pluginTimeout, data)
                         if ((completed != true || links.isEmpty()) && elapsedMs < 15_000) {
                             links.clear()
                             val retryBudget = minOf(pluginTimeout, 20_000L)
                             deadline = maxOf(deadline, System.currentTimeMillis() + retryBudget + 1_000)
-                            runOnce(retryBudget)
+                            runOnce(retryBudget, data)
+                        }
+                        // iStreamFlare-style providers hand loadLinks a JSON
+                        // video-id payload whose "url" is null whenever their
+                        // load() couldn't reach its API. A MOVIE then reports
+                        // "no stream links" even though the same title's series
+                        // episodes (real per-episode urls) play fine — the whole
+                        // movie depends on that one lookup. Give load() one more
+                        // chance here (at stream time, where the original cold
+                        // start has long worn off) and retry with the fresh
+                        // payload before declaring the movie unplayable.
+                        if ((completed != true || links.isEmpty()) && isHollowPayload(data)) {
+                            invalidateHollow(data)
+                            val orig = originalIdOf(data) ?: item.id
+                            val freshBudget = minOf(pluginTimeout, 25_000L)
+                            // Covers BOTH the fresh load() and the retried
+                            // loadLinks, so the merge loop can't cut them off.
+                            deadline = maxOf(deadline, System.currentTimeMillis() + freshBudget * 2 + 1_000)
+                            val fresh = withTimeoutOrNull(freshBudget) { loadResponse(orig) }
+                            val freshData = fresh?.url?.takeIf {
+                                it.isNotBlank() && !isHollowPayload(it)
+                            } ?: data
+                            if (freshData != data) {
+                                links.clear()
+                                runOnce(freshBudget, freshData)
+                            }
                         }
                         if (completed == null) {
                             lastStreamsError =
@@ -584,6 +614,28 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return sb.toString()
     }
 
+    /** iStreamFlare-style providers put a JSON video-id list in LoadResponse.url
+     *  with `"url": null` when their API lookup failed. */
+    private fun isHollowPayload(url: String): Boolean = HOLLOW_URL_RE.containsMatchIn(url)
+
+    /** Drops the cached load for a (possibly rewritten) url so a fresh load()
+     *  runs — the hollow movie payload is cached under BOTH the original id
+     *  and the payload itself, so clear both. */
+    private fun invalidateHollow(url: String) {
+        loadCache.remove(url)
+        val it = loadCache.entries.iterator()
+        while (it.hasNext()) {
+            val (k, v) = it.next()
+            if (v.url == url) it.remove()
+        }
+    }
+
+    /** Finds the original search/page id that produced a (rewritten) url. */
+    private fun originalIdOf(url: String): String? {
+        for ((k, v) in loadCache) if (v.url == url) return k
+        return null
+    }
+
     /** One load() attempt, treating a plugin crash as a miss (never throwing). */
     private suspend fun tryLoad(a: MainAPI, id: String): LoadResponse? = try {
         a.load(id)
@@ -606,8 +658,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 // or blank) usually means the very first network lookup after a
                 // cold start failed, so give load() one retry before caching a
                 // dead response forever.
-                val hollow = first == null || first.url.isBlank() ||
-                    first.url.contains("\"url\": null") || first.url.contains("\"url\":\"\"")
+                val hollow = first == null || first.url.isBlank() || isHollowPayload(first.url)
                 if (!hollow) first else tryLoad(a, id)
             }
         } catch (e: Throwable) {

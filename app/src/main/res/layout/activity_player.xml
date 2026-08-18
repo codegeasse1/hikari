@@ -10,7 +10,46 @@
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:controller_layout_id="@layout/player_controller" />
+        app:controller_layout_id="@layout/player_controller"
+        app:controller_show_timeout_ms="3000" />
+
+    <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
+         rewind/forward arrow + the amount next to it. -->
+    <LinearLayout
+        android:id="@+id/seek_feedback"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="18dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/seek_icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="54sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0" />
+
+        <TextView
+            android:id="@+id/seek_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#F5C569"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0"
+            android:layout_marginTop="2dp" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/error_panel"

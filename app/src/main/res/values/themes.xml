@@ -26,5 +26,12 @@
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
+        <!-- Brand accent: the media3 styled seekbar/progress and controls tint
+             from colorAccent, so the player matches the app's gold instead of
+             the Material default. -->
+        <item name="android:colorAccent">#F5C569</item>
+        <item name="android:colorControlActivated">#F5C569</item>
+        <item name="android:colorControlHighlight">#33F5C569</item>
+        <item name="android:colorControlNormal">#99FFFFFF</item>
     </style>
 </resources>

@@ -99,13 +99,40 @@ class PlayerActivity : ComponentActivity() {
 
     private lateinit var client: OkHttpClient
 
-    private val longPressDetector: GestureDetector by lazy {
+    /** Main-thread handler driving the press-and-hold (≥2s → 2×) timer. */
+    private val speedHandler = Handler(Looper.getMainLooper())
+    private var holdSpeedTimer: Runnable? = null
+    private var holdingFast = false
+
+    /** True right after a ≥2s hold is released — the ensuing single-tap must
+     *  NOT toggle the controls (the lift is part of the hold, not a tap). */
+    private var suppressNextTap = false
+
+    /** YouTube/mpv-style gestures: single tap toggles the controls, double tap
+     *  on the left/right half seeks −/+10s (with a visual feedback flash), and
+     *  press-and-hold ≥2s plays at 2× until the finger lifts. */
+    private val gestureDetector: GestureDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onLongPress(e: MotionEvent) {
-                if (player?.playWhenReady == true) applySpeed(2f)
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (suppressNextTap) {
+                    suppressNextTap = false
+                    return true
+                }
+                toggleController()
+                return true
             }
-        })
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                suppressNextTap = false
+                seekByTap(e.x)
+                return true
+            }
+        }).apply { setIsLongpressEnabled(false) }
     }
+
+    private var seekFeedback: View? = null
+    private var seekIcon: TextView? = null
+    private var seekText: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,6 +149,9 @@ class PlayerActivity : ComponentActivity() {
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
+        seekFeedback = findViewById(R.id.seek_feedback)
+        seekIcon = findViewById(R.id.seek_icon)
+        seekText = findViewById(R.id.seek_text)
         findViewById<TextView>(R.id.title_text).text = intent.getStringExtra("title").orEmpty()
 
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
@@ -145,11 +175,34 @@ class PlayerActivity : ComponentActivity() {
         }
 
         playerView?.setOnTouchListener { _, event ->
-            longPressDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                applySpeed(SPEEDS[speedIndex])
+            // Consume every touch on the video surface so the YouTube-style
+            // gestures below own the interaction (media3's built-in click-to-
+            // toggle never fires). Touches on the controller's own buttons /
+            // seekbar go to those children first and never reach us.
+            gestureDetector.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    holdingFast = false
+                    holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
+                    val task = Runnable {
+                        // Finger has stayed down ≥2s → play at 2× until lift.
+                        holdingFast = true
+                        applySpeed(2f)
+                    }
+                    holdSpeedTimer = task
+                    speedHandler.postDelayed(task, 2000)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
+                    holdSpeedTimer = null
+                    if (holdingFast) {
+                        holdingFast = false
+                        suppressNextTap = true
+                        applySpeed(SPEEDS[speedIndex])
+                    }
+                }
             }
-            false
+            true
         }
 
         // All our controls (Back/Title/Server/Speed on top, Quality/Sub/Rotate
@@ -236,6 +289,41 @@ class PlayerActivity : ComponentActivity() {
     private fun applySpeed(speed: Float) {
         val p = player ?: return
         p.playbackParameters = p.playbackParameters.withSpeed(speed)
+    }
+
+    private fun toggleController() {
+        if (holdingFast) return
+        val pv = playerView ?: return
+        if (pv.isControllerVisible) pv.hideController() else pv.showController()
+    }
+
+    /** Double-tap seek: left half rewinds 10s, right half forwards 10s. */
+    private fun seekByTap(x: Float) {
+        val p = player ?: return
+        val forward = x >= (playerView?.width ?: width) / 2f
+        val delta = if (forward) 10_000L else -10_000L
+        val target = (p.currentPosition + delta)
+            .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
+        p.seekTo(target)
+        playerView?.showController()
+        showSeekFeedback(delta)
+    }
+
+    /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
+    private fun showSeekFeedback(deltaMs: Long) {
+        val v = seekFeedback ?: return
+        seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
+        seekText?.text = (if (deltaMs >= 0) "+" else "-") + (kotlin.math.abs(deltaMs) / 1000) + "s"
+        v.visibility = View.VISIBLE
+        v.animate().cancel()
+        v.alpha = 0f
+        v.animate().alpha(1f).setDuration(120).withEndAction {
+            v.postDelayed({
+                v.animate().alpha(0f).setDuration(250).withEndAction {
+                    v.visibility = View.GONE
+                }.start()
+            }, 450)
+        }.start()
     }
 
     private fun showSourcesDialog() {
