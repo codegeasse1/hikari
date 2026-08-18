@@ -108,6 +108,10 @@ class PlayerActivity : ComponentActivity() {
      *  NOT toggle the controls (the lift is part of the hold, not a tap). */
     private var suppressNextTap = false
 
+    /** Mirrors media3's controller show/hide (kept in sync via the visibility
+     *  listener, which also fires on the automatic 3s auto-hide). */
+    private var controllerVisible = false
+
     /** YouTube/mpv-style gestures: single tap toggles the controls, double tap
      *  on the left/right half seeks −/+10s (with a visual feedback flash), and
      *  press-and-hold ≥2s plays at 2× until the finger lifts. */
@@ -143,6 +147,11 @@ class PlayerActivity : ComponentActivity() {
         playerView = findViewById(R.id.player_view)
         // YouTube-style: fade the controls out after 3s instead of media3's 5s.
         playerView?.controllerShowTimeoutMs = 3000
+        // Keep our own mirror of the controller visibility (media3's
+        // PlayerControlView field is private) for the tap-to-toggle logic.
+        playerView?.setControllerVisibilityListener { v ->
+            controllerVisible = v == View.VISIBLE
+        }
         speedChip = findViewById(R.id.speed_btn)
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
@@ -296,9 +305,7 @@ class PlayerActivity : ComponentActivity() {
     private fun toggleController() {
         if (holdingFast) return
         val pv = playerView ?: return
-        val ctl = pv.controller
-        val visible = ctl != null && ctl.visibility == View.VISIBLE
-        if (visible) pv.hideController() else pv.showController()
+        if (controllerVisible) pv.hideController() else pv.showController()
     }
 
     /** Double-tap seek: left half rewinds 10s, right half forwards 10s. */
