@@ -296,13 +296,16 @@ class PlayerActivity : ComponentActivity() {
     private fun toggleController() {
         if (holdingFast) return
         val pv = playerView ?: return
-        if (pv.isControllerVisible) pv.hideController() else pv.showController()
+        val ctl = pv.controller
+        val visible = ctl != null && ctl.visibility == View.VISIBLE
+        if (visible) pv.hideController() else pv.showController()
     }
 
     /** Double-tap seek: left half rewinds 10s, right half forwards 10s. */
     private fun seekByTap(x: Float) {
         val p = player ?: return
-        val forward = x >= (playerView?.width ?: width) / 2f
+        val mid = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
+        val forward = x >= mid
         val delta = if (forward) 10_000L else -10_000L
         val target = (p.currentPosition + delta)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
