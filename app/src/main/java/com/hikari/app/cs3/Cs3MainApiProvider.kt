@@ -233,6 +233,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         // results (e.g. NSFW) that would otherwise leave the detail screen with
         // neither a Play button nor an episode list.
         val resp = loadResponse(item.id) ?: return item
+        // Providers frequently rewrite the URL during load() (short-links,
+        // redirects, per-title API endpoints). CloudStream plays a movie via
+        // the LoadResponse's FINAL url — feeding the pre-load search url to
+        // loadLinks makes MovieBlast & friends report "no playable sources"
+        // instantly while their episodes (whose ids come from the LoadResponse)
+        // play fine. Adopt the response url as the canonical id, exactly like
+        // CloudStream does.
+        val canonicalUrl = resp.url.takeIf { it.isNotBlank() } ?: item.id
+        if (canonicalUrl != item.id) {
+            loadCache[canonicalUrl] = resp
+        }
         val mt = when (resp) {
             is MovieLoadResponse -> MediaType.MOVIE
             is TvSeriesLoadResponse, is AnimeLoadResponse -> MediaType.SERIES
@@ -240,6 +251,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         }
         return when (resp) {
             is MovieLoadResponse -> item.copy(
+                id = canonicalUrl,
                 type = mt,
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
@@ -248,6 +260,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             ).also { recordRespHeaders(resp) }
             is AnimeLoadResponse -> item.copy(
+                id = canonicalUrl,
                 type = mt,
                 title = resp.engName?.takeIf { it.isNotBlank() } ?: item.title,
                 overview = resp.plot ?: item.overview,
@@ -257,6 +270,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 backdropUrl = resp.backgroundPosterUrl ?: item.backdropUrl,
             ).also { recordRespHeaders(resp) }
             is TvSeriesLoadResponse -> item.copy(
+                id = canonicalUrl,
                 type = mt,
                 overview = resp.plot ?: item.overview,
                 genres = resp.tags ?: item.genres,
