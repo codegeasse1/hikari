@@ -10,8 +10,7 @@
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:controller_layout_id="@layout/player_controller"
-        app:controller_show_timeout_ms="3000" />
+        app:controller_layout_id="@layout/player_controller" />
 
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
          rewind/forward arrow + the amount next to it. -->

@@ -141,6 +141,8 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        // YouTube-style: fade the controls out after 3s instead of media3's 5s.
+        playerView?.controllerShowTimeoutMs = 3000
         speedChip = findViewById(R.id.speed_btn)
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
