@@ -6,7 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
-import com.hikari.app.ui.theme.HikariThemeModeimport kotlinx.coroutines.flow.Flow
+import com.hikari.app.ui.theme.HikariThemeMode
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
