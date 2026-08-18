@@ -177,7 +177,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     _episodesLoading.value = false
                 }
             }
-            prefetchFirstStreams(meta)
+            prefetchFirstStreams(_meta.value ?: base)
         }
     }
 
