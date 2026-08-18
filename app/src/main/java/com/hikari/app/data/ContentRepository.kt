@@ -35,7 +35,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         withTimeoutOrNull(60_000) {
                             val catalogs = p.catalogs()
                                 .distinctBy { it.type to it.id }
-                                .take(8)
+                                .take(14)
                             val gate = Semaphore(4)
                             coroutineScope {
                                 catalogs.map { c ->
@@ -43,7 +43,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                         gate.withPermit {
                                             val items = withTimeoutOrNull(25_000) {
                                                 runCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
-                                            }.orEmpty().distinctBy { it.uniqueId }.take(24)
+                                            }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                             if (items.isEmpty()) null
                                             else CatalogRow(
                                                 providerName = p.config.name,
