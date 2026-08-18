@@ -317,7 +317,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val subs = mutableListOf<SubtitleFile>()
             val worker = Thread.currentThread()
             val rawTimeout = a.loadLinksTimeoutMs
-            val pluginTimeout = if (rawTimeout in 1..120_000L) rawTimeout else 30_000L
+            val pluginTimeout = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L
 
             // Deliberately NOT coroutineScope: it waits for children to finish
             // cancelling, which would block here while a hung plugin drains its
