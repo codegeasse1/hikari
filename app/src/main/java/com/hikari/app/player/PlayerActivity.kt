@@ -524,10 +524,18 @@ class PlayerActivity : ComponentActivity() {
         // a "Hikari/" prefix — a malformed UA gets those hosts to answer 403.
         // When a CDN keeps rejecting the request, headerVariant walks the header
         // set down to nothing (some CDNs 403 any request carrying a Referer).
+        // Header values are sanitized FIRST: some addons' extractors ship a
+        // User-Agent with non-ASCII characters (a Cyrillic look-alike 'е' inside
+        // an otherwise-ASCII Chrome UA is the classic one), and OkHttp rejects
+        // any header value with chars > 127 via IllegalArgumentException — which
+        // media3 surfaces as a fatal playback error even though the stream is
+        // fine. Sanitizing here means a sloppy extension can never crash the
+        // player, now or in the future.
+        val cleanHeaders = sanitizeHeaders(src.headers)
         val sourceHeaders = when (headerVariant) {
-            1 -> src.headers.filterKeys { !it.equals("Referer", ignoreCase = true) }
+            1 -> cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
             2 -> emptyMap()
-            else -> src.headers
+            else -> cleanHeaders
         }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
         val dataSourceFactory = OkHttpDataSource.Factory(client)
@@ -714,14 +722,19 @@ class PlayerActivity : ComponentActivity() {
             }
             // Some CDNs 403 the request as long as it carries a Referer / other
             // extractor headers, even though the bare URL plays fine in a
-            // browser. Walk the header set down (full → no Referer → none)
+            // browser. And some addons hand us a header with non-ASCII chars
+            // (a Cyrillic look-alike User-Agent), which OkHttp rejects with
+            // IllegalArgumentException. Both are header problems, not server
+            // problems — walk the header set down (full → no Referer → none)
             // before declaring the server dead.
-            if (code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && headerVariant < 2) {
+            val headerIssue = details.contains("Unexpected char", true) ||
+                (details.contains("IllegalArgumentException", true) &&
+                    (details.contains("User-Agent", true) || details.contains("Header", true)))
+            if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) && headerVariant < 2) {
                 headerVariant++
                 Toast.makeText(
                     this@PlayerActivity,
-                    "Server rejected the request (403) — retrying with " +
-                        (if (headerVariant == 1) "no Referer" else "default headers"),
+                    "Source rejected our request — retrying with fewer headers",
                     Toast.LENGTH_SHORT
                 ).show()
                 noSubsRetry = false
@@ -741,14 +754,33 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Drop non-ASCII characters from a header value. OkHttp throws
+     *  IllegalArgumentException on any header value containing chars > 127,
+     *  and some addon extractors ship headers (User-Agent most often) that
+     *  contain Cyrillic look-alikes — a player crash that has nothing to do
+     *  with the actual stream. */
+    private fun sanitizeHeaderValue(v: String): String = v.filter { it.code < 128 }
+
+    /** Sanitize every header; blank results are dropped entirely. */
+    private fun sanitizeHeaders(h: Map<String, String>): Map<String, String> =
+        h.mapNotNull { (k, v) ->
+            val c = sanitizeHeaderValue(v)
+            if (c.isBlank()) null else k to c
+        }.toMap()
+
     private fun showError(message: String, hasNext: Boolean) {
         var text = message
         // px.* / tracker domains that resolve to 0.0.0.0 are the signature of
         // a system-level ad-blocker or DNS filter — tell the user, since it
-        // isn't something Hikari can fix from inside the app.
-        if (message.contains("0.0.0.0", true) ||
-            message.contains("Failed to connect", true) ||
-            message.contains("network connection failed", true)
+        // isn't something Hikari can fix from inside the app. Only match real
+        // resolution/connect failures: "Failed to connect" alone is too broad
+        // (it also wraps CDN-side 403s and read timeouts, which are NOT the
+        // user's network).
+        if (message.contains("Unable to resolve host", true) ||
+            message.contains("Failed to resolve", true) ||
+            message.contains("UnknownHost", true) ||
+            message.contains("0.0.0.0", true) ||
+            message.contains("network is unreachable", true)
         ) {
             text += "\n\nThis server's CDN is blocked or unreachable from your network " +
                 "(a system-level ad-blocker or DNS filter may be resolving it to 0.0.0.0). " +

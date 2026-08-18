@@ -596,6 +596,15 @@ object FallbackResolver {
         for (m in Regex("""<iframe[^>]+data-src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).findAll(html)) {
             raw.add(m.groupValues[1])
         }
+        // Many movie sites LINK to their player instead of iframing it —
+        // <a href="https://host/file/abc">Watch Now</a>. Follow anchors that
+        // look like a player/file URL so a link-only page (movies4u, …) never
+        // looks link-free to the fallback engine.
+        for (m in Regex("""<a[^>]+href=["']([^"']+)["']""", RegexOption.IGNORE_CASE).findAll(html)) {
+            if (FILE_HOST_LINK_RE.containsMatchIn(m.groupValues[1])) {
+                raw.add(m.groupValues[1])
+            }
+        }
         // base64-encoded iframe srcs
         for (m in Regex("""(?:data-embed|value)=["']([A-Za-z0-9+/=]{40,})["']""").findAll(html)) {
             runCatching {
@@ -608,6 +617,13 @@ object FallbackResolver {
             .map { fixUrl(it, pageUrl) }
             .filter { it.startsWith("http") && !it.contains("blob:", ignoreCase = true) }
     }
+
+    /** Paths that mark an anchor as a player/stream page rather than an
+     *  ordinary link (comments, share, tags, …). */
+    private val FILE_HOST_LINK_RE = Regex(
+        "(/(?:file|embed|e|v|d|stream|play|watch|player)/|play\\.php|player\\.php|watch\\?|\\?v=)",
+        RegexOption.IGNORE_CASE
+    )
 
     private fun fixUrl(url: String, pageUrl: String): String {
         return when {

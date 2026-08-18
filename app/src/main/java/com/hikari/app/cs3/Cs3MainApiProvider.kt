@@ -339,6 +339,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val worker = Thread.currentThread()
             val rawTimeout = a.loadLinksTimeoutMs
             val pluginTimeout = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L
+            // How long the merge loop waits in total. Extended if a fast-empty
+            // plugin run triggers its one retry (below), so the retry is never
+            // cut off by a deadline that assumed a single attempt.
+            var deadline =
+                started + maxOf(pluginTimeout, MOVIEBLAST_CAP_MS, FALLBACK_CAP_MS) + 2_000
 
             // Deliberately NOT coroutineScope: it waits for children to finish
             // cancelling, which would block here while a hung plugin drains its
@@ -348,8 +353,28 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val result = try {
                 val pluginJob = scope.async {
                     try {
-                        val completed = withTimeoutOrNull(pluginTimeout) {
-                            a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                        // One loadLinks run (returns null on timeout). A
+                        // "success" that takes suspiciously little time and
+                        // yields zero links is usually the provider's first
+                        // network lookup failing on a cold start (iStreamFlare
+                        // and friends build their pages from a JSON API that
+                        // flakes under load) — give it ONE bounded retry so a
+                        // transient miss can never sink the whole source list.
+                        var completed: Boolean? = null
+                        var elapsedMs = 0L
+                        fun runOnce(budget: Long) {
+                            val s = System.currentTimeMillis()
+                            completed = withTimeoutOrNull(budget) {
+                                a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
+                            }
+                            elapsedMs += System.currentTimeMillis() - s
+                        }
+                        runOnce(pluginTimeout)
+                        if ((completed != true || links.isEmpty()) && elapsedMs < 15_000) {
+                            links.clear()
+                            val retryBudget = minOf(pluginTimeout, 20_000L)
+                            deadline = maxOf(deadline, System.currentTimeMillis() + retryBudget + 1_000)
+                            runOnce(retryBudget)
                         }
                         if (completed == null) {
                             lastStreamsError =
@@ -361,8 +386,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                             val who = "${a.name} [$dataLabel]"
                             lastStreamsError = when {
                                 !completed -> "$who: no stream links found on the page."
-                                links.isEmpty() -> "$who: resolved links, but every one of them " +
-                                    "was unusable (blank, or a dead type)."
+                                links.isEmpty() -> "$who: page parsed OK, but produced no stream links."
                                 else -> null
                             }
                         }
@@ -427,7 +451,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + maxOf(pluginTimeout, MOVIEBLAST_CAP_MS, FALLBACK_CAP_MS) + 2_000
                 var firstSourceAt = -1L
                 // True once the plugin's loadLinks has emitted at least one
                 // usable link (it streams them in as it goes).
@@ -502,11 +525,19 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 // page and ExoPlayer reports PARSING_CONTAINER_UNSUPPORTED.
                 // Merge referer in (keeping any Referer the extractor set),
                 // and carry the container type so the player can pick HLS/DASH.
+                // Header values are sanitized to ASCII: addons occasionally ship
+                // a User-Agent with Cyrillic look-alike characters, and OkHttp
+                // rejects any header value containing chars > 127 (the player
+                // ALSO sanitizes as a second line of defense).
                 val headers = LinkedHashMap<String, String>()
-                l.headers?.forEach { (k, v) -> headers[k] = v }
+                l.headers?.forEach { (k, v) ->
+                    val c = v.filter { it.code < 128 }
+                    if (c.isNotBlank()) headers[k] = c
+                }
                 val ref = l.referer
                 if (!ref.isNullOrBlank()) {
-                    headers.putIfAbsent("Referer", ref)
+                    val c = ref.filter { it.code < 128 }
+                    if (c.isNotBlank()) headers.putIfAbsent("Referer", c)
                 }
                 val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
                 // Magnet / .torrent links go through the same TorrServer

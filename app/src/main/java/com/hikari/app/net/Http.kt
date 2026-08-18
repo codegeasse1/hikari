@@ -7,8 +7,13 @@ import java.util.concurrent.TimeUnit
 
 object Http {
 
+    /** Desktop Chrome UA, matching CloudStream's own USER_AGENT. The WAFs that
+     *  guard the TamilBlasters/StreamHG/luluvdo family serve their player pages
+     *  and HLS CDNs to desktop browsers (the plugins' own requests even use a
+     *  desktop Chrome 149); a mobile "… Mobile Safari" UA stands out to those
+     *  WAFs and some answer 403 before ever checking the token. */
     const val UA =
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     /** Same current-Chrome fingerprint the WebView uses so probes and the site
      *  agree on what browser is "visiting" (Cloudflare checks consistency). */

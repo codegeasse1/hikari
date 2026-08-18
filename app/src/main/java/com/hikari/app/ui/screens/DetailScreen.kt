@@ -71,6 +71,7 @@ import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.web.WebViewActivity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -181,6 +182,37 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Streams currently being resolved, keyed the same as [streamCache]. A
+     *  Play tap while the page is still prefetching joins the SAME extraction
+     *  instead of launching a second one — two concurrent loadLinks runs on the
+     *  same CS3 plugin instance can corrupt its state and make it return "no
+     *  sources" for a movie that plays fine on its own. */
+    private val inflight = ConcurrentHashMap<String, CompletableDeferred<List<StreamSource>>>()
+
+    private suspend fun resolveStreams(item: MediaItem, ep: Episode?): List<StreamSource> {
+        val key = cacheKey(item, ep)
+        streamCache[key]?.let { return it }
+        val existing = inflight[key]
+        if (existing != null) return existing.await()
+        val deferred = CompletableDeferred<List<StreamSource>>()
+        val prev = inflight.putIfAbsent(key, deferred)
+        if (prev != null) return prev.await()
+        try {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repo.streamsFor(item, ep) }.getOrDefault(emptyList())
+            }
+            streamCache[key] = result
+            recordOutcome(result, item)
+            deferred.complete(result)
+            return result
+        } catch (e: Throwable) {
+            deferred.complete(emptyList())
+            throw e
+        } finally {
+            inflight.remove(key)
+        }
+    }
+
     /** While the user is still reading the detail page, resolve sources for the
      *  movie or the first episode so the player starts immediately on tap. */
     private suspend fun prefetchFirstStreams(base: MediaItem) {
@@ -197,11 +229,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _streamsReady.value = true
             return
         }
-        val result = withContext(Dispatchers.IO) {
-            runCatching { repo.streamsFor(item, ep) }.getOrDefault(emptyList())
-        }
-        streamCache[key] = result
-        recordOutcome(result, item)
+        resolveStreams(item, ep)
         _streamsReady.value = true
     }
 
@@ -210,14 +238,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun getStreams(episode: Episode?): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
-        val key = cacheKey(m, episode)
-        streamCache[key]?.let { return it }
-        val result = withContext(Dispatchers.IO) {
-            runCatching { repo.streamsFor(m, episode) }.getOrDefault(emptyList())
-        }
-        streamCache[key] = result
-        recordOutcome(result, m)
-        return result
+        return resolveStreams(m, episode)
     }
 }
 
