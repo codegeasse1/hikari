@@ -686,7 +686,7 @@ fun ExtensionsScreen() {
                     Text(
                         if (isHikari)
                             "Paste a Hikari-style repo URL (a repo.json). For example:\n" +
-                                "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/main/repo.json"
+                                "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json"
                         else
                             "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                 "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
