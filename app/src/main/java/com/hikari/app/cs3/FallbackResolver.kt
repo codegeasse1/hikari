@@ -90,12 +90,12 @@ object FallbackResolver {
         val needsMegaPlay = isMegaPlayPage(pageUrl)
         if (embeds.isNotEmpty() || needsMegaPlay) {
             runCatching {
-                withTimeoutOrNull(14_000) {
+                withTimeoutOrNull(18_000) {
                     coroutineScope {
                         val jobs = embeds.map { embed ->
                             async {
                                 runCatching {
-                                    withTimeoutOrNull(8_000) {
+                                    withTimeoutOrNull(12_000) {
                                         resolveEmbed(embed, pageUrl, rawsSync, subsSync)
                                     }
                                 }
@@ -171,7 +171,7 @@ object FallbackResolver {
         // run it instead of only as a last resort. A broken plugin-side
         // resolver for a host can then never lose a server the jar knows.
         runCatching {
-            withTimeoutOrNull(7_000) {
+            withTimeoutOrNull(10_000) {
                 loadExtractor(embedUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
             }
         }
@@ -274,6 +274,13 @@ object FallbackResolver {
             h.contains("dood") || h.contains("playmogo") || h.contains("ds2play") || h.contains("doood") ||
                 h.contains("d000") || h.contains("doods") || h.contains("myvidplay") || h.contains("vide0") ||
                 h.contains("dsvplay") -> "Dood"
+            // The StreamHG/StreamGG CDN network (hgcloud.to, vidhidepro.com,
+            // cavanhabg.com, tryzendm.com, hqq/playhq players, …). TamilBlasters
+            // & friends sign their playlists through these; naming them properly
+            // keeps fallback rows readable instead of a generic "Hikari Auto".
+            h.contains("streamhg") || h.contains("streamgg") || h.contains("hgcloud") ||
+                h.contains("vidhidepro") || h.contains("cavanhabg") || h.contains("tryzendm") ||
+                h.contains("hqq") || h.contains("playhq") || h.contains("playx") -> "StreamHG"
             else -> "Hikari Auto"
         }
     }

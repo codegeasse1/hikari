@@ -48,6 +48,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         /** Budget for the direct MovieBlast movie fallback. */
         private const val MOVIEBLAST_CAP_MS = 20_000L
 
+        /** Budget for the universal extraction engine (StreamHG sign-dance
+         *  needs several requests, so it's deliberately roomy). */
+        private const val FALLBACK_CAP_MS = 20_000L
+
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -372,7 +376,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
                 val fallbackJob = scope.async {
                     try {
-                        withTimeoutOrNull(12_000) { FallbackResolver.resolve(data) } ?: emptyList()
+                        // Roomier than the plugin budget by design: the
+                        // StreamHG/StreamGG sign-dance (page -> player -> token
+                        // API) takes several requests; 12s was too tight for
+                        // the last-resort pass.
+                        withTimeoutOrNull(FALLBACK_CAP_MS) { FallbackResolver.resolve(data) } ?: emptyList()
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()
@@ -419,10 +427,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + maxOf(pluginTimeout, MOVIEBLAST_CAP_MS) + 2_000
+                val deadline = started + maxOf(pluginTimeout, MOVIEBLAST_CAP_MS, FALLBACK_CAP_MS) + 2_000
                 var firstSourceAt = -1L
+                // True once the plugin's loadLinks has emitted at least one
+                // usable link (it streams them in as it goes).
+                var sawPluginSource = false
                 while (true) {
-                    for (s in pluginSources()) merged.putIfAbsent(s.url, s)
+                    val ps = pluginSources()
+                    if (ps.isNotEmpty()) sawPluginSource = true
+                    for (s in ps) merged.putIfAbsent(s.url, s)
                     for (s in fallbackSources()) merged.putIfAbsent(s.url, s)
                     for (s in movieblastSources()) merged.putIfAbsent(s.url, s)
                     val pluginDone = pluginJob.isCompleted
@@ -432,11 +445,31 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val now = System.currentTimeMillis()
                     if (merged.isNotEmpty()) {
                         if (firstSourceAt < 0) firstSourceAt = now
-                        // Once either engine has given us playable servers, stop
-                        // waiting for the other one after a short grace so the
-                        // player opens fast — extra servers are a nice-to-have,
-                        // playback speed is the point.
-                        if ((pluginDone || fallbackDone) && now - firstSourceAt >= 2_000L) break
+                        // The PLUGIN's loadLinks is the authoritative extractor
+                        // — CloudStream plays exactly the servers its loadLinks
+                        // produces, waiting out the plugin's own declared
+                        // budget. The fallback engine is only a safety net for
+                        // when the plugin comes up empty, so it must never be
+                        // allowed to cancel the plugin mid-extraction: that
+                        // raced the user into a raw-scanned "Hikari Auto" URL
+                        // (403-prone) while the plugin's properly-signed
+                        // StreamHG link was still one request away.
+                        val waited = now - firstSourceAt >= 2_000L
+                        val openNow = when {
+                            // Plugin still working → open fast only if it has
+                            // already handed us servers (its later servers are
+                            // a nice-to-have; playback speed is the point).
+                            !pluginDone && sawPluginSource -> waited
+                            // Plugin finished WITH servers → open fast.
+                            pluginDone && sawPluginSource -> waited
+                            // Plugin finished EMPTY → the fallback is the only
+                            // hope; don't cut it off, wait for its full budget
+                            // (it's what finds the StreamHG/VidHidePro server
+                            // when the plugin's own resolver dies).
+                            pluginDone -> fallbackDone && waited
+                            else -> false
+                        }
+                        if (openNow) break
                     }
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
@@ -520,13 +553,32 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return sb.toString()
     }
 
+    /** One load() attempt, treating a plugin crash as a miss (never throwing). */
+    private suspend fun tryLoad(a: MainAPI, id: String): LoadResponse? = try {
+        a.load(id)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        null
+    }
+
     private suspend fun loadResponse(id: String): LoadResponse? {
         loadCache[id]?.let { return it }
         val a = api ?: return null
         // Some providers' load() walks many pages (e.g. PimpBunny model pages
         // paginate up to 50) — cap it so the detail screen can never hang.
         val r = try {
-            withTimeoutOrNull(45_000) { a.load(id) }
+            withTimeoutOrNull(45_000) {
+                val first = tryLoad(a, id)
+                // Providers like iStreamFlare build a JSON video-id string and
+                // fill its `url` field during load(); a hollow one (url:null,
+                // or blank) usually means the very first network lookup after a
+                // cold start failed, so give load() one retry before caching a
+                // dead response forever.
+                val hollow = first == null || first.url.isBlank() ||
+                    first.url.contains("\"url\": null") || first.url.contains("\"url\":\"\"")
+                if (!hollow) first else tryLoad(a, id)
+            }
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             null
