@@ -82,6 +82,7 @@ class PlayerActivity : ComponentActivity() {
     private var rotateBtn: ImageButton? = null
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
+    private var subsBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
@@ -111,6 +112,7 @@ class PlayerActivity : ComponentActivity() {
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
+        subsBtn = findViewById(R.id.subs_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
@@ -122,6 +124,7 @@ class PlayerActivity : ComponentActivity() {
         rotateBtn?.setOnClickListener { cycleRotation() }
         qualityBtn?.setOnClickListener { showQualityDialog() }
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
+        subsBtn?.setOnClickListener { showSubsDialog() }
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
@@ -290,6 +293,68 @@ class PlayerActivity : ComponentActivity() {
                             TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
                         )
                         .build()
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /**
+     * Subtitle control. Lists every available text track (HLS/DASH subtitle
+     * groups AND the provider-supplied .srt/.vtt), plus Off and Auto — so a
+     * stream that forces subtitles on can finally be muted, and a stream with
+     * several languages gets a real picker.
+     */
+    private fun showSubsDialog() {
+        val p = player ?: return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        val params = p.trackSelectionParameters
+        val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+
+        val items = mutableListOf<String>()
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        items.add("Off")
+        items.add("Auto")
+        var checked = if (textDisabled) 0 else 1
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            val override = params.overrides[mediaGroup]
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val lang = listOfNotNull(
+                    f.language?.takeIf { it.isNotBlank() },
+                    f.label?.takeIf { it.isNotBlank() },
+                    f.id?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
+                items.add(lang)
+                indexMap[items.size - 1] = group to i
+                if (!textDisabled && override != null && override.trackIndices.any { it == i }) {
+                    checked = items.size - 1
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Subtitles")
+            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
+                when (which) {
+                    0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+                    1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .build()
+                    else -> {
+                        val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setOverrideForType(
+                                TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                            )
+                            .build()
+                    }
                 }
                 d.dismiss()
             }

@@ -307,9 +307,16 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             // appear, just like CloudStream's source picker. Neither engine is
             // allowed to block the other: once one finishes, the other gets a
             // short grace window and then we play what we have.
+            // CloudStream lets each plugin declare its own loadLinks budget
+            // (MainAPI.loadLinksTimeoutMs, default 30s). Hikari used to hard-cap
+            // this at 12s — and a provider that signs requests / walks several
+            // API pages (MovieBlast, AllMovieLand, …) routinely blows past that
+            // on a phone network, so Hikari declared "no playable sources" while
+            // CloudStream happily waited. Respect the plugin's own budget now.
             val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
             val subs = mutableListOf<SubtitleFile>()
             val worker = Thread.currentThread()
+            val pluginTimeout = (a.loadLinksTimeoutMs.takeIf { it in 1..120_000 } ?: 30_000L)
 
             // Deliberately NOT coroutineScope: it waits for children to finish
             // cancelling, which would block here while a hung plugin drains its
@@ -319,12 +326,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val result = try {
                 val pluginJob = scope.async {
                     try {
-                        val completed = withTimeoutOrNull(12_000) {
+                        val completed = withTimeoutOrNull(pluginTimeout) {
                             a.loadLinks(data, false, { subs.add(it) }, { links.add(it) })
                         }
                         if (completed == null) {
                             lastStreamsError =
-                                "Timed out after 12s — the provider hung while resolving sources.\n" +
+                                "Timed out after ${pluginTimeout / 1000}s — the provider hung while resolving sources.\n" +
                                     "Stuck on thread '${worker.name}':\n" +
                                     worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                         } else {
@@ -365,7 +372,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + 14_000
+                val deadline = started + pluginTimeout + 2_000
                 var firstSourceAt = -1L
                 while (true) {
                     for (s in pluginSources()) merged.putIfAbsent(s.url, s)
