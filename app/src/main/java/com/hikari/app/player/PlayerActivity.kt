@@ -66,6 +66,7 @@ class PlayerActivity : ComponentActivity() {
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
     private var topBar: View? = null
+    private var bottomBar: View? = null
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
@@ -108,6 +109,7 @@ class PlayerActivity : ComponentActivity() {
 
         playerView = findViewById(R.id.player_view)
         topBar = findViewById(R.id.top_bar)
+        bottomBar = findViewById(R.id.bottom_bar)
         speedChip = findViewById(R.id.speed_btn)
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
@@ -151,7 +153,9 @@ class PlayerActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
             override fun onVisibilityChanged(visibility: Int) {
-                topBar?.visibility = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
+                val v = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
+                topBar?.visibility = v
+                bottomBar?.visibility = v
             }
         })
 

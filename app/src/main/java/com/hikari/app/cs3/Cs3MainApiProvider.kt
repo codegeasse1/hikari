@@ -45,6 +45,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         @Volatile
         var lastStreamsTimeMs: Long = 0L
 
+        /** Budget for the direct MovieBlast movie fallback. */
+        private const val MOVIEBLAST_CAP_MS = 20_000L
+
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -374,6 +377,29 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         emptyList()
                     }
                 }
+                // MovieBlast MOVIES: the plugin's movie loader returns an empty
+                // but "completed" result (its series path works — episodes
+                // play), so resolve movies straight from the MovieBlast API:
+                // search the title -> media detail -> signed CDN links. Runs in
+                // parallel with the plugin; its sources are merged in the same
+                // pass below and deduped by URL.
+                val movieblastJob = scope.async {
+                    try {
+                        // Provider name is normally "MovieBlast"; also accept
+                        // the plugin's own page URL as a signal in case a
+                        // rebuilt plugin names itself differently.
+                        val isMb = a.name.contains("MovieBlast", ignoreCase = true) ||
+                            config.name.contains("MovieBlast", ignoreCase = true) ||
+                            data.contains("movieblast", ignoreCase = true) ||
+                            data.contains("cloud-mb", ignoreCase = true)
+                        if (!isMb || episode != null) return@async emptyList()
+                        withTimeoutOrNull(MOVIEBLAST_CAP_MS) { MovieBlastResolver.resolve(item, episode) }
+                            ?: emptyList()
+                    } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        emptyList()
+                    }
+                }
 
                 fun pluginSources(): List<StreamSource> =
                     if (pluginJob.isCompleted) {
@@ -386,15 +412,22 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         runCatching { fallbackJob.getCompleted() }.getOrDefault(emptyList())
                     } else emptyList()
 
+                fun movieblastSources(): List<StreamSource> =
+                    if (movieblastJob.isCompleted) {
+                        runCatching { movieblastJob.getCompleted() }.getOrDefault(emptyList())
+                    } else emptyList()
+
                 val merged = LinkedHashMap<String, StreamSource>()
-                val deadline = started + pluginTimeout + 2_000
+                val deadline = started + maxOf(pluginTimeout, MOVIEBLAST_CAP_MS) + 2_000
                 var firstSourceAt = -1L
                 while (true) {
                     for (s in pluginSources()) merged.putIfAbsent(s.url, s)
                     for (s in fallbackSources()) merged.putIfAbsent(s.url, s)
+                    for (s in movieblastSources()) merged.putIfAbsent(s.url, s)
                     val pluginDone = pluginJob.isCompleted
                     val fallbackDone = fallbackJob.isCompleted
-                    if (pluginDone && fallbackDone) break
+                    val movieblastDone = movieblastJob.isCompleted
+                    if (pluginDone && fallbackDone && movieblastDone) break
                     val now = System.currentTimeMillis()
                     if (merged.isNotEmpty()) {
                         if (firstSourceAt < 0) firstSourceAt = now
@@ -409,6 +442,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
                 if (!pluginJob.isCompleted) pluginJob.cancel()
                 if (!fallbackJob.isCompleted) fallbackJob.cancel()
+                if (!movieblastJob.isCompleted) movieblastJob.cancel()
                 merged.values.toList()
             } finally {
                 scope.cancel()

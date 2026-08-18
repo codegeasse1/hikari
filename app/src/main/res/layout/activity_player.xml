@@ -65,36 +65,6 @@
                 android:paddingBottom="6dp" />
 
             <TextView
-                android:id="@+id/quality_btn"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Quality"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:textColor="#FFFFFF"
-                android:background="@drawable/chip_bg"
-                android:layout_marginEnd="6dp"
-                android:paddingLeft="12dp"
-                android:paddingRight="12dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp" />
-
-            <TextView
-                android:id="@+id/subs_btn"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Sub"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:textColor="#FFFFFF"
-                android:background="@drawable/chip_bg"
-                android:layout_marginEnd="6dp"
-                android:paddingLeft="12dp"
-                android:paddingRight="12dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp" />
-
-            <TextView
                 android:id="@+id/speed_btn"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -108,17 +78,64 @@
                 android:paddingRight="12dp"
                 android:paddingTop="6dp"
                 android:paddingBottom="6dp" />
-
-            <ImageButton
-                android:id="@+id/rotate_btn"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:src="@drawable/ic_rotate"
-                android:tint="#FFFFFF"
-                android:contentDescription="Rotate screen"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:scaleType="centerInside" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- Bottom bar: Quality / Subtitle / Rotate. Shown and hidden together with
+         the top bar so the screen stays clean while watching. -->
+    <LinearLayout
+        android:id="@+id/bottom_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:gravity="center_vertical|end"
+        android:background="@drawable/bottom_bar_bg"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/quality_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Quality"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/chip_bg"
+            android:layout_marginEnd="6dp"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp" />
+
+        <TextView
+            android:id="@+id/subs_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Sub"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/chip_bg"
+            android:layout_marginEnd="6dp"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp" />
+
+        <ImageButton
+            android:id="@+id/rotate_btn"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@drawable/ic_rotate"
+            android:tint="#FFFFFF"
+            android:contentDescription="Rotate screen"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:scaleType="centerInside" />
     </LinearLayout>
 
     <LinearLayout
