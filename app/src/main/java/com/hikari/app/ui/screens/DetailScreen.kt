@@ -68,11 +68,10 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -162,19 +161,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _meta.value = base
             _loading.value = false
             withContext(Dispatchers.IO) {
-                // meta + episode list fetch in PARALLEL so the episode grid
-                // appears as fast as the banner (sequential made it feel
-                // like 5-10s of nothing).
-                coroutineScope {
-                    async { runCatching { _meta.value = repo.metaFor(base) } }
-                    async {
-                        _episodesLoading.value = true
-                        try {
-                            runCatching { _episodes.value = repo.episodesFor(base) }
-                        } finally {
-                            _episodesLoading.value = false
-                        }
-                    }
+                // Fetch meta FIRST — CS3 plugins can label a series/actor page
+                // as a movie on their search results (LeakPorner actors are
+                // NSFW→MOVIE), and getMeta corrects the type from the
+                // LoadResponse. Episodes are then fetched against the
+                // CORRECTED item (loadResponse is cached, so this stays a
+                // single origin fetch) — fetching against the raw base would
+                // leave the episode grid empty for every mis-typed item.
+                val meta = runCatching { repo.metaFor(base) }.getOrDefault(base)
+                _meta.value = meta
+                _episodesLoading.value = true
+                try {
+                    _episodes.value = runCatching { repo.episodesFor(meta) }.getOrNull()
+                } finally {
+                    _episodesLoading.value = false
                 }
             }
             prefetchFirstStreams(base)
@@ -645,8 +645,7 @@ private fun Hero(meta: MediaItem?, onBack: () -> Unit) {
             .fillMaxWidth()
             .height(240.dp)
     ) {
-        val img = (meta?.backdropUrl ?: meta?.posterUrl)
-            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        val img = PosterLoader.model(meta?.backdropUrl ?: meta?.posterUrl)
         if (img != null) {
             AsyncImage(
                 model = img,
@@ -685,7 +684,7 @@ private fun EpisodeRow(ep: Episode, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val thumb = ep.image?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        val thumb = PosterLoader.model(ep.image)
         if (thumb != null) {
             AsyncImage(
                 model = thumb,

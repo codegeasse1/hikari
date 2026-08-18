@@ -62,6 +62,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          *  gets the right referer. */
         val imageHostReferers = ConcurrentHashMap<String, String>()
 
+        init {
+            // MRDS/51CG encrypt their pic.xustgq.cn posters; the plugins
+            // usually decrypt them into data: URIs, but when that fails the
+            // raw URL is hotlink-protected and needs the origin site as
+            // Referer. (recordPosterHeaders may override per-plugin later.)
+            imageHostReferers["pic.xustgq.cn"] = "https://51cg1.com/"
+            imageHostReferers["www.pic.xustgq.cn"] = "https://51cg1.com/"
+        }
+
         private fun recordPosterHeaders(url: String?, headers: Map<String, String>?) {
             if (url.isNullOrBlank() || headers.isNullOrEmpty()) return
             val trimmed = url.trim()

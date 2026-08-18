@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.hikari.app.data.MediaItem
+import com.hikari.app.ui.PosterLoader
 
 @Composable
 fun MediaRow(
@@ -87,7 +88,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = item.posterUrl,
+            model = PosterLoader.model(item.posterUrl),
             contentDescription = item.title,
             modifier = Modifier
                 .fillMaxWidth()

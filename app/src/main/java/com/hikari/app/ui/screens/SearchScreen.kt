@@ -42,6 +42,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.FlowPreview
@@ -201,7 +202,7 @@ fun SearchScreen(nav: NavHostController) {
                             }
                     ) {
                         AsyncImage(
-                            model = item.posterUrl,
+                            model = PosterLoader.model(item.posterUrl),
                             contentDescription = item.title,
                             modifier = Modifier
                                 .fillMaxWidth()

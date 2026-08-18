@@ -44,7 +44,9 @@ object Routes {
     const val SEARCH = "search"
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
-    const val DETAIL = "detail/{providerId}/{type}/{mediaId}?title={title}&poster={poster}&rawType={rawType}"
+    // All args live in the query string: mediaIds are URLs (slashes would break
+    // a path segment) and posters can be megabytes of base64 (see detail()).
+    const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}"
 
     fun detail(
         providerId: String,
@@ -54,8 +56,12 @@ object Routes {
         posterUrl: String? = null,
         rawType: String = "",
     ): String {
-        var s = "detail/$providerId/${type.name}/${Uri.encode(mediaId)}?title=${Uri.encode(title)}"
-        if (!posterUrl.isNullOrBlank()) s += "&poster=${Uri.encode(posterUrl)}"
+        var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(title)}"
+        // MRDS/51CG posters are decrypted into huge data: URIs — dropping them
+        // from the route keeps the NavController from exploding on a monster
+        // deep link. The detail page re-fetches the poster via /meta anyway.
+        val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
+        if (poster != null) s += "&poster=${Uri.encode(poster)}"
         if (rawType.isNotBlank()) s += "&rawType=${Uri.encode(rawType)}"
         return s
     }
