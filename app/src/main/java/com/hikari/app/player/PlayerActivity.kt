@@ -149,9 +149,11 @@ class PlayerActivity : ComponentActivity() {
         playerView?.controllerShowTimeoutMs = 3000
         // Keep our own mirror of the controller visibility (media3's
         // PlayerControlView field is private) for the tap-to-toggle logic.
-        playerView?.setControllerVisibilityListener { v ->
-            controllerVisible = v == View.VISIBLE
-        }
+        playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
+            override fun onVisibilityChange(visibility: Int) {
+                controllerVisible = visibility == View.VISIBLE
+            }
+        })
         speedChip = findViewById(R.id.speed_btn)
         rotateBtn = findViewById(R.id.rotate_btn)
         qualityBtn = findViewById(R.id.quality_btn)
