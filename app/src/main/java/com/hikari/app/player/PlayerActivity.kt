@@ -69,6 +69,14 @@ class PlayerActivity : ComponentActivity() {
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
 
+    /** Which header set the CURRENT source is being tried with, when a CDN
+     *  keeps rejecting our requests. 0 = the extractor's full headers,
+     *  1 = without Referer, 2 = no custom headers at all. Some CDNs (often
+     *  Cloudflare-fronted) 403 a request that carries a Referer/Origin they
+     *  don't expect even though the bare URL works in a browser — the player
+     *  walks these variants before giving up on a server. */
+    private var headerVariant = 0
+
     /** True while the current source is retried with text tracks disabled
      *  (its HLS manifest carried a garbage subtitle track that made media3
      *  crash with "Expected WEBVTT. Got 1"). */
@@ -360,6 +368,7 @@ class PlayerActivity : ComponentActivity() {
             showError("No more servers to try.", false)
             return
         }
+        if (index != currentIndex) headerVariant = 0
         currentIndex = index
         val src = sources[index]
         if (src.isTorrent && src.infoHash != null) {
@@ -513,7 +522,13 @@ class PlayerActivity : ComponentActivity() {
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
         // requires), falling back to our Chrome UA. Never brand-mangle it with
         // a "Hikari/" prefix — a malformed UA gets those hosts to answer 403.
-        val sourceHeaders = src.headers
+        // When a CDN keeps rejecting the request, headerVariant walks the header
+        // set down to nothing (some CDNs 403 any request carrying a Referer).
+        val sourceHeaders = when (headerVariant) {
+            1 -> src.headers.filterKeys { !it.equals("Referer", ignoreCase = true) }
+            2 -> emptyMap()
+            else -> src.headers
+        }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
         val dataSourceFactory = OkHttpDataSource.Factory(client)
             .setUserAgent(ua)
@@ -677,6 +692,9 @@ class PlayerActivity : ComponentActivity() {
                     cause = cause.cause
                     depth++
                 }
+                if (currentIndex in sources.indices) {
+                    append("\nURL: ").append(sources[currentIndex].url)
+                }
             }
             // HLS manifests often declare a subtitle track whose URL returns
             // junk ("Expected WEBVTT. Got 1" / contentIsMalformed). media3
@@ -691,6 +709,22 @@ class PlayerActivity : ComponentActivity() {
             if (subtitleIssue) {
                 Toast.makeText(this@PlayerActivity, "Bad subtitle track — retrying without subtitles", Toast.LENGTH_SHORT).show()
                 noSubsRetry = true
+                playSource(currentIndex)
+                return
+            }
+            // Some CDNs 403 the request as long as it carries a Referer / other
+            // extractor headers, even though the bare URL plays fine in a
+            // browser. Walk the header set down (full → no Referer → none)
+            // before declaring the server dead.
+            if (code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && headerVariant < 2) {
+                headerVariant++
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "Server rejected the request (403) — retrying with " +
+                        (if (headerVariant == 1) "no Referer" else "default headers"),
+                    Toast.LENGTH_SHORT
+                ).show()
+                noSubsRetry = false
                 playSource(currentIndex)
                 return
             }

@@ -156,7 +156,12 @@ object FallbackResolver {
         if (html.isNullOrBlank()) return
 
         val text = getAndUnpack(html)
-        scanForUrls(text, embedUrl, raws)
+        // LuluStream (luluvdo.com & friends) expects its CDN requests to carry
+        // the site ROOT as Referer (CloudStream's LuluStream uses mainUrl) — a
+        // full embed URL can make the CDN's hotlink check answer 403. All other
+        // hosts keep the embed URL as referer, like before.
+        val scanReferer = if (isLuluHost(embedUrl)) baseOf(embedUrl) + "/" else embedUrl
+        scanForUrls(text, scanReferer, raws)
         runCatching { subs += scanSubtitles(text) }
 
         if (isDoodHost(embedUrl)) {
@@ -281,8 +286,16 @@ object FallbackResolver {
             h.contains("streamhg") || h.contains("streamgg") || h.contains("hgcloud") ||
                 h.contains("vidhidepro") || h.contains("cavanhabg") || h.contains("tryzendm") ||
                 h.contains("hqq") || h.contains("playhq") || h.contains("playx") -> "StreamHG"
+            h.contains("luluvdo") || h.contains("lulustream") || h.contains("lulucdn") ||
+                h.contains("tnmr.org") || h.contains("kinoger.pw") -> "LuluStream"
             else -> "Hikari Auto"
         }
+    }
+
+    private fun isLuluHost(url: String): Boolean {
+        val h = url.lowercase()
+        return h.contains("luluvdo") || h.contains("lulustream") ||
+            h.contains("lulucdn") || h.contains("kinoger.pw")
     }
 
     private fun isRumbleUrl(url: String): Boolean =
