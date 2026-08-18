@@ -98,6 +98,16 @@ class HikariApp : Application() {
         }
     }
 
+    /**
+     * Some CDNs refuse image requests that carry a Referer at all (even a
+     * same-host one) while serving the identical URL fine to a bare request —
+     * fourhoi.com/surrit.com (MissAV's image+stream CDN) is verified
+     * no-referer-only: browsers and plain clients get the JPEG, a same-origin
+     * Referer gets 403. These hosts get no Referer header from the image
+     * loader; UA stays browser-like for everyone.
+     */
+    private val NO_REFERER_HOSTS = setOf("fourhoi.com", "surrit.com")
+
     /** Clear the persisted crash banner after the user dismisses it. */
     fun clearCrash() {
         lastCrash = null
@@ -120,24 +130,29 @@ class HikariApp : Application() {
                     val req = chain.request()
                     val builder = req.newBuilder()
                         .header("User-Agent", Http.UA)
+                    val host = req.url.host?.lowercase() ?: ""
+                    val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
                     // Plugins declare per-poster headers (e.g. LeakPorner's
                     // 58img.top needs `Referer: https://leakporner.org/`). Use
                     // the exact headers when known, else fall back to a
-                    // same-origin Referer (hotlink protection).
-                    val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
-                    val exact = cs3.imageHeaders[req.url.toString()]
-                    if (exact != null) {
-                        exact.forEach { (k, v) -> builder.header(k, v) }
+                    // same-origin Referer (hotlink protection) — except for
+                    // hosts that 403 any Referer at all (see NO_REFERER_HOSTS).
+                    if (host in NO_REFERER_HOSTS) {
+                        // no Referer — fourhoi.com/surrit.com reject the image
+                        // when a Referer is present (verified: same-origin
+                        // referer => 403, bare request => 200)
                     } else {
-                        // URL may differ from the recorded one (scheme/query/
-                        // params) — apply the Referer the provider declared
-                        // for this image host.
-                        val hostRef = req.url.host?.let { cs3.imageHostReferers[it.lowercase()] }
-                        if (hostRef != null) {
-                            builder.header("Referer", hostRef)
+                        val exact = cs3.imageHeaders[req.url.toString()]
+                        if (exact != null) {
+                            exact.forEach { (k, v) -> builder.header(k, v) }
                         } else {
-                            val host = req.url.host
-                            if (host.isNotBlank()) {
+                            // URL may differ from the recorded one (scheme/query/
+                            // params) — apply the Referer the provider declared
+                            // for this image host.
+                            val hostRef = cs3.imageHostReferers[host]
+                            if (hostRef != null) {
+                                builder.header("Referer", hostRef)
+                            } else if (host.isNotBlank()) {
                                 builder.header("Referer", "${req.url.scheme}://$host/")
                             }
                         }
