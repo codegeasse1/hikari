@@ -283,11 +283,11 @@ fun DetailScreen(
             val playable = streams.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
-            // With a single playable source we go straight to the player. When
-            // there are several (e.g. multiple Torrentio servers for one movie)
-            // keep the sheet open so the user picks a source — exactly how
-            // Stremio presents them.
-            if (playable.size == 1) {
+            // Auto-play as soon as any playable source exists (fastest in the
+            // list). All sources ride along in the player payload, so the
+            // player's own "Select server" dialog can switch between them mid-
+            // playback — the same as earlier builds.
+            if (playable.isNotEmpty()) {
                 val payload = playerPayload(playable)
                 if (payload != null) {
                     showSheet = false
