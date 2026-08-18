@@ -30,7 +30,7 @@ class YtsProvider : HikariProvider {
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
-    private fun api(path: String): JSONObject? =
+    private suspend fun api(path: String): JSONObject? =
         HikariNet.getJson("https://yts.mx/api/v2/$path")
 
     private fun moviesOf(json: JSONObject?): List<HikariMedia> {
