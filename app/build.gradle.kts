@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.3.17"
+        versionCode = 21
+        versionName = "0.3.18"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -75,7 +75,16 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
     archiveFileName.set("cloudstream3-clean.jar")
     destinationDirectory.set(layout.buildDirectory.dir("intermediates/cloudstream-clean"))
     from(zipTree(cloudstreamRawJar)) {
-        exclude("**/R.class", "**/R\$*.class")
+        exclude("**/R.class", "**/R$*.class")
+        // The jar ships the JVM (desktop) artifact of CloudStream, whose
+        // network/WebViewResolver is a no-op stub (`intercept` passes through,
+        // resolveUsingWebView returns nothing). Plugins that resolve embeds
+        // through a real WebView (TamilBlasters' StreamHG/Hgcloud hgcloud.to
+        // dance, …) pass a WebViewResolver to app.get(...) and silently got
+        // zero servers. Shadow it with a real Android implementation in
+        // app/src/main/java/com/lagradost/cloudstream3/network/ — so drop the
+        // stub classes here to avoid a duplicate-class build failure.
+        exclude("com/lagradost/cloudstream3/network/WebViewResolver*.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }

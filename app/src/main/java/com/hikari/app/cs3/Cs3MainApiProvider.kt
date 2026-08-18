@@ -391,8 +391,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // start has long worn off) and retry with the fresh
                         // payload before declaring the movie unplayable.
                         if ((completed != true || links.isEmpty()) && isHollowPayload(data)) {
-                            invalidateHollow(data)
+                            // Resolve the ORIGINAL search/page id BEFORE
+                            // invalidateHollow — it finds the cache entry
+                            // (key → payload) that invalidate is about to
+                            // delete; after the wipe, originalIdOf comes up
+                            // empty and the retry would just re-load the dead
+                            // payload string instead of the real page.
                             val orig = originalIdOf(data) ?: item.id
+                            invalidateHollow(data)
                             val freshBudget = minOf(pluginTimeout, 25_000L)
                             // Covers BOTH the fresh load() and the retried
                             // loadLinks, so the merge loop can't cut them off.

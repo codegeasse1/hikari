@@ -7,6 +7,7 @@ import coil.ImageLoader
 import com.hikari.app.data.AppStore
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ProviderManager
+import com.lagradost.api.setContext
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SettingsJson
 import com.lagradost.nicehttp.Requests
@@ -142,6 +143,18 @@ class HikariApp : Application() {
 
     private fun initCloudStream(context: Context) {
         try {
+            // Mirrors the reference host (CloudStreamApp.onCreate). The jar
+            // currently ships the JVM stub of com.lagradost.api.ContextHelper
+            // (getContext() always null), so this is a no-op today — but if the
+            // jar is ever swapped for the Android artifact, the WebViewResolver
+            // shadow in com/lagradost/cloudstream3/network needs the host
+            // context wired exactly this way.
+            try {
+                setContext(context)
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariApp", "setContext failed", t)
+            }
+
             // CloudStream's buildDefaultClient inserts Conscrypt as the JSSE
             // provider before building okhttp — mirror it so TLS handshakes to
             // the streaming CDNs behave identically.
