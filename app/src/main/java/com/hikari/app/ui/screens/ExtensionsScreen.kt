@@ -69,6 +69,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3PluginManager
+import com.hikari.app.hiki.HikariPluginManager
 import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.Cs3RepoPlugin
 import com.hikari.app.data.ProviderConfig
@@ -176,8 +177,81 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun remove(id: String) {
+        val target = store.providers().firstOrNull { it.id == id }
         store.removeProvider(id)
         manager.refresh()
+        if (target != null && target.type == ProviderType.HIKARI &&
+            target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
+        ) {
+            val stillUsed = store.providers().any { it.url == target.url }
+            if (!stillUsed) {
+                withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
+            }
+        }
+    }
+
+    suspend fun installHikiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            return@withContext Result.failure(Exception("Must start with http(s)://"))
+        }
+        val bytes = Http.getBytes(clean)
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        installHikiBytes(bytes, clean.substringAfterLast('/').ifBlank { "extension.hiki" }, sourceUrl = clean)
+    }
+
+    suspend fun installHikiFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = runCatching {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
+        val name = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "extension.hiki"
+        installHikiBytes(bytes, name)
+    }
+
+    private suspend fun installHikiBytes(
+        bytes: ByteArray,
+        rawName: String,
+        sourceUrl: String? = null,
+    ): Result<Int> {
+        if (bytes.size > 10 * 1024 * 1024) {
+            return Result.failure(Exception("File too large (max 10MB)"))
+        }
+        val clean = rawName.substringAfterLast('/').ifBlank { "extension.hiki" }
+            .let { if (it.endsWith(".hiki", true)) it else "$it.hiki" }
+        val dir = File(getApplication<Application>().filesDir, "hiki").apply { mkdirs() }
+        val file = File(dir, clean)
+        file.setWritable(true)
+        file.writeBytes(bytes)
+
+        val providers = HikariPluginManager.reload(getApplication<Application>(), file)
+        if (providers.isEmpty()) {
+            file.delete()
+            val detail = HikariPluginManager.lastError?.take(600)
+            return Result.failure(
+                Exception(
+                    if (detail.isNullOrBlank()) "No Hikari extension found in this .hiki file"
+                    else "No Hikari extension loaded:\n$detail"
+                )
+            )
+        }
+        var added = 0
+        providers.forEachIndexed { i, p ->
+            val id = "hiki|" + clean.hashCode() + "|" + i
+            val extra = (sourceUrl ?: "") + "|" + i
+            store.addProvider(
+                ProviderConfig(
+                    id = id,
+                    name = p.name,
+                    type = ProviderType.HIKARI,
+                    url = file.absolutePath,
+                    iconUrl = p.iconUrl,
+                    extra = extra,
+                )
+            )
+            added++
+        }
+        manager.refresh()
+        return Result.success(added)
     }
 
     suspend fun installCs3FromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -385,9 +459,11 @@ fun ExtensionsScreen() {
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
     var showRepoDialog by remember { mutableStateOf(false) }
+    var showHikiUrl by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
     var cs3Url by remember { mutableStateOf("") }
+    var hikiUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var busyMsg by remember { mutableStateOf("") }
@@ -418,6 +494,21 @@ fun ExtensionsScreen() {
                 errorMsg = null
                 successMsg = null
                 val r = vm.installCs3FromUri(uri)
+                busy = false
+                r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
+                r.onFailure { errorMsg = it.message }
+            }
+        }
+    }
+
+    val hikiPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                busy = true
+                busyMsg = "Installing .hiki extension…"
+                errorMsg = null
+                successMsg = null
+                val r = vm.installHikiFromUri(uri)
                 busy = false
                 r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
                 r.onFailure { errorMsg = it.message }
@@ -487,6 +578,12 @@ fun ExtensionsScreen() {
             onAddStremio = { errorMsg = null; showStremio = true },
             onAddScraper = { errorMsg = null; showScraper = true },
             onAddCs3Url = { errorMsg = null; showCs3Url = true },
+            onAddHikiUrl = { errorMsg = null; showHikiUrl = true },
+            onPickHikiFile = {
+                errorMsg = null
+                successMsg = null
+                hikiPicker.launch(arrayOf("application/octet-stream", "*/*"))
+            },
             onAddSite = { errorMsg = null; showSite = true },
             onOpenSite = { site ->
                 context.startActivity(
@@ -728,6 +825,63 @@ fun ExtensionsScreen() {
         )
     }
 
+    if (showHikiUrl) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showHikiUrl = false },
+            title = { Text("Install .hiki extension") },
+            text = {
+                Column {
+                    Text(
+                        "Paste a direct link to a compiled Hikari extension (.hiki). " +
+                            "Extensions run against Hikari's own SDK — no CloudStream " +
+                            "dependencies, Cloudflare solvers and WebView stream capture " +
+                            "built in. See docs/HIKARI_EXTENSIONS.md."
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = hikiUrl,
+                        onValueChange = { hikiUrl = it },
+                        placeholder = { Text("https://…/MyExtension.hiki") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            busyMsg = "Downloading and installing…"
+                            errorMsg = null
+                            successMsg = null
+                            val r = vm.installHikiFromUrl(hikiUrl)
+                            busy = false
+                            r.onSuccess { n ->
+                                showHikiUrl = false
+                                hikiUrl = ""
+                                successMsg = "Installed $n provider(s)"
+                            }
+                            r.onFailure { errorMsg = it.message }
+                        }
+                    }
+                ) { Text("Install") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showSite) {
         AlertDialog(
             onDismissRequest = { if (!busy) showSite = false },
@@ -827,6 +981,8 @@ private fun RepoBrowserView(
     onAddScraper: () -> Unit,
     onAddCs3Url: () -> Unit,
     onPickCs3File: () -> Unit,
+    onAddHikiUrl: () -> Unit,
+    onPickHikiFile: () -> Unit,
     onRemoveRepo: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -898,6 +1054,31 @@ private fun RepoBrowserView(
                     Icon(Icons.Filled.Build, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Pick .cs3 file")
+                }
+            }
+        }
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = onAddHikiUrl,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Install .hiki from URL")
+                }
+                OutlinedButton(
+                    onClick = onPickHikiFile,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Extension, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Pick .hiki file")
                 }
             }
         }
@@ -1004,7 +1185,7 @@ private fun RepoBrowserView(
                 EmptyState(
                     title = if (providers.isEmpty()) "No extensions yet" else "No matches",
                     subtitle = if (providers.isEmpty())
-                        "Add a CloudStream repo, a Stremio addon, a universal scraper, or a single .cs3 file."
+                        "Add a CloudStream repo, a Stremio addon, a universal scraper, a .cs3 plugin, or a .hiki extension."
                     else
                         "No installed extension matches \"$extFilter\".",
                     actionLabel = null,

@@ -5,6 +5,8 @@ import android.content.Context
 import coil.Coil
 import coil.ImageLoader
 import com.hikari.app.data.AppStore
+import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
@@ -52,6 +54,22 @@ class HikariApp : Application() {
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()
+            // First run: register the bundled Hikari demo extension (YTS) so
+            // the extension system ships with a working provider. Harmless if
+            // already added — addProvider dedupes by id.
+            runCatching {
+                if (store.providers().none { it.type == ProviderType.HIKARI }) {
+                    store.addProvider(
+                        ProviderConfig(
+                            id = "hiki|yts",
+                            name = "YTS (Hikari)",
+                            type = ProviderType.HIKARI,
+                            iconUrl = null,
+                            extra = "com.hikari.ext.providers.YtsProvider",
+                        )
+                    )
+                }
+            }
             providers.refresh()
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()

@@ -22,6 +22,7 @@ class ProviderManager(private val store: AppStore) {
         ProviderType.STREMIO -> StremioAddon(c)
         ProviderType.UNIVERSAL -> UniversalScraper(c)
         ProviderType.CS3 -> Cs3MainApiProvider(c)
+        ProviderType.HIKARI -> HikariProviderAdapter(c)
     }
 
     fun byId(id: String): ContentProvider? =

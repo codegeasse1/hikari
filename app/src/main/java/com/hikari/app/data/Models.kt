@@ -1,6 +1,6 @@
 package com.hikari.app.data
 
-enum class ProviderType { STREMIO, UNIVERSAL, CS3 }
+enum class ProviderType { STREMIO, UNIVERSAL, CS3, HIKARI }
 
 data class ProviderConfig(
     val id: String,
