@@ -54,6 +54,12 @@ class HikariApp : Application() {
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()
+            // WebView UA override state (Settings) — loaded once, kept current
+            // by the settings card.
+            runCatching {
+                webViewUseDefaultUa = store.webviewUseDefaultUa()
+                webViewCustomUa = store.webviewCustomUa()
+            }
             // First run: register the bundled Hikari demo extension (YTS) so
             // the extension system ships with a working provider. Harmless if
             // already added — addProvider dedupes by id.
@@ -112,6 +118,33 @@ class HikariApp : Application() {
     fun clearCrash() {
         lastCrash = null
         runCatching { File(cacheDir, "crash.log").delete() }
+    }
+
+    /**
+     * WebView user-agent override (Settings → WebView user agent). Default ON:
+     * the WebView advertises the STOCK Android WebView UA — the fingerprint the
+     * engine actually presents, which is what makes Cloudflare's JS challenge
+     * (cf_clearance) complete instead of looping on a desktop UA claim. Off +
+     * custom UA lets users force a desktop/mobile UA for sites that need one.
+     * Loaded from prefs at startup; updated live by the settings card.
+     */
+    @Volatile
+    var webViewUseDefaultUa = true
+
+    @Volatile
+    var webViewCustomUa: String? = null
+
+    /** UA string the WebViews should advertise. [pluginUa] is the UA a
+     *  CloudStream-style plugin explicitly requested (used only when the user
+     *  has turned the override off and typed nothing). */
+    fun effectiveWebViewUa(pluginUa: String? = null): String {
+        val custom = webViewCustomUa?.trim()
+        if (!webViewUseDefaultUa) {
+            if (!custom.isNullOrBlank()) return custom
+            if (!pluginUa.isNullOrBlank()) return pluginUa
+        }
+        return runCatching { android.webkit.WebSettings.getDefaultUserAgent(this) }
+            .getOrDefault(Http.UA)
     }
 
     /**

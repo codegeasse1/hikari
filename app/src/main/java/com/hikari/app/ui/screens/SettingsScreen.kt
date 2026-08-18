@@ -248,6 +248,16 @@ fun SettingsScreen() {
                     .padding(top = 12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
+                WebViewUserAgentCard(app)
+            }
+        }
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 UserscriptsCard(app)
             }
         }
@@ -390,6 +400,87 @@ private fun WebViewSafetyCard(app: HikariApp) {
                     popupProtection = it
                     scope.launch { runCatching { app.store.setWebviewPopup(it) } }
                 }
+            )
+        }
+    }
+}
+
+@Composable
+private fun WebViewUserAgentCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var useDefault by remember { mutableStateOf(true) }
+    var customUa by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        useDefault = app.store.webviewUseDefaultUa()
+        customUa = app.store.webviewCustomUa()
+        draft = customUa
+    }
+
+    fun persist(u: Boolean, custom: String) {
+        useDefault = u
+        customUa = custom
+        // Keep the runtime UA (used by both WebViews + stream capture) current.
+        app.webViewUseDefaultUa = u
+        app.webViewCustomUa = custom.ifBlank { null }
+        scope.launch { runCatching { app.store.setWebViewUa(u, custom) } }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "WebView user agent",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Some sites (Cloudflare) block the WebView when it advertises a " +
+                "desktop browser it doesn't match. The stock Android user agent " +
+                "passes verification on most sites; a custom one is for sites " +
+                "that need a specific desktop/mobile UA.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Use Android default user agent",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Stock Android WebView UA — passes Cloudflare checks.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = useDefault,
+                onCheckedChange = { on -> persist(on, draft) }
+            )
+        }
+        if (!useDefault) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = { Text("Mozilla/5.0 …") },
+                    singleLine = true,
+                    label = { Text("Custom user agent") },
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { persist(false, draft) },
+                    enabled = draft.trim().isNotEmpty() && draft.trim() != customUa
+                ) { Text("Save") }
+            }
+            Text(
+                "Currently used: ${app.effectiveWebViewUa().take(70)}…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

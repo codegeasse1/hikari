@@ -127,7 +127,12 @@ class WebViewResolver(
                 webViewUserAgent = wv.settings.userAgentString
                 // CloudStream deliberately does not force a UA unless the
                 // plugin asks for one — forcing it makes Cloudflare break.
-                if (userAgent != null) wv.settings.userAgentString = userAgent
+                // The app's setting (Settings → WebView user agent) decides the
+                // UA instead: stock Android default by default (passes the CF
+                // JS challenge), or the user's custom UA when they override.
+                // The plugin-requested UA is only honored when the user turned
+                // the override off and typed nothing.
+                wv.settings.userAgentString = HikariApp.instance.effectiveWebViewUa(userAgent)
                 wv.webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(
                         view: WebView,

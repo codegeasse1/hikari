@@ -32,6 +32,8 @@ class AppStore(private val ctx: Context) {
         val AD_WHITE = stringPreferencesKey("adWhite")
         val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
+        val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
+        val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
     }
 
     fun themeFlow(): Flow<String> =
@@ -99,6 +101,25 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setWebviewPopup(enabled: Boolean) {
         store.edit { it[K.WEBVIEW_POPUP] = enabled }
+    }
+
+    // ---- WebView user agent (stock Android default vs custom) ----
+
+    fun webviewUseDefaultUaFlow(): Flow<Boolean> =
+        store.data.map { it[K.WEBVIEW_DEFAULT_UA] ?: true }
+
+    suspend fun webviewUseDefaultUa(): Boolean = webviewUseDefaultUaFlow().first()
+
+    fun webviewCustomUaFlow(): Flow<String> =
+        store.data.map { it[K.WEBVIEW_CUSTOM_UA] ?: "" }
+
+    suspend fun webviewCustomUa(): String = webviewCustomUaFlow().first()
+
+    suspend fun setWebViewUa(useDefault: Boolean, customUa: String) {
+        store.edit {
+            it[K.WEBVIEW_DEFAULT_UA] = useDefault
+            it[K.WEBVIEW_CUSTOM_UA] = customUa
+        }
     }
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {

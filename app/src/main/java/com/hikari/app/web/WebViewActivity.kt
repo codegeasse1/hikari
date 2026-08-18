@@ -266,10 +266,10 @@ class WebViewActivity : ComponentActivity() {
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
         ws.offscreenPreRaster = true
-        // A real current Chrome UA (not the bare "Version/4.0 webview" string):
-        // sites serve their normal HTML5 player instead of a fallback page, and
-        // Cloudflare sees an ordinary Chrome Mobile fingerprint.
-        ws.userAgentString = Http.WEBVIEW_UA
+        // UA comes from Settings → WebView user agent: stock Android default
+        // (passes Cloudflare's JS challenge) unless the user overrides with a
+        // custom one. See HikariApp.effectiveWebViewUa.
+        ws.userAgentString = (application as HikariApp).effectiveWebViewUa()
 
         // Cookies are the backbone of most streaming CDNs (session tokens) and
         // Cloudflare (cf_clearance). Accept them, accept THIRD-party ones (the
@@ -434,7 +434,7 @@ class WebViewActivity : ComponentActivity() {
                     setBackgroundColor(0xFF000000.toInt())
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    settings.userAgentString = Http.WEBVIEW_UA
+                    settings.userAgentString = (application as HikariApp).effectiveWebViewUa()
                     webViewClient = object : WebViewClient() {
                         private var relayed = false
 
@@ -644,7 +644,7 @@ class WebViewActivity : ComponentActivity() {
         val headers = buildMap {
             put("Range", "bytes=0-2047")
             put("Referer", pageUrl ?: url)
-            put("User-Agent", Http.WEBVIEW_UA)
+            put("User-Agent", (application as HikariApp).effectiveWebViewUa())
             if (!cookie.isNullOrBlank()) put("Cookie", cookie)
         }
         val r = runCatching { Http.get(url, headers) }.getOrNull() ?: return false
