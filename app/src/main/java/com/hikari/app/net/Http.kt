@@ -2,6 +2,8 @@ package com.hikari.app.net
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +36,31 @@ object Http {
         val builder = Request.Builder().url(url).header("User-Agent", UA)
         headers.forEach { (k, v) -> builder.header(k, v) }
         return client.newCall(builder.build()).execute()
+    }
+
+    fun post(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): Response {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .post(body.toRequestBody(contentType.toMediaType()))
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        return client.newCall(builder.build()).execute()
+    }
+
+    fun postString(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): String? = try {
+        post(url, body, headers, contentType).use { if (it.isSuccessful) it.body?.string() else null }
+    } catch (e: Exception) {
+        null
     }
 
     fun getString(url: String, headers: Map<String, String> = emptyMap()): String? =

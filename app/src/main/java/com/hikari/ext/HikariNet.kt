@@ -52,6 +52,37 @@ object HikariNet {
             com.hikari.app.net.Http.getString(url, headers)
         }
 
+    /** POST a string body and return the response body as text (null on any
+     *  failure). JSON is the normal case (the Castle API's encrypted envelope),
+     *  but the body is passed through verbatim so any content type works. */
+    suspend fun postString(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): String? = withContext(Dispatchers.IO) {
+        com.hikari.app.net.Http.postString(url, body, headers, contentType)
+    }
+
+    /** POST a JSON object and parse the response as JSON (null on failure). */
+    suspend fun postJson(
+        url: String,
+        body: JSONObject,
+        headers: Map<String, String> = emptyMap(),
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        postString(url, body.toString(), headers + mapOf("Content-Type" to "application/json; charset=utf-8"))
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+    }
+
+    /** Base64 decode (standard alphabet, tolerant of whitespace). Null-safe. */
+    fun base64Decode(s: String): ByteArray? = runCatching {
+        android.util.Base64.decode(s, android.util.Base64.DEFAULT)
+    }.getOrNull()
+
+    /** Base64 encode (standard alphabet). */
+    fun base64Encode(bytes: ByteArray): String =
+        android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+
     /**
      * GET like [getString], but when the plain HTTP client gets blocked (a
      * Cloudflare/DataDome challenge page or a hard failure — the common way
