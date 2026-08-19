@@ -28,6 +28,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -144,6 +147,33 @@ fun SearchScreen(nav: NavHostController) {
         )
         if (providers.isNotEmpty()) {
             Column {
+                var providerFilter by remember { mutableStateOf("") }
+                val visibleProviders = remember(providers, providerFilter) {
+                    val f = providerFilter.trim()
+                    if (f.isEmpty()) providers
+                    else providers.filter { it.config.name.contains(f, ignoreCase = true) }
+                }
+                if (providers.size > 5) {
+                    // With many extensions installed the chip row is unusable —
+                    // a mini search box narrows it to the ones you mean.
+                    OutlinedTextField(
+                        value = providerFilter,
+                        onValueChange = { providerFilter = it },
+                        placeholder = { Text("Filter providers…") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (providerFilter.isNotEmpty()) {
+                                IconButton(onClick = { providerFilter = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Clear")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
+                }
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -155,7 +185,7 @@ fun SearchScreen(nav: NavHostController) {
                             label = { Text("All") }
                         )
                     }
-                    items(providers, key = { it.config.id }) { p ->
+                    items(visibleProviders, key = { it.config.id }) { p ->
                         FilterChip(
                             selected = p.config.id in selected,
                             onClick = { vm.toggleProvider(p.config.id) },

@@ -212,11 +212,13 @@ object HikariNet {
         capture: Regex,
         additional: List<Regex> = emptyList(),
         timeoutMs: Long = 60_000,
+        script: String? = null,
     ): List<HikariWebViewResult> = withContext(Dispatchers.IO) {
         val resolver = WebViewResolver(
             interceptUrl = capture,
             additionalUrls = additional,
             timeout = timeoutMs,
+            script = script,
         )
         runCatching {
             val (fixed, extra) = resolver.resolveUsingWebView(url)

@@ -151,7 +151,38 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         } else {
             val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
             val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
-            apis.getOrNull(index)
+            apis.getOrNull(index)?.also { normalizeMainUrl(it) }
+        }
+    }
+
+    /** Some repo builds ship Castle TV with a redirect-id base
+     *  (`https://api.hlowb.com/9919952593151901`) — every endpoint 404s under
+     *  that, while the plain base works. Strip the id segment when present. */
+    private fun normalizeMainUrl(a: MainAPI) {
+        val m = a.mainUrl
+        if (!m.startsWith("https://api.hlowb.com/")) return
+        val rest = m.removePrefix("https://api.hlowb.com/").trimEnd('/')
+        if (rest.isEmpty() || !rest.all { it.isDigit() }) return
+        val fixed = "https://api.hlowb.com"
+        // Prefer the public Kotlin `var` setter; fall back to the backing
+        // field (walking the hierarchy in case it lives on the base class).
+        val ok = runCatching {
+            a.javaClass.methods.firstOrNull { it.name == "setMainUrl" }
+                ?.invoke(a, fixed) != null
+        }.getOrDefault(false)
+        if (!ok) {
+            var c: Class<*>? = a.javaClass
+            while (c != null) {
+                try {
+                    c.getDeclaredField("mainUrl").also { f ->
+                        f.isAccessible = true
+                        f.set(a, fixed)
+                    }
+                    break
+                } catch (e: NoSuchFieldException) {
+                    c = c.superclass
+                }
+            }
         }
     }
 

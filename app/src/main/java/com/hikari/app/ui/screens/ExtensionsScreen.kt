@@ -350,6 +350,44 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun addHikiRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.HIKARI)
 
+    /** The URL that actually served the last [fetchRepoRaw] — repos are stored
+     *  under their raw form so refreshing works with the plain http client. */
+    @Volatile
+    private var lastGoodRepoUrl: String = ""
+
+    /** Fetches a repo.json, trying the pasted URL first and then the raw-GitHub
+     *  variants for `github.com/o/r` links users commonly paste (the HTML page
+     *  would never parse as JSON). Remembers which variant succeeded. */
+    private fun fetchRepoRaw(url: String): Result<String> {
+        val variants = repoUrlVariants(url)
+        if (variants.isEmpty()) {
+            lastGoodRepoUrl = url
+            return Http.fetchStringRobust(url)
+        }
+        for (candidate in variants) {
+            val r = Http.fetchStringRobust(candidate)
+            if (r.isSuccess) {
+                lastGoodRepoUrl = candidate
+                return r
+            }
+        }
+        // last resort: the pasted URL as-is (a non-main/mixed-branch repo.json)
+        lastGoodRepoUrl = url
+        return Http.fetchStringRobust(url)
+    }
+
+    private fun repoUrlVariants(raw: String): List<String> {
+        val t = raw.trim().trimEnd('/')
+        if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
+        val m = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t) ?: return emptyList()
+        val owner = m.groupValues[1]
+        val repo = m.groupValues[2]
+        return listOf(
+            "https://raw.githubusercontent.com/$owner/$repo/main/repo.json",
+            "https://raw.githubusercontent.com/$owner/$repo/master/repo.json",
+        )
+    }
+
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
         val url = rawUrl.trim()
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -357,10 +395,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         return withContext(Dispatchers.IO) {
             runCatching {
-                val text = Http.fetchStringRobust(url).getOrElse { throw it }
+                val text = fetchRepoRaw(url).getOrElse { throw it }
                 val obj = JSONObject(text)
                 val repo = Cs3Repo(
-                    url = url,
+                    url = lastGoodRepoUrl,
                     name = obj.optString("name").ifBlank { url },
                     description = obj.optString("description"),
                     kind = kind,
@@ -391,7 +429,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
-        val text = Http.fetchStringRobust(repoUrl)
+        val text = fetchRepoRaw(repoUrl)
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = JSONObject(text)
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
