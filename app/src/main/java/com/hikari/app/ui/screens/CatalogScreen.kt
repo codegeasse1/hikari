@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -144,12 +145,19 @@ fun CatalogScreen(
     val done by vm.done.collectAsState()
 
     val gridState = rememberLazyGridState()
-    // Infinite scroll: fetch the next page when the last card becomes visible.
-    LaunchedEffect(gridState, items.size) {
-        val snapshot = gridState.layoutInfo
-        val last = snapshot.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (last >= snapshot.totalItemsCount - 3 && !done && !loading) {
-            vm.loadNext()
+    // Infinite scroll: fetch the next page when the user scrolls close to the
+    // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
+    // scroll — gridState is a stable object — so this watches the scroll
+    // position via snapshotFlow instead.)
+    LaunchedEffect(gridState) {
+        snapshotFlow {
+            val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val total = gridState.layoutInfo.totalItemsCount
+            last to total
+        }.collect { (last, total) ->
+            if (last >= total - 3 && !done && !loading) {
+                vm.loadNext()
+            }
         }
     }
 
