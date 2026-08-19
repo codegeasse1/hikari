@@ -47,6 +47,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: "8.11.1"
+          # The GitHub cache service occasionally has outages that make the
+          # restore/save steps exit 1 and kill the whole build before gradle
+          # even runs. Disabling the cache costs a couple of minutes of
+          # dependency re-downloads but makes builds deterministic.
+          cache-disabled: true
 
       - name: Build APKs (debug + release)
         env:
