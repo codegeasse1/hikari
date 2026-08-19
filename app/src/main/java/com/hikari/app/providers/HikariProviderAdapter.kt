@@ -22,7 +22,28 @@ import com.hikari.ext.HikariStream
  */
 class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvider {
 
-    private val provider: HikariProvider? by lazy { HikariRuntime.providerFor(config) }
+    @Volatile
+    private var loadedProvider: HikariProvider? = null
+    @Volatile
+    private var providerResolved = false
+
+    /** The extension's provider, resolved on first access. Only a SUCCESS is
+     *  cached — a transient failure (extension still loading, a one-off hiccup)
+     *  is retried on the next access rather than stuck as a permanent null
+     *  ("no catalog"/"no playable source" until a force-stop). */
+    private val provider: HikariProvider?
+        get() {
+            if (providerResolved) return loadedProvider
+            synchronized(this) {
+                if (providerResolved) return loadedProvider
+                val p = HikariRuntime.providerFor(config)
+                if (p != null) {
+                    loadedProvider = p
+                    providerResolved = true
+                }
+                return p
+            }
+        }
 
     override suspend fun catalogs(): List<CatalogRef> =
         provider?.catalogs()?.map { CatalogRef(config.id, it.type.toApp(), it.id, it.name, it.rawType) }

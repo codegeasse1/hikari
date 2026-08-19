@@ -144,16 +144,36 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         }
     }
 
-    private val api: MainAPI? by lazy {
-        val file = File(config.url)
-        if (!file.exists()) {
-            null
-        } else {
-            val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
-            val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
-            apis.getOrNull(index)?.also { normalizeMainUrl(it) }
+    @Volatile
+    private var loadedApi: MainAPI? = null
+    @Volatile
+    private var apiResolved = false
+
+    /** The plugin's MainAPI, resolved on first access. Only a SUCCESS is
+     *  cached — a transient failure (the plugin still being loaded elsewhere,
+     *  the load lock busy, a one-off network hiccup) is retried on the next
+     *  access instead of poisoning every catalog/stream call with a
+     *  permanently-null api ("no catalog found" until a force-stop). */
+    private val api: MainAPI?
+        get() {
+            if (apiResolved) return loadedApi
+            synchronized(this) {
+                if (apiResolved) return loadedApi
+                val file = File(config.url)
+                if (!file.exists()) {
+                    apiResolved = true
+                    return null
+                }
+                val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
+                val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
+                val a = apis.getOrNull(index)?.also { normalizeMainUrl(it) }
+                if (a != null) {
+                    loadedApi = a
+                    apiResolved = true
+                }
+                return a
+            }
         }
-    }
 
     /** Some repo builds ship Castle TV with a redirect-id base
      *  (`https://api.hlowb.com/9919952593151901`) — every endpoint 404s under

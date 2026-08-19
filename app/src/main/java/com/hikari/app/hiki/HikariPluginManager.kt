@@ -27,18 +27,43 @@ object HikariPluginManager {
 
     private val cache = HashMap<String, List<HikariProvider>>()
 
+    // Paths whose load() just failed, with the failure timestamp — a failed
+    // load is not retried hot (see providersFor).
+    private val lastFail = HashMap<String, Long>()
+
+    private const val FAIL_RETRY_MS = 60_000L
+
     @Volatile
     var lastError: String? = null
         private set
 
     @Synchronized
-    fun providersFor(context: Context, file: File): List<HikariProvider> =
-        cache.getOrPut(file.absolutePath) { loadFile(context, file) }
+    fun providersFor(context: Context, file: File): List<HikariProvider> {
+        val path = file.absolutePath
+        cache[path]?.let { return it }
+        val failAt = lastFail[path]
+        if (failAt != null && System.currentTimeMillis() - failAt < FAIL_RETRY_MS) return emptyList()
+        val list = loadFile(context, file)
+        if (list.isNotEmpty()) {
+            cache[path] = list
+            lastFail.remove(path)
+        } else {
+            lastFail[path] = System.currentTimeMillis()
+        }
+        return list
+    }
 
     @Synchronized
     fun reload(context: Context, file: File): List<HikariProvider> {
         val list = loadFile(context, file)
-        cache[file.absolutePath] = list
+        val path = file.absolutePath
+        if (list.isNotEmpty()) {
+            cache[path] = list
+            lastFail.remove(path)
+        } else {
+            cache.remove(path)
+            lastFail[path] = System.currentTimeMillis()
+        }
         return list
     }
 

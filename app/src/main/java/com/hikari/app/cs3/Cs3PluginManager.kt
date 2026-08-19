@@ -39,14 +39,20 @@ object Cs3PluginManager {
 
     private val cache = ConcurrentHashMap<String, List<MainAPI>>()
 
-    // Files whose load() is currently running. Concurrent callers short-circuit
-    // on this instead of blocking on a lock — a caller that can't get the load
-    // immediately just sees "not loaded yet" and retries later. This stops a
-    // slow plugin load (some plugins do network work in load()) from freezing
-    // the app no matter which thread started it.
+    // Files whose load() is currently running (re-entrancy guard). Loading
+    // itself is serialized under loadLock; the set just lets a re-entrant call
+    // from inside load() detect that it is mid-load.
     private val loading = ConcurrentHashMap.newKeySet<String>()
 
     private val loadLock = java.util.concurrent.locks.ReentrantLock()
+
+    // Paths whose load() just failed, with the failure timestamp. A failed
+    // load is NOT retried hot — every attempt can block for up to
+    // LOAD_TIMEOUT_S — so callers get a fast empty result until the window
+    // passes, then the load is attempted again (and can self-heal).
+    private val lastFail = ConcurrentHashMap<String, Long>()
+
+    private const val FAIL_RETRY_MS = 60_000L
 
     @Volatile
     var lastError: String? = null
@@ -76,26 +82,42 @@ object Cs3PluginManager {
 
     /**
      * Cached plugin APIs, loading on demand. NEVER loads a plugin on the UI
-     * thread (dex loading + plugin load() code can block for seconds → ANR),
-     * and NEVER waits for another in-flight load: if the plugin isn't loaded
-     * yet it returns empty immediately and the cache is filled by the startup
-     * warm() or the provider's own first IO access.
+     * thread (dex loading + plugin load() code can block for seconds → ANR).
+     * On IO threads a call BLOCKS until the load finishes and returns the real
+     * result — callers cache whatever apisFor returns (e.g. a provider's
+     * `api`), so a sneaky empty shortcut would poison that cache permanently
+     * and the provider would report "no catalog" forever. A plugin whose load
+     * genuinely failed is instead negative-cached for a short window so it is
+     * not retried hot.
      */
     fun apisFor(context: Context, file: File): List<MainAPI> {
         val path = file.absolutePath
         cache[path]?.let { return it }
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return emptyList()
-        if (path in loading) return emptyList()
-        if (!loadLock.tryLock()) return emptyList()
+        val failAt = lastFail[path]
+        if (failAt != null && System.currentTimeMillis() - failAt < FAIL_RETRY_MS) return emptyList()
+        loadLock.lock()
         try {
             cache[path]?.let { return it }
-            if (path in loading) return emptyList()
+            if (path in loading) {
+                // Re-entrant call from inside a plugin load() — report "not
+                // loaded yet" rather than deadlock on our own lock.
+                return emptyList()
+            }
             loading.add(path)
-            val apis = loadFile(context, file)
-            if (apis.isNotEmpty()) cache[path] = apis
-            return apis
+            try {
+                val apis = loadFile(context, file)
+                if (apis.isNotEmpty()) {
+                    cache[path] = apis
+                    lastFail.remove(path)
+                } else {
+                    lastFail[path] = System.currentTimeMillis()
+                }
+                return apis
+            } finally {
+                loading.remove(path)
+            }
         } finally {
-            loading.remove(path)
             loadLock.unlock()
         }
     }
@@ -108,7 +130,13 @@ object Cs3PluginManager {
         try {
             loading.add(path)
             val apis = loadFile(context, file)
-            if (apis.isNotEmpty()) cache[path] = apis else cache.remove(path)
+            if (apis.isNotEmpty()) {
+                cache[path] = apis
+                lastFail.remove(path)
+            } else {
+                cache.remove(path)
+                lastFail[path] = System.currentTimeMillis()
+            }
             return apis
         } finally {
             loading.remove(path)
