@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -126,13 +127,13 @@ fun CatalogScreen(
     type: MediaType,
     rawType: String,
 ) {
+    val app = LocalContext.current.applicationContext as Application
     val vm: CatalogViewModel = viewModel(
         key = "$providerId|$catalogId|$type",
         factory = viewModelFactory {
             initializer {
                 CatalogViewModel(
-                    androidx.compose.ui.platform.LocalContext.current
-                        .applicationContext as Application,
+                    app,
                     providerId, catalogId, catalogName, type, rawType
                 )
             }
