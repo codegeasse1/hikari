@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
@@ -126,7 +128,7 @@ fun CatalogScreen(
 ) {
     val vm: CatalogViewModel = viewModel(
         key = "$providerId|$catalogId|$type",
-        factory = androidx.lifecycle.viewmodel.compose.viewModelFactory {
+        factory = viewModelFactory {
             initializer {
                 CatalogViewModel(
                     androidx.compose.ui.platform.LocalContext.current

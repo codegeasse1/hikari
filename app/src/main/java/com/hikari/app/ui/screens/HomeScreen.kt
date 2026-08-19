@@ -214,6 +214,11 @@ fun HomeScreen(nav: NavHostController) {
                         title = row.title,
                         providerName = row.providerName,
                         items = row.items,
+                        onClick = { item ->
+                            nav.navigate(
+                                Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                            )
+                        },
                         onShowAll = {
                             nav.navigate(
                                 Routes.catalog(
@@ -222,11 +227,7 @@ fun HomeScreen(nav: NavHostController) {
                                 )
                             )
                         }
-                    ) { item ->
-                        nav.navigate(
-                            Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
-                        )
-                    }
+                    )
                 }
             }
             if (rows.isEmpty() && !loading) {
