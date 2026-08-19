@@ -156,7 +156,7 @@ object Translator {
         if (now - lastPersist < 10_000) return
         lastPersist = now
         val store = storeRef ?: return
-        val snapshot = synchronized(lock) { cache.toList().takeLast(1500).map { it.key to it.value } }
+        val snapshot = synchronized(lock) { cache.entries.toList().takeLast(1500).map { it.key to it.value } }
         CoroutineScope(Dispatchers.IO).launch {
             runCatching { store.setTranslateCache(snapshot) }
         }
