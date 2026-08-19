@@ -50,6 +50,17 @@ class HikariApp : Application() {
     lateinit var providers: ProviderManager
         private set
 
+    /**
+     * Live copy of the persisted element-block selectors (WebView element
+     * blocker). Loaded at startup and kept in sync by every block/undo/clear,
+     * so a freshly opened WebView can apply them synchronously BEFORE its
+     * first page finishes loading — reading the store itself is async and was
+     * racing the first page load, which made blocks look \"reset\" after
+     * closing and reopening the WebView.
+     */
+    @Volatile
+    var elementBlocks: List<String> = emptyList()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -60,6 +71,10 @@ class HikariApp : Application() {
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
+            // Load the persisted WebView element blocks into the app cache FIRST
+            // (fast DataStore read) so a WebView opened right after launch can
+            // apply them on its first page instead of showing them after a race.
+            runCatching { elementBlocks = store.elementBlocks() }
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()

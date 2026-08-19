@@ -241,9 +241,18 @@ class WebViewActivity : ComponentActivity() {
                 }
             }
             // Persisted element-block selectors, applied by ELEMENT_BLOCK_JS on
-            // every page load (see injectElementBlocker).
+            // every page load (see injectElementBlocker). The app-level cache
+            // (HikariApp.elementBlocks) is already synced from disk at startup,
+            // so blocks are ready BEFORE the first page loads — this is what
+            // previously made them look "reset" after closing and reopening the
+            // WebView (the async store read was racing the first onPageFinished).
+            // The store re-read below is a safety net for a cold-start race; once
+            // it lands we re-inject so an already-finished page still gets its
+            // blocks applied.
             blockedSelectors.clear()
+            blockedSelectors += app.elementBlocks
             runCatching { blockedSelectors += app.store.elementBlocks() }
+            runOnUiThread { injectElementBlocker(webView) }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -617,6 +626,7 @@ class WebViewActivity : ComponentActivity() {
                     Toast.makeText(this@WebViewActivity, "Nothing to undo", Toast.LENGTH_SHORT).show()
                 } else {
                     blockedSelectors.remove(sel)
+                    (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
                     webView.evaluateJavascript(
                         "window.__hikariRestoreSelector?window.__hikariRestoreSelector(" +
                             jsString(sel) + "):null",
@@ -633,6 +643,7 @@ class WebViewActivity : ComponentActivity() {
             runCatching { (applicationContext as HikariApp).store.clearElementBlocks() }
             runOnUiThread {
                 blockedSelectors.clear()
+                (applicationContext as HikariApp).elementBlocks = emptyList()
                 webView.evaluateJavascript(
                     "window.__hikariRestoreAll?window.__hikariRestoreAll():null",
                     null
@@ -840,6 +851,7 @@ class WebViewActivity : ComponentActivity() {
             if (selector.isBlank()) return
             runOnUiThread {
                 blockedSelectors.add(selector)
+                (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
                 Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch(Dispatchers.IO) {
                     runCatching { (applicationContext as HikariApp).store.addElementBlock(selector) }
@@ -868,6 +880,13 @@ class WebViewActivity : ComponentActivity() {
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    override fun onPause() {
+        super.onPause()
+        // Persist cookies/DOM-storage to disk the moment the WebView leaves the
+        // foreground so logins and sessions survive even a force-kill.
+        runCatching { CookieManager.getInstance().flush() }
+    }
 
     override fun onDestroy() {
         scanHandler.removeCallbacksAndMessages(null)
