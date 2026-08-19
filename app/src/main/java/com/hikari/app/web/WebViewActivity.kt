@@ -81,6 +81,7 @@ class WebViewActivity : ComponentActivity() {
     // the caller can reload the extension catalog with the now-valid cookies.
     private var autoCloseWhenCloudflarePassed = false
     private var challengeSeen = false
+    private var verifyDone = false
     private val verifyHandler = Handler(Looper.getMainLooper())
     private var verifyRunnable: Runnable? = null
 
@@ -778,7 +779,7 @@ class WebViewActivity : ComponentActivity() {
         verifyHandler.removeCallbacksAndMessages(null)
         val r = object : Runnable {
             override fun run() {
-                if (!autoCloseWhenCloudflarePassed) return
+                if (!autoCloseWhenCloudflarePassed || verifyDone) return
                 val v = webView
                 if (v == null) return
                 v.evaluateJavascript(
@@ -797,10 +798,12 @@ class WebViewActivity : ComponentActivity() {
                         challengeSeen = true
                     } else if (challengeSeen) {
                         // Challenge present → gone = verification complete.
+                        verifyDone = true
                         finish()
-                        return
                     }
-                    if (autoCloseWhenCloudflarePassed) verifyHandler.postDelayed(this, 1200)
+                    if (!verifyDone && autoCloseWhenCloudflarePassed) {
+                        verifyHandler.postDelayed(this, 1200)
+                    }
                 }
             }
         }
