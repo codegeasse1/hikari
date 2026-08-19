@@ -292,7 +292,7 @@ fun DetailScreen(
         vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
-    val launchPlayer: (List<StreamSource>, Episode?) -> Unit = { playable, ep ->
+    val launchPlayer: (List<StreamSource>, Episode?) -> Unit = launchPlayer@{ playable, ep ->
         val payload = playerPayload(playable)
         if (payload == null) return@launchPlayer
         // History context rides along so the player can record resume position
