@@ -37,6 +37,17 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
+        val HOME_PROVIDER = stringPreferencesKey("homeProvider")
+    }
+
+    /** Which provider the Home screen is currently showing (empty = All). */
+    fun homeProviderFlow(): Flow<String> =
+        store.data.map { it[K.HOME_PROVIDER] ?: "" }
+
+    suspend fun homeProvider(): String = homeProviderFlow().first()
+
+    suspend fun setHomeProvider(id: String) {
+        store.edit { it[K.HOME_PROVIDER] = id }
     }
 
     fun themeFlow(): Flow<String> =

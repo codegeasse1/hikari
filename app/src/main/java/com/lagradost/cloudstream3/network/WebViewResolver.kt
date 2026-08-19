@@ -140,6 +140,13 @@ class WebViewResolver(
                 val wv = WebView(context)
                 wv.settings.javaScriptEnabled = true
                 wv.settings.domStorageEnabled = true
+                // Streaming players refuse to autoplay with sound when the
+                // WebView requires a user gesture — and a capture WebView
+                // never gets tapped, so the player just sits there and never
+                // requests the manifest (hanime.tv / hstream.moe showed "no
+                // playable sources" for exactly this reason). Allow
+                // programmatic play, then injectAutoplay() kicks the player.
+                wv.settings.mediaPlaybackRequiresUserGesture = false
                 webViewUserAgent = wv.settings.userAgentString
                 // CloudStream deliberately does not force a UA unless the
                 // plugin asks for one — forcing it makes Cloudflare break.
@@ -155,6 +162,10 @@ class WebViewResolver(
                         request: WebResourceRequest,
                     ): WebResourceResponse? {
                         val reqUrl = request.url.toString()
+                        // The player is often only wired up by the time the
+                        // page has made a request — nudge it to start on every
+                        // request too (muted play is always allowed).
+                        injectAutoplay(view)
                         if (script != null) {
                             Handler(Looper.getMainLooper()).post {
                                 view.evaluateJavascript(script) { r -> scriptCallback?.invoke(r) }
@@ -182,6 +193,12 @@ class WebViewResolver(
                             return WebResourceResponse("image/png", null, ByteArrayInputStream(ByteArray(0)))
                         }
                         return super.shouldInterceptRequest(view, request)
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        // Page loaded (possibly a WAF challenge that then
+                        // reloads) — start the player if one exists.
+                        injectAutoplay(view)
                     }
 
                     override fun onReceivedSslError(
@@ -213,6 +230,45 @@ class WebViewResolver(
             webView = null
         }
         return fixedRequest.get() to extraRequests.toList()
+    }
+
+    private fun injectAutoplay(view: WebView?) {
+        if (view == null) return
+        // Some sites show a "click to play" overlay or gate the stream behind a
+        // solved challenge (Altcha proof-of-work on hstream, Cloudflare on
+        // hanime.tv) — once the page settles, force the video element to start
+        // (muted play is exempt from autoplay policy) and click common play
+        // overlays. Runs a few times because players initialize lazily.
+        val js = """
+            (function(){
+              var tryPlay = function(){
+                var vids = document.querySelectorAll('video');
+                for (var i=0;i<vids.length;i++){
+                  var v = vids[i];
+                  try {
+                    if (v.paused) { v.muted = true; var p = v.play(); if (p && p.catch) p.catch(function(){}); }
+                    setTimeout(function(){ try { v.muted = false; } catch(e){} }, 400);
+                  } catch(e){}
+                }
+                var sels = ['.play','.play-btn','.play-button','[aria-label="Play"]',
+                            '.bigPlayButton','.vjs-big-play-button','.jw-icon-display',
+                            '.plyr__control--overlaid','button[title="Play"]','.play_btn'];
+                for (var s=0;s<sels.length;s++){
+                  var els = document.querySelectorAll(sels[s]);
+                  for (var j=0;j<els.length;j++){
+                    var el = els[j];
+                    if (el.offsetParent !== null || el.getBoundingClientRect().height > 0) {
+                      try { el.click(); } catch(e){}
+                    }
+                  }
+                }
+              };
+              tryPlay();
+              setTimeout(tryPlay, 1000);
+              setTimeout(tryPlay, 3000);
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(js, null)
     }
 
     private fun toOkhttpRequest(req: WebResourceRequest): Request? = runCatching {

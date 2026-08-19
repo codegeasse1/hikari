@@ -19,6 +19,7 @@ import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -97,7 +98,18 @@ class PlayerActivity : ComponentActivity() {
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
+    private var lockBtn: ImageButton? = null
+    private var resizeBtn: TextView? = null
+    private var skipBtn: TextView? = null
+    private var unlockBtn: TextView? = null
     private var speedIndex = 2
+
+    /** True while the controls are locked — the media3 controller stays hidden
+     *  and only the center unlock button remains touchable. */
+    private var controlsLocked = false
+
+    /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
+    private var resizeIndex = 0
 
     private var torrentDialog: android.app.ProgressDialog? = null
 
@@ -181,6 +193,10 @@ class PlayerActivity : ComponentActivity() {
         sourcesBtn = findViewById(R.id.sources_btn)
         subsBtn = findViewById(R.id.subs_btn)
         audioBtn = findViewById(R.id.audio_btn)
+        lockBtn = findViewById(R.id.lock_btn)
+        resizeBtn = findViewById(R.id.resize_btn)
+        skipBtn = findViewById(R.id.skip_btn)
+        unlockBtn = findViewById(R.id.unlock_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
@@ -197,6 +213,19 @@ class PlayerActivity : ComponentActivity() {
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
+
+        lockBtn?.setOnClickListener { lockControls() }
+        resizeBtn?.setOnClickListener { cycleResize() }
+        skipBtn?.setOnClickListener {
+            val p = player ?: return@setOnClickListener
+            val target = (p.currentPosition + 85_000L).coerceIn(
+                0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+            )
+            p.seekTo(target)
+        }
+        unlockBtn?.setOnClickListener { unlockControls() }
+        unlockBtn?.background = ContextCompat.getDrawable(this, R.drawable.ic_unlock)
+        unlockBtn?.setPadding(0, 0, 0, 0)
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
@@ -351,8 +380,40 @@ class PlayerActivity : ComponentActivity() {
         p.playbackParameters = p.playbackParameters.withSpeed(speed)
     }
 
+    /** Locks the controls: the media3 controller stays hidden and only the
+     *  center unlock button remains touchable (like the reference player's
+     *  Lock button). */
+    private fun lockControls() {
+        controlsLocked = true
+        val pv = playerView ?: return
+        pv.useController = false
+        pv.hideController()
+        unlockBtn?.visibility = View.VISIBLE
+        hideSystemUi()
+    }
+
+    private fun unlockControls() {
+        controlsLocked = false
+        val pv = playerView ?: return
+        pv.useController = true
+        unlockBtn?.visibility = View.GONE
+        pv.showController()
+    }
+
+    /** Toggles the video resize mode between Fit and Crop (zoom to fill). */
+    private fun cycleResize() {
+        val pv = playerView ?: return
+        resizeIndex = (resizeIndex + 1) % 2
+        pv.resizeMode = if (resizeIndex == 0) {
+            C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        } else {
+            C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+        }
+        resizeBtn?.text = if (resizeIndex == 0) "Fit" else "Crop"
+    }
+
     private fun toggleController() {
-        if (holdingFast) return
+        if (holdingFast || controlsLocked) return
         val pv = playerView ?: return
         if (controllerVisible) pv.hideController() else pv.showController()
     }

@@ -50,6 +50,16 @@
             android:layout_marginTop="2dp" />
     </LinearLayout>
 
+    <!-- Shown when controls are locked: the only way back to the controls. -->
+    <TextView
+        android:id="@+id/unlock_btn"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center"
+        android:background="@drawable/chip_bg"
+        android:padding="18dp"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/error_panel"
         android:layout_width="wrap_content"
@@ -60,7 +70,6 @@
         android:background="#EE000000"
         android:padding="24dp"
         android:visibility="gone">
-
         <TextView
             android:id="@+id/error_title"
             android:layout_width="wrap_content"

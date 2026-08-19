@@ -46,10 +46,14 @@ class ContentRepository(private val manager: ProviderManager) {
                                             }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                             if (items.isEmpty()) null
                                             else CatalogRow(
+                                                providerId = p.config.id,
                                                 providerName = p.config.name,
                                                 title = c.name,
                                                 items = items,
                                                 key = "${p.config.id}|${c.type}|${c.id}",
+                                                catalogId = c.id,
+                                                type = c.type,
+                                                rawType = c.rawType,
                                             )
                                         }
                                     }

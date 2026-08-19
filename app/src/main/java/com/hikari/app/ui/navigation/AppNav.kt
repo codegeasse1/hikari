@@ -33,6 +33,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.hikari.app.data.MediaType
+import com.hikari.app.ui.screens.CatalogScreen
 import com.hikari.app.ui.screens.DetailScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
@@ -50,6 +51,20 @@ object Routes {
     // All args live in the query string: mediaIds are URLs (slashes would break
     // a path segment) and posters can be megabytes of base64 (see detail()).
     const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
+    // "Show All" catalog browser: every item of one provider catalog, paged.
+    const val CATALOG = "catalog?providerId={providerId}&catalogId={catalogId}&title={title}&providerName={providerName}&type={type}&rawType={rawType}"
+
+    fun catalog(
+        providerId: String,
+        catalogId: String,
+        title: String,
+        providerName: String,
+        type: MediaType,
+        rawType: String = "",
+    ): String =
+        "catalog?providerId=${Uri.encode(providerId)}&catalogId=${Uri.encode(catalogId)}" +
+            "&title=${Uri.encode(title)}&providerName=${Uri.encode(providerName)}" +
+            "&type=${Uri.encode(type.name)}&rawType=${Uri.encode(rawType)}"
 
     fun detail(
         providerId: String,
@@ -151,6 +166,27 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             composable(Routes.HISTORY) { HistoryScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
+            composable(
+                route = Routes.CATALOG,
+                arguments = listOf(
+                    navArgument("providerId") { type = NavType.StringType },
+                    navArgument("catalogId") { type = NavType.StringType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("providerName") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("type") { type = NavType.StringType; defaultValue = "UNKNOWN" },
+                    navArgument("rawType") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val providerId = Uri.decode(entry.arguments?.getString("providerId").orEmpty())
+                val catalogId = Uri.decode(entry.arguments?.getString("catalogId").orEmpty())
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                val providerName = Uri.decode(entry.arguments?.getString("providerName").orEmpty())
+                val type = runCatching {
+                    MediaType.valueOf(entry.arguments?.getString("type").orEmpty())
+                }.getOrDefault(MediaType.UNKNOWN)
+                val rawType = Uri.decode(entry.arguments?.getString("rawType").orEmpty())
+                CatalogScreen(nav, providerId, catalogId, title, providerName, type, rawType)
+            }
             composable(
                 route = Routes.DETAIL,
                 arguments = listOf(

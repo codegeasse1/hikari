@@ -84,14 +84,35 @@ object HikariNet {
                     wv.settings.domStorageEnabled = true
                     wv.settings.userAgentString = app.effectiveWebViewUa()
                     wv.webChromeClient = WebChromeClient()
-                    wv.webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            view?.evaluateJavascript(
-                                "(function(){return document.documentElement.outerHTML;})()"
-                            ) { res ->
-                                if (res != null) result.set(unescapeJsString(res))
+                    // Cloudflare JS challenges complete ASYNC and then reload
+                    // the page — the first onPageFinished may be the challenge
+                    // page itself, so poll the DOM until it looks like real
+                    // content (or the safety timeout below fires).
+                    fun pollDom(view: WebView?, attempt: Int) {
+                        if (view == null) {
+                            latch.countDown()
+                            return
+                        }
+                        view.evaluateJavascript(
+                            "(function(){return document.documentElement.outerHTML;})()"
+                        ) { res ->
+                            val html = unescapeJsString(res)
+                            if (html != null && !looksLikeChallengePage(html)) {
+                                result.set(html)
+                                latch.countDown()
+                            } else if (attempt < 30) {
+                                main.postDelayed({ pollDom(view, attempt + 1) }, 800)
+                            } else {
+                                // give up with whatever we have rather than hang
+                                result.set(html)
                                 latch.countDown()
                             }
+                        }
+                    }
+
+                    wv.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            pollDom(view, 0)
                         }
 
                         override fun onReceivedError(

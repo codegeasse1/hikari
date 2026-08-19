@@ -131,6 +131,7 @@ data class CatalogRef(
 )
 
 data class CatalogRow(
+    val providerId: String = "",
     val providerName: String,
     val title: String,
     val items: List<MediaItem>,
@@ -139,4 +140,9 @@ data class CatalogRow(
      *  "Streaming Catalogs" has both a movies and a series catalog named
      *  "Netflix"). */
     val key: String = "",
+    /** The originating catalog's own id/type — lets "Show All" re-fetch the
+     *  whole catalog with paging instead of only the home row's first page. */
+    val catalogId: String = "",
+    val type: MediaType = MediaType.UNKNOWN,
+    val rawType: String = "",
 )

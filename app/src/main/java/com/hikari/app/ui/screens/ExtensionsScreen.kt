@@ -87,6 +87,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -222,7 +223,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val dir = File(getApplication<Application>().filesDir, "hiki").apply { mkdirs() }
         val file = File(dir, clean)
         file.setWritable(true)
-        file.writeBytes(bytes)
+        val wrote = runCatching { file.writeBytes(bytes) }
+        if (wrote.isFailure) {
+            return Result.failure(Exception("Could not write extension file: ${wrote.exceptionOrNull()?.message}"))
+        }
 
         val providers = HikariPluginManager.reload(getApplication<Application>(), file)
         if (providers.isEmpty()) {
@@ -288,7 +292,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
         val file = File(dir, clean)
         file.setWritable(true)
-        file.writeBytes(bytes)
+        val wrote = runCatching { file.writeBytes(bytes) }
+        if (wrote.isFailure) {
+            return Result.failure(Exception("Could not write plugin file: ${wrote.exceptionOrNull()?.message}"))
+        }
 
         val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
         if (apis.isEmpty()) {
@@ -422,8 +429,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun installCs3Plugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
-        val bytes = Http.fetchBytesRobust(plugin.url)
-            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+            ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {
             val expected = hash.removePrefix("sha256-").lowercase()
@@ -462,8 +469,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Installs a .hiki extension listed in a Hikari repo. */
     suspend fun installHikiPlugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
-        val bytes = Http.fetchBytesRobust(plugin.url)
-            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+            ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {
             val expected = hash.removePrefix("sha256-").lowercase()
@@ -546,10 +553,18 @@ fun ExtensionsScreen() {
                 busyMsg = "Installing .cs3 plugin…"
                 errorMsg = null
                 successMsg = null
-                val r = vm.installCs3FromUri(uri)
-                busy = false
-                r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
-                r.onFailure { errorMsg = it.message }
+                // try/catch/finally so `busy` ALWAYS resets — a thrown error
+                // (bad file, disk write, plugin load crash) must never leave
+                // the button stuck on "Installing…" forever.
+                try {
+                    val r = vm.installCs3FromUri(uri)
+                    r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
+                    r.onFailure { errorMsg = it.message }
+                } catch (e: Exception) {
+                    errorMsg = e.message ?: "Installation failed"
+                } finally {
+                    busy = false
+                }
             }
         }
     }
@@ -561,10 +576,15 @@ fun ExtensionsScreen() {
                 busyMsg = "Installing .hiki extension…"
                 errorMsg = null
                 successMsg = null
-                val r = vm.installHikiFromUri(uri)
-                busy = false
-                r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
-                r.onFailure { errorMsg = it.message }
+                try {
+                    val r = vm.installHikiFromUri(uri)
+                    r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
+                    r.onFailure { errorMsg = it.message }
+                } catch (e: Exception) {
+                    errorMsg = e.message ?: "Installation failed"
+                } finally {
+                    busy = false
+                }
             }
         }
     }
@@ -575,15 +595,20 @@ fun ExtensionsScreen() {
             busyMsg = "Installing ${p.name}…"
             errorMsg = null
             successMsg = null
-            val r = when (kind) {
-                RepoKind.CS3 -> vm.installCs3Plugin(p)
-                RepoKind.HIKARI -> vm.installHikiPlugin(p)
+            try {
+                val r = when (kind) {
+                    RepoKind.CS3 -> vm.installCs3Plugin(p)
+                    RepoKind.HIKARI -> vm.installHikiPlugin(p)
+                }
+                r.onSuccess { n ->
+                    successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
+                }
+                r.onFailure { errorMsg = it.message }
+            } catch (e: Exception) {
+                errorMsg = e.message ?: "Installation failed"
+            } finally {
+                busy = false
             }
-            busy = false
-            r.onSuccess { n ->
-                successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
-            }
-            r.onFailure { errorMsg = it.message }
         }
     }
 
@@ -593,12 +618,17 @@ fun ExtensionsScreen() {
             busyMsg = "Uninstalling ${p.name}…"
             errorMsg = null
             successMsg = null
-            when (kind) {
-                RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
-                RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
+            try {
+                when (kind) {
+                    RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
+                    RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
+                }
+                successMsg = "Uninstalled ${p.name}"
+            } catch (e: Exception) {
+                errorMsg = e.message ?: "Uninstall failed"
+            } finally {
+                busy = false
             }
-            busy = false
-            successMsg = "Uninstalled ${p.name}"
         }
     }
 
