@@ -82,6 +82,23 @@ data class Episode(
     val image: String? = null,
 )
 
+/** A single watch-history entry — what the user played and where they left off. */
+data class HistoryEntry(
+    val providerId: String,
+    val mediaId: String,
+    val type: MediaType,
+    val title: String,
+    val posterUrl: String? = null,
+    val episodeId: String = "",
+    val episodeName: String = "",
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val watchedAt: Long = 0L,
+) {
+    /** Dedup key: one entry per video (movie = mediaId, series = per episode). */
+    val uniqueKey: String get() = "$providerId|$type|$mediaId|$episodeId"
+}
+
 data class SubtitleSource(val lang: String, val url: String)
 
 data class StreamSource(

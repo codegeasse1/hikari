@@ -26,6 +26,8 @@ class AppStore(private val ctx: Context) {
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
+        val HISTORY = stringPreferencesKey("history")
+        val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
         val AD_LISTS = stringPreferencesKey("adLists")
         val AD_BLOCK = stringPreferencesKey("adBlock")
@@ -297,6 +299,80 @@ class AppStore(private val ctx: Context) {
 
     suspend fun clearAll() {
         store.edit { it.clear() }
+    }
+
+    // ---- Watch history ----
+
+    fun historyFlow(): Flow<List<HistoryEntry>> =
+        store.data.map { parseHistory(it[K.HISTORY]) }
+
+    suspend fun history(): List<HistoryEntry> = historyFlow().first()
+
+    /** Insert/update one entry (deduped by [HistoryEntry.uniqueKey], newest
+     *  first, capped at 200 entries). */
+    suspend fun addHistory(e: HistoryEntry) {
+        val next = (listOf(e) + history().filter { it.uniqueKey != e.uniqueKey }).take(200)
+        store.edit { it[K.HISTORY] = encodeHistory(next) }
+    }
+
+    suspend fun clearHistory() {
+        store.edit { it[K.HISTORY] = "[]" }
+    }
+
+    fun historyPausedFlow(): Flow<Boolean> =
+        store.data.map { it[K.HISTORY_PAUSED] ?: false }
+
+    suspend fun historyPaused(): Boolean = historyPausedFlow().first()
+
+    suspend fun setHistoryPaused(paused: Boolean) {
+        store.edit { it[K.HISTORY_PAUSED] = paused }
+    }
+
+    private fun encodeHistory(list: List<HistoryEntry>): String {
+        val arr = JSONArray()
+        for (h in list) {
+            arr.put(
+                JSONObject()
+                    .put("pid", h.providerId)
+                    .put("id", h.mediaId)
+                    .put("type", h.type.name)
+                    .put("title", h.title)
+                    .put("poster", h.posterUrl ?: "")
+                    .put("eid", h.episodeId)
+                    .put("ename", h.episodeName)
+                    .put("pos", h.positionMs)
+                    .put("dur", h.durationMs)
+                    .put("at", h.watchedAt)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun parseHistory(s: String?): List<HistoryEntry> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                if (id.isBlank()) null
+                else HistoryEntry(
+                    providerId = o.optString("pid"),
+                    mediaId = id,
+                    type = runCatching { MediaType.valueOf(o.optString("type")) }
+                        .getOrDefault(MediaType.UNKNOWN),
+                    title = o.optString("title"),
+                    posterUrl = o.optString("poster").ifBlank { null },
+                    episodeId = o.optString("eid"),
+                    episodeName = o.optString("ename"),
+                    positionMs = o.optLong("pos", 0L),
+                    durationMs = o.optLong("dur", 0L),
+                    watchedAt = o.optLong("at", 0L),
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private fun encodeProviders(list: List<ProviderConfig>): String {

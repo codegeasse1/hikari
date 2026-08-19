@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -34,6 +35,7 @@ import androidx.navigation.navArgument
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.screens.DetailScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
+import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
@@ -44,9 +46,10 @@ object Routes {
     const val SEARCH = "search"
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
+    const val HISTORY = "history"
     // All args live in the query string: mediaIds are URLs (slashes would break
     // a path segment) and posters can be megabytes of base64 (see detail()).
-    const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}"
+    const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
 
     fun detail(
         providerId: String,
@@ -55,6 +58,10 @@ object Routes {
         title: String,
         posterUrl: String? = null,
         rawType: String = "",
+        /** Watch-history resume: target episode id (blank for movies). */
+        episodeId: String = "",
+        /** Watch-history resume: playback position in milliseconds. */
+        startPositionMs: Long = 0L,
     ): String {
         var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(title)}"
         // MRDS/51CG posters are decrypted into huge data: URIs — dropping them
@@ -63,6 +70,8 @@ object Routes {
         val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
         if (poster != null) s += "&poster=${Uri.encode(poster)}"
         if (rawType.isNotBlank()) s += "&rawType=${Uri.encode(rawType)}"
+        if (episodeId.isNotBlank()) s += "&episodeId=${Uri.encode(episodeId)}"
+        if (startPositionMs > 0L) s += "&startPos=$startPositionMs"
         return s
     }
 }
@@ -76,6 +85,7 @@ private data class Tab(
 private val Tabs = listOf(
     Tab(Routes.HOME, "Home", Icons.Filled.Home),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
+    Tab(Routes.HISTORY, "History", Icons.Filled.History),
     Tab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -138,6 +148,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         ) {
             composable(Routes.HOME) { HomeScreen(nav) }
             composable(Routes.SEARCH) { SearchScreen(nav) }
+            composable(Routes.HISTORY) { HistoryScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
             composable(
@@ -149,6 +160,8 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("poster") { type = NavType.StringType; defaultValue = "" },
                     navArgument("rawType") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("episodeId") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("startPos") { type = NavType.StringType; defaultValue = "0" },
                 )
             ) { entry ->
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
@@ -159,7 +172,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty()).ifBlank { null }
                 val rawType = Uri.decode(entry.arguments?.getString("rawType").orEmpty())
-                DetailScreen(nav, providerId, type, mediaId, title, poster, rawType)
+                val episodeId = Uri.decode(entry.arguments?.getString("episodeId").orEmpty())
+                val startPos = entry.arguments?.getString("startPos")?.toLongOrNull() ?: 0L
+                DetailScreen(nav, providerId, type, mediaId, title, poster, rawType, episodeId, startPos)
             }
         }
         }

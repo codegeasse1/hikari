@@ -35,7 +35,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.google.common.collect.ImmutableList
+import com.hikari.app.HikariApp
 import com.hikari.app.R
+import com.hikari.app.data.HistoryEntry
+import com.hikari.app.data.MediaType
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
@@ -98,6 +101,23 @@ class PlayerActivity : ComponentActivity() {
     private var torrentDialog: android.app.ProgressDialog? = null
 
     private lateinit var client: OkHttpClient
+
+    /** Watch-history context passed by the detail screen. When non-null the
+     *  player records resume positions into the app store. */
+    private var historyEntry: HistoryEntry? = null
+
+    /** Resume position (ms) from a history tap — seeked to on first ready. */
+    private var startPositionMs = 0L
+
+    /** Whether the startPosition seek has been applied yet. */
+    private var seekPending = true
+
+    /** Position of the last persisted progress — throttles DataStore writes. */
+    private var lastSavedPos = -1L
+
+    /** Periodic (5s) progress saver so even a force-kill keeps resume position. */
+    private val saveHandler = Handler(Looper.getMainLooper())
+    private var saveTask: Runnable? = null
 
     /** Main-thread handler driving the press-and-hold (≥2s → 2×) timer. */
     private val speedHandler = Handler(Looper.getMainLooper())
@@ -221,6 +241,30 @@ class PlayerActivity : ComponentActivity() {
         // All our controls (Back/Title/Server/Speed on top, Quality/Sub/Rotate
         // at the bottom) live INSIDE the media3 controller layout now, so they
         // appear and fade together with the playback controls on tap.
+
+        // Watch-history context (set by the detail screen). When present, the
+        // player periodically persists resume position into the app store.
+        val histProvider = intent.getStringExtra("histProviderId")
+        if (!histProvider.isNullOrBlank()) {
+            historyEntry = HistoryEntry(
+                providerId = histProvider,
+                mediaId = intent.getStringExtra("histMediaId").orEmpty(),
+                type = runCatching { MediaType.valueOf(intent.getStringExtra("histType").orEmpty()) }
+                    .getOrDefault(MediaType.UNKNOWN),
+                title = intent.getStringExtra("histTitle").orEmpty(),
+                posterUrl = intent.getStringExtra("histPoster").takeIf { !it.isNullOrBlank() },
+                episodeId = intent.getStringExtra("histEpisodeId").orEmpty(),
+                episodeName = intent.getStringExtra("histEpisodeName").orEmpty(),
+            )
+            startPositionMs = intent.getLongExtra("startPosition", 0L).coerceAtLeast(0L)
+            saveTask = object : Runnable {
+                override fun run() {
+                    recordProgress()
+                    saveHandler.postDelayed(this, 5000)
+                }
+            }
+            saveHandler.postDelayed(saveTask!!, 5000)
+        }
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -787,6 +831,16 @@ class PlayerActivity : ComponentActivity() {
             if (playbackState == Player.STATE_READY) {
                 watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
                 watchdogTask = null
+                // Resume from history: seek once the first frame is ready.
+                if (seekPending && startPositionMs > 0L) {
+                    seekPending = false
+                    val p = player ?: return
+                    val dur = p.duration
+                    val target = if (dur > 0L) {
+                        startPositionMs.coerceAtMost(dur - 1000L).coerceAtLeast(0L)
+                    } else startPositionMs
+                    if (target > 0L) p.seekTo(target)
+                }
             }
         }
 
@@ -913,6 +967,31 @@ class PlayerActivity : ComponentActivity() {
         else -> MimeTypes.APPLICATION_SUBRIP
     }
 
+    /**
+     * Persists current playback position into the watch history (if the
+     * detail screen supplied history context and the user hasn't paused
+     * history). Skips the very start of a video (<10s — a quick peek shouldn't
+     * litter the history) and throttles to one write per 10s of progress.
+     */
+    private fun recordProgress() {
+        val entry = historyEntry ?: return
+        val p = player ?: return
+        val pos = p.currentPosition
+        if (pos < 10_000) return
+        if (kotlin.math.abs(pos - lastSavedPos) < 10_000) return
+        lastSavedPos = pos
+        val dur = p.duration.takeIf { it > 0 } ?: pos
+        val h = entry.copy(positionMs = pos, durationMs = dur, watchedAt = System.currentTimeMillis())
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val app = applicationContext as HikariApp
+                if (!app.store.historyPaused()) app.store.addHistory(h)
+            } catch (_: Throwable) {
+                // history is best-effort — never let it break playback
+            }
+        }
+    }
+
     private fun hideSystemUi() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -929,6 +1008,10 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        // Persist the final position as soon as the activity goes to the
+        // background (home button, lock screen, app switch) — onDestroy may
+        // come later or never (background process death).
+        recordProgress()
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
         }
@@ -936,6 +1019,9 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        recordProgress()
+        saveTask?.let { saveHandler.removeCallbacks(it) }
+        saveTask = null
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }

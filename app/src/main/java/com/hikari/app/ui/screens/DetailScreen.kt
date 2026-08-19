@@ -252,6 +252,10 @@ fun DetailScreen(
     title: String,
     posterUrl: String? = null,
     rawType: String = "",
+    /** Set when arriving from watch history: auto-open this episode on load. */
+    episodeId: String = "",
+    /** Resume position (ms) from history — forwarded to the player. */
+    startPositionMs: Long = 0L,
 ) {
     val vm: DetailViewModel = viewModel()
     val meta by vm.meta.collectAsState()
@@ -288,6 +292,27 @@ fun DetailScreen(
         vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
+    val launchPlayer: (List<StreamSource>, Episode?) -> Unit = { playable, ep ->
+        val payload = playerPayload(playable)
+        if (payload == null) return@launchPlayer
+        // History context rides along so the player can record resume position
+        // (and seek back to it when this screen was opened from history).
+        val isResumeTarget = (ep?.id ?: "") == episodeId
+        context.startActivity(
+            Intent(context, PlayerActivity::class.java).apply {
+                putExtra("title", m?.title ?: title)
+                putExtra("sources", payload)
+                putExtra("histProviderId", providerId)
+                putExtra("histMediaId", mediaId)
+                putExtra("histType", (m?.type ?: type).name)
+                putExtra("histPoster", (m?.posterUrl ?: posterUrl).orEmpty())
+                putExtra("histEpisodeId", ep?.id.orEmpty())
+                putExtra("histEpisodeName", ep?.name.orEmpty())
+                putExtra("startPosition", if (isResumeTarget) startPositionMs else 0L)
+            }
+        )
+    }
+
     val openStreams: (Episode?) -> Unit = { ep ->
         // Show the sheet + spinner IMMEDIATELY, then resolve sources in the
         // background. Otherwise a slow provider looks like a dead click.
@@ -309,17 +334,29 @@ fun DetailScreen(
             // player's own "Select server" dialog can switch between them mid-
             // playback — the same as earlier builds.
             if (playable.isNotEmpty()) {
-                val payload = playerPayload(playable)
-                if (payload != null) {
-                    showSheet = false
-                    context.startActivity(
-                        Intent(context, PlayerActivity::class.java).apply {
-                            putExtra("title", m?.title ?: title)
-                            putExtra("sources", payload)
-                        }
-                    )
-                }
+                showSheet = false
+                launchPlayer(playable, ep)
             }
+        }
+    }
+
+    // Resume from history: once metadata/episodes are loaded, auto-open the
+    // target episode (or the movie) so playback jumps straight to the saved
+    // position. One shot per screen instance.
+    var resumeHandled by remember { mutableStateOf(false) }
+    LaunchedEffect(meta, episodes, episodeId, startPositionMs) {
+        if (resumeHandled || startPositionMs <= 0L) return@LaunchedEffect
+        val mm = meta ?: return@LaunchedEffect
+        if (episodeId.isNotBlank()) {
+            val eps = episodes ?: return@LaunchedEffect
+            val ep = eps.firstOrNull { it.id == episodeId }
+            if (ep != null) {
+                resumeHandled = true
+                openStreams(ep)
+            }
+        } else if (episodes.isNullOrEmpty()) {
+            resumeHandled = true
+            openStreams(null)
         }
     }
 
@@ -613,12 +650,7 @@ fun DetailScreen(
                                         }
                                         else -> {
                                             showSheet = false
-                                            context.startActivity(
-                                                Intent(context, PlayerActivity::class.java).apply {
-                                                    putExtra("title", m?.title ?: title)
-                                                    putExtra("sources", playerPayload(listOf(s)).orEmpty())
-                                                }
-                                            )
+                                            launchPlayer(listOf(s), selectedEp)
                                         }
                                     }
                                 }
