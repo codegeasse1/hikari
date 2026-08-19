@@ -39,6 +39,7 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
+        val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
     }
 
     /** Which provider the Home screen is currently showing (empty = All). */
@@ -49,6 +50,20 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHomeProvider(id: String) {
         store.edit { it[K.HOME_PROVIDER] = id }
+    }
+
+    // ---- Per-extension auto-translate (WebView pages → English) ----
+
+    /** Provider ids whose web pages are always translated to English. */
+    fun translateProvidersFlow(): Flow<Set<String>> =
+        store.data.map { parseStringList(it[K.TRANSLATE_PROVIDERS]).toSet() }
+
+    suspend fun translateProviders(): Set<String> = translateProvidersFlow().first()
+
+    suspend fun setTranslateProvider(id: String, enabled: Boolean) {
+        val cur = translateProviders()
+        val next = if (enabled) cur + id else cur - id
+        store.edit { it[K.TRANSLATE_PROVIDERS] = encodeStringList(next.toList()) }
     }
 
     fun themeFlow(): Flow<String> =

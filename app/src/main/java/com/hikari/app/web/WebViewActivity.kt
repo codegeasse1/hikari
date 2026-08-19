@@ -37,6 +37,7 @@ import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Http
 import com.hikari.app.player.PlayerActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -74,6 +75,17 @@ class WebViewActivity : ComponentActivity() {
     private var pageUrl: String? = null
     private var pageTitle: String = ""
     private var startUrl: String = ""
+
+    // Provider this WebView was opened for (null = a plain site/URL). Used by
+    // the per-extension auto-translate feature to decide whether the page's
+    // text should be translated to English.
+    private var providerId: String? = null
+
+    // Whether to translate this page's text into English. True when the intent
+    // asked for it explicitly ("Just this time") or the provider has "Always
+    // translate" turned on in the store.
+    @Volatile
+    private var translateEnabled = false
 
     // "Verify for Cloudflare" mode (opened from the Home tab): the site is
     // shown so the user can complete a CF challenge; once a challenge was seen
@@ -151,6 +163,8 @@ class WebViewActivity : ComponentActivity() {
         this.startUrl = startUrl
         pageTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
         autoCloseWhenCloudflarePassed = intent.getBooleanExtra("autoCloseWhenCloudflarePassed", false)
+        providerId = intent.getStringExtra("providerId")
+        val forceTranslate = intent.getBooleanExtra("translate", false)
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -321,6 +335,14 @@ class WebViewActivity : ComponentActivity() {
             blockedSelectors += app.elementBlocks
             runCatching { blockedSelectors += app.store.elementBlocks() }
             runOnUiThread { injectElementBlocker(webView) }
+            // Per-extension auto-translate: on when the intent asked for it
+            // explicitly ("Just this time") or the provider has "Always
+            // translate" turned on.
+            translateEnabled = forceTranslate ||
+                (providerId != null && providerId in app.store.translateProviders())
+            if (translateEnabled) {
+                runOnUiThread { runCatching { webView.evaluateJavascript(TRANSLATE_JS, null) } }
+            }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -473,6 +495,7 @@ class WebViewActivity : ComponentActivity() {
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
+                if (translateEnabled) view?.evaluateJavascript(TRANSLATE_JS, null)
                 injectElementBlocker(view)
                 // Some players create <video> from JS without a network URL we
                 // can see — scan the DOM for the real element too. The runnable
@@ -661,6 +684,7 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 7, 0, "\u2298 Element blocker")
         menu.menu.add(0, 8, 0, "\u21A9 Undo last block")
         menu.menu.add(0, 9, 0, "\u2715 Clear all blocks")
+        if (translateEnabled) menu.menu.add(0, 10, 0, "\u2716 Translation off")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> if (webView.canGoBack()) webView.goBack()
@@ -674,6 +698,18 @@ class WebViewActivity : ComponentActivity() {
                 7 -> enableElementBlocker()
                 8 -> undoLastBlock()
                 9 -> clearAllBlocks()
+                10 -> {
+                    // Per-extension auto-translate off (menu is only offered
+                    // while a translation is active on this page).
+                    translateEnabled = false
+                    val pid = providerId
+                    if (pid != null) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            runCatching { (applicationContext as HikariApp).store.setTranslateProvider(pid, false) }
+                        }
+                    }
+                    Toast.makeText(this, "Translation off", Toast.LENGTH_SHORT).show()
+                }
             }
             true
         }
@@ -739,6 +775,24 @@ class WebViewActivity : ComponentActivity() {
     /** A JS string literal (for embedding a selector into evaluateJavascript). */
     private fun jsString(s: String): String =
         "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /**
+     * Translates one string into English via Google's free gtx endpoint (no
+     * API key, CORS-free since the app does the request server-side). Returns
+     * the original text when nothing could be translated so the page keeps
+     * working even if translation is unavailable.
+     */
+    private fun fetchTranslation(text: String): String {
+        if (text.isBlank()) return text
+        val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
+            "&sl=auto&tl=en&dt=t&q=" + java.net.URLEncoder.encode(text, "UTF-8")
+        return try {
+            val body = Http.get(url).use { it.body?.string() } ?: return text
+            JSONArray(body).optJSONArray(0)?.optJSONArray(0)?.optString(0) ?: text
+        } catch (e: Exception) {
+            text
+        }
+    }
 
     /** Injects the blocker script + the persisted selectors into the page. */
     private fun injectElementBlocker(view: WebView?) {
@@ -1004,6 +1058,40 @@ class WebViewActivity : ComponentActivity() {
         @android.webkit.JavascriptInterface
         fun userscriptList(scriptId: String): String =
             UserscriptManager.listValues(applicationContext, scriptId)
+
+        // ---- Auto-translate bridge ----
+        // The page's TRANSLATE_JS calls this with a batch of unique text
+        // strings; we fetch English translations (translate.googleapis.com —
+        // no key needed) and hand them back via window.__hikariTransResult.
+        @android.webkit.JavascriptInterface
+        fun translate(id: String, textsJson: String) {
+            val arr = runCatching { JSONArray(textsJson) }.getOrNull() ?: return
+            val texts = (0 until arr.length()).map { arr.optString(it) }
+            if (texts.isEmpty()) return
+            lifecycleScope.launch {
+                val sem = java.util.concurrent.Semaphore(6)
+                val results = arrayOfNulls<String>(texts.size)
+                coroutineScope {
+                    for (i in texts.indices) {
+                        launch(Dispatchers.IO) {
+                            sem.acquire()
+                            try {
+                                results[i] = fetchTranslation(texts[i])
+                            } catch (e: Exception) {
+                                results[i] = ""
+                            } finally {
+                                sem.release()
+                            }
+                        }
+                    }
+                }
+                val out = JSONArray()
+                results.forEach { out.put(it ?: "") }
+                val js = "window.__hikariTransResult?window.__hikariTransResult(" +
+                    jsString(id) + "," + out.toString() + "):null"
+                runOnUiThread { runCatching { webView.evaluateJavascript(js, null) } }
+            }
+        }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -1357,6 +1445,132 @@ class WebViewActivity : ComponentActivity() {
               try{new MutationObserver(hideAll).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
               hideAll();
               setInterval(hideAll,500);
+            })();
+        """.trimIndent()
+
+        /**
+         * Auto-translate (per-extension, English only). Walks the page's text
+         * nodes, batches the unique strings to `HikariBridge.translate()` (the
+         * app fetches Google's gtx endpoint — no CORS issue, no API key) and
+         * swaps the translated text back in place. Works for ANY language
+         * (CJK, Korean, accented Latin, Cyrillic, …): text that's already
+         * English is recognized by its stopwords and left alone, everything
+         * else is auto-detected by the translator and turned into English.
+         */
+        private val TRANSLATE_JS = """
+            (function(){
+              if(window.__hikariTranslateInit)return;
+              window.__hikariTranslateInit=true;
+              var cache={};        // original text -> translated text
+              var done={};         // original text that can't be translated (skip forever)
+              var texts={};        // original text -> [text nodes waiting]
+              var pending={};      // request id -> {keys:[], nodes:[[]]}
+              var inFlight=false;
+              var reqCounter=0;
+              var walker=null;
+              var applied=new WeakSet();
+              // English stopwords: a pure-ASCII text containing any of these is
+              // almost certainly already English and is skipped (saves the
+              // translation round-trips). Everything else — CJK, Korean,
+              // accented Latin, Cyrillic, or ASCII without stopwords — is sent
+              // to the translator, which auto-detects the language.
+              var EN_STOP=/^(the|and|of|to|in|is|are|was|were|for|with|on|at|by|this|that|these|those|you|your|we|our|they|their|them|it|its|a|an|or|but|as|from|not|be|have|has|had|i|me|my|do|does|did|what|which|who|when|where|why|there|here|can|will|would|should|could|then|than|so|if|up|out|about|just|more|most|all|any|some|also|only|into|over|under|no|yes)$/i;
+              function looksEnglish(t){
+                var m=t.match(/[A-Za-z]+/g);
+                if(!m)return false;
+                for(var i=0;i<m.length;i++){if(EN_STOP.test(m[i]))return true;}
+                return false;
+              }
+              function worth(text){
+                var t=(text||'').trim();
+                if(t.length<2)return false;
+                if(!/[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/.test(t))return false;
+                if(/^[\d\s.,!?%$#@&*()\/\-+='"<>\[\]{}|\\:;_~^`\u00A0]+$/.test(t))return false;
+                if(cache[t]||done[t])return false;
+                if(/^[\x00-\x7F]+$/.test(t)&&looksEnglish(t))return false;
+                return true;
+              }
+              function shouldSkip(node){
+                var p=node.parentElement;
+                if(!p)return true;
+                var tag=p.tagName;
+                if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||tag==='TEXTAREA'||tag==='INPUT'||tag==='SELECT'||tag==='OPTION'||tag==='CODE'||tag==='PRE'||tag==='IFRAME')return true;
+                if(p.isContentEditable)return true;
+                if(tag==='A'){var h=(p.getAttribute('href')||'').trim();if(h&&(node.nodeValue||'').trim()===h)return true;}
+                if(applied.has(node))return true;
+                return false;
+              }
+              function process(node){
+                var v=node.nodeValue;
+                if(!v||!v.trim())return;
+                if(cache[v]){
+                  if(node.nodeValue===v){node.nodeValue=cache[v];applied.add(node);}
+                  return;
+                }
+                if(!worth(v))return;
+                (texts[v]=texts[v]||[]).push(node);
+              }
+              function flush(){
+                if(inFlight)return;
+                var keys=Object.keys(texts);
+                if(!keys.length)return;
+                var batch=[],nodes=[];
+                for(var i=0;i<keys.length&&batch.length<40;i++){
+                  var k=keys[i];
+                  var list=texts[k]||[];
+                  var alive=false;
+                  for(var j=0;j<list.length;j++){if(list[j]&&list[j].parentNode){alive=true;break;}}
+                  if(!alive){delete texts[k];continue;}
+                  batch.push(k);
+                  nodes.push(list);
+                  delete texts[k];
+                }
+                if(!batch.length)return;
+                var id='t'+(reqCounter++);
+                pending[id]={keys:batch,nodes:nodes};
+                inFlight=true;
+                try{window.HikariBridge.translate(id,JSON.stringify(batch));}
+                catch(e){inFlight=false;delete pending[id];}
+              }
+              window.__hikariTransResult=function(id,results){
+                var p=pending[id];
+                delete pending[id];
+                if(!p){inFlight=false;return;}
+                for(var i=0;i<p.keys.length;i++){
+                  var orig=p.keys[i];
+                  var tr=(results&&results[i])||'';
+                  if(!tr||!tr.trim()||tr===orig){done[orig]=true;continue;}
+                  cache[orig]=tr;
+                  var list=p.nodes[i]||[];
+                  for(var j=0;j<list.length;j++){
+                    var n=list[j];
+                    if(n&&n.parentNode&&n.nodeValue===orig){n.nodeValue=tr;applied.add(n);}
+                  }
+                }
+                inFlight=false;
+                setTimeout(function(){scan();},50);
+              };
+              function scan(){
+                try{
+                  if(!document.body){setTimeout(scan,400);return;}
+                  if(walker&&walker.currentNode&&!document.documentElement.contains(walker.currentNode))walker=null;
+                  if(!walker)walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
+                  var n,count=0,exhausted=true;
+                  while((n=walker.nextNode())){
+                    if(!n.nodeValue||!n.nodeValue.trim())continue;
+                    if(shouldSkip(n))continue;
+                    process(n);
+                    if(++count>=1500){exhausted=false;break;}
+                  }
+                  if(exhausted)walker=null;
+                  flush();
+                }catch(e){walker=null;}
+              }
+              var timer=null;
+              function schedule(){if(timer)return;timer=setTimeout(function(){timer=null;scan();},250);}
+              try{new MutationObserver(schedule).observe(document.documentElement,{childList:true,subtree:true,characterData:true});}catch(e){}
+              setInterval(scan,4000);
+              setTimeout(scan,150);
             })();
         """.trimIndent()
     }

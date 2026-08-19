@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -141,6 +144,8 @@ fun HomeScreen(nav: NavHostController) {
     val selectedName = providers.firstOrNull { it.config.id == selected }?.config?.name
     var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
     var showPicker by remember { mutableStateOf(false) }
+    var showTranslate by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
     // by a WAF check, this globe button opens the site in the WebView so the
@@ -196,11 +201,23 @@ fun HomeScreen(nav: NavHostController) {
                     }
                     if (webUrl != null) {
                         IconButton(
+                            onClick = { showTranslate = true }
+                        ) {
+                            Text(
+                                "A\u3042",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+                        IconButton(
                             onClick = {
                                 verifyLauncher.launch(
                                     Intent(context, WebViewActivity::class.java).apply {
                                         putExtra("url", webUrl)
                                         putExtra("title", "Verify: ${selectedName ?: "site"}")
+                                        putExtra("providerId", selected)
                                         putExtra("autoCloseWhenCloudflarePassed", true)
                                     }
                                 )
@@ -346,6 +363,60 @@ fun HomeScreen(nav: NavHostController) {
                 vm.selectProvider(id)
             },
             onDismiss = { showPicker = false },
+        )
+    }
+
+    val selId = selected
+    if (showTranslate && selId != null && webUrl != null) {
+        val pid = selId
+        val pname = selectedName ?: "this site"
+        val siteUrl = webUrl
+        AlertDialog(
+            onDismissRequest = { showTranslate = false },
+            title = { Text("Translate to English?") },
+            text = {
+                Text(
+                    "$pname's pages are showing in their original language. " +
+                        "Turn their web pages into English so you can read them? " +
+                        "Other extensions stay untouched."
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        showTranslate = false
+                        scope.launch {
+                            runCatching { (context.applicationContext as HikariApp).store.setTranslateProvider(pid, true) }
+                        }
+                        verifyLauncher.launch(
+                            Intent(context, WebViewActivity::class.java).apply {
+                                putExtra("url", siteUrl)
+                                putExtra("title", pname)
+                                putExtra("providerId", pid)
+                                putExtra("translate", true)
+                            }
+                        )
+                    }) {
+                        Text("Always")
+                    }
+                    TextButton(onClick = {
+                        showTranslate = false
+                        verifyLauncher.launch(
+                            Intent(context, WebViewActivity::class.java).apply {
+                                putExtra("url", siteUrl)
+                                putExtra("title", pname)
+                                putExtra("providerId", pid)
+                                putExtra("translate", true)
+                            }
+                        )
+                    }) {
+                        Text("Just this time")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTranslate = false }) { Text("Cancel") }
+            },
         )
     }
 }

@@ -44,6 +44,18 @@ object Cs3PluginManager {
 
     private val errorDetails = StringBuilder()
 
+    // Plugins run real code in load() and some do network work there (a couple
+    // of repos' plugins fetch repo lists on load). A hung load() must never
+    // stall an install forever, so load() runs on its own thread with a hard
+    // timeout — the caller gets a clean "plugin load timed out" instead of an
+    // eternal spinner.
+    private val loadExecutor =
+        java.util.concurrent.Executors.newCachedThreadPool { r ->
+            Thread(r, "cs3-load").apply { isDaemon = true }
+        }
+
+    private const val LOAD_TIMEOUT_S = 45L
+
     private fun record(what: String, e: Throwable) {
         val line = "$what: ${e.javaClass.simpleName}: ${e.message}"
         if (errorDetails.length < 4000) {
@@ -139,16 +151,36 @@ object Cs3PluginManager {
                     record("resource loading failed", e)
                 }
             }
-            if (instance is Plugin) {
-                instance.load(HikariApp.mainActivity ?: context)
-            } else {
-                instance.load()
+            // Plugins can do real (network) work in load() — run it on the
+            // executor with a hard timeout so a hung plugin can never leave
+            // the install spinner stuck forever.
+            val task = java.util.concurrent.Callable<Any?> {
+                if (instance is Plugin) {
+                    instance.load(HikariApp.mainActivity ?: context)
+                } else {
+                    instance.load()
+                }
+                null
+            }
+            val future = loadExecutor.submit(task)
+            try {
+                future.get(LOAD_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                future.cancel(true)
+                record(
+                    "load() timed out after ${LOAD_TIMEOUT_S}s",
+                    RuntimeException("${manifest.pluginClassName}.load() hung")
+                )
+                return fail()
+            } catch (e: Throwable) {
+                future.cancel(true)
+                record("load() threw", e)
+                return fail()
             }
         } catch (e: Throwable) {
             record("load() threw", e)
             return fail()
         }
-
         // 6) collect the providers this plugin registered
         val apis = try {
             APIHolder.allProviders.filter { it.sourcePlugin == path }

@@ -385,6 +385,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return listOf(
             "https://raw.githubusercontent.com/$owner/$repo/main/repo.json",
             "https://raw.githubusercontent.com/$owner/$repo/master/repo.json",
+            "https://raw.githubusercontent.com/$owner/$repo/builds/repo.json",
         )
     }
 
@@ -404,6 +405,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     kind = kind,
                 )
                 store.addCs3Repo(repo)
+                // A "Mega"-style bundle repo isn't a plugin repo — its single
+                // plugin only exists to add every CloudStream repo from the
+                // canonical repos-db.json (and relies on the real CloudStream
+                // RepositoryManager, which Hikari doesn't run). Import the
+                // repos natively instead so they all show up and install.
+                if (isMegaBundle(obj)) importMegaRepos()
                 repos.value = store.repos()
                 repo
             }
@@ -423,12 +430,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             val plugins = withContext(Dispatchers.IO) { fetchRepoPlugins(repo.url) }
             pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
+            // A Mega-style bundle import may have added repos to the store.
+            repos.value = store.repos()
         } catch (e: Exception) {
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false, error = e.message))
         }
     }
 
-    private fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
+    private suspend fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
         val text = fetchRepoRaw(repoUrl)
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = JSONObject(text)
@@ -448,7 +457,48 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // "Mega"-style bundle: the repo's one plugin (MegaProvider) exists only
+        // to add every CloudStream repo from repos-db.json via the real
+        // CloudStream RepositoryManager, which Hikari never runs. Import the
+        // repos natively (they land in the repo list, installable as usual)
+        // and hide the useless bundle plugin instead of offering it.
+        if (isMegaBundle(root) || out.values.any { it.name == "MegaProvider" }) {
+            importMegaRepos()
+            return emptyList()
+        }
         return out.values.toList()
+    }
+
+    private val MEGA_REPOS_DB =
+        "https://raw.githubusercontent.com/recloudstream/cs-repos/master/repos-db.json"
+
+    /** True for the self-similarity/MegaRepo style "add every repo" bundle. */
+    private fun isMegaBundle(root: JSONObject): Boolean {
+        val name = root.optString("name")
+        return name.contains("mega", true) && name.contains("repo", true)
+    }
+
+    /** Imports every repo URL from the canonical CS repos-db.json (deduped). */
+    private suspend fun importMegaRepos(): Int {
+        val text = Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull() ?: return 0
+        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return 0
+        var added = 0
+        for (i in 0 until arr.length()) {
+            val entry = arr.opt(i)
+            val repoUrl = when (entry) {
+                is String -> entry
+                is JSONObject -> entry.optString("url")
+                else -> null
+            } ?: continue
+            if (!repoUrl.startsWith("http")) continue
+            val m = Regex("github\\.com/([^/]+)/([^/]+)").find(repoUrl)
+            val name = if (m != null) "${m.groupValues[1]}/${m.groupValues[2]}" else repoUrl
+            runCatching {
+                store.addCs3Repo(Cs3Repo(url = repoUrl, name = name, kind = RepoKind.CS3))
+            }
+            added++
+        }
+        return added
     }
 
     private fun parsePlugin(o: JSONObject): Cs3RepoPlugin? {
@@ -599,7 +649,8 @@ fun ExtensionsScreen() {
                 // (bad file, disk write, plugin load crash) must never leave
                 // the button stuck on "Installing…" forever.
                 try {
-                    val r = vm.installCs3FromUri(uri)
+                    val r = withTimeoutOrNull(120_000) { vm.installCs3FromUri(uri) }
+                        ?: Result.failure(Exception("Installation timed out"))
                     r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
                     r.onFailure { errorMsg = it.message }
                 } catch (e: Exception) {
@@ -619,7 +670,8 @@ fun ExtensionsScreen() {
                 errorMsg = null
                 successMsg = null
                 try {
-                    val r = vm.installHikiFromUri(uri)
+                    val r = withTimeoutOrNull(120_000) { vm.installHikiFromUri(uri) }
+                        ?: Result.failure(Exception("Installation timed out"))
                     r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
                     r.onFailure { errorMsg = it.message }
                 } catch (e: Exception) {
@@ -638,10 +690,12 @@ fun ExtensionsScreen() {
             errorMsg = null
             successMsg = null
             try {
-                val r = when (kind) {
-                    RepoKind.CS3 -> vm.installCs3Plugin(p)
-                    RepoKind.HIKARI -> vm.installHikiPlugin(p)
-                }
+                val r = withTimeoutOrNull(120_000) {
+                    when (kind) {
+                        RepoKind.CS3 -> vm.installCs3Plugin(p)
+                        RepoKind.HIKARI -> vm.installHikiPlugin(p)
+                    }
+                } ?: Result.failure(Exception("Installation timed out"))
                 r.onSuccess { n ->
                     successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
                 }
