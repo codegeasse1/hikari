@@ -97,6 +97,10 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var popupProtection = true
     private var blockedToastShown = false
+    // Hosts the user explicitly allowed redirects to (Settings → WebView safety
+    // → Allowed redirect links). Navigations to these are never blocked.
+    @Volatile
+    private var allowedRedirectHosts: Set<String> = emptySet()
 
     // Guards the auto hand-off to the external player: a page that genuinely
     // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
@@ -208,6 +212,7 @@ class WebViewActivity : ComponentActivity() {
             // Safety toggles from Settings.
             redirectProtection = app.store.webviewRedirect()
             popupProtection = app.store.webviewPopup()
+            allowedRedirectHosts = app.store.webviewRedirectAllow().toSet()
             val enabled = app.store.adEnabled()
             if (enabled) {
                 val lists = app.store.adLists()
@@ -308,12 +313,14 @@ class WebViewActivity : ComponentActivity() {
             ): Boolean {
                 // Redirect protection: cancel main-frame navigations away from
                 // the site before they load (ad-hijack redirects). Same-site
-                // pages, subdomains and whitelisted hosts still work.
+                // pages, subdomains, whitelisted hosts and user-allowed
+                // redirect hosts still work.
                 if (redirectProtection && request.isForMainFrame) {
                     val host = request.url.host
                     val cur = currentPageHost()
                     if (host != null && cur != null && host != cur &&
                         !AdBlocker.matches(host, whitelistDomains) &&
+                        !AdBlocker.matches(host, allowedRedirectHosts) &&
                         !isSameSite(host, cur)
                     ) {
                         showBlockedToast("Blocked redirect to $host")
@@ -353,14 +360,15 @@ class WebViewActivity : ComponentActivity() {
                 }
                 // Redirect protection: never let an ad hijack navigate the main
                 // frame away to a foreign domain (the twinrdengine.com-class
-                // redirects). Same-site pages, subdomains and whitelisted hosts
-                // still navigate normally; turning the toggle off disables this
-                // entirely.
+                // redirects). Same-site pages, subdomains, whitelisted hosts and
+                // user-allowed redirect hosts still navigate normally; turning
+                // the toggle off disables this entirely.
                 if (redirectProtection && request.isForMainFrame) {
                     val host = request.url.host
                     val cur = currentPageHost()
                     if (host != null && cur != null && host != cur &&
                         !AdBlocker.matches(host, whitelistDomains) &&
+                        !AdBlocker.matches(host, allowedRedirectHosts) &&
                         !isSameSite(host, cur)
                     ) {
                         showBlockedToast("Blocked redirect to $host")

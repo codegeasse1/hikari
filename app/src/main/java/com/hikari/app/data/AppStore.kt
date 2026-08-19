@@ -35,6 +35,7 @@ class AppStore(private val ctx: Context) {
         val AD_WHITE = stringPreferencesKey("adWhite")
         val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
+        val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
@@ -115,6 +116,17 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setWebviewPopup(enabled: Boolean) {
         store.edit { it[K.WEBVIEW_POPUP] = enabled }
+    }
+
+    /** Hosts the user allowed redirects to (blocked-elsewhere hosts allowed
+     *  through). */
+    fun webviewRedirectAllowFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.WEBVIEW_REDIRECT_ALLOW]) }
+
+    suspend fun webviewRedirectAllow(): List<String> = webviewRedirectAllowFlow().first()
+
+    suspend fun setWebviewRedirectAllow(list: List<String>) {
+        store.edit { it[K.WEBVIEW_REDIRECT_ALLOW] = encodeStringList(list) }
     }
 
     // ---- WebView user agent (stock Android default vs custom) ----

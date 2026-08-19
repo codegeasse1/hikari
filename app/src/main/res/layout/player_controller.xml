@@ -122,9 +122,11 @@
           style="@style/ExoStyledControls.Button.Bottom.RepeatToggle"
           android:visibility="gone"/>
 
-      <!-- Player toolbar (bottom row): Lock / Rotate / Resize / Speed / Server
-           / Skip OP then the stream chips — all in the same row as media3's
-           own buttons, nothing floats above the player controls. -->
+      <!-- Player toolbar (bottom row): Lock / Settings / Resize / Speed / Server
+           / Skip OP then the stream chips, with Rotate at the end (user asked
+           for the rotate icon where the settings gear used to be, and the gear
+           up front) — all in the same row as media3's own buttons, nothing
+           floats above the player controls. -->
       <ImageButton
           android:id="@+id/lock_btn"
           android:layout_width="40dp"
@@ -135,15 +137,8 @@
           android:background="?android:attr/selectableItemBackgroundBorderless"
           android:scaleType="centerInside" />
 
-      <ImageButton
-          android:id="@+id/rotate_btn"
-          android:layout_width="40dp"
-          android:layout_height="40dp"
-          android:src="@drawable/ic_rotate"
-          android:tint="#FFFFFF"
-          android:contentDescription="Rotate screen"
-          android:background="?android:attr/selectableItemBackgroundBorderless"
-          android:scaleType="centerInside" />
+      <ImageButton android:id="@id/exo_settings"
+          style="@style/ExoStyledControls.Button.Bottom.Settings"/>
 
       <TextView
           android:id="@+id/resize_btn"
@@ -250,8 +245,15 @@
           android:paddingTop="6dp"
           android:paddingBottom="6dp" />
 
-      <ImageButton android:id="@id/exo_settings"
-          style="@style/ExoStyledControls.Button.Bottom.Settings"/>
+      <ImageButton
+          android:id="@+id/rotate_btn"
+          android:layout_width="40dp"
+          android:layout_height="40dp"
+          android:src="@drawable/ic_rotate"
+          android:tint="#FFFFFF"
+          android:contentDescription="Rotate screen"
+          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:scaleType="centerInside" />
 
       <ImageButton android:id="@id/exo_fullscreen"
           style="@style/ExoStyledControls.Button.Bottom.FullScreen"

@@ -79,7 +79,7 @@ class WebViewResolver(
                   } catch(e){}
                 }
                 var sels = ['.play','.play-btn','.play-button','[aria-label="Play"]',
-                            '.bigPlayButton','.vjs-big-play-button','.jw-icon-display',
+                            '[aria-label="Play video"]','.bigPlayButton','.vjs-big-play-button','.jw-icon-display',
                             '.plyr__control--overlaid','button[title="Play"]','.play_btn'];
                 for (var s=0;s<sels.length;s++){
                   var els = document.querySelectorAll(sels[s]);

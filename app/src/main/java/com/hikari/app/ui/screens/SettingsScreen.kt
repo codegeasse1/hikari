@@ -338,10 +338,13 @@ private fun WebViewSafetyCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var redirectProtection by remember { mutableStateOf(true) }
     var popupProtection by remember { mutableStateOf(true) }
+    var allowedRedirects by remember { mutableStateOf(listOf<String>()) }
+    var newAllowedDomain by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         redirectProtection = app.store.webviewRedirect()
         popupProtection = app.store.webviewPopup()
+        allowedRedirects = app.store.webviewRedirectAllow()
     }
 
     Column(Modifier.padding(16.dp)) {
@@ -401,6 +404,65 @@ private fun WebViewSafetyCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setWebviewPopup(it) } }
                 }
             )
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            "Allowed redirect links",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Redirects to these hosts are never blocked, even though they're a " +
+                "different site (e.g. a player or CDN a site must send you to).",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = newAllowedDomain,
+                onValueChange = { newAllowedDomain = it },
+                placeholder = { Text("player.example.com") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                val d = AdBlocker.normalizeDomain(newAllowedDomain)
+                if (d.isNotBlank()) {
+                    val next = (allowedRedirects + d).distinct()
+                    allowedRedirects = next
+                    newAllowedDomain = ""
+                    scope.launch { app.store.setWebviewRedirectAllow(next) }
+                }
+            }) { Text("Add") }
+        }
+        allowedRedirects.forEach { domain ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    domain,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = {
+                    val next = allowedRedirects.filterNot { it == domain }
+                    allowedRedirects = next
+                    scope.launch { app.store.setWebviewRedirectAllow(next) }
+                }) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "Remove $domain",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
         }
     }
 }
