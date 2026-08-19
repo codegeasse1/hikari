@@ -14,6 +14,7 @@ import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.extractorApis
 import java.io.File
 import java.io.InputStreamReader
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Loads compiled CloudStream `.cs3` plugin archives exactly the way the real
@@ -36,7 +37,16 @@ import java.io.InputStreamReader
  */
 object Cs3PluginManager {
 
-    private val cache = HashMap<String, List<MainAPI>>()
+    private val cache = ConcurrentHashMap<String, List<MainAPI>>()
+
+    // Files whose load() is currently running. Concurrent callers short-circuit
+    // on this instead of blocking on a lock — a caller that can't get the load
+    // immediately just sees "not loaded yet" and retries later. This stops a
+    // slow plugin load (some plugins do network work in load()) from freezing
+    // the app no matter which thread started it.
+    private val loading = ConcurrentHashMap.newKeySet<String>()
+
+    private val loadLock = java.util.concurrent.locks.ReentrantLock()
 
     @Volatile
     var lastError: String? = null
@@ -64,15 +74,46 @@ object Cs3PluginManager {
         android.util.Log.e("Cs3PluginManager", line, e)
     }
 
-    @Synchronized
-    fun apisFor(context: Context, file: File): List<MainAPI> =
-        cache.getOrPut(file.absolutePath) { loadFile(context, file) }
+    /**
+     * Cached plugin APIs, loading on demand. NEVER loads a plugin on the UI
+     * thread (dex loading + plugin load() code can block for seconds → ANR),
+     * and NEVER waits for another in-flight load: if the plugin isn't loaded
+     * yet it returns empty immediately and the cache is filled by the startup
+     * warm() or the provider's own first IO access.
+     */
+    fun apisFor(context: Context, file: File): List<MainAPI> {
+        val path = file.absolutePath
+        cache[path]?.let { return it }
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return emptyList()
+        if (path in loading) return emptyList()
+        if (!loadLock.tryLock()) return emptyList()
+        try {
+            cache[path]?.let { return it }
+            if (path in loading) return emptyList()
+            loading.add(path)
+            val apis = loadFile(context, file)
+            if (apis.isNotEmpty()) cache[path] = apis
+            return apis
+        } finally {
+            loading.remove(path)
+            loadLock.unlock()
+        }
+    }
 
-    @Synchronized
+    /** Re-loads after an install/uninstall. The installer runs on IO, so it
+     *  may wait for a previous load to finish. */
     fun reload(context: Context, file: File): List<MainAPI> {
-        val apis = loadFile(context, file)
-        cache[file.absolutePath] = apis
-        return apis
+        val path = file.absolutePath
+        loadLock.lock()
+        try {
+            loading.add(path)
+            val apis = loadFile(context, file)
+            if (apis.isNotEmpty()) cache[path] = apis else cache.remove(path)
+            return apis
+        } finally {
+            loading.remove(path)
+            loadLock.unlock()
+        }
     }
 
     private fun loadFile(context: Context, file: File): List<MainAPI> {

@@ -705,7 +705,7 @@ class WebViewActivity : ComponentActivity() {
                     val pid = providerId
                     if (pid != null) {
                         lifecycleScope.launch(Dispatchers.IO) {
-                            runCatching { (applicationContext as HikariApp).store.setTranslateProvider(pid, false) }
+                            runCatching { com.hikari.app.data.Translator.enable(pid, false) }
                         }
                     }
                     Toast.makeText(this, "Translation off", Toast.LENGTH_SHORT).show()

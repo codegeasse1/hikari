@@ -40,6 +40,7 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
+        val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
     }
 
     /** Which provider the Home screen is currently showing (empty = All). */
@@ -64,6 +65,35 @@ class AppStore(private val ctx: Context) {
         val cur = translateProviders()
         val next = if (enabled) cur + id else cur - id
         store.edit { it[K.TRANSLATE_PROVIDERS] = encodeStringList(next.toList()) }
+    }
+
+    /** Persisted original→English translation pairs (title cache). */
+    suspend fun translateCache(): List<Pair<String, String>> =
+        store.data.map { parsePairs(it[K.TRANSLATE_CACHE]) }.first()
+
+    suspend fun setTranslateCache(list: List<Pair<String, String>>) {
+        store.edit { it[K.TRANSLATE_CACHE] = encodePairs(list) }
+    }
+
+    private fun encodePairs(list: List<Pair<String, String>>): String {
+        val arr = JSONArray()
+        for ((k, v) in list) arr.put(JSONArray().put(k).put(v))
+        return arr.toString()
+    }
+
+    private fun parsePairs(s: String?): List<Pair<String, String>> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val pair = arr.optJSONArray(i) ?: return@mapNotNull null
+                val k = pair.optString(0)
+                val v = pair.optString(1)
+                if (k.isBlank() || v.isBlank()) null else k to v
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     fun themeFlow(): Flow<String> =

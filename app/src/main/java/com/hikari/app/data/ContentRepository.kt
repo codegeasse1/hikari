@@ -15,6 +15,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 class ContentRepository(private val manager: ProviderManager) {
 
+    /** Like runCatching but re-throws CancellationException — a coroutine that
+     *  gets cancelled (e.g. the user switches tabs while Home is loading every
+     *  provider) must stop its work instead of swallowing the cancellation and
+     *  keeping the network busy in the background. */
+    private inline fun <T> cancellableCatching(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+
     /**
      * Loads Home rows. Catalogs inside a provider are fetched IN PARALLEL but
      * through a small semaphore so a slow network can't flood the IO pool with
@@ -28,10 +41,10 @@ class ContentRepository(private val manager: ProviderManager) {
         val active = manager.providers.value.filter {
             it.config.enabled && (providerId == null || it.config.id == providerId)
         }
-        coroutineScope {
+        val rows = coroutineScope {
             active.map { p ->
                 async {
-                    runCatching {
+                    cancellableCatching {
                         withTimeoutOrNull(60_000) {
                             val catalogs = p.catalogs()
                                 .distinctBy { it.type to it.id }
@@ -42,7 +55,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     async {
                                         gate.withPermit {
                                             val items = withTimeoutOrNull(25_000) {
-                                                runCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
+                                                cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                             }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                             if (items.isEmpty()) null
                                             else CatalogRow(
@@ -64,6 +77,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             }.awaitAll().flatten()
         }
+        translateRows(rows)
     }
 
     /** Searches across every enabled provider, or only the given subset.
@@ -76,15 +90,16 @@ class ContentRepository(private val manager: ProviderManager) {
         val active = manager.providers.value.filter {
             it.config.enabled && (providerIds.isNullOrEmpty() || it.config.id in providerIds)
         }
-        coroutineScope {
+        val results = coroutineScope {
             active.map { p ->
                 async {
-                    runCatching {
+                    cancellableCatching {
                         withTimeoutOrNull(45_000) { p.search(query, page) } ?: emptyList()
                     }.getOrDefault(emptyList())
                 }
             }.awaitAll().flatten().distinctBy { it.uniqueId }
         }
+        translateItems(results)
     }
 
     /**
@@ -122,7 +137,7 @@ class ContentRepository(private val manager: ProviderManager) {
             try {
                 val jobs = targets.map { p ->
                     scope.async {
-                        runCatching {
+                        cancellableCatching {
                             withTimeoutOrNull(45_000) { p.getStreams(item, episode) }.orEmpty()
                         }.getOrDefault(emptyList())
                     }
@@ -157,14 +172,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *  because one catalog addon serves minimal metadata. */
     suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         var result = manager.byId(item.providerId)
-            ?.let { withTimeoutOrNull(15_000) { runCatching { it.getMeta(item) }.getOrDefault(item) } }
+            ?.let { withTimeoutOrNull(15_000) { cancellableCatching { it.getMeta(item) }.getOrDefault(item) } }
             ?: item
-        if (result.backdropUrl != null && result.overview != null) return@withContext result
+        if (result.backdropUrl != null && result.overview != null) return@withContext translateItem(result)
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
         for (alt in others) {
-            val r = withTimeoutOrNull(8_000) { runCatching { alt.getMeta(result) }.getOrDefault(result) }
+            val r = withTimeoutOrNull(8_000) { cancellableCatching { alt.getMeta(result) }.getOrDefault(result) }
                 ?: continue
             if (result.backdropUrl == null && r.backdropUrl != null) {
                 result = result.copy(backdropUrl = r.backdropUrl)
@@ -174,7 +189,7 @@ class ContentRepository(private val manager: ProviderManager) {
             if (result.year == null && r.year != null) result = result.copy(year = r.year)
             if (result.backdropUrl != null && result.overview != null) break
         }
-        result
+        translateItem(result)
     }
 
     /** Episodes from the origin addon, falling back to the first other addon
@@ -188,10 +203,68 @@ class ContentRepository(private val manager: ProviderManager) {
         val ordered = listOfNotNull(manager.byId(item.providerId)) + others
         for (p in ordered) {
             val eps = (withTimeoutOrNull(12_000) {
-                runCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
+                cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
             }) ?: emptyList()
-            if (eps.isNotEmpty()) return@withContext eps
+            if (eps.isNotEmpty()) return@withContext translateEpisodes(item.providerId, eps)
         }
         null
+    }
+
+    // ---- Per-extension auto-translate (app content → English) ----
+    // Only extensions with "always translate" on are touched; every other
+    // provider's titles pass through untouched.
+
+    private suspend fun translateRows(rows: List<CatalogRow>): List<CatalogRow> {
+        val on = Translator.enabledIds()
+        if (on.isEmpty()) return rows
+        return rows.map { row ->
+            if (row.providerId !in on) return@map row
+            val newTitle = Translator.translate(row.title)
+            val items = translateItems(row.items)
+            if (newTitle == row.title && items === row.items) row
+            else row.copy(title = newTitle, items = items)
+        }
+    }
+
+    private suspend fun translateItems(items: List<MediaItem>): List<MediaItem> {
+        val on = Translator.enabledIds()
+        if (on.isEmpty()) return items
+        val toTranslate = items.filter { it.providerId in on }
+        if (toTranslate.isEmpty()) return items
+        val translations = Translator.translateAll(toTranslate.map { it.title })
+        var anyChanged = false
+        val changed = toTranslate.mapIndexed { i, it ->
+            val t = translations[i]
+            if (t != it.title) {
+                anyChanged = true
+                it.copy(title = t)
+            } else it
+        }
+        if (!anyChanged) return items
+        val byId = changed.associateBy { it.uniqueId }
+        return items.map { byId[it.uniqueId] ?: it }
+    }
+
+    private suspend fun translateItem(item: MediaItem): MediaItem {
+        if (item.providerId !in Translator.enabledIds()) return item
+        val title = Translator.translate(item.title)
+        val overview = item.overview?.let { Translator.translate(it) }
+        if (title == item.title && overview == item.overview) return item
+        return item.copy(title = title, overview = overview)
+    }
+
+    private suspend fun translateEpisodes(providerId: String, eps: List<Episode>): List<Episode> {
+        if (providerId !in Translator.enabledIds()) return eps
+        val names = eps.map { it.name ?: "" }
+        val translations = Translator.translateAll(names)
+        var anyChanged = false
+        val out = eps.mapIndexed { i, e ->
+            val t = translations[i]
+            if (e.name != null && t.isNotEmpty() && t != e.name) {
+                anyChanged = true
+                e.copy(name = t)
+            } else e
+        }
+        return if (anyChanged) out else eps
     }
 }

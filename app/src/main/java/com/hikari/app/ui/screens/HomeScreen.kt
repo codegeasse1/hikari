@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,10 +62,12 @@ import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.web.WebViewActivity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
@@ -152,7 +155,16 @@ fun HomeScreen(nav: NavHostController) {
     // user can verify once; the WebView auto-closes once the challenge passes
     // and the catalog reloads (the extension's cookie jar is now cleared).
     val context = LocalContext.current
-    val webUrl = providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+    // Resolved off the main thread: for CS3 plugins this loads the plugin dex
+    // to read its mainUrl, which must never block the UI thread (it can take
+    // seconds and previously froze/ANR'd the app when Home recomposed during
+    // heavy loads or right after an extension install).
+    var webUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selected, providers) {
+        webUrl = withContext(Dispatchers.IO) {
+            providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+        }
+    }
     val verifyLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         vm.refresh()
     }
@@ -199,7 +211,11 @@ fun HomeScreen(nav: NavHostController) {
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
-                    if (webUrl != null) {
+                    // Translate: per-extension toggle — turns this extension's
+                    // titles/text into English inside the app. Shown whenever a
+                    // provider is selected (content exists regardless of webUrl).
+                    selected?.let { pid ->
+                        val translateOn = com.hikari.app.data.Translator.isOn(pid)
                         IconButton(
                             onClick = { showTranslate = true }
                         ) {
@@ -207,10 +223,13 @@ fun HomeScreen(nav: NavHostController) {
                                 "A\u3042",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = if (translateOn) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 4.dp)
                             )
                         }
+                    }
+                    if (webUrl != null) {
                         IconButton(
                             onClick = {
                                 verifyLauncher.launch(
@@ -367,51 +386,32 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     val selId = selected
-    if (showTranslate && selId != null && webUrl != null) {
+    if (showTranslate && selId != null) {
         val pid = selId
-        val pname = selectedName ?: "this site"
-        val siteUrl = webUrl
+        val pname = selectedName ?: "this extension"
+        val isOn = com.hikari.app.data.Translator.isOn(pid)
         AlertDialog(
             onDismissRequest = { showTranslate = false },
-            title = { Text("Translate to English?") },
+            title = { Text(if (isOn) "Turn off translation?" else "Translate to English?") },
             text = {
                 Text(
-                    "$pname's pages are showing in their original language. " +
-                        "Turn their web pages into English so you can read them? " +
-                        "Other extensions stay untouched."
+                    if (isOn) {
+                        "Translation is ON for $pname — its titles and text are shown in English."
+                    } else {
+                        "$pname shows content in its original language. Turn it into English? " +
+                            "Only this extension is affected — every other extension stays as it is."
+                    }
                 )
             },
             confirmButton = {
-                Row {
-                    TextButton(onClick = {
-                        showTranslate = false
-                        scope.launch {
-                            runCatching { (context.applicationContext as HikariApp).store.setTranslateProvider(pid, true) }
-                        }
-                        verifyLauncher.launch(
-                            Intent(context, WebViewActivity::class.java).apply {
-                                putExtra("url", siteUrl)
-                                putExtra("title", pname)
-                                putExtra("providerId", pid)
-                                putExtra("translate", true)
-                            }
-                        )
-                    }) {
-                        Text("Always")
+                TextButton(onClick = {
+                    showTranslate = false
+                    scope.launch {
+                        com.hikari.app.data.Translator.enable(pid, !isOn)
+                        vm.refresh()
                     }
-                    TextButton(onClick = {
-                        showTranslate = false
-                        verifyLauncher.launch(
-                            Intent(context, WebViewActivity::class.java).apply {
-                                putExtra("url", siteUrl)
-                                putExtra("title", pname)
-                                putExtra("providerId", pid)
-                                putExtra("translate", true)
-                            }
-                        )
-                    }) {
-                        Text("Just this time")
-                    }
+                }) {
+                    Text(if (isOn) "Turn off" else "Always translate")
                 }
             },
             dismissButton = {

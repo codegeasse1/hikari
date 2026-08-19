@@ -98,11 +98,17 @@ class CatalogViewModel(
             } catch (t: Throwable) {
                 emptyList()
             }
-            if (fresh.isEmpty()) {
+            val translated = if (providerId in com.hikari.app.data.Translator.enabledIds()) {
+                com.hikari.app.data.Translator.translateAll(fresh.map { it.title })
+                    .mapIndexed { i, t -> if (t != fresh[i].title) fresh[i].copy(title = t) else fresh[i] }
+            } else {
+                fresh
+            }
+            if (translated.isEmpty()) {
                 _done.value = true
             } else {
                 val seen = _items.value.map { it.uniqueId }.toMutableSet()
-                val merged = _items.value + fresh.filter { seen.add(it.uniqueId) }
+                val merged = _items.value + translated.filter { seen.add(it.uniqueId) }
                 _items.value = merged
                 page++
             }

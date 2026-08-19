@@ -104,6 +104,8 @@ class HikariApp : Application() {
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
+            // Per-extension auto-translate config + persisted translation cache.
+            runCatching { com.hikari.app.data.Translator.init(store) }
         }
     }
 
