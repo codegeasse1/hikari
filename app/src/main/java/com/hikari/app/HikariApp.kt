@@ -34,6 +34,15 @@ class HikariApp : Application() {
         @Volatile
         var lastCrash: String? = null
             private set
+
+        /**
+         * The current MainActivity, set on create and cleared on stop. The real
+         * CloudStream host passes its AppCompatActivity to plugin load() (some
+         * plugins cast it — e.g. Moviebox's `as AppCompatActivity`), so a bare
+         * Application context makes those plugins throw ClassCastException.
+         */
+        @Volatile
+        var mainActivity: MainActivity? = null
     }
 
     lateinit var store: AppStore

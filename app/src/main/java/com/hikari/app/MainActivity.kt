@@ -1,7 +1,6 @@
 package com.hikari.app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -11,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.UpdateDialog
@@ -18,8 +18,9 @@ import com.hikari.app.ui.navigation.AppRoot
 import com.hikari.app.ui.theme.HikariTheme
 import com.hikari.app.ui.theme.HikariThemeMode
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        HikariApp.mainActivity = this
         // No window title bar, ever — every screen is header-free by design.
         window.requestFeature(android.view.Window.FEATURE_NO_TITLE)
         // Edge-to-edge: the app draws behind the status + navigation bars so
@@ -78,12 +79,34 @@ class MainActivity : ComponentActivity() {
         // The CloudStream runtime's Torrent engine needs an activity reference
         // for its cache dir (it throws "No activity" otherwise).
         com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
+        // The real CloudStream host exposes its activity as MainAPI.app; some
+        // plugins read it (or cast load()'s context) and throw when it's null
+        // or not an Activity. Set it reflectively — the jar's MainAPI shape
+        // varies, so each strategy is guarded.
+        setMainApiApp(this)
     }
 
     override fun onStop() {
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
         }
+        if (HikariApp.mainActivity === this) {
+            HikariApp.mainActivity = null
+        }
         super.onStop()
+    }
+
+    /** Set MainAPI.app to this activity, whichever form the jar compiles it
+     *  as (plain static field, Kotlin object, or companion instance). */
+    private fun setMainApiApp(activity: MainActivity) {
+        runCatching {
+            val cls = Class.forName("com.lagradost.cloudstream3.MainAPI")
+            runCatching { cls.getField("app").set(null, activity) }
+            val holder = runCatching { cls.getField("INSTANCE").get(null) }
+                .getOrNull() ?: runCatching { cls.getField("Companion").get(null) }.getOrNull()
+            if (holder != null) {
+                holder.javaClass.getField("app").set(holder, activity)
+            }
+        }
     }
 }

@@ -3,7 +3,10 @@
          Android window title bar (it renders the app label). Every theme
          below now forces windowNoTitle + windowActionBar=false explicitly,
          so no activity can ever draw a title bar again. -->
-    <style name="Theme.Hikari" parent="Theme.SplashScreen">
+    <!-- MainActivity is an AppCompatActivity (CloudStream plugins cast `app` to
+         it), so its theme must be Theme.AppCompat-based. The splash attributes
+         are declared here directly so installSplashScreen() still works. -->
+    <style name="Theme.Hikari" parent="Theme.AppCompat.NoActionBar">
         <item name="windowSplashScreenBackground">@color/hikari_bg</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.Hikari.App</item>
@@ -11,7 +14,7 @@
         <item name="android:windowActionBar">false</item>
     </style>
 
-    <style name="Theme.Hikari.App" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Hikari.App" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@color/hikari_bg</item>
         <item name="android:statusBarColor">@color/hikari_bg</item>
         <item name="android:navigationBarColor">@color/hikari_bg</item>

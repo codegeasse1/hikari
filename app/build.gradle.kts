@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 28
-        versionName = "0.3.25"
+        versionCode = 29
+        versionName = "0.3.26"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -97,6 +97,11 @@ dependencies {
     // magnet/infoHash streams become HLS served from a local TorrServer process.
     implementation("com.github.recloudstream:torrentserver:7861970")
     implementation(libs.androidx.core.ktx)
+    // CloudStream plugins cast `app` to androidx.appcompat.app.AppCompatActivity
+    // (MovieBox/Phisher repo do it in load()); the app must ship the real
+    // AppCompat classes AND MainActivity must be an AppCompatActivity for that
+    // cast to succeed.
+    implementation("androidx.appcompat:appcompat:1.7.0")
     // Phisher/Kotlin plugins (Anikoto, …) are compiled against Gson and call it
     // at runtime (e.g. AnikotoExtractors.extractMegaPlayUrl) — without it they
     // die with NoClassDefFoundError: com.google.gson.JsonObject.

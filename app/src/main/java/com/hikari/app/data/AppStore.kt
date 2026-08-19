@@ -28,6 +28,7 @@ class AppStore(private val ctx: Context) {
         val THEME = stringPreferencesKey("theme")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
+        val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
         val AD_LISTS = stringPreferencesKey("adLists")
         val AD_BLOCK = stringPreferencesKey("adBlock")
@@ -326,6 +327,32 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHistoryPaused(paused: Boolean) {
         store.edit { it[K.HISTORY_PAUSED] = paused }
+    }
+
+    // ---- WebView element blocker (persistent CSS selectors) ----
+
+    fun elementBlocksFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.ELEMENT_BLOCKS]) }
+
+    suspend fun elementBlocks(): List<String> = elementBlocksFlow().first()
+
+    suspend fun addElementBlock(selector: String) {
+        val cur = elementBlocks()
+        if (selector in cur) return
+        store.edit { it[K.ELEMENT_BLOCKS] = encodeStringList((cur + selector).take(200)) }
+    }
+
+    /** Removes and returns the most recently blocked selector (null if none). */
+    suspend fun removeLastElementBlock(): String? {
+        val cur = elementBlocks()
+        if (cur.isEmpty()) return null
+        val last = cur.last()
+        store.edit { it[K.ELEMENT_BLOCKS] = encodeStringList(cur.dropLast(1)) }
+        return last
+    }
+
+    suspend fun clearElementBlocks() {
+        store.edit { it[K.ELEMENT_BLOCKS] = "[]" }
     }
 
     private fun encodeHistory(list: List<HistoryEntry>): String {

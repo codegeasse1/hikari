@@ -5,6 +5,7 @@ package com.hikari.app.cs3
 import android.content.Context
 import android.content.res.AssetManager
 import android.content.res.Resources
+import com.hikari.app.HikariApp
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
@@ -139,7 +140,7 @@ object Cs3PluginManager {
                 }
             }
             if (instance is Plugin) {
-                instance.load(context)
+                instance.load(HikariApp.mainActivity ?: context)
             } else {
                 instance.load()
             }
@@ -154,6 +155,32 @@ object Cs3PluginManager {
         } catch (e: Throwable) {
             record("collecting providers failed", e)
             return fail()
+        }
+        // Some plugins read the app off their providers (e.g. `MainAPI.app`)
+        // after load. The real CloudStream host sets it to the activity —
+        // mirror that, locating the field wherever the jar puts it (instance
+        // member, companion, or a provider subclass override).
+        HikariApp.mainActivity?.let { activity ->
+            apis.forEach { api ->
+                runCatching {
+                    var done = false
+                    var c: Class<*>? = api.javaClass
+                    while (c != null && !done) {
+                        runCatching { c.getField("app").set(api, activity); done = true }
+                        if (!done) runCatching {
+                            c.getDeclaredField("app").apply { isAccessible = true }
+                                .set(api, activity); done = true
+                        }
+                        c = c.superclass
+                    }
+                    if (!done) {
+                        runCatching {
+                            val holder = api.javaClass.getField("Companion").get(null)
+                            holder.javaClass.getField("app").set(holder, activity)
+                        }
+                    }
+                }
+            }
         }
         if (apis.isEmpty()) {
             val details = errorDetails.toString().trim()

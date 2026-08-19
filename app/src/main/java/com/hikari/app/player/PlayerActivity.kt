@@ -93,6 +93,7 @@ class PlayerActivity : ComponentActivity() {
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
     private var subsBtn: TextView? = null
+    private var audioBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
@@ -179,6 +180,7 @@ class PlayerActivity : ComponentActivity() {
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
         subsBtn = findViewById(R.id.subs_btn)
+        audioBtn = findViewById(R.id.audio_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
         nextBtn = findViewById(R.id.next_btn)
@@ -194,6 +196,7 @@ class PlayerActivity : ComponentActivity() {
         qualityBtn?.setOnClickListener { showQualityDialog() }
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
         subsBtn?.setOnClickListener { showSubsDialog() }
+        audioBtn?.setOnClickListener { showAudioDialog() }
 
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
@@ -502,6 +505,65 @@ class PlayerActivity : ComponentActivity() {
                             )
                             .build()
                     }
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /**
+     * Audio track switcher — for dual-audio releases (Hindi/Tamil/Telugu audio
+     * on the same video, etc). Lists every audio group the current source
+     * exposes, plus Default, and switches with an ExoPlayer track override.
+     * The button sits in the SAME bottom chip row as Quality/Sub so it never
+     * overlaps any other control.
+     */
+    private fun showAudioDialog() {
+        val p = player ?: return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (groups.isEmpty()) {
+            Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = mutableListOf<String>()
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        items.add("Default (adaptive)")
+        var checked = 0
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            val override = p.trackSelectionParameters.overrides[mediaGroup]
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = listOfNotNull(
+                    f.language?.takeIf { it.isNotBlank() }?.let { lang ->
+                        java.util.Locale(lang).getDisplayLanguage(java.util.Locale.ENGLISH)
+                            .takeIf { it.isNotBlank() } ?: lang
+                    },
+                    f.label?.takeIf { it.isNotBlank() },
+                    f.id?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
+                items.add(label)
+                indexMap[items.size - 1] = group to i
+                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
+                    checked = items.size - 1
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Audio")
+            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
+                if (which == 0) {
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                        .build()
+                } else {
+                    val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(
+                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                        )
+                        .build()
                 }
                 d.dismiss()
             }

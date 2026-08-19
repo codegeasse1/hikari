@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -98,6 +99,21 @@ class WebViewResolver(
 
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun resolveUsingWebView(
+        request: Request,
+        requestCallBack: (Request) -> Boolean = { false },
+    ): Pair<Request?, List<Request>> {
+        // The FIRST WebView on a fresh process is slow (renderer spawn, cookie
+        // store init) and some CDNs need the page loaded twice to establish
+        // the session — a plugin that gets nothing on attempt #1 often succeeds
+        // instantly on #2 (the "first play only shows the fallback server"
+        // symptom). Retry once when the first pass captured nothing.
+        val first = resolveOnce(request, requestCallBack)
+        if (first.first != null || first.second.isNotEmpty()) return first
+        return resolveOnce(request, requestCallBack)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun resolveOnce(
         request: Request,
         requestCallBack: (Request) -> Boolean = { false },
     ): Pair<Request?, List<Request>> {
@@ -206,7 +222,19 @@ class WebViewResolver(
             if (req.method.equals("GET", true) || req.method.equals("HEAD", true)) null
             else RequestBody.create(null, ByteArray(0))
         )
-        req.requestHeaders?.forEach { (k, v) -> builder.header(k, v) }
+        var hasCookie = false
+        req.requestHeaders?.forEach { (k, v) ->
+            builder.header(k, v)
+            if (k.equals("Cookie", ignoreCase = true)) hasCookie = true
+        }
+        // The WebView never puts the Cookie header in requestHeaders, but the
+        // session (cf_clearance, login tokens) is what makes the CDN serve the
+        // stream. Attach the WebView's cookies so the plugin's subsequent
+        // request actually gets served.
+        if (!hasCookie) {
+            val cookie = runCatching { CookieManager.getInstance().getCookie(req.url.toString()) }.getOrNull()
+            if (!cookie.isNullOrBlank()) builder.header("Cookie", cookie)
+        }
         builder.build()
     }.getOrNull()
 

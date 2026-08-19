@@ -37,9 +37,14 @@ import java.util.concurrent.ConcurrentHashMap
 class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
-        /** Last loadLinks failure (shown in the UI so users see the real reason). */
-        @Volatile
-        var lastStreamsError: String? = null
+        /**
+         * Per-provider last loadLinks failure (shown in the UI so users see the
+         * real reason). Keyed by provider id so one provider's error can never
+         * leak into another title's error panel — that's what made an
+         * iStreamFlare/istreamcdn failure from one video appear on every other
+         * extension's "no sources" message.
+         */
+        val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
         /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
         @Volatile
@@ -413,23 +418,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                             }
                         }
                         if (completed == null) {
-                            lastStreamsError =
+                            streamErrors[config.id] =
                                 "${a.name} timed out after ${pluginTimeout / 1000}s — the provider hung while resolving sources.\n" +
                                     "Stuck on thread '${worker.name}':\n" +
                                     worker.stackTrace.take(25).joinToString("\n") { "    at $it" }
                         } else {
                             val dataLabel = if (data.length > 96) data.take(96) + "…" else data
                             val who = "${a.name} [$dataLabel]"
-                            lastStreamsError = when {
+                            streamErrors[config.id] = when {
                                 completed != true -> "$who: no stream links found on the page."
                                 links.isEmpty() -> "$who: page parsed OK, but produced no stream links."
                                 else -> null
-                            }
+                            } ?: ""
                         }
                         links.toList()
                     } catch (e: Throwable) {
                         if (e is CancellationException) throw e
-                        lastStreamsError = fullCause(e)
+                        streamErrors[config.id] = fullCause(e)
                         android.util.Log.e("Cs3Streams", "loadLinks failed for $data", e)
                         emptyList()
                     }
@@ -541,7 +546,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 scope.cancel()
             }
 
-            if (result.isNotEmpty()) lastStreamsError = null
+            if (result.isNotEmpty()) streamErrors.remove(config.id)
             lastStreamsTimeMs = System.currentTimeMillis() - started
             result
         }

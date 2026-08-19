@@ -74,6 +74,11 @@ class WebViewActivity : ComponentActivity() {
     private var pageUrl: String? = null
     private var pageTitle: String = ""
 
+    // Persisted element-block selectors (WebView menu → Element blocker). Loaded
+    // from the store on launch, kept in sync by the bridge, and handed to the
+    // page's ELEMENT_BLOCK_JS on every load so blocked elements stay hidden.
+    private val blockedSelectors = java.util.LinkedHashSet<String>()
+
     // Ad blocking (WebView requests only) — resolved from the user's lists on
     // launch, and never applied to the ExoPlayer's own network I/O.
     @Volatile
@@ -223,8 +228,10 @@ class WebViewActivity : ComponentActivity() {
             // Userscripts (Tampermonkey-style, WebView only). Loaded here so
             // they're ready before the first page finishes; if the page already
             // started loading, inject the document-start scripts for it now.
+            // pageUrl is read INSTEAD of webView.url: reading WebView state off
+            // the main thread crashes (checkThread) — this coroutine runs on IO.
             UserscriptManager.reload(app)
-            val startUrlNow = webView.url ?: pageUrl
+            val startUrlNow = pageUrl
             if (startUrlNow != null) {
                 val inject = UserscriptManager.scriptsFor(startUrlNow, atStart = true)
                 if (inject.isNotEmpty()) {
@@ -233,6 +240,10 @@ class WebViewActivity : ComponentActivity() {
                     }
                 }
             }
+            // Persisted element-block selectors, applied by ELEMENT_BLOCK_JS on
+            // every page load (see injectElementBlocker).
+            blockedSelectors.clear()
+            runCatching { blockedSelectors += app.store.elementBlocks() }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -382,6 +393,7 @@ class WebViewActivity : ComponentActivity() {
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
+                injectElementBlocker(view)
                 // Some players create <video> from JS without a network URL we
                 // can see — scan the DOM for the real element too. The runnable
                 // keeps re-scanning so single-page-app players (which swap the
@@ -564,6 +576,9 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 3, 0, "\u21BB Reload")
         menu.menu.add(0, 4, 0, "\u25B6 Open in player")
         menu.menu.add(0, 5, 0, "Open in browser")
+        menu.menu.add(0, 6, 0, "\u2298 Element blocker")
+        menu.menu.add(0, 7, 0, "\u21A9 Undo last block")
+        menu.menu.add(0, 8, 0, "\u2715 Clear all blocks")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> if (webView.canGoBack()) webView.goBack()
@@ -573,10 +588,73 @@ class WebViewActivity : ComponentActivity() {
                 5 -> runCatching {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pageUrl ?: webView.url)))
                 }
+                6 -> enableElementBlocker()
+                7 -> undoLastBlock()
+                8 -> clearAllBlocks()
             }
             true
         }
         menu.show()
+    }
+
+    // ---- Element blocker ----
+
+    private fun enableElementBlocker() {
+        webView.evaluateJavascript("window.__hikariBlockerActive=true;", null)
+        Toast.makeText(
+            this,
+            "Element blocker ON — tap an element to block it",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun undoLastBlock() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val sel = runCatching { (applicationContext as HikariApp).store.removeLastElementBlock() }
+                .getOrNull()
+            runOnUiThread {
+                if (sel == null) {
+                    Toast.makeText(this@WebViewActivity, "Nothing to undo", Toast.LENGTH_SHORT).show()
+                } else {
+                    blockedSelectors.remove(sel)
+                    webView.evaluateJavascript(
+                        "window.__hikariRestoreSelector?window.__hikariRestoreSelector(" +
+                            jsString(sel) + "):null",
+                        null
+                    )
+                    Toast.makeText(this@WebViewActivity, "Last block reverted", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun clearAllBlocks() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { (applicationContext as HikariApp).store.clearElementBlocks() }
+            runOnUiThread {
+                blockedSelectors.clear()
+                webView.evaluateJavascript(
+                    "window.__hikariRestoreAll?window.__hikariRestoreAll():null",
+                    null
+                )
+                Toast.makeText(this@WebViewActivity, "All element blocks cleared", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** A JS string literal (for embedding a selector into evaluateJavascript). */
+    private fun jsString(s: String): String =
+        "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /** Injects the blocker script + the persisted selectors into the page. */
+    private fun injectElementBlocker(view: WebView?) {
+        view?.evaluateJavascript(ELEMENT_BLOCK_JS, null)
+        val arr = JSONArray().apply { blockedSelectors.forEach { put(it) } }
+        view?.evaluateJavascript(
+            "window.__hikariBlocks=" + arr.toString() +
+                ";window.__hikariHideAll&&window.__hikariHideAll();",
+            null
+        )
     }
 
     /** Host of the page currently shown (or being loaded). */
@@ -753,6 +831,19 @@ class WebViewActivity : ComponentActivity() {
                 videoChip.text = "\u25B6 Opening external player…"
                 videoChip.visibility = View.VISIBLE
                 launchPlayer(listOf(url), pageUrl ?: webView.url)
+            }
+        }
+
+        // ---- Element blocker bridge ----
+        @android.webkit.JavascriptInterface
+        fun blockElement(selector: String) {
+            if (selector.isBlank()) return
+            runOnUiThread {
+                blockedSelectors.add(selector)
+                Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT).show()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    runCatching { (applicationContext as HikariApp).store.addElementBlock(selector) }
+                }
             }
         }
 
@@ -949,6 +1040,127 @@ class WebViewActivity : ComponentActivity() {
               }
               setInterval(tick,2000);
               tick();
+            })();
+        """.trimIndent()
+
+        /**
+         * Element blocker. Always injected (guarded by a page-scoped flag) so
+         * the menu's "Element blocker" toggle just flips
+         * window.__hikariBlockerActive; the next tap on the page picks the
+         * tapped element, computes a stable CSS selector, hides it, pushes it
+         * to the registry + __hikariBlocks and calls
+         * HikariBridge.blockElement(selector) so the app persists it. The
+         * toggle switches itself off after one block. Persisted selectors from
+         * __hikariBlocks are re-hidden on every load + on DOM mutations (SPAs
+         * re-mount nodes), and __hikariRestoreSelector/__hikariRestoreAll undo
+         * a block / all blocks without a reload.
+         */
+        private val ELEMENT_BLOCK_JS = """
+            (function(){
+              if(window.__hikariBlockerInit)return;
+              window.__hikariBlockerInit=true;
+              window.__hikariBlockerActive=false;
+              window.__hikariBlocks=window.__hikariBlocks||[];
+              window.__hikariBlockRegistry=[];
+              function hideAll(){
+                var sels=window.__hikariBlocks||[];
+                for(var i=0;i<sels.length;i++){
+                  try{
+                    var els=document.querySelectorAll(sels[i]);
+                    for(var j=0;j<els.length;j++){
+                      var e=els[j];
+                      if(!e.__hikariBlocked){
+                        e.__hikariBlocked=true;
+                        e.style.setProperty('display','none','important');
+                        window.__hikariBlockRegistry.push({el:e,sel:sels[i]});
+                      }
+                    }
+                  }catch(e){}
+                }
+              }
+              window.__hikariHideAll=hideAll;
+              function restoreOne(sel){
+                var rem=[];
+                for(var i=0;i<window.__hikariBlockRegistry.length;i++){
+                  var en=window.__hikariBlockRegistry[i];
+                  if(en.sel===sel){
+                    try{
+                      en.el.__hikariBlocked=false;
+                      en.el.style.removeProperty('display');
+                    }catch(e){}
+                    rem.push(i);
+                  }
+                }
+                for(var k=rem.length-1;k>=0;k--)window.__hikariBlockRegistry.splice(rem[k],1);
+                var bi=window.__hikariBlocks.indexOf(sel);
+                if(bi>=0)window.__hikariBlocks.splice(bi,1);
+              }
+              window.__hikariRestoreSelector=restoreOne;
+              function restoreAll(){
+                for(var i=0;i<window.__hikariBlockRegistry.length;i++){
+                  var en=window.__hikariBlockRegistry[i];
+                  try{
+                    en.el.__hikariBlocked=false;
+                    en.el.style.removeProperty('display');
+                  }catch(e){}
+                }
+                window.__hikariBlockRegistry=[];
+                window.__hikariBlocks=[];
+              }
+              window.__hikariRestoreAll=restoreAll;
+              function esc(s){return String(s).replace(/[^a-zA-Z0-9_-]/g,function(c){return '\\'+c;});}
+              function buildSelector(el){
+                if(!el||el===document.documentElement||el===document.body)return '';
+                if(el.id){return '#'+esc(el.id);}
+                var t=el;
+                for(var k=0;k<4;k++){
+                  var r=t.getBoundingClientRect?t.getBoundingClientRect():null;
+                  if(r&&(r.width>=24&&r.height>=16))break;
+                  if(!t.parentElement||t.parentElement===document.body)break;
+                  t=t.parentElement;
+                }
+                var parts=[];
+                var cur=t;
+                while(cur&&cur!==document.documentElement&&parts.length<3){
+                  var tag=(cur.tagName||'').toLowerCase();
+                  if(!tag)break;
+                  var seg=tag;
+                  var cls=[].slice.call(cur.classList).filter(function(c){return c&&c.length>1&&!c.match(/^(css-|sc-|_)/);});
+                  if(cls.length)seg+='.'+cls.slice(0,2).map(esc).join('.');
+                  var parent=cur.parentElement;
+                  if(parent){
+                    var sameTag=[].slice.call(parent.children).filter(function(s){return (s.tagName||'').toLowerCase()===tag;});
+                    if(sameTag.length>1)seg+=':nth-of-type('+(sameTag.indexOf(cur)+1)+')';
+                  }
+                  parts.unshift(seg);
+                  cur=cur.parentElement;
+                }
+                return parts.join(' > ');
+              }
+              function block(el){
+                var sel=buildSelector(el);
+                if(!sel){window.__hikariBlockerActive=false;return;}
+                el.__hikariBlocked=true;
+                el.style.setProperty('display','none','important');
+                window.__hikariBlockRegistry.push({el:el,sel:sel});
+                window.__hikariBlocks.push(sel);
+                window.__hikariBlockerActive=false;
+                try{HikariBridge.blockElement(sel);}catch(e){}
+              }
+              document.addEventListener('pointerdown',function(e){
+                if(!window.__hikariBlockerActive)return;
+                e.stopImmediatePropagation();
+                e.preventDefault();
+              },true);
+              document.addEventListener('click',function(e){
+                if(!window.__hikariBlockerActive)return;
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                var el=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;
+                block(el);
+              },true);
+              try{new MutationObserver(hideAll).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
+              hideAll();
             })();
         """.trimIndent()
     }

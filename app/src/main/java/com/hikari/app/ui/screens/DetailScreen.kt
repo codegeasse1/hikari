@@ -131,9 +131,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
         _searchedProviders.value = streamTargets(item).size
         if (result.isEmpty()) {
-            _streamError.value =
-                com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
-                    ?: com.hikari.app.cs3.Cs3MainApiProvider.lastStreamsError
+            // Attribute the failure to the ORIGIN provider only — a global
+            // "last error" from a different video (e.g. iStreamFlare on the
+            // hstream title) used to leak into every other extension's "no
+            // sources" message and made the whole app look broken.
+            val origin = manager.byId(item.providerId)
+            _streamError.value = when (origin?.config?.type) {
+                ProviderType.STREMIO ->
+                    com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
+                ProviderType.CS3 ->
+                    com.hikari.app.cs3.Cs3MainApiProvider.streamErrors[item.providerId]
+                else -> null
+            }
         } else {
             _streamError.value = null
         }
