@@ -52,11 +52,12 @@ object Translator {
     suspend fun init(store: AppStore) {
         storeRef = store
         val pairs = runCatching { store.translateCache() }.getOrDefault(emptyList())
+        val enabledSet = runCatching { store.translateProviders() }.getOrDefault(emptySet())
         synchronized(lock) {
             cache.clear()
             for ((k, v) in pairs.takeLast(2000)) cache[k] = v
             enabled.clear()
-            enabled += runCatching { store.translateProviders() }.getOrDefault(emptySet())
+            enabled += enabledSet
             initialized = true
         }
     }
@@ -155,7 +156,7 @@ object Translator {
         if (now - lastPersist < 10_000) return
         lastPersist = now
         val store = storeRef ?: return
-        val snapshot = synchronized(lock) { cache.entries.takeLast(1500).map { it.key to it.value } }
+        val snapshot = synchronized(lock) { cache.toList().takeLast(1500).map { it.key to it.value } }
         CoroutineScope(Dispatchers.IO).launch {
             runCatching { store.setTranslateCache(snapshot) }
         }
