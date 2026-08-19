@@ -73,6 +73,16 @@ class WebViewActivity : ComponentActivity() {
     private val detectedVideos = LinkedHashSet<String>()
     private var pageUrl: String? = null
     private var pageTitle: String = ""
+    private var startUrl: String = ""
+
+    // "Verify for Cloudflare" mode (opened from the Home tab): the site is
+    // shown so the user can complete a CF challenge; once a challenge was seen
+    // and the page turns into real content, the activity finishes by itself so
+    // the caller can reload the extension catalog with the now-valid cookies.
+    private var autoCloseWhenCloudflarePassed = false
+    private var challengeSeen = false
+    private val verifyHandler = Handler(Looper.getMainLooper())
+    private var verifyRunnable: Runnable? = null
 
     // Persisted element-block selectors (WebView menu → Element blocker). Loaded
     // from the store on launch, kept in sync by the bridge, and handed to the
@@ -137,7 +147,9 @@ class WebViewActivity : ComponentActivity() {
         }
 
         val startUrl = intent.getStringExtra("url") ?: "https://www.google.com"
+        this.startUrl = startUrl
         pageTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
+        autoCloseWhenCloudflarePassed = intent.getBooleanExtra("autoCloseWhenCloudflarePassed", false)
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -203,6 +215,56 @@ class WebViewActivity : ComponentActivity() {
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         setContentView(rootView)
+
+        // Draggable ⋯ pill: it floats over the site (top-right by default) and
+        // can cover a site's search/header button, so let the user drag it
+        // anywhere along the top edge. A plain tap still opens the menu.
+        val pillLp = togglePill.layoutParams as FrameLayout.LayoutParams
+        var pillDownX = 0f
+        var pillDownY = 0f
+        var pillStartRight = 0
+        var pillStartTop = 0
+        var pillDragging = false
+        val pillTouchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        togglePill.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    pillDownX = e.rawX
+                    pillDownY = e.rawY
+                    pillStartRight = pillLp.rightMargin
+                    pillStartTop = pillLp.topMargin
+                    pillDragging = false
+                    false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - pillDownX
+                    val dy = e.rawY - pillDownY
+                    if (!pillDragging &&
+                        (kotlin.math.abs(dx) > pillTouchSlop || kotlin.math.abs(dy) > pillTouchSlop)
+                    ) {
+                        pillDragging = true
+                    }
+                    if (pillDragging) {
+                        val maxRight = (content.width - v.width).coerceAtLeast(0)
+                        val maxTop = (content.height - v.height).coerceAtLeast(0)
+                        pillLp.rightMargin = (pillStartRight - dx.toInt()).coerceIn(0, maxRight)
+                        pillLp.topMargin = (pillStartTop + dy.toInt()).coerceIn(0, maxTop)
+                        v.layoutParams = pillLp
+                    }
+                    pillDragging
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (pillDragging) {
+                        pillDragging = false
+                        true
+                    } else {
+                        v.performClick()
+                        false
+                    }
+                }
+                else -> false
+            }
+        }
 
         // Load the user's ad-blocking config (hosts lists are cached on disk;
         // lists the user never downloaded get fetched lazily here). Blocking
@@ -429,6 +491,7 @@ class WebViewActivity : ComponentActivity() {
                 }
                 scanRunnable = r
                 scanHandler.postDelayed(r, 1500)
+                if (autoCloseWhenCloudflarePassed) pollCloudflarePass()
             }
 
             override fun onRenderProcessGone(
@@ -591,23 +654,25 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 1, 0, "\u2190 Back")
         menu.menu.add(0, 2, 0, "\u2192 Forward")
         menu.menu.add(0, 3, 0, "\u21BB Reload")
-        menu.menu.add(0, 4, 0, "\u25B6 Open in player")
-        menu.menu.add(0, 5, 0, "Open in browser")
-        menu.menu.add(0, 6, 0, "\u2298 Element blocker")
-        menu.menu.add(0, 7, 0, "\u21A9 Undo last block")
-        menu.menu.add(0, 8, 0, "\u2715 Clear all blocks")
+        menu.menu.add(0, 4, 0, "\u2302 Home")
+        menu.menu.add(0, 5, 0, "\u25B6 Open in player")
+        menu.menu.add(0, 6, 0, "Open in browser")
+        menu.menu.add(0, 7, 0, "\u2298 Element blocker")
+        menu.menu.add(0, 8, 0, "\u21A9 Undo last block")
+        menu.menu.add(0, 9, 0, "\u2715 Clear all blocks")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> if (webView.canGoBack()) webView.goBack()
                 2 -> if (webView.canGoForward()) webView.goForward()
                 3 -> webView.reload()
-                4 -> playVideo()
-                5 -> runCatching {
+                4 -> webView.loadUrl(startUrl)
+                5 -> playVideo()
+                6 -> runCatching {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pageUrl ?: webView.url)))
                 }
-                6 -> enableElementBlocker()
-                7 -> undoLastBlock()
-                8 -> clearAllBlocks()
+                7 -> enableElementBlocker()
+                8 -> undoLastBlock()
+                9 -> clearAllBlocks()
             }
             true
         }
@@ -699,6 +764,48 @@ class WebViewActivity : ComponentActivity() {
         if (blockedToastShown) return
         blockedToastShown = true
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * "Verify for Cloudflare" mode: every ~1.2s ask the page whether it still
+     * looks like a WAF challenge. The moment a challenge we've already seen
+     * turns into real content (the user completed the verification and the
+     * page reloaded), finish this activity so the caller reloads the extension
+     * catalog with the now-valid cf_clearance cookie. If no challenge ever
+     * appears the user just closes the view normally.
+     */
+    private fun pollCloudflarePass() {
+        verifyHandler.removeCallbacksAndMessages(null)
+        val r = object : Runnable {
+            override fun run() {
+                if (!autoCloseWhenCloudflarePassed) return
+                val v = webView
+                if (v == null) return
+                v.evaluateJavascript(
+                    "(function(){" +
+                        "var t=(document.title||'').toLowerCase();" +
+                        "var h=location.href.toLowerCase();" +
+                        "var b=document.body?document.body.innerText.slice(0,3000).toLowerCase():'';" +
+                        "return (t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||" +
+                        "h.indexOf('cdn-cgi/challenge')>=0||h.indexOf('challenge-platform')>=0||" +
+                        "b.indexOf('verify you are human')>=0||b.indexOf('performing security verification')>=0||" +
+                        "b.indexOf('checking your browser')>=0||b.indexOf('cf-chl')>=0);" +
+                        "})();"
+                ) { res ->
+                    val isChallenge = res?.trim()?.trim('"') == "true"
+                    if (isChallenge) {
+                        challengeSeen = true
+                    } else if (challengeSeen) {
+                        // Challenge present → gone = verification complete.
+                        finish()
+                        return
+                    }
+                    if (autoCloseWhenCloudflarePassed) verifyHandler.postDelayed(this, 1200)
+                }
+            }
+        }
+        verifyRunnable = r
+        verifyHandler.postDelayed(r, 1200)
     }
 
     private fun hideSystemBars() {
@@ -906,6 +1013,7 @@ class WebViewActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        verifyHandler.removeCallbacksAndMessages(null)
         scanHandler.removeCallbacksAndMessages(null)
         runCatching { popupChild?.destroy() }
         popupChild = null

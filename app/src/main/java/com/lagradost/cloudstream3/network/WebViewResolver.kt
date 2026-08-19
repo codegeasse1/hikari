@@ -90,6 +90,18 @@ class WebViewResolver(
                     }
                   }
                 }
+                // Last resort: any visible button whose label/aria mentions
+                // play/start — covers players that name their overlay oddly.
+                try {
+                  var all=document.querySelectorAll('button,[role="button"],.control,label[for]');
+                  for (var k=0;k<all.length;k++){
+                    var el=all[k];
+                    if (el.offsetParent===null && el.getBoundingClientRect().height<=0) continue;
+                    var label=(el.getAttribute('aria-label')||'')+' '+(el.textContent||'').trim();
+                    var low=label.toLowerCase();
+                    if (low.indexOf('play')>=0 && low.length<40) { try { el.click(); } catch(e){} }
+                  }
+                } catch(e){}
               };
               tryPlay();
               setTimeout(tryPlay, 1000);
@@ -235,7 +247,7 @@ class WebViewResolver(
                         // reloads) — start the player if one exists. Players
                         // initialize lazily, so keep nudging for a few seconds.
                         nudgeAutoplay(view)
-                        for (delay in listOf(1000L, 3000L, 6000L)) {
+                        for (delay in listOf(1000L, 3000L, 6000L, 9000L, 12000L)) {
                             mainHandler.postDelayed({
                                 runCatching { view?.evaluateJavascript(AUTOPLAY_JS, null) }
                             }, delay)

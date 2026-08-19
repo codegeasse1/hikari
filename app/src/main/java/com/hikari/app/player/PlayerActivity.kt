@@ -30,6 +30,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -107,6 +108,10 @@ class PlayerActivity : ComponentActivity() {
     /** True while the controls are locked — the media3 controller stays hidden
      *  and only the center unlock button remains touchable. */
     private var controlsLocked = false
+
+    /** Auto-rotation already applied for the current source (once the screen
+     *  matched the video's aspect we stop fighting the user's rotate button). */
+    private var autoRotated = false
 
     /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
     private var resizeIndex = 0
@@ -638,6 +643,7 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         if (index != currentIndex) headerVariant = 0
+        autoRotated = false
         currentIndex = index
         val src = sources[index]
         if (src.isTorrent && src.infoHash != null) {
@@ -945,6 +951,24 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private val listener = object : Player.Listener {
+        // Auto-rotate to match the video: landscape videos play landscape,
+        // portrait videos play portrait — once, per source. After that the
+        // rotate button is entirely in the user's hands.
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            if (autoRotated) return
+            if (videoSize.width <= 0 || videoSize.height <= 0) return
+            autoRotated = true
+            val landscape = videoSize.width > videoSize.height
+            requestedOrientation = if (landscape) {
+                SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                SCREEN_ORIENTATION_PORTRAIT
+            }
+            val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
+            val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
+            rotateBtn?.imageTintList = if (landscape) gold else white
+        }
+
         override fun onTracksChanged(tracks: Tracks) {
             if (noSubsRetry) return
             selectFirstTextTrack(player ?: return, tracks)

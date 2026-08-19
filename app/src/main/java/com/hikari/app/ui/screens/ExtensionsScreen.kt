@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PlayArrow
@@ -58,6 +61,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1203,22 +1207,11 @@ private fun RepoBrowserView(
                 Text("Add website (ad-free web view)")
             }
         }
-        item { SectionHeader("Websites") }
-        if (sites.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "No websites yet",
-                    subtitle = "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
-                    actionLabel = null,
-                    action = null
-                )
-            }
-        }
-        items(sites, key = { it.url }) { site ->
-            SiteRow(
-                site = site,
-                onOpen = { onOpenSite(site) },
-                onRemove = { onRemoveSite(site.url) }
+        item {
+            SitesFolder(
+                sites = sites,
+                onOpen = { onOpenSite(it) },
+                onRemove = { onRemoveSite(it) }
             )
         }
         if (busy) {
@@ -1445,10 +1438,14 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
         )
         return
     }
+    // ContentScale.Crop makes real logos fill their box edge-to-edge, so a
+    // Stremio/CS3 addon logo and a glyph-only extension render at the same
+    // visual weight instead of "big round logo vs tiny icon".
     SubcomposeAsyncImage(
         model = safe,
         contentDescription = null,
-        modifier = modifier
+        modifier = modifier,
+        contentScale = ContentScale.Crop
     ) {
         when (painter.state) {
             is AsyncImagePainter.State.Error, is AsyncImagePainter.State.Loading ->
@@ -1694,6 +1691,84 @@ private fun pluginStatus(p: ContentProvider): String? {
     if (err != null) return err.take(200)
     if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
     return null
+}
+
+@Composable
+private fun SitesFolder(
+    sites: List<Site>,
+    onOpen: (Site) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.FolderOpen,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Webview sites",
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        if (sites.isEmpty()) "No sites added yet — tap to expand"
+                        else "${sites.size} site${if (sites.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                if (sites.isEmpty()) {
+                    Text(
+                        "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
+                    sites.forEach { site ->
+                        SiteRow(
+                            site = site,
+                            onOpen = { onOpen(site) },
+                            onRemove = { onRemove(site.url) }
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

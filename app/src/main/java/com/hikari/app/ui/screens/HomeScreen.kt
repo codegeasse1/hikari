@@ -1,6 +1,9 @@
 package com.hikari.app.ui.screens
 
 import android.app.Application
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -36,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -46,11 +51,13 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -135,6 +142,16 @@ fun HomeScreen(nav: NavHostController) {
     var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
     var showPicker by remember { mutableStateOf(false) }
 
+    // Cloudflare verification: when the selected extension's site is blocked
+    // by a WAF check, this globe button opens the site in the WebView so the
+    // user can verify once; the WebView auto-closes once the challenge passes
+    // and the catalog reloads (the extension's cookie jar is now cleared).
+    val context = LocalContext.current
+    val webUrl = providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+    val verifyLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        vm.refresh()
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -176,6 +193,25 @@ fun HomeScreen(nav: NavHostController) {
                             contentDescription = "Search",
                             tint = MaterialTheme.colorScheme.primary
                         )
+                    }
+                    if (webUrl != null) {
+                        IconButton(
+                            onClick = {
+                                verifyLauncher.launch(
+                                    Intent(context, WebViewActivity::class.java).apply {
+                                        putExtra("url", webUrl)
+                                        putExtra("title", "Verify: ${selectedName ?: "site"}")
+                                        putExtra("autoCloseWhenCloudflarePassed", true)
+                                    }
+                                )
+                            }
+                        ) {
+                            Icon(
+                                Icons.Filled.Public,
+                                contentDescription = "Open site in web view (Cloudflare verification)",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
@@ -251,7 +287,10 @@ fun HomeScreen(nav: NavHostController) {
                             EmptyState(
                                 title = "Couldn't load ${selectedName ?: "this extension"}",
                                 subtitle = reason
-                                    ?: "It returned no content right now. The site may be temporarily down or blocking the app — retry, or browse another extension.",
+                                    ?: "It returned no content right now. If the site is stuck behind " +
+                                        "a Cloudflare check, tap the globe button at the top to verify — " +
+                                        "the catalog reloads by itself when you're done. Otherwise the " +
+                                        "site may be down — retry or browse another extension.",
                                 actionLabel = "Retry",
                                 action = { vm.refresh() }
                             )
@@ -406,4 +445,23 @@ private fun PickerRow(label: String, isSelected: Boolean, onClick: () -> Unit) {
             }
         }
     }
+}
+
+/** The website URL a provider's content actually lives on (for the Cloudflare
+ *  verification WebView button). HIKARI providers expose it through their SDK
+ *  mainUrl; Stremio/universal use the configured URL; CS3 plugins load theirs
+ *  from the plugin dex. Null when unknown — the button is hidden then. */
+private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
+    ProviderType.STREMIO, ProviderType.UNIVERSAL ->
+        p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    ProviderType.HIKARI ->
+        com.hikari.app.hiki.HikariRuntime.providerFor(p.config)?.mainUrl
+    ProviderType.CS3 -> runCatching {
+        val file = java.io.File(p.config.url)
+        if (!file.exists()) return@runCatching null
+        val apis = com.hikari.app.cs3.Cs3PluginManager.apisFor(com.hikari.app.HikariApp.instance, file)
+        apis.getOrNull(p.config.id.substringAfterLast("|").toIntOrNull() ?: 0)?.mainUrl
+            ?.takeIf { it.startsWith("http") }
+    }.getOrNull()
+    else -> null
 }
