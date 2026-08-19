@@ -63,6 +63,39 @@ class WebViewResolver(
 
         @Volatile
         var webViewUserAgent: String? = null
+
+        /** Forces a muted play + clicks common play overlays. Kept as a shared
+         *  constant so both the throttled nudge and the post-finish retries use
+         *  the exact same script. */
+        private val AUTOPLAY_JS = """
+            (function(){
+              var tryPlay = function(){
+                var vids = document.querySelectorAll('video');
+                for (var i=0;i<vids.length;i++){
+                  var v = vids[i];
+                  try {
+                    if (v.paused) { v.muted = true; var p = v.play(); if (p && p.catch) p.catch(function(){}); }
+                    setTimeout(function(){ try { v.muted = false; } catch(e){} }, 400);
+                  } catch(e){}
+                }
+                var sels = ['.play','.play-btn','.play-button','[aria-label="Play"]',
+                            '.bigPlayButton','.vjs-big-play-button','.jw-icon-display',
+                            '.plyr__control--overlaid','button[title="Play"]','.play_btn'];
+                for (var s=0;s<sels.length;s++){
+                  var els = document.querySelectorAll(sels[s]);
+                  for (var j=0;j<els.length;j++){
+                    var el = els[j];
+                    if (el.offsetParent !== null || el.getBoundingClientRect().height > 0) {
+                      try { el.click(); } catch(e){}
+                    }
+                  }
+                }
+              };
+              tryPlay();
+              setTimeout(tryPlay, 1000);
+              setTimeout(tryPlay, 3000);
+            })();
+        """.trimIndent()
     }
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -163,9 +196,11 @@ class WebViewResolver(
                     ): WebResourceResponse? {
                         val reqUrl = request.url.toString()
                         // The player is often only wired up by the time the
-                        // page has made a request — nudge it to start on every
-                        // request too (muted play is always allowed).
-                        injectAutoplay(view)
+                        // page has made a request — nudge it to start (muted
+                        // play is always allowed). Throttled + posted to the
+                        // main thread (shouldInterceptRequest runs on a
+                        // background thread and WebView calls there crash).
+                        nudgeAutoplay(view)
                         if (script != null) {
                             Handler(Looper.getMainLooper()).post {
                                 view.evaluateJavascript(script) { r -> scriptCallback?.invoke(r) }
@@ -197,8 +232,14 @@ class WebViewResolver(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         // Page loaded (possibly a WAF challenge that then
-                        // reloads) — start the player if one exists.
-                        injectAutoplay(view)
+                        // reloads) — start the player if one exists. Players
+                        // initialize lazily, so keep nudging for a few seconds.
+                        nudgeAutoplay(view)
+                        for (delay in listOf(1000L, 3000L, 6000L)) {
+                            mainHandler.postDelayed({
+                                runCatching { view?.evaluateJavascript(AUTOPLAY_JS, null) }
+                            }, delay)
+                        }
                     }
 
                     override fun onReceivedSslError(
@@ -232,43 +273,30 @@ class WebViewResolver(
         return fixedRequest.get() to extraRequests.toList()
     }
 
-    private fun injectAutoplay(view: WebView?) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Guards against spamming the page with autoplay nudges on EVERY
+     *  subresource request (shouldInterceptRequest fires for each one). */
+    @Volatile
+    private var lastAutoplayAt = 0L
+
+    /**
+     * Some sites show a "click to play" overlay or gate the stream behind a
+     * solved challenge (Altcha proof-of-work on hstream, Cloudflare on
+     * hanime.tv) — once the page settles, force the video element to start
+     * (muted play is exempt from autoplay policy) and click common play
+     * overlays. Runs a few times because players initialize lazily.
+     */
+    private fun nudgeAutoplay(view: WebView?) {
         if (view == null) return
-        // Some sites show a "click to play" overlay or gate the stream behind a
-        // solved challenge (Altcha proof-of-work on hstream, Cloudflare on
-        // hanime.tv) — once the page settles, force the video element to start
-        // (muted play is exempt from autoplay policy) and click common play
-        // overlays. Runs a few times because players initialize lazily.
-        val js = """
-            (function(){
-              var tryPlay = function(){
-                var vids = document.querySelectorAll('video');
-                for (var i=0;i<vids.length;i++){
-                  var v = vids[i];
-                  try {
-                    if (v.paused) { v.muted = true; var p = v.play(); if (p && p.catch) p.catch(function(){}); }
-                    setTimeout(function(){ try { v.muted = false; } catch(e){} }, 400);
-                  } catch(e){}
-                }
-                var sels = ['.play','.play-btn','.play-button','[aria-label="Play"]',
-                            '.bigPlayButton','.vjs-big-play-button','.jw-icon-display',
-                            '.plyr__control--overlaid','button[title="Play"]','.play_btn'];
-                for (var s=0;s<sels.length;s++){
-                  var els = document.querySelectorAll(sels[s]);
-                  for (var j=0;j<els.length;j++){
-                    var el = els[j];
-                    if (el.offsetParent !== null || el.getBoundingClientRect().height > 0) {
-                      try { el.click(); } catch(e){}
-                    }
-                  }
-                }
-              };
-              tryPlay();
-              setTimeout(tryPlay, 1000);
-              setTimeout(tryPlay, 3000);
-            })();
-        """.trimIndent()
-        view.evaluateJavascript(js, null)
+        val now = System.currentTimeMillis()
+        if (now - lastAutoplayAt < 1500) return
+        lastAutoplayAt = now
+        // shouldInterceptRequest runs on a background thread — WebView methods
+        // MUST run on the main thread, or the renderer throws
+        // "A WebView method was called on thread '…'" (seen as a crash banner
+        // on Home). Always bounce through the main looper.
+        mainHandler.post { runCatching { view.evaluateJavascript(AUTOPLAY_JS, null) } }
     }
 
     private fun toOkhttpRequest(req: WebResourceRequest): Request? = runCatching {

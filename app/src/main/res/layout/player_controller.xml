@@ -66,33 +66,49 @@
       android:background="@drawable/bottom_bar_bg"
       android:layoutDirection="ltr">
 
-    <LinearLayout android:id="@id/exo_time"
-        android:layout_width="wrap_content"
+    <!-- Time + toolbar chips live in ONE horizontal row (not media3's two
+         gravity-aligned siblings) so they can never collide on narrow /
+         landscape screens; the chip cluster scrolls if it outgrows the row. -->
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingStart="@dimen/exo_styled_bottom_bar_time_padding"
-        android:paddingEnd="@dimen/exo_styled_bottom_bar_time_padding"
-        android:paddingLeft="@dimen/exo_styled_bottom_bar_time_padding"
-        android:paddingRight="@dimen/exo_styled_bottom_bar_time_padding"
-        android:layout_gravity="center_vertical|start"
-        android:layoutDirection="ltr">
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
 
-      <TextView android:id="@id/exo_position"
-          style="@style/ExoStyledControls.TimeText.Position"/>
+      <LinearLayout android:id="@id/exo_time"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:paddingStart="@dimen/exo_styled_bottom_bar_time_padding"
+          android:paddingEnd="@dimen/exo_styled_bottom_bar_time_padding"
+          android:paddingLeft="@dimen/exo_styled_bottom_bar_time_padding"
+          android:paddingRight="@dimen/exo_styled_bottom_bar_time_padding"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
 
-      <TextView
-          style="@style/ExoStyledControls.TimeText.Separator"/>
+        <TextView android:id="@id/exo_position"
+            style="@style/ExoStyledControls.TimeText.Position"/>
 
-      <TextView android:id="@id/exo_duration"
-          style="@style/ExoStyledControls.TimeText.Duration"/>
+        <TextView
+            style="@style/ExoStyledControls.TimeText.Separator"/>
 
-    </LinearLayout>
+        <TextView android:id="@id/exo_duration"
+            style="@style/ExoStyledControls.TimeText.Duration"/>
 
-    <LinearLayout android:id="@id/exo_basic_controls"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_vertical|end"
-        android:gravity="center_vertical"
-        android:layoutDirection="ltr">
+      </LinearLayout>
+
+      <HorizontalScrollView
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:scrollbars="none"
+          android:overScrollMode="never"
+          android:clipToPadding="false">
+
+        <LinearLayout android:id="@id/exo_basic_controls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:layoutDirection="ltr">
 
       <ImageButton android:id="@id/exo_vr"
           style="@style/ExoStyledControls.Button.Bottom.VR"
@@ -111,8 +127,8 @@
            own buttons, nothing floats above the player controls. -->
       <ImageButton
           android:id="@+id/lock_btn"
-          android:layout_width="44dp"
-          android:layout_height="44dp"
+          android:layout_width="40dp"
+          android:layout_height="40dp"
           android:src="@drawable/ic_lock"
           android:tint="#FFFFFF"
           android:contentDescription="Lock controls"
@@ -121,8 +137,8 @@
 
       <ImageButton
           android:id="@+id/rotate_btn"
-          android:layout_width="44dp"
-          android:layout_height="44dp"
+          android:layout_width="40dp"
+          android:layout_height="40dp"
           android:src="@drawable/ic_rotate"
           android:tint="#FFFFFF"
           android:contentDescription="Rotate screen"
@@ -245,6 +261,8 @@
           style="@style/ExoStyledControls.Button.Bottom.OverflowShow"
           android:visibility="gone"/>
 
+        </LinearLayout>
+      </HorizontalScrollView>
     </LinearLayout>
 
     <HorizontalScrollView android:id="@id/exo_extra_controls_scroll_view"

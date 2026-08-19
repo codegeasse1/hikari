@@ -609,12 +609,21 @@ class WebViewActivity : ComponentActivity() {
     // ---- Element blocker ----
 
     private fun enableElementBlocker() {
-        webView.evaluateJavascript("window.__hikariBlockerActive=true;", null)
-        Toast.makeText(
-            this,
-            "Element blocker ON — tap an element to block it",
-            Toast.LENGTH_SHORT
-        ).show()
+        // Toggle: ON selects (red highlight), a 2nd tap on the same element
+        // blocks it; OFF clears the highlight. Reads the state back so the
+        // toast always matches reality.
+        webView.evaluateJavascript(
+            "(window.__hikariBlockerToggle?window.__hikariBlockerToggle():null);" +
+                "(window.__hikariBlockerActive?'true':'false')"
+        ) { res ->
+            val active = res?.trim()?.trim('"') == "true"
+            Toast.makeText(
+                this@WebViewActivity,
+                if (active) "Blocker ON — tap an element to select it, tap it again to block"
+                else "Element blocker OFF",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     private fun undoLastBlock() {
@@ -1074,6 +1083,18 @@ class WebViewActivity : ComponentActivity() {
          * re-mount nodes), and __hikariRestoreSelector/__hikariRestoreAll undo
          * a block / all blocks without a reload.
          */
+                /**
+         * Element blocker. Always injected (guarded by a page-scoped flag).
+         * Menu → "Element blocker" TOGGLES the mode: when on, the first tap
+         * HIGHLIGHTS the element in red (outline + scroll into view) so you see
+         * exactly what would be removed; a second tap on the SAME element hides
+         * + persists it. Tapping a different element just moves the highlight.
+         * Toggle off (or a completed block) clears the highlight.
+         * Persisted selectors from __hikariBlocks are re-hidden on every load,
+         * on DOM mutations AND on a 500ms interval — sites that re-render ads
+         * (rotating GIF banners, SPA sliders) recreate containers with the same
+         * selectors, which is what made blocked elements "come back".
+         */
         private val ELEMENT_BLOCK_JS = """
             (function(){
               if(window.__hikariBlockerInit)return;
@@ -1081,6 +1102,16 @@ class WebViewActivity : ComponentActivity() {
               window.__hikariBlockerActive=false;
               window.__hikariBlocks=window.__hikariBlocks||[];
               window.__hikariBlockRegistry=[];
+              window.__hikariPendingEl=null;
+              function clearPending(){
+                if(window.__hikariPendingEl){
+                  try{
+                    window.__hikariPendingEl.style.removeProperty('outline');
+                    window.__hikariPendingEl.style.removeProperty('outline-offset');
+                  }catch(e){}
+                  window.__hikariPendingEl=null;
+                }
+              }
               function hideAll(){
                 var sels=window.__hikariBlocks||[];
                 for(var i=0;i<sels.length;i++){
@@ -1088,11 +1119,15 @@ class WebViewActivity : ComponentActivity() {
                     var els=document.querySelectorAll(sels[i]);
                     for(var j=0;j<els.length;j++){
                       var e=els[j];
+                      if(!e||!e.parentNode)continue;
+                      // Re-apply every pass: sites reset inline styles and the
+                      // element would otherwise flicker back into view.
                       if(!e.__hikariBlocked){
                         e.__hikariBlocked=true;
-                        e.style.setProperty('display','none','important');
                         window.__hikariBlockRegistry.push({el:e,sel:sels[i]});
                       }
+                      e.style.setProperty('display','none','important');
+                      e.style.setProperty('pointer-events','none','important');
                     }
                   }catch(e){}
                 }
@@ -1106,6 +1141,7 @@ class WebViewActivity : ComponentActivity() {
                     try{
                       en.el.__hikariBlocked=false;
                       en.el.style.removeProperty('display');
+                      en.el.style.removeProperty('pointer-events');
                     }catch(e){}
                     rem.push(i);
                   }
@@ -1121,12 +1157,18 @@ class WebViewActivity : ComponentActivity() {
                   try{
                     en.el.__hikariBlocked=false;
                     en.el.style.removeProperty('display');
+                    en.el.style.removeProperty('pointer-events');
                   }catch(e){}
                 }
                 window.__hikariBlockRegistry=[];
                 window.__hikariBlocks=[];
               }
               window.__hikariRestoreAll=restoreAll;
+              window.__hikariBlockerToggle=function(){
+                window.__hikariBlockerActive=!window.__hikariBlockerActive;
+                if(!window.__hikariBlockerActive)clearPending();
+                return window.__hikariBlockerActive;
+              };
               function esc(s){return String(s).replace(/[^a-zA-Z0-9_-]/g,function(c){return '\\'+c;});}
               function buildSelector(el){
                 if(!el||el===document.documentElement||el===document.body)return '';
@@ -1156,11 +1198,22 @@ class WebViewActivity : ComponentActivity() {
                 }
                 return parts.join(' > ');
               }
+              function highlight(el){
+                clearPending();
+                try{
+                  el.style.setProperty('outline','3px solid #ff1744','important');
+                  el.style.setProperty('outline-offset','2px','important');
+                  el.scrollIntoView({block:'center',inline:'center',behavior:'smooth'});
+                }catch(e){}
+                window.__hikariPendingEl=el;
+              }
               function block(el){
+                clearPending();
                 var sel=buildSelector(el);
                 if(!sel){window.__hikariBlockerActive=false;return;}
                 el.__hikariBlocked=true;
                 el.style.setProperty('display','none','important');
+                el.style.setProperty('pointer-events','none','important');
                 window.__hikariBlockRegistry.push({el:el,sel:sel});
                 window.__hikariBlocks.push(sel);
                 window.__hikariBlockerActive=false;
@@ -1176,10 +1229,15 @@ class WebViewActivity : ComponentActivity() {
                 e.stopImmediatePropagation();
                 e.preventDefault();
                 var el=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;
-                block(el);
+                if(window.__hikariPendingEl===el){
+                  block(el);
+                }else{
+                  highlight(el);
+                }
               },true);
               try{new MutationObserver(hideAll).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
               hideAll();
+              setInterval(hideAll,500);
             })();
         """.trimIndent()
     }
