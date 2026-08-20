@@ -379,7 +379,26 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
-            val data = episode?.id ?: item.id
+            // For SERIES, the plugin's per-episode data string lives on the
+            // episode (it's a URL or a JSON payload the provider re-parses in
+            // loadLinks) and is already in episode.id. For MOVIES there is no
+            // episode: the provider serialized its source list into
+            // MovieLoadResponse.dataUrl during load() (e.g. MoviesMod and
+            // VegaMovies build `[{"source":"…"}]` and loadLinks does
+            // parseJson<ArrayList<EpisodeLink>>(data)). Feeding the plain page
+            // URL to loadLinks makes those providers throw Jackson's
+            // "Unrecognized token 'https'" — so hand the plugin the response's
+            // data string, exactly like CloudStream does.
+            val movieData = if (episode == null) {
+                (loadResponse(item.id) as? MovieLoadResponse)
+                    ?.dataUrl
+                    ?.takeIf { it.isNotBlank() }
+            } else null
+            val data = if (episode != null) episode.id else movieData ?: item.id
+            // The universal fallback engine and the MovieBlast resolver scrape
+            // a real page URL, never a serialized payload, so they keep using
+            // the original item url.
+            val fallbackTarget = if (episode != null) data else item.id
             val started = System.currentTimeMillis()
 
             // The plugin's own extraction and our universal engine (jar
@@ -496,7 +515,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // StreamHG/StreamGG sign-dance (page -> player -> token
                         // API) takes several requests; 12s was too tight for
                         // the last-resort pass.
-                        withTimeoutOrNull(FALLBACK_CAP_MS) { FallbackResolver.resolve(data) } ?: emptyList()
+                        withTimeoutOrNull(FALLBACK_CAP_MS) { FallbackResolver.resolve(fallbackTarget) } ?: emptyList()
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()
@@ -515,8 +534,8 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // rebuilt plugin names itself differently.
                         val isMb = a.name.contains("MovieBlast", ignoreCase = true) ||
                             config.name.contains("MovieBlast", ignoreCase = true) ||
-                            data.contains("movieblast", ignoreCase = true) ||
-                            data.contains("cloud-mb", ignoreCase = true)
+                            item.id.contains("movieblast", ignoreCase = true) ||
+                            item.id.contains("cloud-mb", ignoreCase = true)
                         if (!isMb || episode != null) return@async emptyList()
                         withTimeoutOrNull(MOVIEBLAST_CAP_MS) { MovieBlastResolver.resolve(item, episode) }
                             ?: emptyList()
