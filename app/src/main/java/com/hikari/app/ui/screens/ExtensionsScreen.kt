@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -400,7 +401,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val obj = JSONObject(text)
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
-                    name = obj.optString("name").ifBlank { url },
+                    name = niceRepoName(url, obj.optString("name")),
                     description = obj.optString("description"),
                     kind = kind,
                 )
@@ -427,7 +428,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refreshRepoPlugins(repo: Cs3Repo) {
         repoState.value = repoState.value + (repo.url to RepoLoadState(loading = true, error = null))
         try {
-            val plugins = withContext(Dispatchers.IO) { fetchRepoPlugins(repo.url) }
+            val (plugins, meta) = withContext(Dispatchers.IO) { fetchRepoPlugins(repo) }
+            // Repos imported from a mega-bundle land with a URL-ish name; once
+            // its repo.json is actually fetched, replace that with the real
+            // name/description so the list shows "owner/repo" instead of a URL.
+            val refreshed = meta ?: repo
+            if (refreshed != repo) store.addCs3Repo(refreshed)
             pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
             // A Mega-style bundle import may have added repos to the store.
@@ -437,8 +443,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun fetchRepoPlugins(repoUrl: String): List<Cs3RepoPlugin> {
-        val text = fetchRepoRaw(repoUrl)
+    /** A readable repo label: the repo.json's own name, else "owner/repo" from
+     *  the URL, else the bare host. Never a full URL. */
+    private fun niceRepoName(url: String, fromJson: String): String {
+        if (fromJson.isNotBlank()) return fromJson
+        val m = Regex("github\\.com/([^/]+)/([^/]+)").find(url)
+        if (m != null) return "${m.groupValues[1]}/${m.groupValues[2]}"
+        return url.removePrefix("https://").removePrefix("http://").trimEnd('/')
+    }
+
+    private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
+        val text = fetchRepoRaw(repo.url)
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = JSONObject(text)
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
@@ -464,9 +479,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // and hide the useless bundle plugin instead of offering it.
         if (isMegaBundle(root) || out.values.any { it.name == "MegaProvider" }) {
             importMegaRepos()
-            return emptyList()
+            return emptyList<Cs3RepoPlugin>() to null
         }
-        return out.values.toList()
+        val name = niceRepoName(repo.url, root.optString("name"))
+        val description = root.optString("description")
+        val meta = if (name != repo.name || description != repo.description)
+            repo.copy(name = name, description = description)
+        else null
+        return out.values.toList() to meta
     }
 
     private val MEGA_REPOS_DB =
@@ -491,8 +511,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 else -> null
             } ?: continue
             if (!repoUrl.startsWith("http")) continue
-            val m = Regex("github\\.com/([^/]+)/([^/]+)").find(repoUrl)
-            val name = if (m != null) "${m.groupValues[1]}/${m.groupValues[2]}" else repoUrl
+            val name = niceRepoName(repoUrl, "")
             runCatching {
                 store.addCs3Repo(Cs3Repo(url = repoUrl, name = name, kind = RepoKind.CS3))
             }
@@ -739,6 +758,7 @@ fun ExtensionsScreen() {
             successMsg = successMsg,
             errorMsg = errorMsg,
             onBack = { openRepoUrl = null; errorMsg = null; successMsg = null },
+            onRefresh = { scope.launch { vm.refreshRepoPlugins(openRepo) } },
             onInstall = { installPlugin(it, openRepo.kind) },
             onUninstall = { uninstallPlugin(it, openRepo.kind) },
         )
@@ -795,6 +815,12 @@ fun ExtensionsScreen() {
                     vm.removeCs3Repo(url)
                     if (openRepoUrl == url) openRepoUrl = null
                     successMsg = "Removed repo"
+                }
+            },
+            onRefreshRepo = { repo ->
+                scope.launch {
+                    errorMsg = null
+                    vm.refreshRepoPlugins(repo)
                 }
             },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
@@ -1181,6 +1207,7 @@ private fun RepoBrowserView(
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
     onRemoveSite: (String) -> Unit,
+    onRefreshRepo: (Cs3Repo) -> Unit,
 ) {
     var extFilter by remember { mutableStateOf("") }
     LazyColumn(
@@ -1354,6 +1381,7 @@ private fun RepoBrowserView(
                 pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
                 state = repoState[repo.url],
                 onClick = { onOpenRepo(repo) },
+                onRefresh = { onRefreshRepo(repo) },
                 onRemoveRepo = { onRemoveRepo(repo.url) }
             )
         }
@@ -1410,6 +1438,7 @@ private fun RepoPluginsView(
     successMsg: String?,
     errorMsg: String?,
     onBack: () -> Unit,
+    onRefresh: () -> Unit,
     onInstall: (Cs3RepoPlugin) -> Unit,
     onUninstall: (Cs3RepoPlugin) -> Unit,
 ) {
@@ -1446,6 +1475,13 @@ private fun RepoPluginsView(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
+            IconButton(onClick = onRefresh) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "Refresh repo",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         HorizontalDivider()
         if (busy) {
@@ -1494,6 +1530,7 @@ private fun RepoPluginsView(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
+                    TextButton(onClick = onRefresh) { Text("Retry") }
                 }
                 plugins.isEmpty() -> item {
                     Text(
@@ -1634,6 +1671,7 @@ private fun RepoCard(
     pluginCount: Int,
     state: RepoLoadState?,
     onClick: () -> Unit,
+    onRefresh: () -> Unit,
     onRemoveRepo: () -> Unit,
 ) {
     Card(
@@ -1689,11 +1727,15 @@ private fun RepoCard(
                 Text(
                     when {
                         state?.loading == true -> "Loading plugins…"
+                        state?.error != null -> "Load failed — tap refresh to retry"
                         pluginCount > 0 -> "${pluginCount} plugin${if (pluginCount == 1) "" else "s"}"
                         else -> repo.description.ifBlank { "No plugins found" }
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (state?.error != null)
+                        MaterialTheme.colorScheme.error
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1704,6 +1746,13 @@ private fun RepoCard(
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            IconButton(onClick = onRefresh) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "Refresh repo",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             IconButton(onClick = onRemoveRepo) {
                 Icon(
                     Icons.Filled.Delete,

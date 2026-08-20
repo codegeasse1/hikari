@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -89,8 +90,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                         return@collectLatest
                     }
                     _searching.value = true
-                    _results.value = repo.searchAll(q, providerIds = _selectedProviders.value)
-                    _searching.value = false
+                    try {
+                        repo.searchStreaming(q, providerIds = _selectedProviders.value)
+                            .collect { _results.value = it }
+                    } finally {
+                        _searching.value = false
+                    }
                 }
         }
     }
@@ -114,13 +119,17 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 @Composable
-fun SearchScreen(nav: NavHostController) {
+fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
     val vm: SearchViewModel = viewModel()
     val query by vm.query.collectAsState()
     val results by vm.results.collectAsState()
     val searching by vm.searching.collectAsState()
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
+
+    LaunchedEffect(Unit) {
+        if (initialQuery.isNotBlank()) vm.setQuery(initialQuery)
+    }
 
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -209,6 +218,13 @@ fun SearchScreen(nav: NavHostController) {
             EmptyState(
                 title = "Search",
                 subtitle = "Type something to search across every provider.",
+                actionLabel = null,
+                action = null
+            )
+        } else if (!searching && results.isEmpty()) {
+            EmptyState(
+                title = "No results",
+                subtitle = "Nothing matched \"$query\". Try a different title, or deselect providers in the row above.",
                 actionLabel = null,
                 action = null
             )

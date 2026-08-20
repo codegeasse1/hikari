@@ -8,6 +8,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -81,25 +85,56 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /** Searches across every enabled provider, or only the given subset.
-     *  `null`/empty = all providers. */
-    suspend fun searchAll(
+     *  `null`/empty = all providers.
+     *
+     *  Results STREAM IN as each provider finishes instead of waiting for ALL
+     *  of them: a fast provider's hits appear immediately, and one dead/slow
+     *  provider can no longer blank the whole screen or delay everything. The
+     *  final emission is the full deduplicated aggregate. */
+    fun searchStreaming(
         query: String,
         page: Int = 1,
         providerIds: Set<String>? = null,
-    ): List<MediaItem> = withContext(Dispatchers.IO) {
+    ): Flow<List<MediaItem>> = flow {
         val active = manager.providers.value.filter {
             it.config.enabled && (providerIds.isNullOrEmpty() || it.config.id in providerIds)
         }
-        val results = coroutineScope {
-            active.map { p ->
-                async {
-                    cancellableCatching {
-                        withTimeoutOrNull(45_000) { p.search(query, page) } ?: emptyList()
-                    }.getOrDefault(emptyList())
-                }
-            }.awaitAll().flatten().distinctBy { it.uniqueId }
+        if (active.isEmpty()) {
+            emit(emptyList())
+            return@flow
         }
-        translateItems(results)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val aggregate = MutableStateFlow<List<MediaItem>>(emptyList())
+            val jobs = active.map { p ->
+                scope.async {
+                    val items = cancellableCatching {
+                        withTimeoutOrNull(60_000) { p.search(query, page) } ?: emptyList()
+                    }.getOrDefault(emptyList())
+                    aggregate.value = (aggregate.value + items).distinctBy { it.uniqueId }
+                }
+            }
+            // Poll-and-emit the running aggregate so the UI shows each
+            // provider's hits the moment they land.
+            val started = System.currentTimeMillis()
+            var lastEmitted: List<MediaItem>? = null
+            while (true) {
+                val allDone = jobs.all { it.isCompleted }
+                val timedOut = System.currentTimeMillis() - started > 75_000
+                if (allDone || timedOut) {
+                    emit(translateItems(aggregate.value))
+                    break
+                }
+                val snapshot = aggregate.value
+                if (snapshot !== lastEmitted) {
+                    emit(snapshot)
+                    lastEmitted = snapshot
+                }
+                delay(120)
+            }
+        } finally {
+            scope.cancel()
+        }
     }
 
     /**

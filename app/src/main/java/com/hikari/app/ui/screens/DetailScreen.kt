@@ -70,6 +70,7 @@ import com.hikari.app.player.PlayerActivity
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -405,6 +406,7 @@ fun DetailScreen(
                                             .clip(RoundedCornerShape(20.dp))
                                             .background(MaterialTheme.colorScheme.surfaceVariant)
                                             .padding(horizontal = 10.dp, vertical = 4.dp)
+                                            .clickable { nav.navigate(Routes.searchQuery(g)) }
                                     ) {
                                         Text(
                                             g,

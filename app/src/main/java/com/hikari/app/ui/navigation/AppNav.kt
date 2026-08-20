@@ -48,6 +48,11 @@ object Routes {
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
     const val HISTORY = "history"
+    // Same Search screen, but pre-filled with a query (genre tags, "show all",
+    // search suggestions…). A separate route (not "search?q=" on the tab route)
+    // so the query string carries through nav without clobbering the tab's own
+    // remembered state; the tab bar matches it by stripping the query.
+    const val SEARCH_QUERY = "search?q={q}"
     // All args live in the query string: mediaIds are URLs (slashes would break
     // a path segment) and posters can be megabytes of base64 (see detail()).
     const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
@@ -89,6 +94,9 @@ object Routes {
         if (startPositionMs > 0L) s += "&startPos=$startPositionMs"
         return s
     }
+
+    /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
+    fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}"
 }
 
 private data class Tab(
@@ -110,7 +118,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    val showBar = currentRoute in Tabs.map { it.route }
+    // SEARCH_QUERY is "search?q=…" — strip the query so the tab still matches.
+    val tabRoute = currentRoute?.substringBefore('?')
+    val showBar = tabRoute in Tabs.map { it.route }
 
     Box(Modifier.fillMaxSize()) {
         // Dark Glass UI backdrop — a vivid gradient sits behind the translucent
@@ -140,7 +150,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     Tabs.forEach { tab ->
                         NavigationBarItem(
-                            selected = currentRoute == tab.route,
+                            selected = tabRoute == tab.route,
                             onClick = {
                                 nav.navigate(tab.route) {
                                     popUpTo(nav.graph.findStartDestination().id) { saveState = true }
@@ -163,6 +173,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         ) {
             composable(Routes.HOME) { HomeScreen(nav) }
             composable(Routes.SEARCH) { SearchScreen(nav) }
+            composable(
+                route = Routes.SEARCH_QUERY,
+                arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" })
+            ) { entry ->
+                val q = Uri.decode(entry.arguments?.getString("q").orEmpty())
+                SearchScreen(nav, initialQuery = q)
+            }
             composable(Routes.HISTORY) { HistoryScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
