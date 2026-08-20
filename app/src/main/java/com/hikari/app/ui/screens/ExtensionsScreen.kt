@@ -94,6 +94,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -865,10 +866,10 @@ fun ExtensionsScreen() {
     var cs3Url by remember { mutableStateOf("") }
     var hikiUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
-    var busy by vm.busy.collectAsState()
-    var busyMsg by vm.busyMsg.collectAsState()
-    var errorMsg by vm.errorMsg.collectAsState()
-    var successMsg by vm.successMsg.collectAsState()
+    val busy by vm.busy.collectAsState()
+    val busyMsg by vm.busyMsg.collectAsState()
+    val errorMsg by vm.errorMsg.collectAsState()
+    val successMsg by vm.successMsg.collectAsState()
 
     val repos by vm.repos.collectAsState()
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
