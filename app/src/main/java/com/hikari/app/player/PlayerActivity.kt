@@ -90,6 +90,11 @@ class PlayerActivity : ComponentActivity() {
     private val bufferingWatchdog = Handler(Looper.getMainLooper())
     private var watchdogTask: Runnable? = null
 
+    /** "Server too slow" dialog: a 3s auto-switch countdown with Wait/Switch.
+     *  Wait re-arms the watchdog for 30 more seconds, then re-prompts. */
+    private var slowDialog: android.app.AlertDialog? = null
+    private var slowDialogTicker: Runnable? = null
+
     private var speedChip: TextView? = null
     private var rotateBtn: ImageButton? = null
     private var qualityBtn: TextView? = null
@@ -781,6 +786,7 @@ class PlayerActivity : ComponentActivity() {
             showError("No more servers to try.", false)
             return
         }
+        dismissSlowDialog()
         currentIndex = index
         val src = sources[index]
 
@@ -882,44 +888,103 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * If the current server still hasn't started delivering video 20s after
-     * prepare, skip to the next one — CloudStream plays in ~5s, but some
-     * servers genuinely take 15-20s to spin up (cold CDN edge, slow origin),
-     * so give them that long before declaring them too slow. Only fires while
-     * nothing has been played yet. Torrents get a longer budget: TorrServer
-     * must discover peers and pull the first pieces from cold, which regularly
-     * takes 30s+.
+     * prepare, ask the user: switch to the next server or keep waiting — and
+     * auto-switch after 3s if they don't answer. CloudStream plays in ~5s, but
+     * some servers genuinely take 15-20s to spin up (cold CDN edge, slow
+     * origin), so give them that long first. Only fires while nothing has been
+     * played yet. Torrents get a longer budget: TorrServer must discover peers
+     * and pull the first pieces from cold, which regularly takes 30s+. A
+     * "Wait 30s" answer re-arms the watchdog for another 30s, after which the
+     * same prompt reappears if the server still isn't playing.
      */
-    private fun scheduleBufferingWatchdog() {
+    private fun scheduleBufferingWatchdog(waitBudget: Long? = null) {
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         val torrent = currentIndex in sources.indices && sources[currentIndex].torrentStream
-        val budget = if (torrent) 50_000L else 20_000L
+        val budget = waitBudget ?: if (torrent) 50_000L else 20_000L
         val task = Runnable {
             watchdogTask = null
             val p = player ?: return@Runnable
             if (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_IDLE) {
                 if (p.currentPosition > 0) return@Runnable
-                val hasNext = currentIndex + 1 < sources.size
-                if (hasNext) {
-                    noSubsRetry = false
-                    Toast.makeText(
-                        this,
-                        if (torrent) "Torrent still fetching from peers — trying next"
-                        else "Server too slow — trying next",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    playSource(currentIndex + 1)
-                } else {
-                    showError(
-                        if (torrent) "Torrent did not start streaming (no peers?)"
-                        else "Server is not responding (still buffering after 20s).",
-                        false
-                    )
-                }
+                promptSlowServer(torrent)
             }
         }
         watchdogTask = task
         bufferingWatchdog.postDelayed(task, budget)
+    }
+
+    /** "Server too slow" prompt: Wait 30s or switch to the next server, with a
+     *  3-second countdown after which it switches automatically if the user
+     *  doesn't answer. Switching instantly moves to the next source. */
+    private fun promptSlowServer(torrent: Boolean) {
+        if (currentIndex + 1 >= sources.size) {
+            showError(
+                if (torrent) "Torrent did not start streaming (no peers?)"
+                else "Server is not responding (still buffering after 20s).",
+                false
+            )
+            return
+        }
+        if (slowDialog != null) return
+        val countdown = TextView(this).apply {
+            textSize = 16f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(0xFFB8B8B8.toInt())
+            setPadding(48, 0, 48, 24)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Server too slow")
+            .setMessage(
+                "This server is still buffering. Switch to the next server, " +
+                    "or wait a little longer?"
+            )
+            .setView(countdown)
+            .setPositiveButton("Switch now") { _, _ ->
+                dismissSlowDialog()
+                noSubsRetry = false
+                Toast.makeText(this@PlayerActivity, "Switching server", Toast.LENGTH_SHORT).show()
+                playSource(currentIndex + 1)
+            }
+            .setNegativeButton("Wait 30s") { _, _ ->
+                dismissSlowDialog()
+                // Stay on this server; the same prompt reappears after 30s if
+                // it still hasn't started playing.
+                scheduleBufferingWatchdog(30_000L)
+            }
+            .setCancelable(false)
+            .create()
+        slowDialog = dialog
+        val start = System.currentTimeMillis()
+        val ticker = object : Runnable {
+            override fun run() {
+                if (slowDialog != dialog) return
+                val remaining = 3_000 - (System.currentTimeMillis() - start)
+                if (remaining <= 0) {
+                    dismissSlowDialog()
+                    noSubsRetry = false
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "Server too slow — switching to next",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    playSource(currentIndex + 1)
+                    return
+                }
+                countdown.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
+                bufferingWatchdog.postDelayed(this, 250)
+            }
+        }
+        slowDialogTicker = ticker
+        bufferingWatchdog.post(ticker)
+        dialog.show()
+    }
+
+    private fun dismissSlowDialog() {
+        slowDialogTicker?.let { bufferingWatchdog.removeCallbacks(it) }
+        slowDialogTicker = null
+        slowDialog?.let { runCatching { it.dismiss() } }
+        slowDialog = null
     }
 
     /**
@@ -976,6 +1041,7 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
+                dismissSlowDialog()
                 watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
                 watchdogTask = null
                 // Resume from history: seek once the first frame is ready.
@@ -1169,6 +1235,7 @@ class PlayerActivity : ComponentActivity() {
         recordProgress()
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
+        dismissSlowDialog()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }

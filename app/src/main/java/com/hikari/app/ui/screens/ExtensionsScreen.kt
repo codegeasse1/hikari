@@ -363,31 +363,67 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val variants = repoUrlVariants(url)
         if (variants.isEmpty()) {
             lastGoodRepoUrl = url
-            return Http.fetchStringRobust(url)
+            return Http.fetchStringRobust(url).map { text ->
+                if (looksLikeHtml(text)) throw friendlyRepoError() else text
+            }
         }
         for (candidate in variants) {
             val r = Http.fetchStringRobust(candidate)
             if (r.isSuccess) {
+                val text = r.getOrNull() ?: continue
+                if (looksLikeHtml(text)) continue
                 lastGoodRepoUrl = candidate
                 return r
             }
         }
         // last resort: the pasted URL as-is (a non-main/mixed-branch repo.json)
         lastGoodRepoUrl = url
-        return Http.fetchStringRobust(url)
+        return Http.fetchStringRobust(url).map { text ->
+            if (looksLikeHtml(text)) throw friendlyRepoError() else text
+        }
     }
+
+    private fun looksLikeHtml(text: String): Boolean {
+        val t = text.trimStart().take(64).lowercase()
+        return t.startsWith("<!doctype") || t.startsWith("<html") || t.startsWith("<head")
+    }
+
+    private fun friendlyRepoError(): Exception = Exception(
+        "That URL returned an HTML page instead of a repo.json. Paste a direct " +
+            "raw link: github.com/o/r → https://raw.githubusercontent.com/o/r/main/repo.json, " +
+            "or on a Gitea/Forgejo host (git.disroot.org, codeberg…) → " +
+            "https://host/o/r/raw/branch/main/repo.json"
+    )
 
     private fun repoUrlVariants(raw: String): List<String> {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
-        val m = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t) ?: return emptyList()
-        val owner = m.groupValues[1]
-        val repo = m.groupValues[2]
-        return listOf(
-            "https://raw.githubusercontent.com/$owner/$repo/main/repo.json",
-            "https://raw.githubusercontent.com/$owner/$repo/master/repo.json",
-            "https://raw.githubusercontent.com/$owner/$repo/builds/repo.json",
-        )
+        val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
+        if (gh != null) {
+            val owner = gh.groupValues[1]
+            val repo = gh.groupValues[2]
+            return listOf(
+                "https://raw.githubusercontent.com/$owner/$repo/main/repo.json",
+                "https://raw.githubusercontent.com/$owner/$repo/master/repo.json",
+                "https://raw.githubusercontent.com/$owner/$repo/builds/repo.json",
+            )
+        }
+        // Gitea/Forgejo instances (git.disroot.org, codeberg.org, …) serve raw
+        // files at /owner/repo/raw/branch/<branch>/repo.json — the plain web
+        // page would only come back as HTML.
+        val gi = Regex("https?://([^/]+)/([^/]+)/([^/]+)").find(t)
+        if (gi != null) {
+            val host = gi.groupValues[1]
+            val owner = gi.groupValues[2]
+            val repo = gi.groupValues[3]
+            return listOf(
+                "https://$host/$owner/$repo/raw/branch/main/repo.json",
+                "https://$host/$owner/$repo/raw/branch/master/repo.json",
+                "https://$host/$owner/$repo/raw/main/repo.json",
+                "https://$host/$owner/$repo/raw/master/repo.json",
+            )
+        }
+        return emptyList()
     }
 
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
@@ -398,7 +434,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return withContext(Dispatchers.IO) {
             runCatching {
                 val text = fetchRepoRaw(url).getOrElse { throw it }
-                val obj = JSONObject(text)
+                val obj = runCatching { JSONObject(text) }.getOrElse {
+                    throw Exception("Invalid repo.json: ${it.message}")
+                }
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
                     name = niceRepoName(url, obj.optString("name")),
@@ -455,7 +493,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
         val text = fetchRepoRaw(repo.url)
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
-        val root = JSONObject(text)
+        val root = runCatching { JSONObject(text) }.getOrElse {
+            throw Exception("Invalid repo.json: ${it.message}")
+        }
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
         root.optJSONArray("plugins")?.let { arr ->
             for (i in 0 until arr.length()) {

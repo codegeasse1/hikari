@@ -271,13 +271,35 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         withContext(Dispatchers.IO) {
             val a = api ?: return@withContext emptyList()
             val found = try {
-                a.search(query)
+                searchItems(a, query, page)
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
-                emptyList()
+                // A brand-new plugin instance can fail its very first network
+                // call while the runtime/session initializes — retry once.
+                try {
+                    searchItems(a, query, page)
+                } catch (e2: Throwable) {
+                    if (e2 is CancellationException) throw e2
+                    emptyList()
+                }
             }
-            found.orEmpty().mapNotNull { it.toMediaItem() }
+            found.mapNotNull { it.toMediaItem() }
         }
+
+    /** Modern plugins override the paginated `search(query, page)` — for those
+     *  the plain `search(query)` overload throws NotImplementedError, which
+     *  made Hikari search return nothing for every query on new-style plugins
+     *  (they worked in CloudStream). Old-style plugins override
+     *  `search(query)`; the base `search(query, page)` delegates to it, so
+     *  calling the paginated form first is correct for BOTH generations. */
+    private suspend fun searchItems(a: MainAPI, query: String, page: Int): List<SearchResponse> {
+        return try {
+            a.search(query, page)?.items.orEmpty()
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            a.search(query).orEmpty()
+        }
+    }
 
     /** Human-readable reason why this provider's API object is unavailable. */
     private fun apiFailureReason(): String {
