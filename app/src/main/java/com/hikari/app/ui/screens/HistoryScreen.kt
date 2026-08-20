@@ -114,7 +114,8 @@ fun HistoryScreen(nav: NavHostController) {
             }
             items(entries, key = { it.uniqueKey }) { h ->
                 HistoryRow(h) {
-                    nav.navigate(
+                    Routes.safeNavigate(
+                        nav,
                         Routes.detail(
                             providerId = h.providerId,
                             type = h.type,

@@ -242,7 +242,8 @@ fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
                         Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable {
-                                nav.navigate(
+                                Routes.safeNavigate(
+                                    nav,
                                     Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
                                 )
                             }

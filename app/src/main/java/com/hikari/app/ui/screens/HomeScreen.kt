@@ -287,12 +287,14 @@ fun HomeScreen(nav: NavHostController) {
                         providerName = row.providerName,
                         items = row.items,
                         onClick = { item ->
-                            nav.navigate(
+                            Routes.safeNavigate(
+                                nav,
                                 Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
                             )
                         },
                         onShowAll = {
-                            nav.navigate(
+                            Routes.safeNavigate(
+                                nav,
                                 Routes.catalog(
                                     row.providerId, row.catalogId, row.title,
                                     row.providerName, row.type, row.rawType
@@ -430,9 +432,11 @@ private fun ProviderPickerSheet(
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    // Alphabetical (by extension name), so the picker isn't "install order".
     val filtered = remember(query) {
-        if (query.isBlank()) providers
-        else providers.filter { it.config.name.contains(query, ignoreCase = true) }
+        val sorted = providers.sortedBy { it.config.name.lowercase() }
+        if (query.isBlank()) sorted
+        else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
     }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 16.dp)) {

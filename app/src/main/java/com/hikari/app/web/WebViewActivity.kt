@@ -678,7 +678,7 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 1, 0, "\u2190 Back")
         menu.menu.add(0, 2, 0, "\u2192 Forward")
         menu.menu.add(0, 3, 0, "\u21BB Reload")
-        menu.menu.add(0, 4, 0, "\u2302 Home")
+        menu.menu.add(0, 4, 0, "\u2302 Go to app home")
         menu.menu.add(0, 5, 0, "\u25B6 Open in player")
         menu.menu.add(0, 6, 0, "Open in browser")
         menu.menu.add(0, 7, 0, "\u2298 Element blocker")
@@ -690,7 +690,12 @@ class WebViewActivity : ComponentActivity() {
                 1 -> if (webView.canGoBack()) webView.goBack()
                 2 -> if (webView.canGoForward()) webView.goForward()
                 3 -> webView.reload()
-                4 -> webView.loadUrl(startUrl)
+                4 -> {
+                    // Leave the site view and jump the app back to its Home tab
+                    // (NOT the website's home page — AppRoot watches this).
+                    HikariApp.instance.homeTabRequest.value += 1
+                    finish()
+                }
                 5 -> playVideo()
                 6 -> runCatching {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pageUrl ?: webView.url)))

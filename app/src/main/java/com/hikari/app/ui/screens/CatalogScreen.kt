@@ -215,7 +215,8 @@ fun CatalogScreen(
             ) {
                 items(items, key = { it.uniqueId }) { item ->
                     CatalogCard(item) {
-                        nav.navigate(
+                        Routes.safeNavigate(
+                            nav,
                             Routes.detail(
                                 item.providerId, item.type, item.id,
                                 item.title, item.posterUrl, item.rawType

@@ -18,12 +18,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -32,6 +34,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.screens.CatalogScreen
 import com.hikari.app.ui.screens.DetailScreen
@@ -41,6 +44,7 @@ import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.theme.HikariThemeMode
+import kotlinx.coroutines.flow.collectAsState
 
 object Routes {
     const val HOME = "home"
@@ -83,7 +87,12 @@ object Routes {
         /** Watch-history resume: playback position in milliseconds. */
         startPositionMs: Long = 0L,
     ): String {
-        var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(title)}"
+        // Free-text titles are sanitized: some extensions return junk (control
+        // chars, the literal "null") that can trip up the route parser and
+        // crash navigation with "Wrong argument type for 'title'".
+        val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ")
+            .trim().take(500)
+        var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(safeTitle)}"
         // MRDS/51CG posters are decrypted into huge data: URIs — dropping them
         // from the route keeps the NavController from exploding on a monster
         // deep link. The detail page re-fetches the poster via /meta anyway.
@@ -97,6 +106,13 @@ object Routes {
 
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
     fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}"
+
+    /** navigate() that can never crash the app on a malformed route — some
+     *  extensions return titles/ids that trip up the route parser, and one
+     *  junk item must not be able to kill the whole app. */
+    fun safeNavigate(nav: NavHostController, route: String) {
+        runCatching { nav.navigate(route) }
+    }
 }
 
 private data class Tab(
@@ -121,6 +137,20 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // SEARCH_QUERY is "search?q=…" — strip the query so the tab still matches.
     val tabRoute = currentRoute?.substringBefore('?')
     val showBar = tabRoute in Tabs.map { it.route }
+
+    // The WebView's "Go to app home" menu item bumps this — landing on the
+    // app's own Home tab (not the website's home page).
+    val context = LocalContext.current
+    val homeRequest by (context.applicationContext as HikariApp).homeTabRequest.collectAsState()
+    LaunchedEffect(homeRequest) {
+        if (homeRequest > 0) {
+            nav.navigate(Routes.HOME) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         // Dark Glass UI backdrop — a vivid gradient sits behind the translucent

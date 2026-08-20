@@ -16,6 +16,7 @@ import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.ignoreAllSSLErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -60,6 +61,11 @@ class HikariApp : Application() {
      */
     @Volatile
     var elementBlocks: List<String> = emptyList()
+
+    /** Bumped by the WebView's "Go to app home" menu item; AppRoot watches this
+     *  and switches to the app's own Home tab (so the button leaves the site
+     *  view instead of reloading the website's home page). */
+    val homeTabRequest = MutableStateFlow(0)
 
     override fun onCreate() {
         super.onCreate()
