@@ -258,7 +258,7 @@ class HikariApp : Application() {
             // shadowed (it compiled against Coil 3 and failed to resolve), so
             // wire the shadow's context to the real app context here.
             try {
-                com.lagradost.cloudstream3.CloudStreamApp.context = context
+                com.lagradost.cloudstream3.CloudStreamApp.setContext(context)
             } catch (t: Throwable) {
                 android.util.Log.e("HikariApp", "CloudStreamApp.setContext failed", t)
             }
