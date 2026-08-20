@@ -49,7 +49,7 @@ class ContentRepository(private val manager: ProviderManager) {
             active.map { p ->
                 async {
                     cancellableCatching {
-                        withTimeoutOrNull(60_000) {
+                        withTimeoutOrNull(120_000) {
                             val catalogs = p.catalogs()
                                 .distinctBy { it.type to it.id }
                                 .take(14)
@@ -58,7 +58,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                 catalogs.map { c ->
                                     async {
                                         gate.withPermit {
-                                            val items = withTimeoutOrNull(25_000) {
+                                            val items = withTimeoutOrNull(60_000) {
                                                 cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                             }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                             if (items.isEmpty()) null
