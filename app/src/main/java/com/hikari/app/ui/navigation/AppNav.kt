@@ -44,7 +44,7 @@ import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.theme.HikariThemeMode
-import kotlinx.coroutines.flow.collectAsState
+import androidx.compose.runtime.collectAsState
 
 object Routes {
     const val HOME = "home"
