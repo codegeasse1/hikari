@@ -127,6 +127,13 @@ class HikariApp : Application() {
                 lastCrash = trace
             }
             android.util.Log.e("HikariCrash", "Uncaught on ${thread.name}", t)
+            // NEVER leave a dead main thread running: that is what turns the
+            // screen into a frozen black UI (no back button, nothing responds,
+            // the only escape is force-stopping the app). After recording the
+            // trace, terminate the process like the platform default would, so
+            // Android shows the crash dialog and relaunches cleanly — the Home
+            // banner still reports the cause next launch.
+            runCatching { android.os.Process.killProcess(android.os.Process.myPid()) }
         }
     }
 
@@ -245,6 +252,15 @@ class HikariApp : Application() {
                 setContext(context)
             } catch (t: Throwable) {
                 android.util.Log.e("HikariApp", "setContext failed", t)
+            }
+            // Plugins read CloudStreamApp.context for their Cloudflare bypass,
+            // preference keys and WebView cookies — the jar's CloudStreamApp is
+            // shadowed (it compiled against Coil 3 and failed to resolve), so
+            // wire the shadow's context to the real app context here.
+            try {
+                com.lagradost.cloudstream3.CloudStreamApp.context = context
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariApp", "CloudStreamApp.setContext failed", t)
             }
 
             // CloudStream's buildDefaultClient inserts Conscrypt as the JSSE

@@ -88,6 +88,9 @@ import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -482,11 +485,18 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** A readable repo label: the repo.json's own name, else "owner/repo" from
-     *  the URL, else the bare host. Never a full URL. */
+     *  the URL (works for github.com, raw.githubusercontent.com, Gitea/GitLab),
+     *  else the bare host. Never a full URL. */
     private fun niceRepoName(url: String, fromJson: String): String {
         if (fromJson.isNotBlank()) return fromJson
-        val m = Regex("github\\.com/([^/]+)/([^/]+)").find(url)
-        if (m != null) return "${m.groupValues[1]}/${m.groupValues[2]}"
+        val m = Regex("^https?://([^/]+)/(.*)$").find(url.trim())
+        if (m != null) {
+            val segs = m.groupValues[2].split('?', '#')[0]
+                .trimEnd('/')
+                .split('/')
+                .filter { it.isNotBlank() }
+            if (segs.size >= 2) return "${segs[0]}/${segs[1]}"
+        }
         return url.removePrefix("https://").removePrefix("http://").trimEnd('/')
     }
 
@@ -538,27 +548,56 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return name.contains("mega", true) && name.contains("repo", true)
     }
 
-    /** Imports every repo URL from the canonical CS repos-db.json (deduped). */
+    /** Imports every repo URL from the canonical CS repos-db.json (deduped),
+     *  naming each folder with its repo.json's own name when it can be fetched
+     *  (bounded + parallel) so the list reads "Phisher", "MRDS", "CNC" …
+     *  instead of a raw URL — the URL-only derivation the old code produced
+     *  for every mega-imported repo. */
     private suspend fun importMegaRepos(): Int {
         val text = Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull() ?: return 0
         val arr = runCatching { JSONArray(text) }.getOrNull() ?: return 0
+        data class Entry(val url: String, val name: String)
+        val entries = buildList {
+            for (i in 0 until arr.length()) {
+                val entry = arr.opt(i)
+                val repoUrl = when (entry) {
+                    is String -> entry
+                    is JSONObject -> entry.optString("url")
+                    else -> null
+                } ?: continue
+                if (!repoUrl.startsWith("http")) continue
+                val entryName = (entry as? JSONObject)?.optString("name")
+                    ?.takeIf { it.isNotBlank() } ?: ""
+                add(Entry(repoUrl, entryName))
+            }
+        }
+        val existing = store.repos().map { it.url }.toSet()
+        val fresh = entries.filter { it.url !in existing }
+        val names = coroutineScope {
+            fresh.map { e ->
+                async(Dispatchers.IO) {
+                    if (e.name.isNotBlank()) e.name else fetchRepoDisplayName(e.url)
+                }
+            }.awaitAll()
+        }
         var added = 0
-        for (i in 0 until arr.length()) {
-            val entry = arr.opt(i)
-            val repoUrl = when (entry) {
-                is String -> entry
-                is JSONObject -> entry.optString("url")
-                else -> null
-            } ?: continue
-            if (!repoUrl.startsWith("http")) continue
-            val name = niceRepoName(repoUrl, "")
+        for ((entry, name) in fresh.zip(names)) {
             runCatching {
-                store.addCs3Repo(Cs3Repo(url = repoUrl, name = name, kind = RepoKind.CS3))
+                store.addCs3Repo(Cs3Repo(url = entry.url, name = name, kind = RepoKind.CS3))
             }
             added++
         }
         return added
     }
+
+    /** The repo.json's own name, else an owner/repo label derived from the URL. */
+    private suspend fun fetchRepoDisplayName(url: String): String = withTimeoutOrNull(8_000) {
+        withContext(Dispatchers.IO) {
+            fetchRepoRaw(url).getOrNull()?.let { text ->
+                runCatching { JSONObject(text).optString("name").ifBlank { null } }.getOrNull()
+            }
+        }
+    } ?: niceRepoName(url, "")
 
     private fun parsePlugin(o: JSONObject): Cs3RepoPlugin? {
         val name = o.optString("name").ifBlank { return null }

@@ -781,7 +781,25 @@ class PlayerActivity : ComponentActivity() {
         return sb.toString().ifBlank { e.javaClass.simpleName }
     }
 
+    /** Safe entry point: any unexpected exception during player setup (a bad
+     *  source URL, a plugin-supplied header, an ExoPlayer hiccup) must surface
+     *  as "try the next server" or an error panel — never an uncaught crash
+     *  that leaves a frozen black screen. */
     private fun playDirect(index: Int) {
+        try {
+            playDirectInner(index)
+        } catch (t: Throwable) {
+            android.util.Log.e("HikariPlayer", "playDirect failed", t)
+            if (index + 1 < sources.size) {
+                noSubsRetry = false
+                playSource(index + 1)
+            } else {
+                showError("Playback failed to start:\n${rootMessage(t)}", false)
+            }
+        }
+    }
+
+    private fun playDirectInner(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
             return
@@ -857,32 +875,36 @@ class PlayerActivity : ComponentActivity() {
         applySpeed(SPEEDS[speedIndex])
         scheduleBufferingWatchdog()
 
-        if (noSubsRetry) return@playDirect
+        if (noSubsRetry) return@playDirectInner
 
         val playedIndex = index
         lifecycleScope.launch {
-            val valid = withContext(Dispatchers.IO) {
-                src.subtitles.mapNotNull { s ->
-                    val data = validateSubtitle(s, src.headers)
-                    if (data == null) null else s to data
+            try {
+                val valid = withContext(Dispatchers.IO) {
+                    src.subtitles.mapNotNull { s ->
+                        val data = validateSubtitle(s, src.headers)
+                        if (data == null) null else s to data
+                    }
                 }
+                if (valid.isEmpty()) return@launch
+                if (currentIndex != playedIndex) return@launch
+                val p = player ?: return@launch
+                val configs = valid.map { (s, data) ->
+                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(data))
+                        .setMimeType(mimeFor(s.url))
+                        .setLanguage(s.lang)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                }
+                val item = MediaItem.Builder()
+                    .setUri(src.url)
+                    .setSubtitleConfigurations(configs)
+                if (mime != null) item.setMimeType(mime)
+                p.setMediaItem(item.build(), false)
+                p.prepare()
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariPlayer", "subtitle attach failed", t)
             }
-            if (valid.isEmpty()) return@launch
-            if (currentIndex != playedIndex) return@launch
-            val p = player ?: return@launch
-            val configs = valid.map { (s, data) ->
-                MediaItem.SubtitleConfiguration.Builder(Uri.parse(data))
-                    .setMimeType(mimeFor(s.url))
-                    .setLanguage(s.lang)
-                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                    .build()
-            }
-            val item = MediaItem.Builder()
-                .setUri(src.url)
-                .setSubtitleConfigurations(configs)
-            if (mime != null) item.setMimeType(mime)
-            p.setMediaItem(item.build(), false)
-            p.prepare()
         }
     }
 
