@@ -45,38 +45,46 @@ class ContentRepository(private val manager: ProviderManager) {
         val active = manager.providers.value.filter {
             it.config.enabled && (providerId == null || it.config.id == providerId)
         }
+        // GLOBAL gates shared by ALL providers (not per-provider): with dozens
+        // of installed extensions, per-provider limits multiplied into hundreds
+        // of concurrent network requests which saturated the IO pool and froze
+        // the UI (ANR). 3 providers run their catalogs in parallel, and at most
+        // 8 catalog fetches exist across the whole app at once.
+        val providerGate = Semaphore(3)
+        val catalogGate = Semaphore(8)
         val rows = coroutineScope {
             active.map { p ->
                 async {
                     cancellableCatching {
-                        withTimeoutOrNull(120_000) {
-                            val catalogs = p.catalogs()
-                                .distinctBy { it.type to it.id }
-                                .take(14)
-                            val gate = Semaphore(4)
-                            coroutineScope {
-                                catalogs.map { c ->
-                                    async {
-                                        gate.withPermit {
-                                            val items = withTimeoutOrNull(60_000) {
-                                                cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
-                                            }.orEmpty().distinctBy { it.uniqueId }.take(40)
-                                            if (items.isEmpty()) null
-                                            else CatalogRow(
-                                                providerId = p.config.id,
-                                                providerName = p.config.name,
-                                                title = c.name,
-                                                items = items,
-                                                key = "${p.config.id}|${c.type}|${c.id}",
-                                                catalogId = c.id,
-                                                type = c.type,
-                                                rawType = c.rawType,
-                                            )
-                                        }
+                        providerGate.withPermit {
+                            withTimeoutOrNull(120_000) {
+                                val catalogs = p.catalogs()
+                                    .distinctBy { it.type to it.id }
+                                    .take(14)
+                                coroutineScope {
+                                    catalogs.map { c ->
+                                        async {
+                                            catalogGate.withPermit {
+                                                val items = withTimeoutOrNull(60_000) {
+                                                    cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
+                                                }.orEmpty().distinctBy { it.uniqueId }.take(40)
+                                                if (items.isEmpty()) null
+                                                else CatalogRow(
+                                                    providerId = p.config.id,
+                                                    providerName = p.config.name,
+                                                    title = c.name,
+                                                    items = items,
+                                                    key = "${p.config.id}|${c.type}|${c.id}",
+                                                    catalogId = c.id,
+                                                    type = c.type,
+                                                    rawType = c.rawType,
+                                                )
+                                            }
                                     }
                                 }.awaitAll().filterNotNull()
                             }
                         } ?: emptyList()
+                        }
                     }.getOrDefault(emptyList())
                 }
             }.awaitAll().flatten()
@@ -106,18 +114,25 @@ class ContentRepository(private val manager: ProviderManager) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         try {
             val aggregate = MutableStateFlow<List<MediaItem>>(emptyList())
+            // Searching across MANY providers at once (search-all runs every
+            // installed extension) would fire hundreds of requests at the same
+            // time and starve the IO pool — same ANR class as Home loading.
+            // At most 4 providers search concurrently; the rest queue up.
+            val gate = Semaphore(4)
             val jobs = active.map { p ->
                 scope.async {
-                    val items = cancellableCatching {
-                        // Generous per-provider budget — heavy scrapers (e.g.
-                        // MRDS) fetch several pages AND download/decrypt every
-                        // poster into a data: URI before returning, which can
-                        // take 1-3 minutes on a slow network. CloudStream has
-                        // no such cap, so it shows those results while a short
-                        // cap here used to blank them ("Nothing matched").
-                        withTimeoutOrNull(240_000) { p.search(query, page) } ?: emptyList()
-                    }.getOrDefault(emptyList())
-                    aggregate.value = (aggregate.value + items).distinctBy { it.uniqueId }
+                    gate.withPermit {
+                        val items = cancellableCatching {
+                            // Generous per-provider budget — heavy scrapers (e.g.
+                            // MRDS) fetch several pages AND download/decrypt every
+                            // poster into a data: URI before returning, which can
+                            // take 1-3 minutes on a slow network. CloudStream has
+                            // no such cap, so it shows those results while a short
+                            // cap here used to blank them ("Nothing matched").
+                            withTimeoutOrNull(240_000) { p.search(query, page) } ?: emptyList()
+                        }.getOrDefault(emptyList())
+                        aggregate.value = (aggregate.value + items).distinctBy { it.uniqueId }
+                    }
                 }
             }
             // Poll-and-emit the running aggregate so the UI shows each

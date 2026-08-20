@@ -88,6 +88,7 @@ import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -111,12 +112,161 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
     val sites = MutableStateFlow<List<Site>>(emptyList())
 
+    // Install/uninstall/busy status lives in the ViewModel (not the
+    // composition) so it survives tab switches: the old screen-local state was
+    // cancelled the moment the user navigated away, which silently killed
+    // installs mid-download. Now a job keeps running when the screen is left
+    // and the result is shown when the user comes back.
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    private val _busyMsg = MutableStateFlow("")
+    val busyMsg: StateFlow<String> = _busyMsg.asStateFlow()
+    private val _successMsg = MutableStateFlow<String?>(null)
+    val successMsg: StateFlow<String?> = _successMsg.asStateFlow()
+    private val _errorMsg = MutableStateFlow<String?>(null)
+    val errorMsg: StateFlow<String?> = _errorMsg.asStateFlow()
+
+    private var installJob: Job? = null
+    private var backgroundGeneration = 0L
+    private var reposLoadStarted = false
+
+    private inline fun <T> cancellableCatching(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+
+    /** Runs [block] on the ViewModel scope so tab switches never cancel it,
+     *  and shows the busy indicator while it runs. Only the most recent task
+     *  may clear the busy flag when it finishes — an older task that is
+     *  superseded must not turn the spinner off while a newer one still runs. */
+    private fun startBackground(block: suspend () -> Unit): Job = viewModelScope.launch {
+        val gen = ++backgroundGeneration
+        _busy.value = true
+        try {
+            block()
+        } finally {
+            if (backgroundGeneration == gen) _busy.value = false
+        }
+    }
+
+    fun setSuccess(msg: String) {
+        _successMsg.value = msg
+        _errorMsg.value = null
+    }
+
+    fun setError(msg: String?) {
+        _errorMsg.value = msg
+        _successMsg.value = null
+    }
+
+    fun clearStatus() {
+        _successMsg.value = null
+        _errorMsg.value = null
+    }
+
+    /** Extension installs are hard-capped at 20 seconds (per app spec): a
+     *  download that takes longer is a dead/blocked server, not worth waiting
+     *  on — stop it and tell the user to tap Install again. Runs in the VM
+     *  scope, so going back to another tab mid-install does NOT stop it, and
+     *  tapping Install again cancels the stale attempt and restarts cleanly. */
+    fun runInstall(
+        what: String,
+        success: (Int) -> String = { n -> "Installed ($n provider${if (n == 1) "" else "s"})" },
+        onSuccess: (Int) -> Unit = {},
+        action: suspend () -> Result<Int>,
+    ) {
+        installJob?.cancel()
+        installJob = startBackground {
+            _busyMsg.value = what
+            clearStatus()
+            try {
+                val r = withTimeoutOrNull(20_000) { action() }
+                    ?: Result.failure(
+                        Exception("Installation took too long (over 20 seconds) — please tap Install again")
+                    )
+                r.onSuccess { n ->
+                    onSuccess(n)
+                    setSuccess(success(n))
+                }
+                r.onFailure { setError(it.message ?: "Installation failed") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message ?: "Installation failed")
+            }
+        }
+    }
+
+    /** Generic background task with the same VM-scope survival guarantees as
+     *  installs (add repo/addon/scraper/site, …). */
+    fun <T> runTask(
+        what: String,
+        action: suspend () -> Result<T>,
+        onSuccess: (T) -> Unit = {},
+        successMsg: String? = null,
+    ) {
+        startBackground {
+            _busyMsg.value = what
+            clearStatus()
+            try {
+                val r = cancellableCatching { action() }.getOrElse { Result.failure(it) }
+                r.onSuccess { v ->
+                    onSuccess(v)
+                    if (successMsg != null) setSuccess(successMsg)
+                }
+                r.onFailure { setError(it.message ?: "Failed") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            }
+        }
+    }
+
+    /** Uninstall / removal task (unit-returning, may throw). */
+    fun runUninstall(what: String, successMsg: String, action: suspend () -> Unit) {
+        startBackground {
+            _busyMsg.value = what
+            clearStatus()
+            try {
+                cancellableCatching { action() }
+                    .onSuccess { setSuccess(successMsg) }
+                    .onFailure { setError(it.message ?: "Failed") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            }
+        }
+    }
+
+    /** Refreshes a repo's plugin list in the VM scope (survives tab switches —
+     *  the old screen-scope launch died with the screen and left the repo
+     *  stuck on "Loading plugins…" forever). */
+    fun refreshRepo(repo: Cs3Repo) {
+        viewModelScope.launch { refreshRepoPlugins(repo) }
+    }
+
+    /** Loads every repo's plugin list once (and only once) — re-entering the
+     *  screen used to re-download every repo from scratch every time, which
+     *  re-flagged everything as loading and made a slow load look like a crash. */
+    fun loadReposIfNeeded() {
+        if (reposLoadStarted) return
+        reposLoadStarted = true
+        viewModelScope.launch {
+            for (repo in repos.value) {
+                if (pluginsByRepo.value[repo.url] == null) refreshRepoPlugins(repo)
+            }
+        }
+    }
+
     init {
         viewModelScope.launch {
             manager.refresh()
             repos.value = store.repos()
             sites.value = store.sites()
             reloadInstalled()
+            loadReposIfNeeded()
         }
     }
 
@@ -715,10 +865,10 @@ fun ExtensionsScreen() {
     var cs3Url by remember { mutableStateOf("") }
     var hikiUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var busyMsg by remember { mutableStateOf("") }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-    var successMsg by remember { mutableStateOf<String?>(null) }
+    var busy by vm.busy.collectAsState()
+    var busyMsg by vm.busyMsg.collectAsState()
+    var errorMsg by vm.errorMsg.collectAsState()
+    var successMsg by vm.successMsg.collectAsState()
 
     val repos by vm.repos.collectAsState()
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
@@ -733,95 +883,38 @@ fun ExtensionsScreen() {
     var siteUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
-        vm.repos.value.forEach { repo -> vm.refreshRepoPlugins(repo) }
+        vm.loadReposIfNeeded()
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            scope.launch {
-                busy = true
-                busyMsg = "Installing .cs3 plugin…"
-                errorMsg = null
-                successMsg = null
-                // try/catch/finally so `busy` ALWAYS resets — a thrown error
-                // (bad file, disk write, plugin load crash) must never leave
-                // the button stuck on "Installing…" forever.
-                try {
-                    val r = withTimeoutOrNull(120_000) { vm.installCs3FromUri(uri) }
-                        ?: Result.failure(Exception("Installation timed out"))
-                    r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
-                    r.onFailure { errorMsg = it.message }
-                } catch (e: Exception) {
-                    errorMsg = e.message ?: "Installation failed"
-                } finally {
-                    busy = false
-                }
-            }
+            vm.runInstall("Installing .cs3 plugin…") { vm.installCs3FromUri(uri) }
         }
     }
 
     val hikiPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            scope.launch {
-                busy = true
-                busyMsg = "Installing .hiki extension…"
-                errorMsg = null
-                successMsg = null
-                try {
-                    val r = withTimeoutOrNull(120_000) { vm.installHikiFromUri(uri) }
-                        ?: Result.failure(Exception("Installation timed out"))
-                    r.onSuccess { n -> successMsg = "Installed $n provider(s)" }
-                    r.onFailure { errorMsg = it.message }
-                } catch (e: Exception) {
-                    errorMsg = e.message ?: "Installation failed"
-                } finally {
-                    busy = false
-                }
-            }
+            vm.runInstall("Installing .hiki extension…") { vm.installHikiFromUri(uri) }
         }
     }
 
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
-        scope.launch {
-            busy = true
-            busyMsg = "Installing ${p.name}…"
-            errorMsg = null
-            successMsg = null
-            try {
-                val r = withTimeoutOrNull(120_000) {
-                    when (kind) {
-                        RepoKind.CS3 -> vm.installCs3Plugin(p)
-                        RepoKind.HIKARI -> vm.installHikiPlugin(p)
-                    }
-                } ?: Result.failure(Exception("Installation timed out"))
-                r.onSuccess { n ->
-                    successMsg = "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})"
-                }
-                r.onFailure { errorMsg = it.message }
-            } catch (e: Exception) {
-                errorMsg = e.message ?: "Installation failed"
-            } finally {
-                busy = false
+        vm.runInstall(
+            "Installing ${p.name}…",
+            success = { n -> "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})" },
+        ) {
+            when (kind) {
+                RepoKind.CS3 -> vm.installCs3Plugin(p)
+                RepoKind.HIKARI -> vm.installHikiPlugin(p)
             }
         }
     }
 
     fun uninstallPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
-        scope.launch {
-            busy = true
-            busyMsg = "Uninstalling ${p.name}…"
-            errorMsg = null
-            successMsg = null
-            try {
-                when (kind) {
-                    RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
-                    RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
-                }
-                successMsg = "Uninstalled ${p.name}"
-            } catch (e: Exception) {
-                errorMsg = e.message ?: "Uninstall failed"
-            } finally {
-                busy = false
+        vm.runUninstall("Uninstalling ${p.name}…", "Uninstalled ${p.name}") {
+            when (kind) {
+                RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
+                RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
             }
         }
     }
@@ -836,8 +929,8 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
-            onBack = { openRepoUrl = null; errorMsg = null; successMsg = null },
-            onRefresh = { scope.launch { vm.refreshRepoPlugins(openRepo) } },
+            onBack = { openRepoUrl = null; vm.clearStatus() },
+            onRefresh = { vm.refreshRepo(openRepo) },
             onInstall = { installPlugin(it, openRepo.kind) },
             onUninstall = { uninstallPlugin(it, openRepo.kind) },
         )
@@ -854,22 +947,20 @@ fun ExtensionsScreen() {
             errorMsg = errorMsg,
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
-                errorMsg = null
-                successMsg = null
-                if (repoState[repo.url] == null) scope.launch { vm.refreshRepoPlugins(repo) }
+                vm.clearStatus()
+                if (pluginsByRepo[repo.url] == null) vm.refreshRepo(repo)
             },
-            onAddRepo = { errorMsg = null; successMsg = null; repoDialogKind = RepoKind.CS3; showRepoDialog = true },
-            onAddHikiRepo = { errorMsg = null; successMsg = null; repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
-            onAddStremio = { errorMsg = null; showStremio = true },
-            onAddScraper = { errorMsg = null; showScraper = true },
-            onAddCs3Url = { errorMsg = null; showCs3Url = true },
-            onAddHikiUrl = { errorMsg = null; showHikiUrl = true },
+            onAddRepo = { vm.clearStatus(); repoDialogKind = RepoKind.CS3; showRepoDialog = true },
+            onAddHikiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
+            onAddStremio = { vm.clearStatus(); showStremio = true },
+            onAddScraper = { vm.clearStatus(); showScraper = true },
+            onAddCs3Url = { vm.clearStatus(); showCs3Url = true },
+            onAddHikiUrl = { vm.clearStatus(); showHikiUrl = true },
             onPickHikiFile = {
-                errorMsg = null
-                successMsg = null
+                vm.clearStatus()
                 hikiPicker.launch(arrayOf("application/octet-stream", "*/*"))
             },
-            onAddSite = { errorMsg = null; showSite = true },
+            onAddSite = { vm.clearStatus(); showSite = true },
             onOpenSite = { site ->
                 context.startActivity(
                     Intent(context, WebViewActivity::class.java).apply {
@@ -879,28 +970,19 @@ fun ExtensionsScreen() {
                 )
             },
             onRemoveSite = { url ->
-                scope.launch {
-                    vm.removeSite(url)
-                    successMsg = "Website removed"
-                }
+                vm.runUninstall("Removing website…", "Website removed") { vm.removeSite(url) }
             },
             onPickCs3File = {
-                errorMsg = null
-                successMsg = null
+                vm.clearStatus()
                 filePicker.launch(arrayOf("application/octet-stream", "*/*"))
             },
             onRemoveRepo = { url ->
-                scope.launch {
-                    vm.removeCs3Repo(url)
-                    if (openRepoUrl == url) openRepoUrl = null
-                    successMsg = "Removed repo"
-                }
+                if (openRepoUrl == url) openRepoUrl = null
+                vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
             onRefreshRepo = { repo ->
-                scope.launch {
-                    errorMsg = null
-                    vm.refreshRepoPlugins(repo)
-                }
+                vm.clearStatus()
+                vm.refreshRepo(repo)
             },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
@@ -944,21 +1026,16 @@ fun ExtensionsScreen() {
                 Button(
                     enabled = !busy,
                     onClick = {
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Fetching repo…"
-                            errorMsg = null
-                            successMsg = null
-                            val r = if (isHikari) vm.addHikiRepo(repoUrl) else vm.addCs3Repo(repoUrl)
-                            busy = false
-                            r.onSuccess { repo ->
+                        vm.runTask(
+                            "Fetching repo…",
+                            { if (isHikari) vm.addHikiRepo(repoUrl) else vm.addCs3Repo(repoUrl) },
+                            onSuccess = { repo ->
                                 showRepoDialog = false
                                 repoUrl = ""
-                                successMsg = "Added repo: ${repo.name}"
-                                vm.refreshRepoPlugins(repo)
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
+                                vm.setSuccess("Added repo: ${repo.name}")
+                                vm.refreshRepo(repo)
+                            },
+                        )
                     }
                 ) { Text("Add") }
             },
@@ -997,18 +1074,15 @@ fun ExtensionsScreen() {
                 Button(
                     enabled = !busy,
                     onClick = {
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Fetching addon manifest…"
-                            errorMsg = null
-                            val r = vm.addStremio(stremioUrl)
-                            busy = false
-                            r.onSuccess {
+                        vm.runTask(
+                            "Fetching addon manifest…",
+                            { vm.addStremio(stremioUrl) },
+                            onSuccess = {
                                 showStremio = false
                                 stremioUrl = ""
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
+                            },
+                            successMsg = "Added Stremio addon",
+                        )
                     }
                 ) { Text("Add") }
             },
@@ -1048,18 +1122,15 @@ fun ExtensionsScreen() {
                 Button(
                     enabled = !busy,
                     onClick = {
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Adding scraper…"
-                            errorMsg = null
-                            val r = vm.addUniversal(scraperJson)
-                            busy = false
-                            r.onSuccess {
+                        vm.runTask(
+                            "Adding scraper…",
+                            { vm.addUniversal(scraperJson) },
+                            onSuccess = {
                                 showScraper = false
                                 scraperJson = ""
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
+                            },
+                            successMsg = "Added scraper",
+                        )
                     }
                 ) { Text("Add") }
             },
@@ -1098,20 +1169,13 @@ fun ExtensionsScreen() {
                 Button(
                     enabled = !busy,
                     onClick = {
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Downloading and installing…"
-                            errorMsg = null
-                            successMsg = null
-                            val r = vm.installCs3FromUrl(cs3Url)
-                            busy = false
-                            r.onSuccess { n ->
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
                                 showCs3Url = false
                                 cs3Url = ""
-                                successMsg = "Installed $n provider(s)"
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
+                            },
+                        ) { vm.installCs3FromUrl(cs3Url) }
                     }
                 ) { Text("Install") }
             },
@@ -1155,20 +1219,13 @@ fun ExtensionsScreen() {
                 Button(
                     enabled = !busy,
                     onClick = {
-                        scope.launch {
-                            busy = true
-                            busyMsg = "Downloading and installing…"
-                            errorMsg = null
-                            successMsg = null
-                            val r = vm.installHikiFromUrl(hikiUrl)
-                            busy = false
-                            r.onSuccess { n ->
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
                                 showHikiUrl = false
                                 hikiUrl = ""
-                                successMsg = "Installed $n provider(s)"
-                            }
-                            r.onFailure { errorMsg = it.message }
-                        }
+                            },
+                        ) { vm.installHikiFromUrl(hikiUrl) }
                     }
                 ) { Text("Install") }
             },
@@ -1225,20 +1282,18 @@ fun ExtensionsScreen() {
                         else
                             "https://$clean"
                         if (withScheme.isBlank() || withScheme == "https://") {
-                            errorMsg = "Enter a valid URL"
+                            vm.setError("Enter a valid URL")
                         } else {
-                            scope.launch {
-                                busy = true
-                                busyMsg = "Adding website…"
-                                errorMsg = null
-                                successMsg = null
-                                vm.addSite(siteName.trim(), withScheme)
-                                busy = false
-                                showSite = false
-                                siteUrl = ""
-                                siteName = ""
-                                successMsg = "Website added"
-                            }
+                            vm.runTask(
+                                "Adding website…",
+                                { runCatching { vm.addSite(siteName.trim(), withScheme) } },
+                                onSuccess = {
+                                    showSite = false
+                                    siteUrl = ""
+                                    siteName = ""
+                                },
+                                successMsg = "Website added",
+                            )
                         }
                     }
                 ) { Text("Add") }
@@ -1805,6 +1860,7 @@ private fun RepoCard(
                 }
                 Text(
                     when {
+                        state == null -> repo.description.ifBlank { "Not loaded yet — tap to open" }
                         state?.loading == true -> "Loading plugins…"
                         state?.error != null -> "Load failed — tap refresh to retry"
                         pluginCount > 0 -> "${pluginCount} plugin${if (pluginCount == 1) "" else "s"}"
