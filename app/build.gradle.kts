@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 38
-        versionName = "0.3.35"
+        versionCode = 37
+        versionName = "0.3.36"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -85,15 +85,6 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/network/ — so drop the
         // stub classes here to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/network/WebViewResolver*.class")
-        // The jar's CloudStreamApp is compiled against Coil 3 (it implements
-        // coil3.SingletonImageLoader.Factory), which this app does NOT bundle
-        // (it ships Coil 2) — so any plugin that touches the class dies with
-        // NoClassDefFoundError the moment it resolves (seen with Cinemacity's
-        // Cloudflare-bypass interceptor). Shadow it with a self-contained
-        // host-side implementation in
-        // app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt and
-        // drop the jar classes to avoid a duplicate-class build failure.
-        exclude("com/lagradost/cloudstream3/CloudStreamApp*.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }
