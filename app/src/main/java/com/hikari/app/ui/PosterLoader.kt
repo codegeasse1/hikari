@@ -19,9 +19,15 @@ object PosterLoader {
 
     private const val DATA_IMAGE = "data:image/"
 
+    /** Prefix of the tiny token [tokenize] returns for an oversized base64
+     *  `data:` poster — the real bytes live in the disk cache under the token's
+     *  hash, so a catalog can hold thousands of posters without blowing the
+     *  heap while the grid still renders them. */
+    private const val CACHE_TOKEN = "data:cache/"
+
     private val memCache = object : LinkedHashMap<String, ByteArray>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean =
-            size > 128
+            size > 256
     }
 
     private val diskDir: File? by lazy {
@@ -32,6 +38,7 @@ object PosterLoader {
 
     fun model(url: String?): Any? {
         if (url.isNullOrBlank()) return null
+        if (url.startsWith(CACHE_TOKEN)) return fromToken(url)
         if (!url.startsWith(DATA_IMAGE)) return url
 
         memCache[url]?.let { return it }
@@ -55,6 +62,41 @@ object PosterLoader {
             if (file != null) runCatching { file.writeBytes(bytes) }
         }
         return bytes
+    }
+
+    /**
+     * Collapses a huge base64 `data:` poster into a tiny stable disk-cache
+     * token so a giant catalog can hold thousands of posters in memory without
+     * an OutOfMemoryError, while the grid still shows them ([model] resolves
+     * the token back to the persisted bytes). Regular http(s) URLs pass through
+     * unchanged. Returns null when the data URI can't be decoded — the poster
+     * is simply dropped then (blank cell).
+     */
+    fun tokenize(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        if (!url.startsWith(DATA_IMAGE)) return url
+        val hash = fnv1a(url)
+        val file = diskDir?.let { File(it, hash) }
+        val have = file?.let { it.exists() && it.length() > 0 } ?: false
+        if (!have) {
+            val bytes = model(url) ?: return null
+            if (file != null) runCatching { file.writeBytes(bytes) }
+        }
+        return CACHE_TOKEN + hash
+    }
+
+    /** Resolves a [CACHE_TOKEN] token back to the persisted poster bytes. */
+    private fun fromToken(token: String): ByteArray? {
+        memCache[token]?.let { return it }
+        val hash = token.removePrefix(CACHE_TOKEN)
+        val bytes = diskDir?.let { File(it, hash) }?.takeIf { it.exists() }?.let {
+            runCatching { it.readBytes() }.getOrNull()
+        }
+        if (bytes != null && bytes.isNotEmpty()) {
+            memCache[token] = bytes
+            return bytes
+        }
+        return null
     }
 
     /** 32-bit FNV-1a over the URI bytes → stable cache filename. */
