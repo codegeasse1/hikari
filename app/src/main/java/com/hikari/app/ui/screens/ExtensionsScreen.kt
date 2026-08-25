@@ -142,7 +142,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Runs [block] on the ViewModel scope so tab switches never cancel it,
      *  and shows the busy indicator while it runs. Only the most recent task
-     *  may clear the busy flag when it finishes â an older task that is
+     *  may clear the busy flag when it finishes — an older task that is
      *  superseded must not turn the spinner off while a newer one still runs. */
     private fun startBackground(block: suspend () -> Unit): Job = viewModelScope.launch {
         val gen = ++backgroundGeneration
@@ -171,7 +171,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Extension installs are hard-capped at 20 seconds (per app spec): a
      *  download that takes longer is a dead/blocked server, not worth waiting
-     *  on â stop it and tell the user to tap Install again. Runs in the VM
+     *  on — stop it and tell the user to tap Install again. Runs in the VM
      *  scope, so going back to another tab mid-install does NOT stop it, and
      *  tapping Install again cancels the stale attempt and restarts cleanly. */
     fun runInstall(
@@ -187,7 +187,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val r = withTimeoutOrNull(20_000) { action() }
                     ?: Result.failure(
-                        Exception("Installation took too long (over 20 seconds) â please tap Install again")
+                        Exception("Installation took too long (over 20 seconds) — please tap Install again")
                     )
                 r.onSuccess { n ->
                     onSuccess(n)
@@ -203,7 +203,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Generic background task with the same VM-scope survival guarantees as
-     *  installs (add repo/addon/scraper/site, â¦). */
+     *  installs (add repo/addon/scraper/site, …). */
     fun <T> runTask(
         what: String,
         action: suspend () -> Result<T>,
@@ -241,14 +241,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Refreshes a repo's plugin list in the VM scope (survives tab switches â
+    /** Refreshes a repo's plugin list in the VM scope (survives tab switches —
      *  the old screen-scope launch died with the screen and left the repo
-     *  stuck on "Loading pluginsâ¦" forever). */
+     *  stuck on "Loading plugins…" forever). */
     fun refreshRepo(repo: Cs3Repo) {
         viewModelScope.launch { refreshRepoPlugins(repo) }
     }
 
-    /** Loads every repo's plugin list once (and only once) â re-entering the
+    /** Loads every repo's plugin list once (and only once) — re-entering the
      *  screen used to re-download every repo from scratch every time, which
      *  re-flagged everything as loading and made a slow load look like a crash. */
     fun loadReposIfNeeded() {
@@ -297,11 +297,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val text = listOf(manifestUrl, manifestUrl.replaceFirst("https://", "http://"))
             .firstNotNullOfOrNull { Http.getString(it) }
             ?: return@withContext Result.failure(
-                Exception("Could not fetch $manifestUrl â check the address or try again")
+                Exception("Could not fetch $manifestUrl — check the address or try again")
             )
         val manifest = runCatching { JSONObject(text) }.getOrElse {
             return@withContext Result.failure(
-                Exception("Not a Stremio addon â the response from $manifestUrl isn't JSON: ${text.take(80)}")
+                Exception("Not a Stremio addon — the response from $manifestUrl isn't JSON: ${text.take(80)}")
             )
         }
         val name = manifest.optString("name").ifBlank {
@@ -332,7 +332,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun toggle(id: String, enabled: Boolean) {
         store.setEnabled(id, enabled)
-        // The providers StateFlow is the source of truth for the switch state â
+        // The providers StateFlow is the source of truth for the switch state —
         // without a refresh the toggle saves but the UI never moves.
         manager.refresh()
     }
@@ -357,7 +357,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             return@withContext Result.failure(Exception("Must start with http(s)://"))
         }
         val bytes = Http.getBytes(clean)
-            ?: return@withContext Result.failure(Exception("Download failed â check the URL"))
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
         installHikiBytes(bytes, clean.substringAfterLast('/').ifBlank { "extension.hiki" }, sourceUrl = clean)
     }
 
@@ -425,7 +425,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             return@withContext Result.failure(Exception("Must start with http(s)://"))
         }
         val bytes = Http.getBytes(clean)
-            ?: return@withContext Result.failure(Exception("Download failed â check the URL"))
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
         installCs3Bytes(bytes, clean.substringAfterLast('/').ifBlank { "plugin.cs3" }, sourceUrl = clean)
     }
 
@@ -505,7 +505,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun addHikiRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.HIKARI)
 
-    /** The URL that actually served the last [fetchRepoRaw] â repos are stored
+    /** The URL that actually served the last [fetchRepoRaw] — repos are stored
      *  under their raw form so refreshing works with the plain http client. */
     @Volatile
     private var lastGoodRepoUrl: String = ""
@@ -544,8 +544,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun friendlyRepoError(): Exception = Exception(
         "That URL returned an HTML page instead of a repo.json. Paste a direct " +
-            "raw link: github.com/o/r â https://raw.githubusercontent.com/o/r/main/repo.json, " +
-            "or on a Gitea/Forgejo host (git.disroot.org, codebergâ¦) â " +
+            "raw link: github.com/o/r → https://raw.githubusercontent.com/o/r/main/repo.json, " +
+            "or on a Gitea/Forgejo host (git.disroot.org, codeberg…) → " +
             "https://host/o/r/raw/branch/main/repo.json"
     )
 
@@ -562,8 +562,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 "https://raw.githubusercontent.com/$owner/$repo/builds/repo.json",
             )
         }
-        // Gitea/Forgejo instances (git.disroot.org, codeberg.org, â¦) serve raw
-        // files at /owner/repo/raw/branch/<branch>/repo.json â the plain web
+        // Gitea/Forgejo instances (git.disroot.org, codeberg.org, …) serve raw
+        // files at /owner/repo/raw/branch/<branch>/repo.json — the plain web
         // page would only come back as HTML.
         val gi = Regex("https?://([^/]+)/([^/]+)/([^/]+)").find(t)
         if (gi != null) {
@@ -598,7 +598,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     kind = kind,
                 )
                 store.addCs3Repo(repo)
-                // A "Mega"-style bundle repo isn't a plugin repo â its single
+                // A "Mega"-style bundle repo isn't a plugin repo — its single
                 // plugin only exists to add every CloudStream repo from the
                 // canonical repos-db.json (and relies on the real CloudStream
                 // RepositoryManager, which Hikari doesn't run). Import the
@@ -701,8 +701,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Imports every repo URL from the canonical CS repos-db.json (deduped),
      *  naming each folder with its repo.json's own name when it can be fetched
-     *  (bounded + parallel) so the list reads "Phisher", "MRDS", "CNC" â¦
-     *  instead of a raw URL â the URL-only derivation the old code produced
+     *  (bounded + parallel) so the list reads "Phisher", "MRDS", "CNC" …
+     *  instead of a raw URL — the URL-only derivation the old code produced
      *  for every mega-imported repo. */
     private suspend fun importMegaRepos(): Int {
         val text = Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull() ?: return 0
@@ -771,14 +771,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun installCs3Plugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
         val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
-            ?: return@withContext Result.failure(Exception("Download timed out â check your connection"))
+            ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {
             val expected = hash.removePrefix("sha256-").lowercase()
             val actual = sha256Hex(bytes)
             if (actual != expected) {
                 return@withContext Result.failure(
-                    Exception("Checksum mismatch â the plugin file is corrupted or modified")
+                    Exception("Checksum mismatch — the plugin file is corrupted or modified")
                 )
             }
         }
@@ -811,14 +811,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Installs a .hiki extension listed in a Hikari repo. */
     suspend fun installHikiPlugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
         val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
-            ?: return@withContext Result.failure(Exception("Download timed out â check your connection"))
+            ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {
             val expected = hash.removePrefix("sha256-").lowercase()
             val actual = sha256Hex(bytes)
             if (actual != expected) {
                 return@withContext Result.failure(
-                    Exception("Checksum mismatch â the extension file is corrupted or modified")
+                    Exception("Checksum mismatch — the extension file is corrupted or modified")
                 )
             }
         }
@@ -889,19 +889,19 @@ fun ExtensionsScreen() {
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            vm.runInstall("Installing .cs3 pluginâ¦") { vm.installCs3FromUri(uri) }
+            vm.runInstall("Installing .cs3 plugin…") { vm.installCs3FromUri(uri) }
         }
     }
 
     val hikiPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            vm.runInstall("Installing .hiki extensionâ¦") { vm.installHikiFromUri(uri) }
+            vm.runInstall("Installing .hiki extension…") { vm.installHikiFromUri(uri) }
         }
     }
 
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runInstall(
-            "Installing ${p.name}â¦",
+            "Installing ${p.name}…",
             success = { n -> "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})" },
         ) {
             when (kind) {
@@ -912,7 +912,7 @@ fun ExtensionsScreen() {
     }
 
     fun uninstallPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
-        vm.runUninstall("Uninstalling ${p.name}â¦", "Uninstalled ${p.name}") {
+        vm.runUninstall("Uninstalling ${p.name}…", "Uninstalled ${p.name}") {
             when (kind) {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
@@ -971,7 +971,7 @@ fun ExtensionsScreen() {
                 )
             },
             onRemoveSite = { url ->
-                vm.runUninstall("Removing websiteâ¦", "Website removed") { vm.removeSite(url) }
+                vm.runUninstall("Removing website…", "Website removed") { vm.removeSite(url) }
             },
             onPickCs3File = {
                 vm.clearStatus()
@@ -979,7 +979,7 @@ fun ExtensionsScreen() {
             },
             onRemoveRepo = { url ->
                 if (openRepoUrl == url) openRepoUrl = null
-                vm.runUninstall("Removing repoâ¦", "Removed repo") { vm.removeCs3Repo(url) }
+                vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
             onRefreshRepo = { repo ->
                 vm.clearStatus()
@@ -1009,7 +1009,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = repoUrl,
                         onValueChange = { repoUrl = it },
-                        placeholder = { Text("https://â¦/repo.json") },
+                        placeholder = { Text("https://…/repo.json") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1028,7 +1028,7 @@ fun ExtensionsScreen() {
                     enabled = !busy,
                     onClick = {
                         vm.runTask(
-                            "Fetching repoâ¦",
+                            "Fetching repo…",
                             { if (isHikari) vm.addHikiRepo(repoUrl) else vm.addCs3Repo(repoUrl) },
                             onSuccess = { repo ->
                                 showRepoDialog = false
@@ -1052,7 +1052,7 @@ fun ExtensionsScreen() {
             title = { Text("Add Stremio addon") },
             text = {
                 Column {
-                    Text("Paste the addon URL â it must serve a manifest.json.")
+                    Text("Paste the addon URL — it must serve a manifest.json.")
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = stremioUrl,
@@ -1076,7 +1076,7 @@ fun ExtensionsScreen() {
                     enabled = !busy,
                     onClick = {
                         vm.runTask(
-                            "Fetching addon manifestâ¦",
+                            "Fetching addon manifest…",
                             { vm.addStremio(stremioUrl) },
                             onSuccess = {
                                 showStremio = false
@@ -1104,7 +1104,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = scraperJson,
                         onValueChange = { scraperJson = it },
-                        placeholder = { Text("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://â¦\",\n  â¦\n}") },
+                        placeholder = { Text("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}") },
                         minLines = 6,
                         maxLines = 12,
                         modifier = Modifier.fillMaxWidth()
@@ -1124,7 +1124,7 @@ fun ExtensionsScreen() {
                     enabled = !busy,
                     onClick = {
                         vm.runTask(
-                            "Adding scraperâ¦",
+                            "Adding scraper…",
                             { vm.addUniversal(scraperJson) },
                             onSuccess = {
                                 showScraper = false
@@ -1152,7 +1152,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = cs3Url,
                         onValueChange = { cs3Url = it },
-                        placeholder = { Text("https://â¦/JustAnimeProvider.cs3") },
+                        placeholder = { Text("https://…/JustAnimeProvider.cs3") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1171,7 +1171,7 @@ fun ExtensionsScreen() {
                     enabled = !busy,
                     onClick = {
                         vm.runInstall(
-                            "Downloading and installingâ¦",
+                            "Downloading and installing…",
                             onSuccess = {
                                 showCs3Url = false
                                 cs3Url = ""
@@ -1194,7 +1194,7 @@ fun ExtensionsScreen() {
                 Column {
                     Text(
                         "Paste a direct link to a compiled Hikari extension (.hiki). " +
-                            "Extensions run against Hikari's own SDK â no CloudStream " +
+                            "Extensions run against Hikari's own SDK — no CloudStream " +
                             "dependencies, Cloudflare solvers and WebView stream capture " +
                             "built in. See docs/HIKARI_EXTENSIONS.md."
                     )
@@ -1202,7 +1202,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = hikiUrl,
                         onValueChange = { hikiUrl = it },
-                        placeholder = { Text("https://â¦/MyExtension.hiki") },
+                        placeholder = { Text("https://…/MyExtension.hiki") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1221,7 +1221,7 @@ fun ExtensionsScreen() {
                     enabled = !busy,
                     onClick = {
                         vm.runInstall(
-                            "Downloading and installingâ¦",
+                            "Downloading and installing…",
                             onSuccess = {
                                 showHikiUrl = false
                                 hikiUrl = ""
@@ -1244,7 +1244,7 @@ fun ExtensionsScreen() {
                 Column {
                     Text(
                         "Paste the URL of any movie/streaming website. It opens in an " +
-                            "ad-free web view â ads, trackers and popups are blocked, " +
+                            "ad-free web view — ads, trackers and popups are blocked, " +
                             "and videos can be handed to the built-in player."
                     )
                     Spacer(Modifier.height(8.dp))
@@ -1286,7 +1286,7 @@ fun ExtensionsScreen() {
                             vm.setError("Enter a valid URL")
                         } else {
                             vm.runTask(
-                                "Adding websiteâ¦",
+                                "Adding website…",
                                 { runCatching { vm.addSite(siteName.trim(), withScheme) } },
                                 onSuccess = {
                                     showSite = false
@@ -1526,7 +1526,7 @@ private fun RepoBrowserView(
             OutlinedTextField(
                 value = extFilter,
                 onValueChange = { extFilter = it },
-                placeholder = { Text("Search installed extensionsâ¦") },
+                placeholder = { Text("Search installed extensions…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 modifier = Modifier
@@ -1654,7 +1654,7 @@ private fun RepoPluginsView(
             when {
                 state.loading && plugins.isEmpty() -> item {
                     Text(
-                        "Loading pluginsâ¦",
+                        "Loading plugins…",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -1863,9 +1863,9 @@ private fun RepoCard(
                 }
                 Text(
                     when {
-                        state == null -> repo.description.ifBlank { "Not loaded yet â tap to open" }
-                        state?.loading == true -> "Loading pluginsâ¦"
-                        state?.error != null -> "Load failed â tap refresh to retry"
+                        state == null -> repo.description.ifBlank { "Not loaded yet — tap to open" }
+                        state?.loading == true -> "Loading plugins…"
+                        state?.error != null -> "Load failed — tap refresh to retry"
                         pluginCount > 0 -> "${pluginCount} plugin${if (pluginCount == 1) "" else "s"}"
                         else -> repo.description.ifBlank { "No plugins found" }
                     },
@@ -1940,7 +1940,7 @@ private fun PluginRow(
                 p.authors.joinToString(", ").ifBlank { null },
                 if (p.version > 0) "v${p.version}" else null,
                 p.tvTypes.joinToString(", ").ifBlank { null },
-            ).joinToString(" Â· ")
+            ).joinToString(" · ")
             Text(
                 meta,
                 style = MaterialTheme.typography.labelSmall,
@@ -1968,7 +1968,7 @@ private fun pluginStatus(p: ContentProvider): String? {
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
     if (err != null) return err.take(200)
-    if (!File(p.config.url).exists()) return "Plugin file missing â reinstall this extension"
+    if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
     return null
 }
 
@@ -2015,7 +2015,7 @@ private fun SitesFolder(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        if (sites.isEmpty()) "No sites added yet â tap to expand"
+                        if (sites.isEmpty()) "No sites added yet — tap to expand"
                         else "${sites.size} site${if (sites.size == 1) "" else "s"}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2031,7 +2031,7 @@ private fun SitesFolder(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 if (sites.isEmpty()) {
                     Text(
-                        "Add any movie/streaming website and it opens in an ad-free web view â ads, trackers and popups blocked, with one-tap video playback in the player.",
+                        "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp)
