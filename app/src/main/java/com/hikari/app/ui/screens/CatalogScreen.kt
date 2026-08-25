@@ -138,6 +138,8 @@ private fun MediaItem.trimInlinePoster(): MediaItem {
     else copy(posterUrl = p, backdropUrl = b)
 }
 
+@Composable
+fun CatalogScreen(
     nav: NavHostController,
     providerId: String,
     catalogId: String,
