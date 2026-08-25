@@ -94,7 +94,7 @@ class CatalogViewModel(
             val provider: ContentProvider? = manager.byId(providerId)
             val ref = CatalogRef(providerId, type, catalogId, catalogName, rawType)
             val fresh = try {
-                provider?.getCatalog(ref, page) ?: emptyList()
+                (provider?.getCatalog(ref, page) ?: emptyList()).map { it.trimInlinePoster() }
             } catch (t: Throwable) {
                 emptyList()
             }
@@ -124,8 +124,20 @@ class CatalogViewModel(
     }
 }
 
-@Composable
-fun CatalogScreen(
+/** 51CG/MRDS posters arrive as huge inline data: URIs (hundreds of KB of
+ * base64 each). A big catalog holding thousands of those blows the heap the moment
+ * the user scrolls — the detail page re-fetches the poster via /meta anyway,
+ * so drop oversized inline posters to let a catalog of ANY size be browsed
+ * without an OutOfMemoryError. */
+private const val MAX_INLINE_POSTER = 24_000
+
+private fun MediaItem.trimInlinePoster(): MediaItem {
+    val p = posterUrl?.takeIf { it.length <= MAX_INLINE_POSTER }
+    val b = backdropUrl?.takeIf { it.length <= MAX_INLINE_POSTER }
+    return if (p == posterUrl && b == backdropUrl) this
+    else copy(posterUrl = p, backdropUrl = b)
+}
+
     nav: NavHostController,
     providerId: String,
     catalogId: String,
