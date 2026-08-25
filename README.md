@@ -4,7 +4,7 @@
 
 - **Stremio addons** — add any addon URL, browse catalogs, search, play.
 - **Universal scrapers** — JSON-rule site scrapers, no code needed.
-- **CloudStream .cs3 plugins** — Stage 2 ✅ — your existing `.cs3` extensions run unchanged.
+- **CloudStream .cs3 plugins** — Stage 2 â — your existing `.cs3` extensions run unchanged.
 - **SkyStream extensions** — Stage 3.
 
 Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, built in pure Kotlin + Compose.
