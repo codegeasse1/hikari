@@ -252,11 +252,12 @@ class ContentRepository(private val manager: ProviderManager) {
      *  that can list them (some catalog addons serve videos for series via a
      *  different addon, e.g. Cinemeta-backed ids). */
     suspend fun episodesFor(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
-        if (item.type != MediaType.SERIES) return@withContext null
+        if (item.type != MediaType.SERIES && item.type != MediaType.MOVIE) return@withContext null
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
-        val ordered = listOfNotNull(manager.byId(item.providerId)) + others
+        val ordered = listOfNotNull(manager.byId(item.providerId)) +
+            (if (item.type == MediaType.SERIES) others else emptyList())
         for (p in ordered) {
             val eps = (withTimeoutOrNull(12_000) {
                 cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
