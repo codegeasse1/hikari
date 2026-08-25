@@ -30,6 +30,65 @@ Download it on the phone and open it (allow "install unknown apps").
 
 ## Add extensions
 
+### Official repos — add all sources in one tap
+
+The quickest way to load sources is to add our two official extension repos. Each is a single URL that installs a whole collection of extensions.
+
+**Hikari extensions repo** (native .hiki extensions)
+
+```
+https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json
+```
+
+That URL is a `repo.json` listing every official extension (trimmed here):
+
+```json
+{
+  "name": "Hikari Extensions",
+  "description": "Official .hiki extensions for Hikari.",
+  "plugins": [
+    { "name": "Anime4i",  "url": "https://github.com/codegeasse1/hikari-extensions/releases/download/continuous/anime4i.hiki",  "version": 2, "tvTypes": ["series", "movie"] },
+    { "name": "Anime",     "url": "https://github.com/codegeasse1/hikari-extensions/releases/download/continuous/anime.hiki",      "version": 1, "tvTypes": ["movie", "tv"] },
+    { "name": "Castle TV", "url": "https://github.com/codegeasse1/hikari-extensions/releases/download/continuous/castle.hiki",   "version": 3, "tvTypes": ["movie", "tv"] },
+    { "name": "Anikoto",   "url": "https://github.com/codegeasse1/hikari-extensions/releases/download/continuous/anikoto.hiki", "version": 3, "tvTypes": ["movie", "tv"] }
+  ]
+}
+```
+
+**Codegeasse CloudStream repo** (.cs3 plugins)
+
+```
+https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json
+```
+
+Its `repo.json` points at the plugin list:
+
+```json
+{"name": "Codegeasse Repo", "description": "Anime4i CloudStream extensions", "manifestVersion": 1, "pluginLists": ["https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/plugins.json"]}
+```
+
+#### Add the Hikari repo, step by step
+
+1. Open **Hikari** and go to the **Extensions** tab (puzzle-piece icon at the bottom).
+2. Tap **Add Hikari repo** (the top-left button with the puzzle-piece icon).
+3. Paste this URL and tap **Add**:
+
+   `https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json`
+
+4. Tap the **Hikari Extensions** card that appears, then tap **Install** next to any extension you want (Anime4i, Anime, Castle TV, …).
+
+#### Add the CloudStream repo, step by step
+
+1. Open **Hikari** → **Extensions** tab.
+2. Tap **Add CloudStream repo** (the top-left **+** button).
+3. Paste this URL and tap **Add**:
+
+   `https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json`
+
+4. Tap the **Codegeasse Repo** card, then **Install** the providers you want (Anime4i, Anikoto, Anineko, …).
+
+> You can even paste a plain `github.com/owner/repo` link instead of the full raw URL — Hikari automatically finds the correct `repo.json`. Installed providers appear in **Home** and **Search** right away.
+
 **Stremio addon:** Extensions → *Add Stremio addon* → paste the addon URL (it must serve `manifest.json`).
 
 **Universal scraper:** Extensions → *Add scraper* → paste a JSON config. Two modes — **HTML mode** for classic sites with server-rendered pages, and **JSON-API mode** for single-page apps that only serve data through a JSON API.
