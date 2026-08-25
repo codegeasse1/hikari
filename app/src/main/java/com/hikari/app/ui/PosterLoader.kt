@@ -52,16 +52,21 @@ object PosterLoader {
             return onDisk
         }
 
-        val comma = url.indexOf(',')
-        if (comma <= 0) return null
-        val bytes = runCatching {
-            Base64.decode(url.substring(comma + 1), Base64.DEFAULT)
-        }.getOrNull() ?: return null
+        val bytes = decodeDataUri(url) ?: return null
         if (bytes.isNotEmpty()) {
             memCache[url] = bytes
             if (file != null) runCatching { file.writeBytes(bytes) }
         }
         return bytes
+    }
+
+    /** Decodes the base64 payload of a `data:` URI (null on any failure). */
+    private fun decodeDataUri(url: String): ByteArray? {
+        val comma = url.indexOf(',')
+        if (comma <= 0) return null
+        return runCatching {
+            Base64.decode(url.substring(comma + 1), Base64.DEFAULT)
+        }.getOrNull()
     }
 
     /**
@@ -79,7 +84,8 @@ object PosterLoader {
         val file = diskDir?.let { File(it, hash) }
         val have = file?.let { it.exists() && it.length() > 0 } ?: false
         if (!have) {
-            val bytes = model(url) ?: return null
+            val bytes = decodeDataUri(url) ?: return null
+            if (bytes.isEmpty()) return null
             if (file != null) runCatching { file.writeBytes(bytes) }
         }
         return CACHE_TOKEN + hash
