@@ -54,10 +54,12 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.navigation.Routes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class CatalogViewModel(
     app: Application,
@@ -94,7 +96,8 @@ class CatalogViewModel(
             val provider: ContentProvider? = manager.byId(providerId)
             val ref = CatalogRef(providerId, type, catalogId, catalogName, rawType)
             val fresh = try {
-                (provider?.getCatalog(ref, page) ?: emptyList()).map { it.trimInlinePoster() }
+                val raw = provider?.getCatalog(ref, page) ?: emptyList()
+                withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
             } catch (t: Throwable) {
                 emptyList()
             }
@@ -124,16 +127,15 @@ class CatalogViewModel(
     }
 }
 
-/** 51CG/MRDS posters arrive as huge inline data: URIs (hundreds of KB of
- * base64 each). A big catalog holding thousands of those blows the heap the moment
- * the user scrolls — the detail page re-fetches the poster via /meta anyway,
- * so drop oversized inline posters to let a catalog of ANY size be browsed
- * without an OutOfMemoryError. */
-private const val MAX_INLINE_POSTER = 24_000
-
-private fun MediaItem.trimInlinePoster(): MediaItem {
-    val p = posterUrl?.takeIf { it.length <= MAX_INLINE_POSTER }
-    val b = backdropUrl?.takeIf { it.length <= MAX_INLINE_POSTER }
+/** 51CG/MRDS/Porna91-style posters arrive as huge base64 data: URIs. A big
+ * catalog holding thousands of those raw strings blows the heap the moment the
+ * user scrolls — but simply dropping them left every grid cell blank. Collapse
+ * each oversized poster into a tiny disk-cache token instead (decoded +
+ * persisted once, off the main thread): the grid still shows the image, and
+ * memory stays bounded. */
+private fun MediaItem.tokenizePoster(): MediaItem {
+    val p = PosterLoader.tokenize(posterUrl)
+    val b = PosterLoader.tokenize(backdropUrl)
     return if (p == posterUrl && b == backdropUrl) this
     else copy(posterUrl = p, backdropUrl = b)
 }
