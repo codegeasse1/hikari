@@ -48,6 +48,17 @@
           android:ellipsize="end"
           android:gravity="center_vertical" />
 
+      <ImageButton
+          android:id="@+id/pip_btn"
+          android:layout_width="44dp"
+          android:layout_height="44dp"
+          android:src="@drawable/ic_pip"
+          android:tint="#FFFFFF"
+          android:contentDescription="Picture-in-picture"
+          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:scaleType="centerInside"
+          android:layout_marginEnd="4dp" />
+
       <TextView
           android:id="@+id/player_quality_text"
           android:layout_width="wrap_content"
@@ -125,7 +136,7 @@
       <!-- Player toolbar (bottom row): Lock / Settings / Resize / Speed / Server
            / Skip OP then the stream chips, with Rotate at the end (user asked
            for the rotate icon where the settings gear used to be, and the gear
-           up front) — all in the same row as media3's own buttons, nothing
+           up front) â all in the same row as media3's own buttons, nothing
            floats above the player controls. -->
       <ImageButton
           android:id="@+id/lock_btn"
