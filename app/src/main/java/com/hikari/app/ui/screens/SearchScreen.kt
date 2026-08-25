@@ -38,6 +38,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -61,15 +62,25 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
 @OptIn(FlowPreview::class)
-class SearchViewModel(app: Application) : AndroidViewModel(app) {
+class SearchViewModel(
+    app: Application,
+    private val savedState: SavedStateHandle,
+) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
 
-    private val _query = MutableStateFlow("")
+    // Query + selection live in SavedStateHandle so they survive the activity
+    // being recreated while the video player runs. Without this, watching a
+    // stream from the search results and coming back found an empty screen (the
+    // ViewModel was recreated and the query lost) — forcing a re-search after
+    // every video. On recreation the saved query is restored, so the search
+    // re-runs automatically and the results come straight back.
+    private val _query = MutableStateFlow(savedState.get<String>("query") ?: "")
     val query: StateFlow<String> = _query.asStateFlow()
 
     /** Selected provider ids to search in. EMPTY = search ALL providers. */
-    private val _selectedProviders = MutableStateFlow<Set<String>>(emptySet())
+    private val _selectedProviders =
+        MutableStateFlow(savedState.get<ArrayList<String>>("providers")?.toSet() ?: emptySet())
     val selectedProviders: StateFlow<Set<String>> = _selectedProviders.asStateFlow()
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
@@ -79,6 +90,15 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _searching = MutableStateFlow(false)
     val searching: StateFlow<Boolean> = _searching.asStateFlow()
+
+    /** 51CG/MRDS can return posters as huge inline data: URIs; trimming them
+     *  (the detail page re-fetches the poster anyway) keeps a big result set
+     *  from exhausting memory. */
+    private fun MediaItem.trim(): MediaItem {
+        val p = posterUrl?.takeIf { it.length <= 24_000 }
+        val b = backdropUrl?.takeIf { it.length <= 24_000 }
+        return if (p == posterUrl && b == backdropUrl) this else copy(posterUrl = p, backdropUrl = b)
+    }
 
     init {
         viewModelScope.launch {
@@ -92,7 +112,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                     _searching.value = true
                     try {
                         repo.searchStreaming(q, providerIds = _selectedProviders.value)
-                            .collect { _results.value = it }
+                            .collect { _results.value = it.map { x -> x.trim() } }
                     } finally {
                         _searching.value = false
                     }
@@ -102,11 +122,13 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setQuery(q: String) {
         _query.value = q
+        savedState["query"] = q
     }
 
     /** "All sources" — empty set means every provider. */
     fun selectAll() {
         _selectedProviders.value = emptySet()
+        savedState["providers"] = ArrayList<String>()
     }
 
     /** Toggle one provider in/out of the multi-select. Refuses to empty the
@@ -114,7 +136,10 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleProvider(id: String) {
         val cur = _selectedProviders.value
         val next = if (id in cur) cur - id else cur + id
-        if (next.isNotEmpty()) _selectedProviders.value = next
+        if (next.isNotEmpty()) {
+            _selectedProviders.value = next
+            savedState["providers"] = ArrayList(next)
+        }
     }
 }
 
