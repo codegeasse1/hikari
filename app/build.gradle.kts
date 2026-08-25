@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 39
-        versionName = "0.3.36"
+        versionCode = 40
+        versionName = "0.3.37"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -67,7 +67,7 @@ android {
 // every namespace it touches (androidx/activity/compose/R.class,
 // com.fleeksoft.charset.R, ...). Those collide with the real dependencies' R
 // classes during release dex merging ("Type ...R is defined multiple times").
-// Strip ALL R classes before the jar reaches the classpath — a bare jar has no
+// Strip ALL R classes before the jar reaches the classpath â a bare jar has no
 // resource table, so its R classes are dead scaffolding; the real libraries
 // provide the R classes at runtime.
 val cloudstreamRawJar = file("libs/cloudstream3.jar")
@@ -80,14 +80,14 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // network/WebViewResolver is a no-op stub (`intercept` passes through,
         // resolveUsingWebView returns nothing). Plugins that resolve embeds
         // through a real WebView (TamilBlasters' StreamHG/Hgcloud hgcloud.to
-        // dance, …) pass a WebViewResolver to app.get(...) and silently got
+        // dance, â¦) pass a WebViewResolver to app.get(...) and silently got
         // zero servers. Shadow it with a real Android implementation in
-        // app/src/main/java/com/lagradost/cloudstream3/network/ — so drop the
+        // app/src/main/java/com/lagradost/cloudstream3/network/ â so drop the
         // stub classes here to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/network/WebViewResolver*.class")
         // The jar's CloudStreamApp is compiled against Coil 3 (it implements
         // coil3.SingletonImageLoader.Factory), which this app does NOT bundle
-        // (it ships Coil 2) — so any plugin that touches the class dies with
+        // (it ships Coil 2) â so any plugin that touches the class dies with
         // NoClassDefFoundError the moment it resolves (seen with Cinemacity's
         // Cloudflare-bypass interceptor). Shadow it with a self-contained
         // host-side implementation in
@@ -101,8 +101,8 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(files(cloudstreamCleanJar))
-    // TorrServer — the Go torrent engine CloudStream's own Torrent object uses.
-    // Lets Stremio torrent addons (Torrentio, Comet, MediaFusion…) actually play:
+    // TorrServer â the Go torrent engine CloudStream's own Torrent object uses.
+    // Lets Stremio torrent addons (Torrentio, Comet, MediaFusionâ¦) actually play:
     // magnet/infoHash streams become HLS served from a local TorrServer process.
     implementation("com.github.recloudstream:torrentserver:7861970")
     implementation(libs.androidx.core.ktx)
@@ -111,8 +111,8 @@ dependencies {
     // AppCompat classes AND MainActivity must be an AppCompatActivity for that
     // cast to succeed.
     implementation("androidx.appcompat:appcompat:1.7.0")
-    // Phisher/Kotlin plugins (Anikoto, …) are compiled against Gson and call it
-    // at runtime (e.g. AnikotoExtractors.extractMegaPlayUrl) — without it they
+    // Phisher/Kotlin plugins (Anikoto, â¦) are compiled against Gson and call it
+    // at runtime (e.g. AnikotoExtractors.extractMegaPlayUrl) â without it they
     // die with NoClassDefFoundError: com.google.gson.JsonObject.
     implementation("com.google.code.gson:gson:2.11.0")
     implementation(libs.androidx.lifecycle.runtime.ktx)
