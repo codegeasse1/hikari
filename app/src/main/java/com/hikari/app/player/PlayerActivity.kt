@@ -78,7 +78,7 @@ class PlayerActivity : ComponentActivity() {
      *  keeps rejecting our requests. 0 = the extractor's full headers,
      *  1 = without Referer, 2 = no custom headers at all. Some CDNs (often
      *  Cloudflare-fronted) 403 a request that carries a Referer/Origin they
-     *  don't expect even though the bare URL works in a browser â the player
+     *  don't expect even though the bare URL works in a browser — the player
      *  walks these variants before giving up on a server. */
     private var headerVariant = 0
 
@@ -110,7 +110,7 @@ class PlayerActivity : ComponentActivity() {
     private var unlockBtn: TextView? = null
     private var speedIndex = 2
 
-    /** True while the controls are locked â the media3 controller stays hidden
+    /** True while the controls are locked — the media3 controller stays hidden
      *  and only the center unlock button remains touchable. */
     private var controlsLocked = false
 
@@ -133,25 +133,25 @@ class PlayerActivity : ComponentActivity() {
      *  player records resume positions into the app store. */
     private var historyEntry: HistoryEntry? = null
 
-    /** Resume position (ms) from a history tap â seeked to on first ready. */
+    /** Resume position (ms) from a history tap — seeked to on first ready. */
     private var startPositionMs = 0L
 
     /** Whether the startPosition seek has been applied yet. */
     private var seekPending = true
 
-    /** Position of the last persisted progress â throttles DataStore writes. */
+    /** Position of the last persisted progress — throttles DataStore writes. */
     private var lastSavedPos = -1L
 
     /** Periodic (5s) progress saver so even a force-kill keeps resume position. */
     private val saveHandler = Handler(Looper.getMainLooper())
     private var saveTask: Runnable? = null
 
-    /** Main-thread handler driving the press-and-hold (â¥2s â 2Ã) timer. */
+    /** Main-thread handler driving the press-and-hold (≥2s → 2×) timer. */
     private val speedHandler = Handler(Looper.getMainLooper())
     private var holdSpeedTimer: Runnable? = null
     private var holdingFast = false
 
-    /** True right after a â¥2s hold is released â the ensuing single-tap must
+    /** True right after a ≥2s hold is released — the ensuing single-tap must
      *  NOT toggle the controls (the lift is part of the hold, not a tap). */
     private var suppressNextTap = false
 
@@ -160,8 +160,8 @@ class PlayerActivity : ComponentActivity() {
     private var controllerVisible = false
 
     /** YouTube/mpv-style gestures: single tap toggles the controls, double tap
-     *  on the left/right half seeks â/+10s (with a visual feedback flash), and
-     *  press-and-hold â¥2s plays at 2Ã until the finger lifts. */
+     *  on the left/right half seeks −/+10s (with a visual feedback flash), and
+     *  press-and-hold ≥2s plays at 2× until the finger lifts. */
     private val gestureDetector: GestureDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -246,7 +246,7 @@ class PlayerActivity : ComponentActivity() {
                 noSubsRetry = false
                 playSource(currentIndex + 1)
             } else {
-                // Last server failed â retry the whole list (transient CDN
+                // Last server failed — retry the whole list (transient CDN
                 // hiccups / DNS glitches often clear on a second pass).
                 noSubsRetry = false
                 playSource(0)
@@ -264,7 +264,7 @@ class PlayerActivity : ComponentActivity() {
                     holdingFast = false
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     val task = Runnable {
-                        // Finger has stayed down â¥2s â play at 2Ã until lift.
+                        // Finger has stayed down ≥2s → play at 2× until lift.
                         holdingFast = true
                         applySpeed(2f)
                     }
@@ -445,7 +445,7 @@ class PlayerActivity : ComponentActivity() {
         showSeekFeedback(delta)
     }
 
-    /** Flash the double-tap seek indicator (arrow + +10s/â10s) like YouTube. */
+    /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
     private fun showSeekFeedback(deltaMs: Long) {
         val v = seekFeedback ?: return
         seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
@@ -495,7 +495,7 @@ class PlayerActivity : ComponentActivity() {
                     f.height.takeIf { it > 0 }?.let { "${it}p" },
                     f.width.takeIf { it > 0 }?.let { "${it}px" },
                     f.averageBitrate.takeIf { it > 0 }?.let { "${it / 1000}kbps" }
-                ).joinToString(" Â· ").ifBlank { "Track ${i + 1}" }
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
                 items.add(label)
                 indexMap[items.size - 1] = group to i
                 if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
@@ -527,7 +527,7 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * Subtitle control. Lists every available text track (HLS/DASH subtitle
-     * groups AND the provider-supplied .srt/.vtt), plus Off and Auto â so a
+     * groups AND the provider-supplied .srt/.vtt), plus Off and Auto — so a
      * stream that forces subtitles on can finally be muted, and a stream with
      * several languages gets a real picker.
      */
@@ -551,7 +551,7 @@ class PlayerActivity : ComponentActivity() {
                     f.language?.takeIf { it.isNotBlank() },
                     f.label?.takeIf { it.isNotBlank() },
                     f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" Â· ").ifBlank { "Track ${i + 1}" }
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
                 items.add(lang)
                 indexMap[items.size - 1] = group to i
                 if (!textDisabled && override != null && override.trackIndices.any { it == i }) {
@@ -589,7 +589,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Audio track switcher â for dual-audio releases (Hindi/Tamil/Telugu audio
+     * Audio track switcher — for dual-audio releases (Hindi/Tamil/Telugu audio
      * on the same video, etc). Lists every audio group the current source
      * exposes, plus Default, and switches with an ExoPlayer track override.
      * The button sits in the SAME bottom chip row as Quality/Sub so it never
@@ -618,7 +618,7 @@ class PlayerActivity : ComponentActivity() {
                     },
                     f.label?.takeIf { it.isNotBlank() },
                     f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" Â· ").ifBlank { "Track ${i + 1}" }
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
                 items.add(label)
                 indexMap[items.size - 1] = group to i
                 if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
@@ -679,7 +679,7 @@ class PlayerActivity : ComponentActivity() {
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = ProgressDialog(this).apply {
             setTitle("Torrent stream")
-            setMessage("Starting torrent engineâ¦\nFirst play can take a few seconds.")
+            setMessage("Starting torrent engine…\nFirst play can take a few seconds.")
             setCancelable(false)
             setIndeterminate(true)
             show()
@@ -695,8 +695,8 @@ class PlayerActivity : ComponentActivity() {
             torrentDialog = null
 
             res.onSuccess { playable ->
-                // TorrServer's /stream/<file>?â¦&play endpoint serves the torrent
-                // file as RAW BYTES (progressive download with Range support) â
+                // TorrServer's /stream/<file>?…&play endpoint serves the torrent
+                // file as RAW BYTES (progressive download with Range support) —
                 // NOT an HLS manifest. Forcing isM3u8 made ExoPlayer parse the
                 // video bytes as a playlist ("Input does not start with the
                 // #EXTM3U header"). Leave the mime unset and let ExoPlayer sniff
@@ -714,7 +714,7 @@ class PlayerActivity : ComponentActivity() {
                 sources = list
                 Toast.makeText(
                     this@PlayerActivity,
-                    "Torrent ready â streaming from peers",
+                    "Torrent ready — streaming from peers",
                     Toast.LENGTH_SHORT
                 ).show()
                 playDirect(index)
@@ -724,7 +724,7 @@ class PlayerActivity : ComponentActivity() {
                 val hasNext = currentIndex + 1 < sources.size
                 if (hasNext) {
                     noSubsRetry = false
-                    Toast.makeText(this@PlayerActivity, "Torrent failed â trying next", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@PlayerActivity, "Torrent failed — trying next", Toast.LENGTH_SHORT).show()
                     playSource(currentIndex + 1)
                 } else {
                     showError("Torrent playback failed:\n$msg", false)
@@ -747,7 +747,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun buildMagnet(src: PlayerSource): String {
-        // CS3 plugins sometimes hand us a ready magnet link â use it as-is,
+        // CS3 plugins sometimes hand us a ready magnet link — use it as-is,
         // only making sure the file index is present.
         if (src.url.startsWith("magnet:", true)) {
             return if (src.fileIdx != null && !src.url.contains("index=")) {
@@ -778,7 +778,7 @@ class PlayerActivity : ComponentActivity() {
         while (t != null && depth < 4) {
             val m = t.message
             if (!m.isNullOrBlank()) {
-                if (sb.isNotEmpty()) sb.append(" â ")
+                if (sb.isNotEmpty()) sb.append(" → ")
                 sb.append(m)
             }
             t = t.cause
@@ -789,7 +789,7 @@ class PlayerActivity : ComponentActivity() {
 
     /** Safe entry point: any unexpected exception during player setup (a bad
      *  source URL, a plugin-supplied header, an ExoPlayer hiccup) must surface
-     *  as "try the next server" or an error panel â never an uncaught crash
+     *  as "try the next server" or an error panel — never an uncaught crash
      *  that leaves a frozen black screen. */
     private fun playDirect(index: Int) {
         try {
@@ -826,13 +826,13 @@ class PlayerActivity : ComponentActivity() {
         // Send the SOURCE's own User-Agent when it declares one (extractors like
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
         // requires), falling back to our Chrome UA. Never brand-mangle it with
-        // a "Hikari/" prefix â a malformed UA gets those hosts to answer 403.
+        // a "Hikari/" prefix — a malformed UA gets those hosts to answer 403.
         // When a CDN keeps rejecting the request, headerVariant walks the header
         // set down to nothing (some CDNs 403 any request carrying a Referer).
         // Header values are sanitized FIRST: some addons' extractors ship a
-        // User-Agent with non-ASCII characters (a Cyrillic look-alike 'Ðµ' inside
+        // User-Agent with non-ASCII characters (a Cyrillic look-alike 'µ' inside
         // an otherwise-ASCII Chrome UA is the classic one), and OkHttp rejects
-        // any header value with chars > 127 via IllegalArgumentException â which
+        // any header value with chars > 127 via IllegalArgumentException — which
         // media3 surfaces as a fatal playback error even though the stream is
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
@@ -853,7 +853,7 @@ class PlayerActivity : ComponentActivity() {
         this.player = player
         if (noSubsRetry) {
             // The previous attempt crashed on a garbage in-manifest subtitle
-            // track â disable text tracks for this retry.
+            // track — disable text tracks for this retry.
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
@@ -916,7 +916,7 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * If the current server still hasn't started delivering video 20s after
-     * prepare, ask the user: switch to the next server or keep waiting â and
+     * prepare, ask the user: switch to the next server or keep waiting — and
      * auto-switch after 3s if they don't answer. CloudStream plays in ~5s, but
      * some servers genuinely take 15-20s to spin up (cold CDN edge, slow
      * origin), so give them that long first. Only fires while nothing has been
@@ -993,13 +993,13 @@ class PlayerActivity : ComponentActivity() {
                     noSubsRetry = false
                     Toast.makeText(
                         this@PlayerActivity,
-                        "Server too slow â switching to next",
+                        "Server too slow — switching to next",
                         Toast.LENGTH_SHORT
                     ).show()
                     playSource(currentIndex + 1)
                     return
                 }
-                countdown.text = "Switching to the next server in ${(remaining / 1000) + 1}sâ¦"
+                countdown.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
                 bufferingWatchdog.postDelayed(this, 250)
             }
         }
@@ -1017,7 +1017,7 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * Fetches a subtitle file with the given headers and returns it as a
-     * self-contained data URI â but only if the content actually looks like a
+     * self-contained data URI — but only if the content actually looks like a
      * subtitle. Returns null for anything that 404s, errors, or returns junk,
      * so a dead provider subtitle is silently dropped instead of crashing the
      * player.
@@ -1045,7 +1045,7 @@ class PlayerActivity : ComponentActivity() {
 
     private val listener = object : Player.Listener {
         // Auto-rotate to match the video: landscape videos play landscape,
-        // portrait videos play portrait â once, per source. After that the
+        // portrait videos play portrait — once, per source. After that the
         // rotate button is entirely in the user's hands.
         override fun onVideoSizeChanged(videoSize: VideoSize) {
             if (autoRotated) return
@@ -1103,7 +1103,7 @@ class PlayerActivity : ComponentActivity() {
             }
             // HLS manifests often declare a subtitle track whose URL returns
             // junk ("Expected WEBVTT. Got 1" / contentIsMalformed). media3
-            // treats that as a fatal parse error â retry the SAME server with
+            // treats that as a fatal parse error — retry the SAME server with
             // text tracks disabled before giving up on it.
             val code = error.errorCode
             val subtitleIssue = !noSubsRetry &&
@@ -1112,7 +1112,7 @@ class PlayerActivity : ComponentActivity() {
                 (details.contains("WEBVTT", true) || details.contains("Expected", true) ||
                     details.contains("subtitle", true) || details.contains("TextDecoder", true))
             if (subtitleIssue) {
-                Toast.makeText(this@PlayerActivity, "Bad subtitle track â retrying without subtitles", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PlayerActivity, "Bad subtitle track — retrying without subtitles", Toast.LENGTH_SHORT).show()
                 noSubsRetry = true
                 playSource(currentIndex)
                 return
@@ -1122,7 +1122,7 @@ class PlayerActivity : ComponentActivity() {
             // browser. And some addons hand us a header with non-ASCII chars
             // (a Cyrillic look-alike User-Agent), which OkHttp rejects with
             // IllegalArgumentException. Both are header problems, not server
-            // problems â walk the header set down (full â no Referer â none)
+            // problems — walk the header set down (full → no Referer → none)
             // before declaring the server dead.
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
@@ -1131,19 +1131,19 @@ class PlayerActivity : ComponentActivity() {
                 headerVariant++
                 Toast.makeText(
                     this@PlayerActivity,
-                    "Source rejected our request â retrying with fewer headers",
+                    "Source rejected our request — retrying with fewer headers",
                     Toast.LENGTH_SHORT
                 ).show()
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
             }
-            // Like CloudStream: never strand the user â keep trying the next
+            // Like CloudStream: never strand the user — keep trying the next
             // server automatically on every failure.
             val hasNext = currentIndex + 1 < sources.size
             if (hasNext) {
                 noSubsRetry = false
-                Toast.makeText(this@PlayerActivity, "Server failed â trying next", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
                 showError(details, false)
@@ -1154,7 +1154,7 @@ class PlayerActivity : ComponentActivity() {
     /** Drop non-ASCII characters from a header value. OkHttp throws
      *  IllegalArgumentException on any header value containing chars > 127,
      *  and some addon extractors ship headers (User-Agent most often) that
-     *  contain Cyrillic look-alikes â a player crash that has nothing to do
+     *  contain Cyrillic look-alikes — a player crash that has nothing to do
      *  with the actual stream. */
     private fun sanitizeHeaderValue(v: String): String = v.filter { it.code < 128 }
 
@@ -1168,7 +1168,7 @@ class PlayerActivity : ComponentActivity() {
     private fun showError(message: String, hasNext: Boolean) {
         var text = message
         // px.* / tracker domains that resolve to 0.0.0.0 are the signature of
-        // a system-level ad-blocker or DNS filter â tell the user, since it
+        // a system-level ad-blocker or DNS filter — tell the user, since it
         // isn't something Hikari can fix from inside the app. Only match real
         // resolution/connect failures: "Failed to connect" alone is too broad
         // (it also wraps CDN-side 403s and read timeouts, which are NOT the
@@ -1212,7 +1212,7 @@ class PlayerActivity : ComponentActivity() {
     /**
      * Persists current playback position into the watch history (if the
      * detail screen supplied history context and the user hasn't paused
-     * history). Skips the very start of a video (<10s â a quick peek shouldn't
+     * history). Skips the very start of a video (<10s — a quick peek shouldn't
      * litter the history) and throttles to one write per 10s of progress.
      */
     private fun recordProgress() {
@@ -1229,7 +1229,7 @@ class PlayerActivity : ComponentActivity() {
                 val app = applicationContext as HikariApp
                 if (!app.store.historyPaused()) app.store.addHistory(h)
             } catch (_: Throwable) {
-                // history is best-effort â never let it break playback
+                // history is best-effort — never let it break playback
             }
         }
     }
@@ -1251,7 +1251,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStop() {
         // Persist the final position as soon as the activity goes to the
-        // background (home button, lock screen, app switch) â onDestroy may
+        // background (home button, lock screen, app switch) — onDestroy may
         // come later or never (background process death).
         recordProgress()
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
