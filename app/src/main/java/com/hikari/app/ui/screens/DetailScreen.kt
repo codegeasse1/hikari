@@ -2,6 +2,8 @@ package com.hikari.app.ui.screens
 
 import android.app.Application
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -303,6 +305,13 @@ fun DetailScreen(
     }
 
     var playerLaunched by remember { mutableStateOf(false) }
+    // Resets the once-only launch guard the moment the player activity returns
+    // to this screen — without this, the FIRST play set the flag and every
+    // later tap (episode 2..N, another server) was silently swallowed, so a
+    // 10-episode melon list only ever played its first video.
+    val playerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { playerLaunched = false }
     val launchPlayer: (List<StreamSource>, Episode?) -> Unit = launchPlayer@{ playable, ep ->
         if (playerLaunched) return@launchPlayer
         playerLaunched = true
@@ -311,7 +320,7 @@ fun DetailScreen(
         // History context rides along so the player can record resume position
         // (and seek back to it when this screen was opened from history).
         val isResumeTarget = (ep?.id ?: "") == episodeId
-        context.startActivity(
+        playerLauncher.launch(
             Intent(context, PlayerActivity::class.java).apply {
                 putExtra("title", m?.title ?: title)
                 putExtra("sources", payload)
