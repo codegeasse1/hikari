@@ -1,16 +1,20 @@
 package com.hikari.app.player
 
 import android.app.AlertDialog
+import android.app.PictureInPictureParams
 import android.app.ProgressDialog
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
@@ -33,6 +37,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -89,6 +94,23 @@ class PlayerActivity : ComponentActivity() {
 
     private val bufferingWatchdog = Handler(Looper.getMainLooper())
     private var watchdogTask: Runnable? = null
+
+    /** True once the current source has drawn its first video frame. */
+    private var renderedFirstFrame = false
+
+    /** True once the current source has been restarted by the first-frame
+     *  watchdog (guards against an infinite restart loop). */
+    private var firstFrameRetried = false
+
+    /** First-frame watchdog: a video source that reaches READY but never draws
+     *  a frame is a silently-hanging decoder (black screen) — the buffering
+     *  watchdog can't catch it because playbackState is READY. Cancelled on
+     *  onRenderedFirstFrame. */
+    private var firstFrameTask: Runnable? = null
+
+    /** True while the activity is in picture-in-picture mode — every overlay
+     *  is stripped so only the video shows in the small window. */
+    private var inPip = false
 
     /** "Server too slow" dialog: a 3s auto-switch countdown with Wait/Switch.
      *  Wait re-arms the watchdog for 30 more seconds, then re-prompts. */
@@ -241,6 +263,27 @@ class PlayerActivity : ComponentActivity() {
         unlockBtn?.background = ContextCompat.getDrawable(this, R.drawable.ic_unlock)
         unlockBtn?.setPadding(0, 0, 0, 0)
 
+        // Picture-in-picture: explicit pip button (top bar) plus YouTube-style
+        // auto-enter when the user leaves the player with video playing (12+).
+        // minSdk is 24, so the whole feature is gated on SDK >= 26 (API 26
+        // introduced PiP).
+        val pipBtn = findViewById<ImageButton>(R.id.pip_btn)
+        if (Build.VERSION.SDK_INT >= 26) {
+            pipBtn?.setOnClickListener { enterPip() }
+            if (Build.VERSION.SDK_INT >= 31) {
+                // API 31+ prefers setAutoEnterEnabled over onUserLeaveHint so
+                // the enter fires exactly once.
+                setPictureInPictureParams(
+                    PictureInPictureParams.Builder()
+                        .setAspectRatio(Rational(16, 9))
+                        .setAutoEnterEnabled(true)
+                        .build()
+                )
+            }
+        } else {
+            pipBtn?.visibility = View.GONE
+        }
+
         nextBtn?.setOnClickListener {
             if (currentIndex + 1 < sources.size) {
                 noSubsRetry = false
@@ -367,6 +410,69 @@ class PlayerActivity : ComponentActivity() {
             .build()
 
         playSource(0)
+    }
+
+    /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
+     *  video's actual aspect ratio (16:9 until the video is known), so the
+     *  user gets a properly-proportioned mini window instead of letterboxed
+     *  bars. No-ops when already in PiP or when the source is audio-only. */
+    @Suppress("DEPRECATION")
+    private fun enterPip() {
+        if (Build.VERSION.SDK_INT < 26 || inPip) return
+        val p = player ?: return
+        val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
+        if (!hasVideo) {
+            Toast.makeText(this, "No video track to keep in the background", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val builder = PictureInPictureParams.Builder()
+        val ratio = if (p.videoSize.width > 0 && p.videoSize.height > 0) {
+            Rational(p.videoSize.width, p.videoSize.height)
+        } else Rational(16, 9)
+        builder.setAspectRatio(ratio)
+        if (Build.VERSION.SDK_INT >= 31) builder.setAutoEnterEnabled(true)
+        try {
+            enterPictureInPictureMode(builder.build())
+        } catch (t: Throwable) {
+            Toast.makeText(this, "Picture-in-picture unavailable", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** YouTube-style: leaving the player (Home, another app) while video is
+     *  actually playing drops into a PiP window instead of stopping playback.
+     *  Only used on API 26-30 — API 31+ has setAutoEnterEnabled(true) set in
+     *  onCreate, which would make this fire twice. */
+    @Suppress("DEPRECATION")
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT in 26..30) {
+            if (inPip || isFinishing) return
+            if (player?.isPlaying == true) enterPip()
+        }
+    }
+
+    /** Strip every overlay in PiP so only the video shows in the small window,
+     *  and restore the controller / unlock button when back on the full screen. */
+    @Suppress("DEPRECATION")
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip = isInPictureInPictureMode
+        val pv = playerView ?: return
+        if (isInPictureInPictureMode) {
+            pv.useController = false
+            pv.hideController()
+            unlockBtn?.visibility = View.GONE
+            seekFeedback?.visibility = View.GONE
+        } else {
+            pv.useController = true
+            if (controlsLocked) {
+                pv.hideController()
+                unlockBtn?.visibility = View.VISIBLE
+            }
+        }
     }
 
     private fun cycleSpeed() {
@@ -822,6 +928,10 @@ class PlayerActivity : ComponentActivity() {
             old.release()
         }
         playerView?.player = null
+        firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        firstFrameTask = null
+        renderedFirstFrame = false
+        firstFrameRetried = false
 
         // Send the SOURCE's own User-Agent when it declares one (extractors like
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
@@ -848,6 +958,13 @@ class PlayerActivity : ComponentActivity() {
             .setDefaultRequestProperties(sourceHeaders)
 
         val player = ExoPlayer.Builder(this)
+            .setRenderersFactory(
+                // Decoder fallback: a hardware codec that chokes on a (perfectly
+                // valid) stream must degrade to a software decoder — not crash
+                // the whole process into a frozen black screen (the classic
+                // symptom of a native MediaCodec failure).
+                DefaultRenderersFactory(this).setEnableDecoderFallback(true)
+            )
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()
         this.player = player
@@ -879,6 +996,37 @@ class PlayerActivity : ComponentActivity() {
         player.prepare()
         player.playWhenReady = true
         applySpeed(SPEEDS[speedIndex])
+        // A video source that reaches READY but never draws a frame is a
+        // silently-hanging decoder (black screen) — the buffering watchdog
+        // can't catch it because playbackState is already READY. Give it 20s
+        // to render its first frame, then recover (next server, or restart)
+        // instead of stranding the user on a dead black screen.
+        if (mime != null) {
+            firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+            val task = Runnable {
+                firstFrameTask = null
+                val p = player ?: return@Runnable
+                if (renderedFirstFrame) return@Runnable
+                val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
+                if (!hasVideo) return@Runnable // audio-only: no video frames expected
+                if (p.playbackState == Player.STATE_ENDED) return@Runnable
+                android.util.Log.w("HikariPlayer", "No first frame rendered in 20s — decoder hang")
+                if (currentIndex + 1 < sources.size) {
+                    Toast.makeText(this@PlayerActivity, "Video stuck — trying next server", Toast.LENGTH_SHORT).show()
+                    noSubsRetry = false
+                    playSource(currentIndex + 1)
+                } else if (!firstFrameRetried) {
+                    firstFrameRetried = true
+                    Toast.makeText(this@PlayerActivity, "Video stuck — restarting", Toast.LENGTH_SHORT).show()
+                    noSubsRetry = false
+                    playSource(currentIndex)
+                } else {
+                    showError("Playback started but no video frame was rendered.", false)
+                }
+            }
+            firstFrameTask = task
+            bufferingWatchdog.postDelayed(task, 20_000L)
+        }
         scheduleBufferingWatchdog()
 
         if (noSubsRetry) return@playDirectInner
@@ -1067,6 +1215,12 @@ class PlayerActivity : ComponentActivity() {
             selectFirstTextTrack(player ?: return, tracks)
         }
 
+        override fun onRenderedFirstFrame() {
+            renderedFirstFrame = true
+            firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+            firstFrameTask = null
+        }
+
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 dismissSlowDialog()
@@ -1086,6 +1240,8 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+            firstFrameTask = null
             val details = buildString {
                 append(error.javaClass.simpleName)
                 append(" [").append(PlaybackException.getErrorCodeName(error.errorCode)).append("]")
@@ -1267,6 +1423,8 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
+        firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        firstFrameTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
         player?.let { p ->
