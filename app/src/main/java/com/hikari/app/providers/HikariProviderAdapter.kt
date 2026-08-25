@@ -65,7 +65,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
         val p = provider ?: return null
-        if (item.type == MediaType.MOVIE) return null
         return p.getEpisodes(item.toExt())?.map { ep ->
             val base = ep.name ?: "Episode ${ep.number}"
             Episode(
