@@ -1,0 +1,321 @@
+package com.hikari.app
+
+import android.app.Application
+import android.content.Context
+import coil.Coil
+import coil.ImageLoader
+import com.hikari.app.data.AppStore
+import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
+import com.hikari.app.net.Http
+import com.hikari.app.providers.ProviderManager
+import com.lagradost.api.setContext
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.SettingsJson
+import com.lagradost.nicehttp.Requests
+import com.lagradost.nicehttp.ignoreAllSSLErrors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import okhttp3.Cache
+import okhttp3.OkHttpClient
+import org.conscrypt.Conscrypt
+import java.io.File
+import java.security.Security
+import java.util.concurrent.TimeUnit
+
+class HikariApp : Application() {
+
+    companion object {
+        lateinit var instance: HikariApp
+            private set
+
+        /** Stack trace of the last uncaught crash (shown as a Home banner). */
+        @Volatile
+        var lastCrash: String? = null
+            private set
+
+        /**
+         * The current MainActivity, set on create and cleared on stop. The real
+         * CloudStream host passes its AppCompatActivity to plugin load() (some
+         * plugins cast it — e.g. Moviebox's `as AppCompatActivity`), so a bare
+         * Application context makes those plugins throw ClassCastException.
+         */
+        @Volatile
+        var mainActivity: MainActivity? = null
+    }
+
+    lateinit var store: AppStore
+        private set
+    lateinit var providers: ProviderManager
+        private set
+
+    /**
+     * Live copy of the persisted element-block selectors (WebView element
+     * blocker). Loaded at startup and kept in sync by every block/undo/clear,
+     * so a freshly opened WebView can apply them synchronously BEFORE its
+     * first page finishes loading — reading the store itself is async and was
+     * racing the first page load, which made blocks look \"reset\" after
+     * closing and reopening the WebView.
+     */
+    @Volatile
+    var elementBlocks: List<String> = emptyList()
+
+    /** Bumped by the WebView's "Go to app home" menu item; AppRoot watches this
+     *  and switches to the app's own Home tab (so the button leaves the site
+     *  view instead of reloading the website's home page). */
+    val homeTabRequest = MutableStateFlow(0)
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        installCrashHandler()
+        initCloudStream(this)
+        store = AppStore(this)
+        providers = ProviderManager(store)
+        Http.init()
+        setupImageLoader()
+        CoroutineScope(Dispatchers.IO).launch {
+            // Load the persisted WebView element blocks into the app cache FIRST
+            // (fast DataStore read) so a WebView opened right after launch can
+            // apply them on its first page instead of showing them after a race.
+            runCatching { elementBlocks = store.elementBlocks() }
+            // Registering extractor aliases initializes the jar's full extractor
+            // registry — do it off the main thread.
+            com.hikari.app.cs3.HikariExtractorRegistry.register()
+            // WebView UA override state (Settings) — loaded once, kept current
+            // by the settings card.
+            runCatching {
+                webViewUseDefaultUa = store.webviewUseDefaultUa()
+                webViewCustomUa = store.webviewCustomUa()
+            }
+            // First run: register the bundled Hikari demo extension (YTS) so
+            // the extension system ships with a working provider. Harmless if
+            // already added — addProvider dedupes by id.
+            runCatching {
+                if (store.providers().none { it.type == ProviderType.HIKARI }) {
+                    store.addProvider(
+                        ProviderConfig(
+                            id = "hiki|yts",
+                            name = "YTS (Hikari)",
+                            type = ProviderType.HIKARI,
+                            iconUrl = null,
+                            extra = "com.hikari.ext.providers.YtsProvider",
+                        )
+                    )
+                }
+            }
+            providers.refresh()
+            providers.providers.value
+                .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
+                .forEach { it.warm() }
+            // Per-extension auto-translate config + persisted translation cache.
+            runCatching { com.hikari.app.data.Translator.init(store) }
+        }
+    }
+
+    /**
+     * Never let an uncaught exception (main or background thread) die silently:
+     * write the stack to a file, and surface it on the next launch as a banner
+     * (see HomeScreen) so crashes get reported instead of guessed at.
+     */
+    private fun installCrashHandler() {
+        runCatching {
+            val file = File(cacheDir, "crash.log")
+            if (file.exists()) lastCrash = file.readText().take(1600)
+        }
+        Thread.setDefaultUncaughtExceptionHandler { thread, t ->
+            runCatching {
+                val trace = "${t.javaClass.simpleName}: ${t.message}\n" +
+                    t.stackTrace.take(12).joinToString("\n") { "    at $it" }
+                File(cacheDir, "crash.log").writeText(trace)
+                lastCrash = trace
+            }
+            android.util.Log.e("HikariCrash", "Uncaught on ${thread.name}", t)
+            // NEVER leave a dead main thread running: that is what turns the
+            // screen into a frozen black UI (no back button, nothing responds,
+            // the only escape is force-stopping the app). After recording the
+            // trace, terminate the process like the platform default would, so
+            // Android shows the crash dialog and relaunches cleanly — the Home
+            // banner still reports the cause next launch.
+            runCatching { android.os.Process.killProcess(android.os.Process.myPid()) }
+        }
+    }
+
+    /**
+     * Some CDNs refuse image requests that carry a Referer at all (even a
+     * same-host one) while serving the identical URL fine to a bare request —
+     * fourhoi.com/surrit.com (MissAV's image+stream CDN) is verified
+     * no-referer-only: browsers and plain clients get the JPEG, a same-origin
+     * Referer gets 403. These hosts get no Referer header from the image
+     * loader; UA stays browser-like for everyone.
+     */
+    private val NO_REFERER_HOSTS = setOf("fourhoi.com", "surrit.com")
+
+    /** Clear the persisted crash banner after the user dismisses it. */
+    fun clearCrash() {
+        lastCrash = null
+        runCatching { File(cacheDir, "crash.log").delete() }
+    }
+
+    /**
+     * WebView user-agent override (Settings → WebView user agent). Default ON:
+     * the WebView advertises the STOCK Android WebView UA — the fingerprint the
+     * engine actually presents, which is what makes Cloudflare's JS challenge
+     * (cf_clearance) complete instead of looping on a desktop UA claim. Off +
+     * custom UA lets users force a desktop/mobile UA for sites that need one.
+     * Loaded from prefs at startup; updated live by the settings card.
+     */
+    @Volatile
+    var webViewUseDefaultUa = true
+
+    @Volatile
+    var webViewCustomUa: String? = null
+
+    /** UA string the WebViews should advertise. [pluginUa] is the UA a
+     *  CloudStream-style plugin explicitly requested (used only when the user
+     *  has turned the override off and typed nothing). */
+    fun effectiveWebViewUa(pluginUa: String? = null): String {
+        val custom = webViewCustomUa?.trim()
+        if (!webViewUseDefaultUa) {
+            if (!custom.isNullOrBlank()) return custom
+            if (!pluginUa.isNullOrBlank()) return pluginUa
+        }
+        return runCatching { android.webkit.WebSettings.getDefaultUserAgent(this) }
+            .getOrDefault(Http.UA)
+    }
+
+    /**
+     * Most provider CDNs refuse to serve posters to a bare okhttp client: they
+     * require a browser User-Agent and a same-site Referer (hotlink protection).
+     * Coil's default loader sends neither, so every poster 403s into a blank
+     * placeholder. Wire a global loader that sends a browser UA plus a Referer
+     * derived from the image's own origin.
+     */
+    private fun setupImageLoader() {
+        runCatching {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    val builder = req.newBuilder()
+                        .header("User-Agent", Http.UA)
+                    val host = req.url.host?.lowercase() ?: ""
+                    val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
+                    // Plugins declare per-poster headers (e.g. LeakPorner's
+                    // 58img.top needs `Referer: https://leakporner.org/`). Use
+                    // the exact headers when known, else fall back to a
+                    // same-origin Referer (hotlink protection) — except for
+                    // hosts that 403 any Referer at all (see NO_REFERER_HOSTS).
+                    if (host in NO_REFERER_HOSTS) {
+                        // no Referer — fourhoi.com/surrit.com reject the image
+                        // when a Referer is present (verified: same-origin
+                        // referer => 403, bare request => 200)
+                    } else {
+                        val exact = cs3.imageHeaders[req.url.toString()]
+                        if (exact != null) {
+                            exact.forEach { (k, v) -> builder.header(k, v) }
+                        } else {
+                            // URL may differ from the recorded one (scheme/query/
+                            // params) — apply the Referer the provider declared
+                            // for this image host.
+                            val hostRef = cs3.imageHostReferers[host]
+                            if (hostRef != null) {
+                                builder.header("Referer", hostRef)
+                            } else if (host.isNotBlank()) {
+                                builder.header("Referer", "${req.url.scheme}://$host/")
+                            }
+                        }
+                    }
+                    chain.proceed(builder.build())
+                }
+                .build()
+            val loader = ImageLoader.Builder(this)
+                .okHttpClient(client)
+                .crossfade(true)
+                .diskCache {
+                    coil.disk.DiskCache.Builder()
+                        .directory(File(cacheDir, "coil_image_cache"))
+                        .maxSizeBytes(250L * 1024 * 1024)
+                        .build()
+                }
+                .build()
+            Coil.setImageLoader(loader)
+        }
+    }
+
+    private fun initCloudStream(context: Context) {
+        try {
+            // Mirrors the reference host (CloudStreamApp.onCreate). The jar
+            // currently ships the JVM stub of com.lagradost.api.ContextHelper
+            // (getContext() always null), so this is a no-op today — but if the
+            // jar is ever swapped for the Android artifact, the WebViewResolver
+            // shadow in com/lagradost/cloudstream3/network needs the host
+            // context wired exactly this way.
+            try {
+                setContext(context)
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariApp", "setContext failed", t)
+            }
+            // Plugins read CloudStreamApp.context for their Cloudflare bypass,
+            // preference keys and WebView cookies — the jar's CloudStreamApp is
+            // shadowed (it compiled against Coil 3 and failed to resolve), so
+            // wire the shadow's context to the real app context here.
+            try {
+                com.lagradost.cloudstream3.CloudStreamApp.setContext(context)
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariApp", "CloudStreamApp.setContext failed", t)
+            }
+
+            // CloudStream's buildDefaultClient inserts Conscrypt as the JSSE
+            // provider before building okhttp — mirror it so TLS handshakes to
+            // the streaming CDNs behave identically.
+            try {
+                Security.insertProviderAt(Conscrypt.newProvider(), 1)
+            } catch (_: Throwable) {
+            }
+
+            // Accessing the jar's MainActivityKt initializes its own default
+            // nicehttp Requests (jackson responseParser + CloudStream user-agent).
+            // Wire up the real okhttp client (redirects, generous timeouts +
+            // connection retry exactly like CloudStream's buildDefaultClient,
+            // 50MiB cache, optional SSL-ignore) so slow anime sites don't throw
+            // on the 10s okhttp defaults.
+            fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .retryOnConnectionFailure(true)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .apply { if (ignoreSSL) ignoreAllSSLErrors() }
+                .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
+                .build()
+
+            val kt = Class.forName("com.lagradost.cloudstream3.MainActivityKt")
+            fun wire(getter: String, ignoreSSL: Boolean) {
+                val req = kt.getMethod(getter).invoke(null) as Requests
+                req.baseClient = build(ignoreSSL)
+            }
+            wire("getApp", ignoreSSL = false)
+            wire("getInsecureApp", ignoreSSL = true)
+            MainAPI.settingsForProvider = SettingsJson()
+
+            // Warm the 810-extractor registry (constructs every built-in
+            // extractor, loading newpipe/cryptography/ksoup classes) on a
+            // background thread so the first "load sources" click is instant
+            // and any initialization failure surfaces as a caught error
+            // instead of a silent hang on first play.
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    Class.forName("com.lagradost.cloudstream3.utils.ExtractorApiKt")
+                } catch (t: Throwable) {
+                    android.util.Log.e("HikariApp", "extractor registry init failed", t)
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("HikariApp", "CloudStream runtime init failed", t)
+        }
+    }
+}

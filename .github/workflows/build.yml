@@ -1,0 +1,141 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a main release (v<version>) from current main"
+        type: boolean
+        default: false
+      version:
+        description: "Release version (e.g. 0.1.0)"
+        type: string
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Accept Android SDK licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ]; then
+            yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          fi
+
+      - name: Prepare signing keystore
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/hikari-keystore.p12"
+            echo "SIGNING_STORE_PATH=$RUNNER_TEMP/hikari-keystore.p12" >> "$GITHUB_ENV"
+          fi
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.11.1"
+          # The GitHub cache service occasionally has outages that make the
+          # restore/save steps exit 1 and kill the whole build before gradle
+          # even runs. Disabling the cache costs a couple of minutes of
+          # dependency re-downloads but makes builds deterministic.
+          cache-disabled: true
+
+      - name: Build APKs (debug + release)
+        env:
+          GIT_SHA: ${{ github.sha }}
+          SIGNING_STORE_PATH: ${{ env.SIGNING_STORE_PATH }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          gradle assembleDebug assembleRelease --no-daemon --stacktrace > gradle-build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "==== BUILD FAILED (exit $code) ===="
+            tail -n 200 gradle-build.log
+            echo "==== KOTLIN ERRORS ===="
+            grep -E "^e: " gradle-build.log | head -n 40
+            grep -E "^e: " gradle-build.log | head -n 40 | sed -E 's/^e: (.+): \(([0-9]+), ([0-9]+)\): (.*)/::error file=\1,line=\2,col=\3::\4/' || true
+          fi
+          exit $code
+
+      - name: Verify release APK is signed
+        run: |
+          if [ ! -f app/build/outputs/apk/release/app-release.apk ]; then
+            echo "::error::Release APK is missing — signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets."
+            exit 1
+          fi
+          ls -la app/build/outputs/apk/release/
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: gradle-build.log
+          if-no-files-found: ignore
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      # ---- TEST CHANNELS: updated on every push to main ----
+      - name: Publish test APK to build branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
+          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          git add hikari.apk
+          git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
+          git push origin build --force
+
+      - name: Publish test APK to continuous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk hikari-signed.apk
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Continuous build" \
+              --notes "Signed test APK, auto-built from main." || true
+          fi
+
+      # ---- MAIN RELEASE: only when manually triggered with "release" checked ----
+      - name: Publish main release (manual only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          TAG="v${VERSION:-0.1.0}"
+          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Hikari $VERSION" \
+              --notes "Signed release APK." || true
+          fi

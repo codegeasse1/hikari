@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:keepScreenOn="true">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:controller_layout_id="@layout/player_controller" />
+
+    <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
+         rewind/forward arrow + the amount next to it. -->
+    <LinearLayout
+        android:id="@+id/seek_feedback"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="18dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/seek_icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="54sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0" />
+
+        <TextView
+            android:id="@+id/seek_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#F5C569"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0"
+            android:layout_marginTop="2dp" />
+    </LinearLayout>
+
+    <!-- Shown when controls are locked: the only way back to the controls. -->
+    <TextView
+        android:id="@+id/unlock_btn"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center"
+        android:background="@drawable/chip_bg"
+        android:padding="18dp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/error_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#EE000000"
+        android:padding="24dp"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/error_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Playback failed"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+
+        <TextView
+            android:id="@+id/error_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:textColor="#FF8A80"
+            android:paddingTop="8dp"
+            android:maxWidth="320dp" />
+
+        <TextView
+            android:id="@+id/next_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Try next server"
+            android:textSize="15sp"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:layout_marginTop="16dp" />
+    </LinearLayout>
+</FrameLayout>
