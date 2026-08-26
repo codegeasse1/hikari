@@ -662,15 +662,24 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         // Shown in the player error panel if the whole pass still fails, so
         // the user sees that the universal engine actually ran.
         streamErrors[config.id] = "Standard extractors found nothing - trying yt-dlp..."
+        var timedOut = false
         val got = runCatching {
-            withTimeoutOrNull(YTDLP_CAP_MS) { YtDlpResolver.resolve(pageUrl) } ?: emptyList()
+            withTimeoutOrNull(YTDLP_CAP_MS) { YtDlpResolver.resolve(pageUrl) }
+                ?: run { timedOut = true; emptyList() }
         }.getOrDefault(emptyList())
         if (got.isEmpty()) {
             val why = YtDlpResolver.initFailure
-            streamErrors[config.id] = if (why != null) {
-                "Universal extractor (yt-dlp) unavailable: $why"
-            } else {
-                "yt-dlp couldn't extract a playable stream from this page either."
+            streamErrors[config.id] = when {
+                why != null -> "Universal extractor (yt-dlp) unavailable: $why"
+                timedOut -> "yt-dlp timed out after ${YTDLP_CAP_MS / 1000}s extracting this page."
+                else -> {
+                    val detail = YtDlpResolver.lastExtractError
+                    if (detail != null) {
+                        "yt-dlp couldn't extract a playable stream from this page: $detail"
+                    } else {
+                        "yt-dlp couldn't extract a playable stream from this page either."
+                    }
+                }
             }
         } else {
             streamErrors.remove(config.id)
