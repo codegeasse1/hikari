@@ -296,6 +296,10 @@ class HikariApp : Application() {
                 .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
                 .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
+                // Auto Cloudflare handling for CS3 plugin requests (app.get /
+                // app.post): same detect → verify-WebView → retry-with-cookie
+                // flow Hikari's own Http client uses (see CloudflareVerifier).
+                .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
                 .build()
 
             val kt = Class.forName("com.lagradost.cloudstream3.MainActivityKt")

@@ -29,6 +29,10 @@ object Http {
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // Auto Cloudflare handling: attaches a WebView cf_clearance cookie
+            // when present, and on a challenge auto-opens the verify WebView
+            // and retries with the fresh cookie (see CloudflareVerifier).
+            .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .build()
     }
 

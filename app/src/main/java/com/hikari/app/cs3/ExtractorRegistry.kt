@@ -82,6 +82,11 @@ object HikariExtractorRegistry {
         add("https://megacloud.tv") { HikariMegaPlayHost("https://megacloud.tv") }
         add("https://rapid-cloud.co") { HikariMegaPlayHost("https://rapid-cloud.co") }
         add("https://vidplay.site") { HikariMegaPlayHost("https://vidplay.site") }
+
+        // --- hubu.cloud — the one upstream extractor the jar doesn't ship
+        //     (trivial <video><source src> page); alias it so plugins' embeds
+        //     resolve like they do in CloudStream. ---
+        add("https://hubu.cloud") { HikariHubuHost("https://hubu.cloud") }
     }
 }
 
@@ -184,3 +189,31 @@ private class HikariLuluHost(override val mainUrl: String) : LuluStream()
 private class HikariVidHideHost(override val mainUrl: String) : VidHidePro()
 private class HikariWishHost(override val mainUrl: String) : StreamWishExtractor()
 private class HikariByseHost(override val mainUrl: String) : ByseSX()
+
+/**
+ * hubu.cloud — mirrors upstream CloudStream's HubuCloud (the jar doesn't ship
+ * it). The embed page carries a single <video><source src>, so just read the
+ * stream URL off the DOM.
+ */
+private class HikariHubuHost(override val mainUrl: String) : ExtractorApi() {
+    override val name = "Hubu"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val streamUrl = runCatching { app.get(url).document.select("source").attr("src") }.getOrNull()
+        if (streamUrl.isNullOrBlank()) return
+        callback(
+            newExtractorLink(
+                source = name,
+                name = name,
+                url = streamUrl,
+                type = ExtractorLinkType.M3U8,
+            )
+        )
+    }
+}

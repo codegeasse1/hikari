@@ -94,6 +94,10 @@ class WebViewActivity : ComponentActivity() {
     private var autoCloseWhenCloudflarePassed = false
     private var challengeSeen = false
     private var verifyDone = false
+    // Set when the activity was auto-launched by CloudflareVerifier (a request
+    // hit a challenge) — the host lets the verifier wake its waiters when this
+    // view closes so the retry runs immediately.
+    private var verifyHost: String? = null
     private val verifyHandler = Handler(Looper.getMainLooper())
     private var verifyRunnable: Runnable? = null
 
@@ -163,6 +167,7 @@ class WebViewActivity : ComponentActivity() {
         this.startUrl = startUrl
         pageTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
         autoCloseWhenCloudflarePassed = intent.getBooleanExtra("autoCloseWhenCloudflarePassed", false)
+        verifyHost = intent.getStringExtra("verifyHost")
         providerId = intent.getStringExtra("providerId")
         val forceTranslate = intent.getBooleanExtra("translate", false)
 
@@ -1115,6 +1120,9 @@ class WebViewActivity : ComponentActivity() {
         popupChild = null
         runCatching { CookieManager.getInstance().flush() }
         runCatching { webView.destroy() }
+        // The verify WebView closed (challenge passed or dismissed) — wake any
+        // CloudflareVerifier waiters so their retry runs immediately.
+        com.hikari.app.net.CloudflareVerifier.onVerifyViewClosed(verifyHost)
         super.onDestroy()
     }
 
