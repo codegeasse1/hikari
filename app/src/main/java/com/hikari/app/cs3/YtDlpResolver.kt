@@ -70,8 +70,8 @@ object YtDlpResolver {
             try {
                 YtDlp.init(HikariApp.instance)
                 val builtins = Python.getInstance().getBuiltins()
-                val globals = builtins.get("dict").call()
-                builtins.get("exec").call(EXTRACT_SCRIPT, globals)
+                val globals = builtins.get("dict")!!.call()
+                builtins.get("exec")!!.call(EXTRACT_SCRIPT, globals)
                 extractFn = globals.get("_extract")
                 if (extractFn == null) {
                     available = false
