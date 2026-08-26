@@ -1,6 +1,12 @@
 package com.hikari.app.data
 
+import com.hikari.app.HikariApp
+import com.hikari.app.cs3.Cs3MainApiProvider
+import com.hikari.app.cs3.YtDlpResolver
+import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
+import com.hikari.app.providers.StremioAddon
+import com.hikari.app.providers.UniversalScraper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -190,6 +196,7 @@ class ContentRepository(private val manager: ProviderManager) {
             if (targets.isEmpty()) return@withContext emptyList()
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            var result: List<StreamSource> = emptyList()
             try {
                 val jobs = targets.map { p ->
                     scope.async {
@@ -198,7 +205,6 @@ class ContentRepository(private val manager: ProviderManager) {
                         }.getOrDefault(emptyList())
                     }
                 }
-                var result: List<StreamSource> = emptyList()
                 val started = System.currentTimeMillis()
                 while (true) {
                     for (j in jobs) {
@@ -215,12 +221,73 @@ class ContentRepository(private val manager: ProviderManager) {
                     kotlinx.coroutines.delay(80)
                 }
                 jobs.forEach { it.cancel() }
-                // Same torrent/video surfaced by several addons = one entry.
-                result.distinctBy { it.infoHash ?: it.url }
             } finally {
                 scope.cancel()
             }
+            // Same torrent/video surfaced by several addons = one entry.
+            var finalResult = result.distinctBy { it.infoHash ?: it.url }
+            // App-wide universal last resort: every provider type funnels
+            // through here, so when they ALL come up empty the bundled yt-dlp
+            // extractor still gets one shot at the page (see the helper).
+            if (finalResult.isEmpty()) finalResult = ytdlpUniversalFallback(item, episode)
+            finalResult
         }
+
+    /**
+     * App-wide universal last resort: native .hiki providers, the .cs3 bridge,
+     * universal scrapers and even URL-id Stremio addons all funnel through
+     * [streamsFor], so when every one of them came up empty on a real page URL
+     * the bundled yt-dlp extractor gets a shot at it - "no playable sources" is
+     * never the final word just because a provider's own parser missed the
+     * player. CS3 plugins are excluded: Cs3MainApiProvider already runs its own
+     * yt-dlp pass (with richer per-plugin error text), and running it again here
+     * would only double the wait. Gated behind the same "Universal extraction"
+     * setting as that path.
+     */
+    private suspend fun ytdlpUniversalFallback(item: MediaItem, episode: Episode?): List<StreamSource> {
+        val origin = manager.byId(item.providerId) ?: return emptyList()
+        if (origin.config.type == ProviderType.CS3) return emptyList()
+        val pageUrl = episode?.id ?: item.id
+        if (!pageUrl.startsWith("http://") && !pageUrl.startsWith("https://")) return emptyList()
+        val enabled = runCatching { HikariApp.instance.store.ytdlpEnabled() }.getOrDefault(true)
+        if (!enabled) return emptyList()
+
+        recordStreamMessage(origin, "Standard extractors found nothing - trying yt-dlp...")
+        var timedOut = false
+        val got = runCatching {
+            withTimeoutOrNull(45_000) { YtDlpResolver.resolve(pageUrl) }
+                ?: run { timedOut = true; emptyList() }
+        }.getOrDefault(emptyList())
+        if (got.isEmpty()) {
+            val why = YtDlpResolver.initFailure
+            val detail = YtDlpResolver.lastExtractError
+            recordStreamMessage(
+                origin,
+                when {
+                    why != null -> "Universal extractor (yt-dlp) unavailable: $why"
+                    timedOut -> "yt-dlp timed out after 45s extracting this page."
+                    detail != null -> "yt-dlp couldn't extract a playable stream from this page: $detail"
+                    else -> "yt-dlp couldn't extract a playable stream from this page either."
+                }
+            )
+        } else {
+            recordStreamMessage(origin, null)
+        }
+        return got
+    }
+
+    /** Routes a provider's stream message into the right per-provider error map
+     *  so the Detail screen's "no sources" panel can explain what happened. */
+    private fun recordStreamMessage(origin: com.hikari.app.providers.ContentProvider, message: String?) {
+        val id = origin.config.id
+        val map = when (origin.config.type) {
+            ProviderType.STREMIO -> StremioAddon.streamErrors
+            ProviderType.CS3 -> Cs3MainApiProvider.streamErrors
+            ProviderType.HIKARI -> HikariProviderAdapter.streamErrors
+            ProviderType.UNIVERSAL -> UniversalScraper.streamErrors
+        }
+        if (message == null) map.remove(id) else map[id] = message
+    }
 
     /** Enriches an item with the origin addon's full meta (backdrop, overview,
      *  genres, year). If that addon's meta is thin, the next addon that knows

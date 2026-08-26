@@ -27,8 +27,15 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
     @Volatile
     private var providerResolved = false
 
+    companion object {
+        /** Per-provider last-resort message (native .hiki failures + the
+         *  app-wide yt-dlp pass) - shown in the Detail screen's "no sources"
+         *  panel so HIKARI providers aren't a silent wall of mystery. */
+        val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+    }
+
     /** The extension's provider, resolved on first access. Only a SUCCESS is
-     *  cached — a transient failure (extension still loading, a one-off hiccup)
+     *  cached â a transient failure (extension still loading, a one-off hiccup)
      *  is retried on the next access rather than stuck as a permanent null
      *  ("no catalog"/"no playable source" until a force-stop). */
     private val provider: HikariProvider?
@@ -70,7 +77,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             Episode(
                 number = ep.number,
                 id = ep.id,
-                name = if (ep.season > 1) "S${ep.season} E${ep.number} · $base" else base,
+                name = if (ep.season > 1) "S${ep.season} E${ep.number} Â· $base" else base,
                 image = ep.image,
             )
         }

@@ -134,7 +134,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
         _searchedProviders.value = streamTargets(item).size
         if (result.isEmpty()) {
-            // Attribute the failure to the ORIGIN provider only — a global
+            // Attribute the failure to the ORIGIN provider only â a global
             // "last error" from a different video (e.g. iStreamFlare on the
             // hstream title) used to leak into every other extension's "no
             // sources" message and made the whole app look broken.
@@ -144,6 +144,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
                 ProviderType.CS3 ->
                     com.hikari.app.cs3.Cs3MainApiProvider.streamErrors[item.providerId]
+                ProviderType.HIKARI ->
+                    com.hikari.app.providers.HikariProviderAdapter.streamErrors[item.providerId]
+                ProviderType.UNIVERSAL ->
+                    com.hikari.app.providers.UniversalScraper.streamErrors[item.providerId]
                 else -> null
             }
         } else {
@@ -162,7 +166,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _loading.value = false
                 return@launch
             }
-            // The catalog row already carries the poster — render the page
+            // The catalog row already carries the poster â render the page
             // immediately instead of waiting on the origin's /meta (which may
             // be slow or minimal). rawType keeps the addon's own type string
             // for meta/episode/stream URLs.
@@ -174,12 +178,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _meta.value = base
             _loading.value = false
             withContext(Dispatchers.IO) {
-                // Fetch meta FIRST — CS3 plugins can label a series/actor page
+                // Fetch meta FIRST â CS3 plugins can label a series/actor page
                 // as a movie on their search results (LeakPorner actors are
-                // NSFW→MOVIE), and getMeta corrects the type from the
+                // NSFWâMOVIE), and getMeta corrects the type from the
                 // LoadResponse. Episodes are then fetched against the
                 // CORRECTED item (loadResponse is cached, so this stays a
-                // single origin fetch) — fetching against the raw base would
+                // single origin fetch) â fetching against the raw base would
                 // leave the episode grid empty for every mis-typed item.
                 val meta = runCatching { repo.metaFor(base) }.getOrDefault(base)
                 _meta.value = meta
@@ -196,7 +200,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Streams currently being resolved, keyed the same as [streamCache]. A
      *  Play tap while the page is still prefetching joins the SAME extraction
-     *  instead of launching a second one — two concurrent loadLinks runs on the
+     *  instead of launching a second one â two concurrent loadLinks runs on the
      *  same CS3 plugin instance can corrupt its state and make it return "no
      *  sources" for a movie that plays fine on its own. */
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<List<StreamSource>>>()
@@ -266,7 +270,7 @@ fun DetailScreen(
     rawType: String = "",
     /** Set when arriving from watch history: auto-open this episode on load. */
     episodeId: String = "",
-    /** Resume position (ms) from history — forwarded to the player. */
+    /** Resume position (ms) from history â forwarded to the player. */
     startPositionMs: Long = 0L,
 ) {
     val vm: DetailViewModel = viewModel()
@@ -306,7 +310,7 @@ fun DetailScreen(
 
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
-    // to this screen — without this, the FIRST play set the flag and every
+    // to this screen â without this, the FIRST play set the flag and every
     // later tap (episode 2..N, another server) was silently swallowed, so a
     // 10-episode melon list only ever played its first video.
     val playerLauncher = rememberLauncherForActivityResult(
@@ -354,7 +358,7 @@ fun DetailScreen(
             // Auto-play as soon as any playable source exists (fastest in the
             // list). All sources ride along in the player payload, so the
             // player's own "Select server" dialog can switch between them mid-
-            // playback — the same as earlier builds.
+            // playback â the same as earlier builds.
             if (playable.isNotEmpty()) {
                 showSheet = false
                 launchPlayer(playable, ep)
@@ -404,7 +408,7 @@ fun DetailScreen(
                         )
                         if (m?.year != null) {
                             Text(
-                                "${m.year}  ·  ${m.type.name.lowercase()}",
+                                "${m.year}  Â·  ${m.type.name.lowercase()}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp)
@@ -474,7 +478,7 @@ fun DetailScreen(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Text("Preparing…")
+                                Text("Preparingâ¦")
                             }
                         }
                     }
@@ -536,7 +540,7 @@ fun DetailScreen(
                                         strokeWidth = 2.dp
                                     )
                                     Text(
-                                        "Loading episodes…",
+                                        "Loading episodesâ¦",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -555,7 +559,7 @@ fun DetailScreen(
                         else sortedEps.filter {
                             it.number >= rangeStart!! && it.number <= rangeStart!! + 29
                         }
-                        // key MUST be unique — plugins (MoviesMod, …) emit
+                        // key MUST be unique â plugins (MoviesMod, â¦) emit
                         // duplicate ids/numbers per quality group, and a
                         // duplicate Compose key crashes the whole screen.
                         shownEps.forEachIndexed { index, ep ->
@@ -636,7 +640,7 @@ fun DetailScreen(
                             supportingContent = {
                                 Text(
                                     when {
-                                        s.isTorrent -> "Torrent — streams from peers"
+                                        s.isTorrent -> "Torrent â streams from peers"
                                         s.ytId != null -> "YouTube"
                                         s.externalUrl -> "Opens in web view"
                                         s.url.contains(".m3u8", true) -> "HLS"
@@ -661,7 +665,7 @@ fun DetailScreen(
                                             context.startActivity(
                                                 Intent(context, WebViewActivity::class.java).apply {
                                                     putExtra("url", "https://www.youtube.com/watch?v=${s.ytId}")
-                                                    putExtra("title", (m?.title ?: title) + " — YouTube")
+                                                    putExtra("title", (m?.title ?: title) + " â YouTube")
                                                 }
                                             )
                                         }

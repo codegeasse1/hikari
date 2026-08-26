@@ -18,7 +18,7 @@ import org.json.JSONObject
  *
  * Two modes:
  *
- * 1) HTML mode — plain selector rules:
+ * 1) HTML mode â plain selector rules:
  * {
  *   "name": "MySite", "baseUrl": "https://...", "homeUrl": "/",
  *   "catalogs": [{"id":"home","name":"Home","type":"movie"}],
@@ -29,7 +29,7 @@ import org.json.JSONObject
  *   "streams": { "video": "video@src", "m3u8": "source[type*=m3u8]@src", "iframe": "iframe@src" }
  * }
  *
- * 2) JSON-API mode — for SPA/API-only sites like JustAnime. Add an "api" block:
+ * 2) JSON-API mode â for SPA/API-only sites like JustAnime. Add an "api" block:
  * {
  *   "name": "JustAnime", "baseUrl": "https://justanime.to",
  *   "api": {
@@ -58,6 +58,12 @@ import org.json.JSONObject
  * - episode stream pages use {id}/{ep}/{lang} path placeholders
  */
 class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
+
+    companion object {
+        /** Per-provider last-resort message (shown in the Detail screen's "no
+         *  sources" panel, including the app-wide yt-dlp pass). */
+        val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+    }
 
     private val conf = runCatching { JSONObject(config.extra ?: "{}") }.getOrDefault(JSONObject())
     private val api = conf.optJSONObject("api")
