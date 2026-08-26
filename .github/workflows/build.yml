@@ -75,7 +75,7 @@ jobs:
       - name: Verify release APK is signed
         run: |
           if [ ! -f app/build/outputs/apk/release/app-release.apk ]; then
-            echo "::error::Release APK is missing — signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets."
+            echo "::error::Release APK is missing â signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets."
             exit 1
           fi
           ls -la app/build/outputs/apk/release/
@@ -103,13 +103,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          SIZE_MB=$(du -m hikari.apk | cut -f1)
+          if [ "$SIZE_MB" -ge 100 ]; then
+            echo "hikari.apk is ${SIZE_MB}MB - over GitHub's 100MB file limit, skipping build-branch push (the release APK is still in the artifacts)."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
           cp app/build/outputs/apk/release/app-release.apk hikari.apk
           git add hikari.apk
           git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
-          git push origin build --force
+          git push origin build --force || { echo "build-branch push rejected (APK too large for GitHub's 100MB limit) - not fatal, release APK stays in artifacts."; exit 0; }
 
       - name: Publish test APK to continuous release
         if: github.ref == 'refs/heads/main'
