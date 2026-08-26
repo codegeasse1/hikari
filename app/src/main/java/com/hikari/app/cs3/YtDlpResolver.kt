@@ -72,7 +72,7 @@ object YtDlpResolver {
                 val builtins = Python.getInstance().getBuiltins()
                 val globals = builtins.get("dict")!!.call()
                 builtins.get("exec")!!.call(EXTRACT_SCRIPT, globals)
-                extractFn = globals.get("_extract")
+                extractFn = globals.call("get", "_extract")
                 if (extractFn == null) {
                     available = false
                     initFailure = "yt-dlp extractor script failed to load"
