@@ -59,6 +59,14 @@ object YtDlpResolver {
     @Volatile
     private var extractFn: PyObject? = null
 
+    /** Why the LAST extraction pass produced no streams: a Python-side
+     *  yt-dlp exception or a Java bridge error. Null when the engine ran
+     *  cleanly but simply found nothing. Surfaced in the player error panel
+     *  so "site unsupported" is distinguishable from "extraction broke". */
+    @Volatile
+    var lastExtractError: String? = null
+        private set
+
     /** Starts the bundled CPython + yt-dlp runtime (first call takes a few
      *  seconds; later calls are no-ops). Safe from any thread. */
     suspend fun ensureInit(): Boolean {
@@ -96,6 +104,7 @@ object YtDlpResolver {
         if (pageUrl.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             if (!ensureInit()) return@withContext emptyList()
+            lastExtractError = null
             val fn = extractFn
             if (fn == null) {
                 Log.e(TAG, "yt-dlp extract function not ready")
@@ -112,6 +121,7 @@ object YtDlpResolver {
                 val json = fn.call(pageUrl, optsB64).toJava(String::class.java)
                 parse(json, pageUrl)
             } catch (t: Throwable) {
+                lastExtractError = t.message ?: t.javaClass.simpleName
                 Log.e(TAG, "yt-dlp extract failed for $pageUrl: ${t.message}")
                 emptyList()
             }
@@ -121,6 +131,7 @@ object YtDlpResolver {
     private fun parse(json: String, pageUrl: String): List<StreamSource> {
         if (json.isBlank() || json == "None") return emptyList()
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
+        root.optString("error").takeIf { it.isNotBlank() }?.let { lastExtractError = it }
         val arr = root.optJSONArray("streams") ?: return emptyList()
         val out = LinkedHashMap<String, StreamSource>()
         for (i in 0 until arr.length()) {
