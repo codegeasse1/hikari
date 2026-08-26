@@ -57,6 +57,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          *  needs several requests, so it's deliberately roomy). */
         private const val FALLBACK_CAP_MS = 20_000L
 
+        /** Budget for the yt-dlp last resort (cold CPython start + page
+         *  extraction; only spent on pages every other engine failed on). */
+        private const val YTDLP_CAP_MS = 45_000L
+
         /** Matches a provider payload whose stream URL came back empty
          *  (iStreamFlare: `{"id":"…","url": null}`) — the load() API lookup
          *  failed, so loadLinks has nothing to resolve. */
@@ -633,7 +637,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 if (!pluginJob.isCompleted) pluginJob.cancel()
                 if (!fallbackJob.isCompleted) fallbackJob.cancel()
                 if (!movieblastJob.isCompleted) movieblastJob.cancel()
-                merged.values.toList()
+                var result = merged.values.toList()
+                if (result.isEmpty()) {
+                    result = ytdlpLastResort(fallbackTarget)
+                }
+                result
             } finally {
                 scope.cancel()
             }
@@ -642,6 +650,33 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             lastStreamsTimeMs = System.currentTimeMillis() - started
             result
         }
+
+    /** Runs only when every other engine came up empty: the bundled yt-dlp
+     *  universal extractor gets a shot at the raw page URL. It is a last
+     *  resort on purpose - working providers never wait for it, and it is
+     *  gated behind the "Universal extraction" setting. */
+    private suspend fun ytdlpLastResort(pageUrl: String): List<StreamSource> {
+        if (pageUrl.isBlank()) return emptyList()
+        val enabled = runCatching { HikariApp.instance.store.ytdlpEnabled() }.getOrDefault(true)
+        if (!enabled) return emptyList()
+        // Shown in the player error panel if the whole pass still fails, so
+        // the user sees that the universal engine actually ran.
+        streamErrors[config.id] = "Standard extractors found nothing - trying yt-dlp..."
+        val got = runCatching {
+            withTimeoutOrNull(YTDLP_CAP_MS) { YtDlpResolver.resolve(pageUrl) } ?: emptyList()
+        }.getOrDefault(emptyList())
+        if (got.isEmpty()) {
+            val why = YtDlpResolver.initFailure
+            streamErrors[config.id] = if (why != null) {
+                "Universal extractor (yt-dlp) unavailable: $why"
+            } else {
+                "yt-dlp couldn't extract a playable stream from this page either."
+            }
+        } else {
+            streamErrors.remove(config.id)
+        }
+        return got
+    }
 
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */

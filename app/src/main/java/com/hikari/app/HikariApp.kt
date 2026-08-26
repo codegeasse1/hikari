@@ -90,6 +90,11 @@ class HikariApp : Application() {
                 webViewUseDefaultUa = store.webviewUseDefaultUa()
                 webViewCustomUa = store.webviewCustomUa()
             }
+            // Warm up the bundled yt-dlp runtime in the background so the
+            // universal fallback extractor is ready when a provider's own
+            // engines come up empty. The CPython startup takes a few seconds,
+            // so doing it here keeps the first real fallback fast.
+            runCatching { com.hikari.app.cs3.YtDlpResolver.ensureInit() }
             // First run: register the bundled Hikari demo extension (YTS) so
             // the extension system ships with a working provider. Harmless if
             // already added — addProvider dedupes by id.

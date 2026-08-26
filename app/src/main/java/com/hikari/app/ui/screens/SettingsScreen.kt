@@ -228,6 +228,16 @@ fun SettingsScreen() {
                     .padding(top = 16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
+                UniversalExtractionCard(app)
+            }
+        }
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 AdBlockingCard(app)
             }
         }
@@ -330,6 +340,54 @@ fun SettingsScreen() {
             onDismiss = { showUpdateDialog = false },
             initialStatus = updateStatus,
         )
+    }
+}
+
+@Composable
+private fun UniversalExtractionCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var enabled by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        enabled = app.store.ytdlpEnabled()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Universal extraction (yt-dlp)",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "When a provider's own extractors find no playable source, the " +
+                "built-in yt-dlp engine takes over and tries to pull a direct " +
+                "stream from the page. Adds ~60 MB to the APK.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Fall back to yt-dlp when no sources found",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Only kicks in on pages the built-in extractors can't resolve.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    scope.launch { runCatching { app.store.setYtdlpEnabled(it) } }
+                }
+            )
+        }
     }
 }
 

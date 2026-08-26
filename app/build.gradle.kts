@@ -149,6 +149,7 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.atomicfu)
     implementation(libs.newpipeextractor)
+    implementation(libs.yt.dlp.android)
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)
     debugImplementation(libs.androidx.compose.ui.tooling)

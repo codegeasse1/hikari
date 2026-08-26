@@ -38,6 +38,7 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
+        val YTDLP_ENABLED = booleanPreferencesKey("ytdlpEnabled")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
@@ -191,6 +192,17 @@ class AppStore(private val ctx: Context) {
             it[K.WEBVIEW_DEFAULT_UA] = useDefault
             it[K.WEBVIEW_CUSTOM_UA] = customUa
         }
+    }
+
+    // ---- Universal extractor (yt-dlp fallback) ----
+
+    fun ytdlpEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.YTDLP_ENABLED] ?: true }
+
+    suspend fun ytdlpEnabled(): Boolean = ytdlpEnabledFlow().first()
+
+    suspend fun setYtdlpEnabled(enabled: Boolean) {
+        store.edit { it[K.YTDLP_ENABLED] = enabled }
     }
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {

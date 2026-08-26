@@ -25,6 +25,7 @@ datetime = "0.8.0"
 atomicfu = "0.33.0"
 newpipeextractor = "v0.26.3"
 cryptography = "0.6.0"
+ytdlp = "2.0.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -66,6 +67,7 @@ atomicfu = { group = "org.jetbrains.kotlinx", name = "atomicfu", version.ref = "
 newpipeextractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeextractor" }
 cryptography-core = { group = "dev.whyoleg.cryptography", name = "cryptography-core", version.ref = "cryptography" }
 cryptography-provider-optimal = { group = "dev.whyoleg.cryptography", name = "cryptography-provider-optimal", version.ref = "cryptography" }
+yt-dlp-android = { group = "dev.ffmpegkit-maintained", name = "yt-dlp-android", version.ref = "ytdlp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
