@@ -2,6 +2,7 @@ package com.hikari.app.cs3
 
 import android.util.Base64
 import android.util.Log
+import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.hikari.app.HikariApp
 import com.hikari.app.data.StreamSource
@@ -24,10 +25,13 @@ import org.json.JSONObject
  *
  * The engine is the ffmpegkit-maintained yt-dlp-android library: it embeds a
  * CPython 3.13 + yt-dlp inside the AAR via Chaquopy. This resolver does NOT use
- * the library's download API (which returns only an exit code) — it drives the
- * bundled `yt_dlp` module directly through Chaquopy's eval() bridge, running
+ * the library's download API (which returns only an exit code) - it drives the
+ * bundled yt_dlp module directly through the Chaquopy Java bridge, running
  * yt-dlp in "simulate" mode (extract_info(download=False)) and reading back the
  * direct stream URLs as JSON.
+ *
+ * Chaquopy 17 has no Python.eval(); instead we exec our extractor script into a
+ * fresh globals dict and then call the resulting Python function per URL.
  *
  * Unsupported ABIs (32-bit devices) make YtDlp.init() throw; [available] stays
  * false and [resolve] returns nothing, so the app degrades to today's behavior.
@@ -42,13 +46,18 @@ object YtDlpResolver {
         private set
 
     /** Human-readable reason when [available] is false (unsupported ABI,
-     *  init crash, …). Shown to the user in the player error panel. */
+     *  init crash, ...). Shown to the user in the player error panel. */
     @Volatile
     var initFailure: String? = null
         private set
 
     private val initMutex = Mutex()
     private var initAttempted = false
+
+    /** Python callable _extract(url, opts_b64) -> json str, defined by
+     *  [EXTRACT_SCRIPT] once Python is started. */
+    @Volatile
+    private var extractFn: PyObject? = null
 
     /** Starts the bundled CPython + yt-dlp runtime (first call takes a few
      *  seconds; later calls are no-ops). Safe from any thread. */
@@ -60,6 +69,15 @@ object YtDlpResolver {
             initAttempted = true
             try {
                 YtDlp.init(HikariApp.instance)
+                val builtins = Python.getInstance().getBuiltins()
+                val globals = builtins.get("dict").call()
+                builtins.get("exec").call(EXTRACT_SCRIPT, globals)
+                extractFn = globals.get("_extract")
+                if (extractFn == null) {
+                    available = false
+                    initFailure = "yt-dlp extractor script failed to load"
+                    return available
+                }
                 available = true
                 initFailure = null
             } catch (t: Throwable) {
@@ -78,13 +96,20 @@ object YtDlpResolver {
         if (pageUrl.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             if (!ensureInit()) return@withContext emptyList()
+            val fn = extractFn
+            if (fn == null) {
+                Log.e(TAG, "yt-dlp extract function not ready")
+                return@withContext emptyList()
+            }
             try {
-                // Base64 keeps the page URL injection-proof when spliced into
-                // the Python source (no quotes/backslashes can leak through).
-                val b64 = Base64.encodeToString(pageUrl.toByteArray(), Base64.NO_WRAP)
-                val json = Python.getInstance()
-                    .eval(EXTRACT_SCRIPT.replace("HIKARI_B64", b64))
+                // Referer + UA give yt-dlp the same context the plugin had,
+                // which many sites require even for the manifest request.
+                val opts = JSONObject()
+                    .put("Referer", pageUrl)
+                    .put("User-Agent", Http.UA)
                     .toString()
+                val optsB64 = Base64.encodeToString(opts.toByteArray(), Base64.NO_WRAP)
+                val json = fn.call(pageUrl, optsB64).toJava(String::class.java)
                 parse(json, pageUrl)
             } catch (t: Throwable) {
                 Log.e(TAG, "yt-dlp extract failed for $pageUrl: ${t.message}")
@@ -146,12 +171,51 @@ object YtDlpResolver {
     }
 
     /**
-     * yt-dlp in "simulate" mode: extract the page, DO NOT download, and dump
-     * every direct stream URL ExoPlayer can consume, as JSON. Runs inside the
-     * embedded Python via Chaquopy's eval() bridge. HIKARI_B64 is replaced with
-     * the base64 page URL. The whole thing is one expression so eval() returns
-     * the JSON string: `exec(...)` defines `out`, then `or out` yields it.
+     * Python extractor defined ONCE into a fresh globals dict at init (via the
+     * builtins exec), then called per URL. Returns a JSON object
+     * {"streams": [...], "subs": [...]} that [parse] consumes.
      */
-    private const val EXTRACT_SCRIPT =
-        """exec('import base64,json,yt_dlp\nU=base64.b64decode("HIKARI_B64").decode()\no={"quiet":True,"no_warnings":True,"noplaylist":True,"socket_timeout":20,"retries":2}\ni=yt_dlp.YoutubeDL(o).extract_info(U,download=False)\nR=[]\nS=set()\ndef A(u,h,e,p,n,v,a):\n if u and isinstance(u,str) and u not in S:\n  S.add(u)\n  R.append({"url":u,"height":h,"ext":e,"proto":p,"note":n,"vcodec":v,"acodec":a})\nA(i.get("url"),i.get("height"),i.get("ext"),i.get("protocol"),i.get("format_id"),i.get("vcodec"),i.get("acodec"))\nfor f in (i.get("formats") or []):\n if len(R) < 12:\n  A(f.get("url"),f.get("height"),f.get("ext"),f.get("protocol"),f.get("format_id"),f.get("vcodec"),f.get("acodec"))\nsubs=[]\nfor k,v in (i.get("subtitles") or {}).items():\n if isinstance(v,list) and v and isinstance(v[0],dict) and v[0].get("url"):\n  subs.append({"lang":k,"url":v[0]["url"]})\n elif isinstance(v,dict) and v.get("url"):\n  subs.append({"lang":k,"url":v["url"]})\nout=json.dumps({"title":i.get("title"),"streams":R,"subs":subs},default=str)') or out"""
+    private const val EXTRACT_SCRIPT = """import json, base64
+
+def _extract(url, opts_b64):
+    import yt_dlp
+    hdrs = json.loads(base64.b64decode(opts_b64).decode('utf-8'))
+    o = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'socket_timeout': 20,
+        'retries': 2,
+        'http_headers': hdrs,
+    }
+    try:
+        i = yt_dlp.YoutubeDL(o).extract_info(url, download=False)
+    except Exception as e:
+        return json.dumps({'streams': [], 'subs': [], 'error': str(e)}, default=str)
+    if i is None:
+        return json.dumps({'streams': [], 'subs': []})
+    R = []
+    S = set()
+    def A(f):
+        u = f.get('url')
+        if u and isinstance(u, str) and u not in S:
+            S.add(u)
+            R.append({
+                'url': u,
+                'height': f.get('height'),
+                'ext': f.get('ext'),
+                'proto': f.get('protocol'),
+                'note': f.get('format_note'),
+            })
+    A(i)
+    for f in (i.get('formats') or []):
+        if len(R) < 12:
+            A(f)
+    subs = []
+    for k, v in (i.get('subtitles') or {}).items():
+        if isinstance(v, list) and v and isinstance(v[0], dict) and v[0].get('url'):
+            subs.append({'lang': k, 'url': v[0]['url']})
+        elif isinstance(v, dict) and v.get('url'):
+            subs.append({'lang': k, 'url': v['url']})
+    return json.dumps({'title': i.get('title'), 'streams': R, 'subs': subs}, default=str)"""
 }
