@@ -136,7 +136,7 @@
       <!-- Player toolbar (bottom row): Lock / Settings / Resize / Speed / Server
            / Skip OP then the stream chips, with Rotate at the end (user asked
            for the rotate icon where the settings gear used to be, and the gear
-           up front) â all in the same row as media3's own buttons, nothing
+           up front) — all in the same row as media3's own buttons, nothing
            floats above the player controls. -->
       <ImageButton
           android:id="@+id/lock_btn"
