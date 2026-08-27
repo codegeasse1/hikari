@@ -51,6 +51,7 @@ import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -148,6 +149,14 @@ class PlayerActivity : ComponentActivity() {
     private var resizeIndex = 0
 
     private var torrentDialog: android.app.ProgressDialog? = null
+
+    /** Shown while an extension-less / container-unknown stream URL is probed
+     *  to discover its real mime/URL before ExoPlayer sees it. */
+    private var probeDialog: android.app.ProgressDialog? = null
+
+    /** url -> probed (real url, mime). Probing an unknown-container URL is only
+     *  done once per session; retries/switches back reuse the result. */
+    private val probeCache = java.util.concurrent.ConcurrentHashMap<String, ProbeResult>()
 
     private lateinit var client: OkHttpClient
 
@@ -899,6 +908,22 @@ class PlayerActivity : ComponentActivity() {
      *  that leaves a frozen black screen. */
     private fun playDirect(index: Int) {
         try {
+            val src = sources[index]
+            // Extension-less / container-unknown URLs — HLS & DASH manifests
+            // served at API paths, and JSON/HTML wrapper pages — get probed
+            // once before playback so the real mime/URL is known. Otherwise
+            // ExoPlayer treats them as a progressive container and reports
+            // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED on streams that are
+            // perfectly playable (the "every yt-dlp source fails" symptom).
+            val needsProbe = !src.isTorrent && !src.torrentStream && !src.isM3u8 && !src.isMpd &&
+                !src.url.contains(".m3u8", true) && !src.url.contains("master.txt", true) &&
+                !src.url.contains(".mpd", true) &&
+                (src.url.startsWith("http://") || src.url.startsWith("https://")) &&
+                !hasMediaExtension(src.url)
+            if (needsProbe) {
+                probeAndPlay(index)
+                return
+            }
             playDirectInner(index)
         } catch (t: Throwable) {
             android.util.Log.e("HikariPlayer", "playDirect failed", t)
@@ -909,6 +934,162 @@ class PlayerActivity : ComponentActivity() {
                 showError("Playback failed to start:\n${rootMessage(t)}", false)
             }
         }
+    }
+
+    /** A URL probed to its real media form: [url] is what to actually play and
+     *  [mime] is the container to force (HLS/DASH) or null to let ExoPlayer
+     *  sniff it. */
+    private data class ProbeResult(val url: String, val mime: String?)
+
+    /** Media file extensions ExoPlayer's progressive extractors sniff fine on
+     *  their own — URLs ending in these skip the probe entirely. */
+    private val PROBE_SKIP_EXTENSIONS = listOf(
+        ".mp4", ".webm", ".mkv", ".flv", ".avi", ".mov", ".m4v", ".m4s",
+        ".ts", ".mp3", ".aac", ".ogg", ".ogv", ".m4a", ".wav", ".flac",
+        ".3gp", ".mpg", ".mpeg", ".opus", ".wmv",
+    )
+
+    private fun hasMediaExtension(url: String): Boolean {
+        val clean = url.substringBefore('?').substringBefore('#')
+        return PROBE_SKIP_EXTENSIONS.any { clean.endsWith(it, ignoreCase = true) }
+    }
+
+    /** Probes a container-unknown stream URL before ExoPlayer sees it: fetches
+     *  the head of the response with the source's own headers and classifies it
+     *  (HLS `#EXTM3U` / DASH `<MPD` / direct video), or — when the URL is a JSON
+     *  API or HTML wrapper page — digs out the embedded media URLs and follows
+     *  the most promising one. Returns the real URL + forced mime, or null when
+     *  nothing resolvable was found. Never throws. */
+    private fun probeStreamUrl(url: String, headers: Map<String, String>, depth: Int): ProbeResult? {
+        if (depth > 3) return null
+        val response = try {
+            Http.get(url, headers)
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        response.use { r ->
+            if (!r.isSuccessful) return null
+            val ct = r.headers["Content-Type"]?.lowercase() ?: ""
+            val body = r.body ?: return null
+            val head: String = try {
+                val buf = ByteArray(131_072)
+                val input = body.byteStream()
+                var read = 0
+                while (read < buf.size) {
+                    val n = input.read(buf, read, buf.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+                // ISO-8859-1 keeps the raw bytes, so the "#EXTM3U"/"ftyp"
+                // sniffs below are never thrown off by charset decoding.
+                String(buf, 0, read, Charsets.ISO_8859_1)
+            } catch (t: Throwable) {
+                return null
+            }
+            val trimmed = head.trimStart()
+            if (trimmed.startsWith("#EXTM3U") || ct.contains("mpegurl") || ct.contains("m3u8")) {
+                return ProbeResult(url, MimeTypes.APPLICATION_M3U8)
+            }
+            if ((trimmed.startsWith("<?xml") && head.contains("<MPD")) || ct.contains("dash+xml")) {
+                return ProbeResult(url, MimeTypes.APPLICATION_MPD)
+            }
+            // Direct binary container (mp4/fMP4 ftyp & friends) — ExoPlayer's
+            // extractors sniff it fine, no mime to force.
+            if (ct.startsWith("video/") || ct.startsWith("audio/") ||
+                trimmed.startsWith("ftyp") || trimmed.startsWith("\u0000\u0000\u0000\u0018ftyp")
+            ) {
+                return ProbeResult(url, null)
+            }
+            // Wrapper page — JSON API / HTML player. Pull out the embedded
+            // media URLs and follow the best candidate.
+            for (c in extractMediaCandidates(head, url)) {
+                val res = probeStreamUrl(c, headers, depth + 1)
+                if (res != null) return res
+            }
+            return null
+        }
+    }
+
+    private val URL_TOKEN_RE = Regex("""https?://[^\s"'<>\\]+""")
+
+    /** Finds the media-looking URLs inside a wrapper page's head and ranks them
+     *  (m3u8 > mpd > direct video > player paths) so the probe follows the most
+     *  promising one first. */
+    private fun extractMediaCandidates(head: String, pageUrl: String): List<String> {
+        val scored = LinkedHashMap<String, Int>()
+        for (m in URL_TOKEN_RE.findAll(head)) {
+            val u = m.value.trimEnd(')', ']', '}', ',', ';', '.', '"', '\'')
+            if (!u.startsWith("http")) continue
+            if (u == pageUrl) continue
+            val lower = u.lowercase()
+            val score = when {
+                "m3u8" in lower -> 100
+                "mpd" in lower || "manifest" in lower -> 90
+                lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") ||
+                    lower.contains(".m4s") -> 80
+                "/get" in lower || "/stream" in lower || "/play" in lower || "/hls" in lower ||
+                    "master" in lower || "/video" in lower -> 60
+                "video" in lower || "media" in lower || "/embed" in lower -> 40
+                else -> 10
+            }
+            if (score >= 40) scored.putIfAbsent(u, score)
+        }
+        return scored.entries.sortedByDescending { it.value }.take(8).map { it.key }
+    }
+
+    /** Probes the source and, when it resolves to a real media URL, rewrites
+     *  the source before handing it to ExoPlayer. Always ends in playDirectInner
+     *  — a probe failure falls through to the original (current) behavior. */
+    private fun probeAndPlay(index: Int) {
+        if (index < 0 || index >= sources.size) {
+            playDirectInner(index)
+            return
+        }
+        val src = sources[index]
+        val cached = probeCache[src.url]
+        if (cached != null) {
+            applyProbe(index, src, cached)
+            playDirectInner(index)
+            return
+        }
+        probeDialog = ProgressDialog(this).apply {
+            setTitle(src.name)
+            setMessage("Preparing stream…")
+            setCancelable(false)
+            setIndeterminate(true)
+            show()
+        }
+        lifecycleScope.launch {
+            val resolved = withTimeoutOrNull(12_000) {
+                withContext(Dispatchers.IO) {
+                    val clean = sanitizeHeaders(src.headers)
+                    val headers = when (headerVariant) {
+                        1 -> clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
+                        2 -> emptyMap()
+                        else -> clean
+                    }
+                    val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+                    runCatching {
+                        probeStreamUrl(src.url, headers + mapOf("User-Agent" to ua), 0)
+                    }.getOrNull()
+                }
+            }
+            probeDialog?.let { runCatching { it.dismiss() } }
+            probeDialog = null
+            if (currentIndex != index) return@launch
+            if (resolved != null) probeCache[src.url] = resolved
+            if (resolved != null) applyProbe(index, src, resolved)
+            playDirectInner(index)
+        }
+    }
+
+    private fun applyProbe(index: Int, src: PlayerSource, resolved: ProbeResult) {
+        val newM3u8 = resolved.mime == MimeTypes.APPLICATION_M3U8
+        val newMpd = resolved.mime == MimeTypes.APPLICATION_MPD
+        if (resolved.url == src.url && src.isM3u8 == newM3u8 && src.isMpd == newMpd) return
+        val list = sources.toMutableList()
+        list[index] = src.copy(url = resolved.url, isM3u8 = newM3u8, isMpd = newMpd)
+        sources = list
     }
 
     private fun playDirectInner(index: Int) {
@@ -1427,6 +1608,8 @@ class PlayerActivity : ComponentActivity() {
         firstFrameTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
+        probeDialog?.let { runCatching { it.dismiss() } }
+        probeDialog = null
         player?.let { p ->
             p.removeListener(listener)
             p.release()

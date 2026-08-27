@@ -35,7 +35,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
     }
 
     /** The extension's provider, resolved on first access. Only a SUCCESS is
-     *  cached â a transient failure (extension still loading, a one-off hiccup)
+     *  cached — a transient failure (extension still loading, a one-off hiccup)
      *  is retried on the next access rather than stuck as a permanent null
      *  ("no catalog"/"no playable source" until a force-stop). */
     private val provider: HikariProvider?
@@ -77,7 +77,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             Episode(
                 number = ep.number,
                 id = ep.id,
-                name = if (ep.season > 1) "S${ep.season} E${ep.number} Â· $base" else base,
+                name = if (ep.season > 1) "S${ep.season} E${ep.number} · $base" else base,
                 image = ep.image,
             )
         }
