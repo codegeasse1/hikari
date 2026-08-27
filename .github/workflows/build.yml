@@ -119,12 +119,17 @@ jobs:
 
       - name: Publish test APK to continuous release
         if: github.ref == 'refs/heads/main'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cp app/build/outputs/apk/release/app-release.apk hikari-signed.apk
           if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" --clobber
+            for i in 1 2 3; do
+              gh release upload continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              echo "continuous upload attempt $i failed (often a transient race with a concurrent build), retrying..."
+              sleep 5
+            done
           else
             gh release create continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" \
               --title "Continuous build" \
@@ -141,7 +146,11 @@ jobs:
           TAG="v${VERSION:-0.1.0}"
           cp app/build/outputs/apk/release/app-release.apk hikari.apk
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber
+            for i in 1 2 3; do
+              gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              echo "release upload attempt $i failed (often a transient race with a concurrent build), retrying..."
+              sleep 5
+            done
           else
             gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
               --title "Hikari $VERSION" \
