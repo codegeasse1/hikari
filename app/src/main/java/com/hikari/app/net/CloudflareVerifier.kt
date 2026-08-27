@@ -59,6 +59,54 @@ object CloudflareVerifier {
         return server.contains("cloudflare")
     }
 
+    /** Body markers that mean a Cloudflare response is a HARD WAF block
+     *  ("Sorry, you have been blocked") rather than a solvable challenge. A
+     *  block can never be passed by the verify WebView — no cf_clearance will
+     *  ever be minted — so auto-opening for one would only leave a dead browser
+     *  sitting on top of the player (an episode tap popping a blocked host's
+     *  page while the player already has a working source). */
+    private val HARD_BLOCK_MARKERS = listOf(
+        "you have been blocked",
+        "sorry, you have been blocked",
+        "access denied",
+        "request blocked",
+        "cf-error-details",
+        "error 1020",
+        "cf-error-code",
+    )
+
+    /** Body markers that mean the response is a genuine solvable WAF challenge
+     *  (managed challenge / Turnstile) the verify WebView can actually pass. */
+    private val CHALLENGE_MARKERS = listOf(
+        "just a moment",
+        "attention required",
+        "challenges.cloudflare.com",
+        "challenge-platform",
+        "cf-chl",
+        "cf_chl_opt",
+        "turnstile",
+        "hcaptcha",
+        "verify you are human",
+        "checking your browser",
+        "performing security verification",
+    )
+
+    /** True when the challenge response is one the verify WebView can actually
+     *  solve. Peeks the body (without consuming it, so the caller still reads
+     *  it normally) — explicitly-blocked pages return false, undecidable bodies
+     *  default to solvable so the feature keeps working if decoding fails. */
+    private fun isSolvableChallenge(response: Response): Boolean {
+        val body = runCatching {
+            val bytes = response.peekBody(64 * 1024).bytes()
+            val raw = if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+                java.util.zip.GZIPInputStream(bytes.inputStream().buffered()).readBytes()
+            } else bytes
+            String(raw, 0, minOf(raw.size, 64 * 1024), Charsets.UTF_8).lowercase()
+        }.getOrNull().orEmpty()
+        if (HARD_BLOCK_MARKERS.any { body.contains(it) }) return false
+        return body.isBlank() || CHALLENGE_MARKERS.any { body.contains(it) }
+    }
+
     /**
      * OkHttp interceptor body, shared by the Http client and the jar's app
      * client. Passes the request through (attaching any existing cf_clearance
@@ -78,6 +126,7 @@ object CloudflareVerifier {
         val first = chain.proceed(firstReq)
         if (!isCloudflareChallenge(first)) return first
         val url = request.url.toString()
+        val solvable = isSolvableChallenge(first)
         first.close()
 
         val host = request.url.host
@@ -85,7 +134,7 @@ object CloudflareVerifier {
 
         val now = System.currentTimeMillis()
         val cooled = synchronized(lock) { (dismissedUntil[host] ?: 0L) < now }
-        if (clearanceFor(url) == null && autoOpenEnabled && cooled &&
+        if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled &&
             Looper.myLooper() != Looper.getMainLooper()
         ) {
             solve(host, url)

@@ -94,6 +94,11 @@ class WebViewActivity : ComponentActivity() {
     private var autoCloseWhenCloudflarePassed = false
     private var challengeSeen = false
     private var verifyDone = false
+    // Consecutive polls where the verify page looked like a hard WAF block
+    // ("you have been blocked") rather than a solvable challenge — a block can
+    // never mint a clearance, so after a few ticks the view closes itself
+    // instead of lingering on top of the player forever.
+    private var blockedCount = 0
     // Set when the activity was auto-launched by CloudflareVerifier (a request
     // hit a challenge) — the host lets the verifier wake its waiters when this
     // view closes so the retry runs immediately.
@@ -880,19 +885,38 @@ class WebViewActivity : ComponentActivity() {
                         "var t=(document.title||'').toLowerCase();" +
                         "var h=location.href.toLowerCase();" +
                         "var b=document.body?document.body.innerText.slice(0,3000).toLowerCase():'';" +
-                        "return (t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||" +
+                        "var chal=(t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||" +
                         "h.indexOf('cdn-cgi/challenge')>=0||h.indexOf('challenge-platform')>=0||" +
                         "b.indexOf('verify you are human')>=0||b.indexOf('performing security verification')>=0||" +
-                        "b.indexOf('checking your browser')>=0||b.indexOf('cf-chl')>=0);" +
+                        "b.indexOf('checking your browser')>=0||b.indexOf('cf-chl')>=0||" +
+                        "b.indexOf('turnstile')>=0);" +
+                        "var block=(t.indexOf('you have been blocked')>=0||t.indexOf('access denied')>=0||" +
+                        "h.indexOf('cf-error')>=0||b.indexOf('you have been blocked')>=0||" +
+                        "b.indexOf('access denied')>=0||b.indexOf('request blocked')>=0||" +
+                        "b.indexOf('cf-error-details')>=0);" +
+                        "return chal?1:(block?2:0);" +
                         "})();"
                 ) { res ->
-                    val isChallenge = res?.trim()?.trim('"') == "true"
-                    if (isChallenge) {
-                        challengeSeen = true
-                    } else if (challengeSeen) {
-                        // Challenge present → gone = verification complete.
-                        verifyDone = true
-                        finish()
+                    when (res?.trim()?.trim('"')) {
+                        "1" -> {
+                            challengeSeen = true
+                            blockedCount = 0
+                        }
+                        "2" -> {
+                            // Hard WAF block — no challenge to pass. Give the
+                            // page a beat (Cloudflare may still be mid-redirect)
+                            // then close instead of sitting on the player.
+                            blockedCount++
+                            if (blockedCount >= 3) {
+                                verifyDone = true
+                                finish()
+                            }
+                        }
+                        else -> if (challengeSeen) {
+                            // Challenge present → gone = verification complete.
+                            verifyDone = true
+                            finish()
+                        }
                     }
                     if (!verifyDone && autoCloseWhenCloudflarePassed) {
                         verifyHandler.postDelayed(this, 1200)
