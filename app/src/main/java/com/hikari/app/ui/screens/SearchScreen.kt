@@ -50,6 +50,7 @@ import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.Routes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,6 +61,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(FlowPreview::class)
 class SearchViewModel(
@@ -91,13 +93,18 @@ class SearchViewModel(
     private val _searching = MutableStateFlow(false)
     val searching: StateFlow<Boolean> = _searching.asStateFlow()
 
-    /** 51CG/MRDS can return posters as huge inline data: URIs; trimming them
-     *  (the detail page re-fetches the poster anyway) keeps a big result set
-     *  from exhausting memory. */
-    private fun MediaItem.trim(): MediaItem {
-        val p = posterUrl?.takeIf { it.length <= 24_000 }
-        val b = backdropUrl?.takeIf { it.length <= 24_000 }
-        return if (p == posterUrl && b == backdropUrl) this else copy(posterUrl = p, backdropUrl = b)
+    /** 51CG/MRDS/Porna91 can return posters as huge inline data: URIs. Dropping
+     *  them (the old 24k cap) left every search-result cell blank for those
+     *  extensions — same trap as the catalog screens. Collapse each oversized
+     *  poster into a tiny disk-cache token instead ([PosterLoader.tokenize]
+     *  decodes + persists the bytes once, off the main thread): the grid still
+     *  shows the image, and memory stays bounded. The detail page re-fetches
+     *  the poster via /meta anyway, so the token never needs to resolve there. */
+    private fun MediaItem.tokenizePoster(): MediaItem {
+        val p = PosterLoader.tokenize(posterUrl)
+        val b = PosterLoader.tokenize(backdropUrl)
+        return if (p == posterUrl && b == backdropUrl) this
+        else copy(posterUrl = p, backdropUrl = b)
     }
 
     init {
@@ -112,7 +119,9 @@ class SearchViewModel(
                     _searching.value = true
                     try {
                         repo.searchStreaming(q, providerIds = _selectedProviders.value)
-                            .collect { _results.value = it.map { x -> x.trim() } }
+                            .collect { raw ->
+                                _results.value = withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
+                            }
                     } finally {
                         _searching.value = false
                     }
