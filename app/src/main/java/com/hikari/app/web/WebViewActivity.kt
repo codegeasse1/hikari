@@ -134,6 +134,12 @@ class WebViewActivity : ComponentActivity() {
     // on every navigation), so the user never stares at an infinite spinner.
     private var autoLaunched = false
 
+    // True while any <video> on the page is actively playing (kept fresh by the
+    // periodic scan). Popups opened while a video is playing are ads — players
+    // pop them on click — so they're dropped instead of replacing the video.
+    @Volatile
+    private var videoPlaying = false
+
 
     // Fullscreen HTML5 video support
     private var customView: View? = null
@@ -498,6 +504,16 @@ class WebViewActivity : ComponentActivity() {
                     }
                 }
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
+                // The verification view exists only to pass a Cloudflare
+                // challenge — it must never offer to play or hand off video
+                // (the site page would just start its player + ads).
+                if (autoCloseWhenCloudflarePassed) {
+                    videoChip.visibility = View.GONE
+                    if (translateEnabled) view?.evaluateJavascript(TRANSLATE_JS, null)
+                    injectElementBlocker(view)
+                    pollCloudflarePass()
+                    return
+                }
                 view?.evaluateJavascript(VIDEO_POLYFILL_JS, null)
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
                 if (translateEnabled) view?.evaluateJavascript(TRANSLATE_JS, null)
@@ -515,12 +531,14 @@ class WebViewActivity : ComponentActivity() {
                         v.evaluateJavascript(VIDEO_SCAN_JS) { res ->
                             for (u in extractUrls(res)) maybeAddVideo(u)
                         }
+                        v.evaluateJavascript(VIDEO_PLAYING_JS) { res ->
+                            videoPlaying = res?.trim()?.trim('"') == "true"
+                        }
                         scanHandler.postDelayed(this, 2500)
                     }
                 }
                 scanRunnable = r
                 scanHandler.postDelayed(r, 1500)
-                if (autoCloseWhenCloudflarePassed) pollCloudflarePass()
             }
 
             override fun onRenderProcessGone(
@@ -544,6 +562,17 @@ class WebViewActivity : ComponentActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
+                // Cloudflare-verification view: NEVER relay popups. It is only
+                // open to pass the challenge, and these streaming pages' players
+                // use window.open to pop ads the moment you click the video.
+                if (autoCloseWhenCloudflarePassed) return false
+                // While a video is actively playing, a window.open popup is an
+                // ad (players pop them on click) — relaying it into the main
+                // view would replace the playing video with the ad page.
+                if (videoPlaying) {
+                    showBlockedToast("Blocked popup during playback")
+                    return false
+                }
                 // Route popups (some players open in window.open) into this
                 // same web view so video keeps working. The transport CANNOT
                 // target the parent WebView itself — Android throws
@@ -884,6 +913,8 @@ class WebViewActivity : ComponentActivity() {
 
     /** Adds [url] to the detected set ONLY after confirming it serves real video. */
     private fun maybeAddVideo(url: String) {
+        // Verification view never offers video.
+        if (autoCloseWhenCloudflarePassed) return
         if (detectedVideos.contains(url)) return
         Thread {
             val isVideo = isRealVideo(url)
@@ -1026,6 +1057,9 @@ class WebViewActivity : ComponentActivity() {
     private inner class HikariJsBridge {
         @android.webkit.JavascriptInterface
         fun stuckVideo(url: String) {
+            // Verification view exists only to pass the challenge — never
+            // hand a video off to the external player from it.
+            if (autoCloseWhenCloudflarePassed) return
             if (autoLaunched || url.isBlank()) return
             autoLaunched = true
             runOnUiThread {
@@ -1245,6 +1279,21 @@ class WebViewActivity : ComponentActivity() {
                 document.querySelectorAll('video source').forEach(function(s){if(s.src&&s.src.indexOf('blob:')!==0)out.push(s.src);});
               }catch(e){}
               return JSON.stringify(out);
+            })();
+        """.trimIndent()
+
+        /** True when any <video> on the page is actively playing (used to drop
+         *  ad popups that players open on click during playback). */
+        private val VIDEO_PLAYING_JS = """
+            (function(){
+              try{
+                var vs=document.querySelectorAll('video');
+                for(var i=0;i<vs.length;i++){
+                  var v=vs[i];
+                  if(v&&!v.paused&&!v.ended&&v.readyState>=2&&v.currentTime>0)return 'true';
+                }
+              }catch(e){}
+              return 'false';
             })();
         """.trimIndent()
 
