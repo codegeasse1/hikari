@@ -695,7 +695,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     ): List<StreamSource> {
         val a = api
         return rawLinks
-            .filter { it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" }
+            .filter {
+                it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" &&
+                    !isGarbageUrl(it.url) && isStreamableScheme(it.url)
+            }
             .map { l ->
                 // CloudStream keeps the Referer OUT of ExtractorLink.headers —
                 // without it most anime CDNs answer with an anti-hotlink HTML
@@ -745,6 +748,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 )
             }
             .distinctBy { it.url }
+    }
+
+    /** Non-streamable schemes an extractor can never meaningfully produce
+     *  (data:/javascript:/about:/mailto:...) — never become playable sources. */
+    private fun isStreamableScheme(url: String): Boolean {
+        val scheme = runCatching { java.net.URI(url).scheme?.lowercase() }.getOrNull()
+            ?: return url.startsWith("http") // be lenient with scheme-less URLs
+        return scheme == "http" || scheme == "https" || scheme == "magnet" || scheme == "torrent"
+    }
+
+    /** Generic URL-scanner extractors sometimes capture non-content links from
+     *  the embed page — the classic being the SVG xmlns namespace
+     *  (http://www.w3.org/2000/svg), which is not a stream and would otherwise
+     *  surface as a bogus "playable" source. */
+    private fun isGarbageUrl(url: String): Boolean {
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "w3.org" || host.endsWith(".w3.org")
     }
 
     private fun fullCause(e: Throwable): String {

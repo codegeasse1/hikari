@@ -99,6 +99,10 @@ class WebViewActivity : ComponentActivity() {
     // never mint a clearance, so after a few ticks the view closes itself
     // instead of lingering on top of the player forever.
     private var blockedCount = 0
+    // Consecutive polls where the verify page showed neither a challenge nor a
+    // hard block — i.e. it loaded as ordinary content and has nothing to
+    // verify. After a few ticks the view closes itself instead of lingering.
+    private var noChallengePolls = 0
     // Set when the activity was auto-launched by CloudflareVerifier (a request
     // hit a challenge) — the host lets the verifier wake its waiters when this
     // view closes so the retry runs immediately.
@@ -128,7 +132,7 @@ class WebViewActivity : ComponentActivity() {
     private var redirectProtection = true
     @Volatile
     private var popupProtection = true
-    private var blockedToastShown = false
+    @Volatile private var blockedToastShown = false
     // Hosts the user explicitly allowed redirects to (Settings → WebView safety
     // → Allowed redirect links). Navigations to these are never blocked.
     @Volatile
@@ -858,11 +862,13 @@ class WebViewActivity : ComponentActivity() {
     private fun isSameSite(host: String, current: String): Boolean =
         host == current || host.endsWith("." + current) || current.endsWith("." + host)
 
-    /** One toast per page so ad spam doesn't toast-spam the user. */
+    /** One toast per page so ad spam doesn't toast-spam the user. Thread-safe:
+     *  shouldInterceptRequest runs on a WebView background thread (no Looper),
+     *  so the Toast itself must be posted to the main looper. */
     private fun showBlockedToast(msg: String) {
         if (blockedToastShown) return
         blockedToastShown = true
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        verifyHandler.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
     }
 
     /**
@@ -901,12 +907,14 @@ class WebViewActivity : ComponentActivity() {
                         "1" -> {
                             challengeSeen = true
                             blockedCount = 0
+                            noChallengePolls = 0
                         }
                         "2" -> {
                             // Hard WAF block — no challenge to pass. Give the
                             // page a beat (Cloudflare may still be mid-redirect)
                             // then close instead of sitting on the player.
                             blockedCount++
+                            noChallengePolls = 0
                             if (blockedCount >= 3) {
                                 verifyDone = true
                                 finish()
@@ -916,6 +924,17 @@ class WebViewActivity : ComponentActivity() {
                             // Challenge present → gone = verification complete.
                             verifyDone = true
                             finish()
+                        } else {
+                            // No challenge ever appeared and no hard block — the
+                            // page loaded as ordinary content (e.g. the SVG
+                            // namespace page a URL scanner mistook for a stream).
+                            // The verify view has nothing to do; close it instead
+                            // of lingering on screen forever.
+                            noChallengePolls++
+                            if (noChallengePolls >= VERIFY_NO_CHALLENGE_POLLS) {
+                                verifyDone = true
+                                finish()
+                            }
                         }
                     }
                     if (!verifyDone && autoCloseWhenCloudflarePassed) {
@@ -1186,6 +1205,12 @@ class WebViewActivity : ComponentActivity() {
 
     companion object {
         private const val FILE_CHOOSER_REQUEST = 4001
+
+        /** Verify polls (1.2s apart) with no challenge AND no hard block — the
+         *  page loaded as normal content (e.g. the SVG-namespace page a URL
+         *  scanner mistook for a stream), so the verify view is useless and
+         *  should close itself instead of lingering (~14s). */
+        private const val VERIFY_NO_CHALLENGE_POLLS = 12
 
         /** HLS/DASH/MP4 URLs ending the request path (optional query). */
         private val VIDEO_URL_RE =
