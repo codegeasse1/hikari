@@ -21,10 +21,9 @@ Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, b
 
 ## Installing the app
 
-Every push to `main` auto-builds `app-debug.apk` and publishes it to:
+The latest signed APK is on the **latest release** page:
 
-- **Release:** <https://github.com/codegeasse1/hikari/releases/download/continuous/hikari-debug.apk>
-- **build branch:** <https://github.com/codegeasse1/hikari/raw/build/hikari-debug.apk>
+- **Latest release:** <https://github.com/codegeasse1/hikari/releases/latest>
 
 Download it on the phone and open it (allow "install unknown apps").
 
