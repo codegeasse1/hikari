@@ -176,6 +176,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
      *  handed to the player, which would otherwise open them in the web view. */
     private fun isGarbageUrl(url: String): Boolean {
         if (url.isBlank()) return false
+        if (url.contains("w3.org/2000/svg", ignoreCase = true)) return true
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
         return host == "w3.org" || host.endsWith(".w3.org")
     }

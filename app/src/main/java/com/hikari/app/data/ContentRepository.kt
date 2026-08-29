@@ -256,12 +256,19 @@ class ContentRepository(private val manager: ProviderManager) {
                 scope.cancel()
             }
             // Same torrent/video surfaced by several addons = one entry.
+            // Some scrapers/extensions also capture non-content scaffolding —
+            // the classic being the SVG xmlns namespace (www.w3.org/2000/svg),
+            // which must never become a playable source (it would open a
+            // w3.org page in the web view instead of playing).
             var finalResult = result.filterNot { isGarbageUrl(it.url) }
                 .distinctBy { it.infoHash ?: it.url }
             // App-wide universal last resort: every provider type funnels
             // through here, so when they ALL come up empty the bundled yt-dlp
             // extractor still gets one shot at the page (see the helper).
-            if (finalResult.isEmpty()) finalResult = ytdlpUniversalFallback(item, episode)
+            if (finalResult.isEmpty()) {
+                finalResult = ytdlpUniversalFallback(item, episode)
+                    .filterNot { isGarbageUrl(it.url) }
+            }
             finalResult
         }
 
@@ -270,6 +277,10 @@ class ContentRepository(private val manager: ProviderManager) {
      *  handed to the player, which would otherwise open them in the web view. */
     private fun isGarbageUrl(url: String): Boolean {
         if (url.isBlank()) return false
+        // The w3.org/2000/svg namespace is the classic junk a broken scraper
+        // captures; catch it even when the link arrived scheme-less or
+        // url-encoded, since java.net.URI can't parse those into a host.
+        if (url.contains("w3.org/2000/svg", ignoreCase = true)) return true
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
         return host == "w3.org" || host.endsWith(".w3.org")
     }
