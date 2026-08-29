@@ -107,6 +107,15 @@ class WebViewActivity : ComponentActivity() {
     // hit a challenge) — the host lets the verifier wake its waiters when this
     // view closes so the retry runs immediately.
     private var verifyHost: String? = null
+    // Video-verification mode (set alongside verifyHost by CloudflareVerifier):
+    // this view is open solely to pass a CF challenge for a STREAMING site, and
+    // the site's redirect to the real video page is legitimate — so main-frame
+    // redirects are NOT blocked here (the browsing view's redirect protection
+    // cancels exactly those, which is what kept the movie page from opening).
+    // Ad hosts are still blocked and popups are still dropped, so it can't
+    // spiral into ad sites.
+    @Volatile
+    private var verifyAllowRedirects = false
     private val verifyHandler = Handler(Looper.getMainLooper())
     private var verifyRunnable: Runnable? = null
 
@@ -183,6 +192,7 @@ class WebViewActivity : ComponentActivity() {
         pageTitle = intent.getStringExtra("title").orEmpty().ifBlank { startUrl }
         autoCloseWhenCloudflarePassed = intent.getBooleanExtra("autoCloseWhenCloudflarePassed", false)
         verifyHost = intent.getStringExtra("verifyHost")
+        verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
         providerId = intent.getStringExtra("providerId")
         val forceTranslate = intent.getBooleanExtra("translate", false)
 
@@ -416,30 +426,37 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest
             ): Boolean {
-                // Cloudflare-verification mode: ONLY the CF challenge may ever
-                // load (the site + Cloudflare's challenge infra). Any other
-                // redirect target is cancelled before it loads — the view is
-                // open solely to pass the challenge, never to surf.
-                if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
-                    !isVerifyAllowed(request.url.toString())
-                ) {
-                    showBlockedToast("Blocked redirect to ${request.url.host ?: "unknown"}")
-                    return true
-                }
-                // Redirect protection: cancel main-frame navigations away from
-                // the site before they load (ad-hijack redirects). Same-site
-                // pages, subdomains, whitelisted hosts and user-allowed
-                // redirect hosts still work.
-                if (redirectProtection && request.isForMainFrame) {
-                    val host = request.url.host
-                    val cur = currentPageHost()
-                    if (host != null && cur != null && host != cur &&
-                        !AdBlocker.matches(host, whitelistDomains) &&
-                        !AdBlocker.matches(host, allowedRedirectHosts) &&
-                        !isSameSite(host, cur)
+                // Video-verification mode (verifyAllowRedirects): the streaming
+                // site's redirect to the real video page is the whole point —
+                // skip ALL main-frame redirect blocking here. Ad hosts are
+                // still blocked below and popups are still dropped, so it
+                // can't spiral into ad sites.
+                if (!verifyAllowRedirects) {
+                    // Cloudflare-verification mode: ONLY the CF challenge may ever
+                    // load (the site + Cloudflare's challenge infra). Any other
+                    // redirect target is cancelled before it loads — the view is
+                    // open solely to pass the challenge, never to surf.
+                    if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
+                        !isVerifyAllowed(request.url.toString())
                     ) {
-                        showBlockedToast("Blocked redirect to $host")
+                        showBlockedToast("Blocked redirect to ${request.url.host ?: "unknown"}")
                         return true
+                    }
+                    // Redirect protection: cancel main-frame navigations away from
+                    // the site before they load (ad-hijack redirects). Same-site
+                    // pages, subdomains, whitelisted hosts and user-allowed
+                    // redirect hosts still work.
+                    if (redirectProtection && request.isForMainFrame) {
+                        val host = request.url.host
+                        val cur = currentPageHost()
+                        if (host != null && cur != null && host != cur &&
+                            !AdBlocker.matches(host, whitelistDomains) &&
+                            !AdBlocker.matches(host, allowedRedirectHosts) &&
+                            !isSameSite(host, cur)
+                        ) {
+                            showBlockedToast("Blocked redirect to $host")
+                            return true
+                        }
                     }
                 }
                 return super.shouldOverrideUrlLoading(view, request)
@@ -473,33 +490,38 @@ class WebViewActivity : ComponentActivity() {
                 if (VIDEO_URL_RE.containsMatchIn(u)) {
                     maybeAddVideo(u)
                 }
-                // Cloudflare-verification mode: never let a redirect land on a
-                // foreign page while the view is just passing a challenge.
-                if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
-                    !isVerifyAllowed(u)
-                ) {
-                    showBlockedToast("Blocked redirect to $host")
-                    return WebResourceResponse(
-                        "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
-                    )
-                }
-                // Redirect protection: never let an ad hijack navigate the main
-                // frame away to a foreign domain (the twinrdengine.com-class
-                // redirects). Same-site pages, subdomains, whitelisted hosts and
-                // user-allowed redirect hosts still navigate normally; turning
-                // the toggle off disables this entirely.
-                if (redirectProtection && request.isForMainFrame) {
-                    val host = request.url.host
-                    val cur = currentPageHost()
-                    if (host != null && cur != null && host != cur &&
-                        !AdBlocker.matches(host, whitelistDomains) &&
-                        !AdBlocker.matches(host, allowedRedirectHosts) &&
-                        !isSameSite(host, cur)
+                // Video-verification mode: main-frame redirects are allowed
+                // (the streaming site's redirect to the video page), but ad
+                // subresources are still blocked above.
+                if (!verifyAllowRedirects) {
+                    // Cloudflare-verification mode: never let a redirect land on a
+                    // foreign page while the view is just passing a challenge.
+                    if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
+                        !isVerifyAllowed(u)
                     ) {
                         showBlockedToast("Blocked redirect to $host")
                         return WebResourceResponse(
                             "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
                         )
+                    }
+                    // Redirect protection: never let an ad hijack navigate the main
+                    // frame away to a foreign domain (the twinrdengine.com-class
+                    // redirects). Same-site pages, subdomains, whitelisted hosts and
+                    // user-allowed redirect hosts still navigate normally; turning
+                    // the toggle off disables this entirely.
+                    if (redirectProtection && request.isForMainFrame) {
+                        val host = request.url.host
+                        val cur = currentPageHost()
+                        if (host != null && cur != null && host != cur &&
+                            !AdBlocker.matches(host, whitelistDomains) &&
+                            !AdBlocker.matches(host, allowedRedirectHosts) &&
+                            !isSameSite(host, cur)
+                        ) {
+                            showBlockedToast("Blocked redirect to $host")
+                            return WebResourceResponse(
+                                "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                            )
+                        }
                     }
                 }
                 return null

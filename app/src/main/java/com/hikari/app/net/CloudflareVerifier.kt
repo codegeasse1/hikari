@@ -5,6 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -13,6 +15,7 @@ import com.hikari.app.web.WebViewActivity
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
+import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -217,6 +220,13 @@ object CloudflareVerifier {
                             putExtra("title", "Cloudflare verification")
                             putExtra("autoCloseWhenCloudflarePassed", true)
                             putExtra("verifyHost", host)
+                            // This is the VIDEO verification view: redirects to
+                            // the real page (the streaming site's challenge →
+                            // video-page chain) must NOT be blocked — the
+                            // browsing view's redirect protection cancels
+                            // exactly those. Ads still get blocked (hosts
+                            // lists) and popups are still dropped.
+                            putExtra("verifyAllowRedirects", true)
                         }
                         app.startActivity(intent)
                     } catch (t: Throwable) {
@@ -249,7 +259,16 @@ object CloudflareVerifier {
     /** Hidden off-screen solver: loads the challenged URL in an INVISIBLE
      *  WebView (real dimensions so the challenge JS gets a sane viewport, but
      *  never attached to a window and never drawn) and polls the shared cookie
-     *  jar for cf_clearance. Returns true when a clearance appeared. */
+     *  jar for cf_clearance. Returns true when a clearance appeared.
+     *
+     *  This is Hikari's dedicated "video verification" WebView — deliberately
+     *  SEPARATE from the browsing WebView's redirect protection (the extension
+     *  tab's ad-block webview cancels main-frame redirects to foreign hosts,
+     *  which is exactly what a streaming site's redirect to the real video
+     *  page looks like — the user's discovery of why the movie page never
+     *  opened). Here redirects are NEVER blocked (the challenge → real page
+     *  chain must complete), but ad hosts still are (same hosts lists the
+     *  browsing view uses), and media is never blocked. */
     private fun solveHidden(host: String, url: String): Boolean {
         val created = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
@@ -264,7 +283,27 @@ object CloudflareVerifier {
                 wv.visibility = View.INVISIBLE
                 wv.layout(0, 0, 480, 320)
                 wv.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                wv.webViewClient = object : WebViewClient() {}
+                // Ad-blocking (cached hosts lists + built-ins) — subresources
+                // from ad hosts are dropped so the verify page can't pull ads,
+                // but media and main-frame redirects always pass. No redirect
+                // protection here: that's the whole point of this WebView.
+                val blocked = runCatching { AdBlocker.cachedResolve(HikariApp.instance) }
+                    .getOrDefault(AdBlocker.BUILTIN.toSet())
+                wv.webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest
+                    ): WebResourceResponse? {
+                        if (request.isForMainFrame) return null
+                        val rh = request.url.host ?: return null
+                        if (AdBlocker.matches(rh, blocked) && !AdBlocker.isMediaLike(request)) {
+                            return WebResourceResponse(
+                                "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                            )
+                        }
+                        return null
+                    }
+                }
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
                 synchronized(lock) { hiddenSolves[host] = wv }

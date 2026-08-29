@@ -142,6 +142,36 @@ object AdBlocker {
         }
     }
 
+    /** Blocked set built purely from the on-disk cache + built-ins — no store,
+     *  no network, no suspension. For WebViews that can't suspend (e.g. the
+     *  hidden Cloudflare solver): covers whatever lists the user configured,
+     *  since downloading a list caches it under filesDir/adblock/. */
+    fun cachedResolve(context: Context): Set<String> {
+        val blocked = HashSet<String>()
+        val dir = cacheDir(context)
+        dir.listFiles()?.forEach { f ->
+            if (f.name.endsWith(".txt")) {
+                runCatching { blocked.addAll(parseHosts(f.readText())) }
+            }
+        }
+        blocked.addAll(BUILTIN)
+        return blocked
+    }
+
+    /** True when a request looks like actual media (never ad-block these —
+     *  blocklists routinely contain tube-site CDN domains that serve the
+     *  real video). */
+    fun isMediaLike(request: android.webkit.WebResourceRequest): Boolean {
+        val h = request.requestHeaders
+        if (h?.containsKey("Range") == true) return true
+        val accept = h?.get("Accept")?.lowercase().orEmpty()
+        if (accept.contains("video/") || accept.contains("application/octet-stream")) return true
+        val u = request.url.toString().lowercase()
+        return u.contains(".mp4") || u.contains(".m3u8") || u.contains(".mpd") ||
+            u.contains(".ts?") || u.contains("videoplayback") || u.contains("/videos/") ||
+            u.contains("/media/") || u.contains("phncdn") || u.contains("streamable")
+    }
+
     fun normalizeDomain(raw: String): String =
         raw.trim()
             .removePrefix("http://").removePrefix("https://")
