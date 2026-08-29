@@ -114,7 +114,7 @@ class HikariApp : Application() {
             // First run: seed the Nuvio provider repos (manifest.json) and a few
             // pre-installed providers so nuvio sources work out of the box.
             runCatching {
-                com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this, store)
+                com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
             }
             providers.refresh()
             providers.providers.value

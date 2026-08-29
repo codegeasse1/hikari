@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -90,7 +91,7 @@ object NuvioRuntime {
         wv.settings.allowFileAccess = true
         wv.settings.blockNetworkLoads = true
         wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
-        wv.addJavascriptInterface(NuvioBridge, "NuvioBridge")
+        wv.addJavascriptInterface(NuvioBridge(), "NuvioBridge")
         val p = PooledWebView(wv)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
@@ -320,7 +321,7 @@ object NuvioRuntime {
         }
     }
 
-    private class NuvioBridge {
+    private inner class NuvioBridge {
         @JavascriptInterface
         fun fetch(url: String, method: String, headersJson: String, body: String, followRedirects: Boolean): String =
             bridgeFetch(url, method, headersJson, body, followRedirects)
@@ -341,5 +342,3 @@ object NuvioRuntime {
         }
     }
 }
-
-private fun String.toMediaTypeOrNull() = okhttp3.MediaType.Companion.toMediaTypeOrNull(this)
