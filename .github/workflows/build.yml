@@ -61,8 +61,25 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          gradle assembleDebug assembleRelease --no-daemon --stacktrace > gradle-build.log 2>&1
-          code=$?
+          # Maven Central occasionally rate-limits (HTTP 429) cold dependency
+          # resolution. Retry the whole build a few times with a pause so the
+          # rate-limit bucket can drain, instead of failing the first run.
+          code=1
+          for attempt in 1 2 3 4 5; do
+            echo "==== Gradle build attempt $attempt/5 ===="
+            gradle assembleDebug assembleRelease --no-daemon --stacktrace > gradle-build.log 2>&1
+            code=$?
+            if [ $code -eq 0 ]; then
+              break
+            fi
+            if grep -qE "429|Too Many Requests" gradle-build.log; then
+              echo "==== Attempt $attempt hit a 429 rate-limit; retrying in 60s ===="
+              sleep 60
+            else
+              echo "==== Attempt $attempt failed with a non-rate-limit error; stopping ===="
+              break
+            fi
+          done
           if [ $code -ne 0 ]; then
             echo "==== BUILD FAILED (exit $code) ===="
             tail -n 200 gradle-build.log
