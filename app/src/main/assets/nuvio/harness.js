@@ -583,7 +583,7 @@
     var done = false;
     var timer = setTimeout(function () {
       if (!done) { done = true; __bridge().onGetStreamsDone(cid, JSON.stringify({ ok: false, error: 'timeout' })); }
-    }, 60000);
+    }, 100000);
     Promise.resolve()
       .then(function () { return getStreams(tmdbId, mediaType, season, episode); })
       .then(function (result) {

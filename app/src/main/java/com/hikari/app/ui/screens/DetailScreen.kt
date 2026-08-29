@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
@@ -88,6 +90,10 @@ import java.util.concurrent.ConcurrentHashMap
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
+
+    /** Installed extensions (names for the per-provider diagnostics shown in
+     *  the sources sheet's empty state). */
+    val providers: StateFlow<List<ContentProvider>> = manager.providers
 
     private val _meta = MutableStateFlow<MediaItem?>(null)
     val meta: StateFlow<MediaItem?> = _meta.asStateFlow()
@@ -264,6 +270,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+/** One diagnostic line per extension for the sources sheet's empty state:
+ *  what each searched addon actually reported ("✓ 3 sources", "✗ timeout",
+ *  "✗ cut off after 110s", …). Null when the addon has no recorded outcome. */
+private fun providerOutcomeLine(p: ContentProvider): String? {
+    val name = p.config.name
+    val msg = when (p.config.type) {
+        ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id]
+            ?: com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
+        ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.streamErrors[p.config.id]
+        ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.streamErrors[p.config.id]
+        ProviderType.HIKARI -> com.hikari.app.providers.HikariProviderAdapter.streamErrors[p.config.id]
+        ProviderType.UNIVERSAL -> com.hikari.app.providers.UniversalScraper.streamErrors[p.config.id]
+        else -> null
+    }
+    return msg?.let { "$name: $it" }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(
@@ -288,6 +311,7 @@ fun DetailScreen(
     val streamsReady by vm.streamsReady.collectAsState()
     val searchedProviders by vm.searchedProviders.collectAsState()
     val streamError by vm.streamError.collectAsState()
+    val providers by vm.providers.collectAsState()
     val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -605,7 +629,9 @@ fun DetailScreen(
                     CircularProgressIndicator()
                 }
                 streams.isEmpty() -> Column(
-                    Modifier.padding(24.dp)
+                    Modifier
+                        .padding(24.dp)
+                        .verticalScroll(rememberScrollState())
                 ) {
                     Text(
                         "No playable sources found.",
@@ -628,6 +654,43 @@ fun DetailScreen(
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(top = 8.dp)
                         )
+                    }
+                    val diagLines = providers
+                        .filter { it.config.enabled }
+                        .mapNotNull { providerOutcomeLine(it) }
+                        .take(20)
+                    if (diagLines.isNotEmpty()) {
+                        Text(
+                            "Per-extension results:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                        diagLines.forEach { l ->
+                            Text(
+                                l,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                    val fLog = com.hikari.app.nuvio.NuvioRuntime.fetchLogSnapshot().takeLast(24)
+                    if (fLog.isNotEmpty()) {
+                        Text(
+                            "Fetch log:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                        fLog.forEach { l ->
+                            Text(
+                                l,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
                 }
                 else -> LazyColumn(

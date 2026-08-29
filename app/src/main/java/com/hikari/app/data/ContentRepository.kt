@@ -204,21 +204,40 @@ class ContentRepository(private val manager: ProviderManager) {
             val targets = primaryTargets + nuvioTargets
             if (targets.isEmpty()) return@withContext emptyList()
 
+            // Fresh diagnostic state for this lookup.
+            com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
+            com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
+
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
-                        cancellableCatching {
-                            // Nuvio providers get a shorter budget — their
-                            // pipeline is several sequential fetches per source.
-                            val budget = if (i < primaryTargets.size) 45_000L else 25_000L
-                            withTimeoutOrNull(budget) { p.getStreams(item, episode) }.orEmpty()
-                        }.getOrDefault(emptyList())
+                        // Nuvio providers need a real budget — a single lookup
+                        // is several sequential fetches (search → detail →
+                        // player → resolve) that can take well over 60s on a
+                        // mobile connection. The old 25s cut killed them mid-
+                        // pipeline and every extension reported "no sources"
+                        // even though the providers work when given time. When
+                        // the budget fires, record WHY so the sources sheet can
+                        // show it instead of a silent empty result.
+                        val budget = if (i < primaryTargets.size) 45_000L else 110_000L
+                        val r = withTimeoutOrNull(budget) {
+                            try {
+                                p.getStreams(item, episode)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                if (p.config.type == ProviderType.NUVIO) {
+                                    com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] =
+                                        "✗ cut off after ${budget / 1000}s (too slow)"
+                                }
+                                throw e
+                            }
+                        }
+                        r.orEmpty()
                     }
                 }
                 val started = System.currentTimeMillis()
-                val deadline = started + 30_000L
+                val deadline = started + 115_000L
                 // Merge EVERY provider's sources (deduped by url/infoHash). The
                 // old first-non-empty-wins behaviour is kept for the primary
                 // targets so a fast Stremio/CS3 answer still opens instantly;

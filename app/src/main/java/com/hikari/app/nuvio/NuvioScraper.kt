@@ -31,6 +31,11 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
     companion object {
         /** Per-provider last failure (shown on the Detail screen). */
         val streamErrors = ConcurrentHashMap<String, String>()
+        /** Per-provider last lookup outcome — one short line per extension
+         *  ("✓ 3 sources in 18s" or "✗ …"). Shown in the sources sheet so the
+         *  user can see which extension actually failed and why, instead of
+         *  one global "no sources found". */
+        val lastOutcome = ConcurrentHashMap<String, String>()
         /** Per-provider catalog failure (shown on the Home empty state). */
         val catalogErrors = ConcurrentHashMap<String, String>()
 
@@ -298,15 +303,19 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
+            val startedAt = System.currentTimeMillis()
             val resolved = TmdbResolver.resolve(item)
             if (resolved == null) {
-                streamErrors[config.id] =
-                    "Couldn't resolve a TMDB id for this title (needed by nuvio providers)."
+                val msg = "✗ Couldn't resolve a TMDB id for this title."
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             val source = runCatching { File(config.url).readText() }.getOrNull()
             if (source.isNullOrBlank()) {
-                streamErrors[config.id] = "Scraper file missing — reinstall this extension."
+                val msg = "✗ Scraper file missing — reinstall this extension."
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             // Series: nuvio needs the season + episode numbers. The episode's
@@ -324,20 +333,23 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             )
             val parsed = runCatching { JSONObject(payload) }.getOrNull()
             if (parsed == null) {
-                streamErrors[config.id] = "Nuvio runtime returned an unreadable result."
+                val msg = "✗ Nuvio runtime returned an unreadable result."
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             if (!parsed.optBoolean("ok", false)) {
                 val err = parsed.optString("error").ifBlank { "no sources found" }
-                streamErrors[config.id] = if (err == "timeout")
-                    "Nuvio provider timed out after 60s."
-                else
-                    err.take(400)
+                val msg = if (err == "timeout") "✗ provider timed out after 100s." else "✗ $err"
+                streamErrors[config.id] = msg.take(400)
+                lastOutcome[config.id] = msg.take(80)
                 return@withContext emptyList()
             }
             val data = parsed.optJSONArray("data")
             if (data == null || data.length() == 0) {
-                streamErrors[config.id] = "Provider returned no sources for this title."
+                val msg = "✗ Provider returned no sources for this title."
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             val out = mutableListOf<StreamSource>()
@@ -345,7 +357,12 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val s = data.optJSONObject(i) ?: continue
                 toStreamSource(s)?.let { out.add(it) }
             }
-            if (out.isNotEmpty()) streamErrors.remove(config.id)
+            if (out.isNotEmpty()) {
+                streamErrors.remove(config.id)
+                lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in ${(System.currentTimeMillis() - startedAt) / 1000}s"
+            } else {
+                lastOutcome[config.id] = "✗ returned ${data.length()} rows but none playable"
+            }
             out.distinctBy { it.url }
         }
 

@@ -39,7 +39,12 @@ import java.util.concurrent.TimeUnit
  */
 object NuvioRuntime {
 
-    private const val MAX_WEBVIEWS = 3
+    // 5 hidden WebViews = up to 5 providers resolving at once. The old 3-view
+    // pool meant that with a dozen+ installed extensions most of them queued
+    // behind the slowest three and were cut off by the app's search deadline
+    // before ever running — every addon reported "no sources" even though the
+    // providers work fine on their own (verified against the live sites).
+    private const val MAX_WEBVIEWS = 5
     private const val FETCH_TIMEOUT_MS = 120_000L
     private const val CALL_TIMEOUT_MS = 150_000L
 
@@ -61,6 +66,28 @@ object NuvioRuntime {
     private val freeChannel = Channel<PooledWebView>(Channel.UNLIMITED)
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(4)
+
+    /** Diagnostic ring buffer of every bridgeFetch outcome (host, status,
+     *  size, latency). Shown on the Detail screen when no sources are found so
+     *  a failing provider reports exactly what HTTP really returned — a 403
+     *  Cloudflare challenge (site blocked the device IP), a network error, or
+     *  just slow. Cleared at the start of each sources search. */
+    private val fetchLogEntries = java.util.concurrent.ConcurrentLinkedDeque<String>()
+
+    fun resetFetchLog() {
+        fetchLogEntries.clear()
+    }
+
+    fun fetchLogSnapshot(): List<String> = fetchLogEntries.toList()
+
+    private fun fetchLogLine(host: String, m: String, status: String, bytes: Int, ms: Long, extra: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        fetchLogEntries.addFirst("$ts $m $host -> $status ${bytes}b ${ms}ms$extra")
+        while (fetchLogEntries.size > 150) fetchLogEntries.pollLast()
+    }
+
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(url).host ?: url.take(48) }.getOrDefault(url.take(48))
 
     private val client by lazy {
         OkHttpClient.Builder()
@@ -278,6 +305,7 @@ object NuvioRuntime {
         followRedirects: Boolean,
     ): String {
         val started = System.currentTimeMillis()
+        val m = method.uppercase()
         val task = fetchExecutor.submit<JSONObject> {
             try {
                 val builder = Request.Builder()
@@ -301,7 +329,6 @@ object NuvioRuntime {
                         runCatching { builder.header(k, h.getString(k)) }
                     }
                 }
-                val m = method.uppercase()
                 if (body.isNotEmpty() && (m == "POST" || m == "PUT" || m == "PATCH")) {
                     val type = if (h != null && h.has("Content-Type")) h.getString("Content-Type")
                     else "application/x-www-form-urlencoded; charset=utf-8"
@@ -312,6 +339,14 @@ object NuvioRuntime {
                 val resp = client.newCall(builder.build()).execute()
                 resp.use { r ->
                     val bytes = r.body?.bytes() ?: ByteArray(0)
+                    val host = hostOf(url)
+                    val extra = if (r.code == 403 || r.code == 503) {
+                        val low = String(bytes, Charsets.ISO_8859_1).lowercase()
+                        if (low.contains("just a moment") || low.contains("attention required") ||
+                            low.contains("cf-chl") || low.contains("checking your browser")
+                        ) " CF-CHALLENGE-UNSOLVED" else ""
+                    } else ""
+                    fetchLogLine(host, m, r.code.toString(), bytes.size, System.currentTimeMillis() - started, extra)
                     val out = JSONObject()
                     out.put("ok", r.isSuccessful)
                     out.put("status", r.code)
@@ -340,6 +375,7 @@ object NuvioRuntime {
                     return@submit out
                 }
             } catch (e: Throwable) {
+                fetchLogLine(hostOf(url), m, "ERR", 0, System.currentTimeMillis() - started, " ${e.message ?: "network error"}")
                 val out = JSONObject()
                 out.put("ok", false)
                 out.put("status", 0)
@@ -355,6 +391,7 @@ object NuvioRuntime {
         return try {
             task.get(FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS).toString()
         } catch (e: Exception) {
+            fetchLogLine(hostOf(url), m, "TIMEOUT", 0, System.currentTimeMillis() - started, " fetch did not finish in ${FETCH_TIMEOUT_MS / 1000}s")
             "{\"ok\":false,\"status\":0,\"statusText\":\"fetch timed out\",\"url\":${quote(url)}," +
                 "\"headers\":{},\"body\":\"\",\"bodyBase64\":\"\"}"
         }
