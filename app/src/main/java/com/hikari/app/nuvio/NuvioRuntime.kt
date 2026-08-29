@@ -61,12 +61,11 @@ object NuvioRuntime {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             // Auto Cloudflare handling, same as Hikari's own Http client: when
-            // a provider fetch hits a CF challenge the verify WebView auto-opens
-            // (and auto-closes once the challenge passes), then the request is
-            // retried with the fresh cf_clearance cookie + browser UA.
-            // NOTE: Nuvio fetches send X-Hikari-NoCfAutoOpen so the verify WebView
-            // never auto-opens full-screen over the player (ad/anti-bot pages were
-            // popping up over playback); they still get clearance + UA retries.
+            // a provider fetch hits a CF challenge it solves it — first in a
+            // hidden off-screen WebView (nothing pops over the player), falling
+            // back to the visible verify view only for interactive challenges —
+            // then the request is retried with the fresh cf_clearance cookie
+            // + browser UA.
             .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             .build()
     }
@@ -274,7 +273,6 @@ object NuvioRuntime {
                 val builder = Request.Builder()
                     .url(url)
                     .header("User-Agent", Http.UA)
-                    .header("X-Hikari-NoCfAutoOpen", "1")
                 val h = runCatching { JSONObject(headersJson) }.getOrNull()
                 if (h != null) {
                     h.keys().forEach { k -> runCatching { builder.header(k, h.getString(k)) } }

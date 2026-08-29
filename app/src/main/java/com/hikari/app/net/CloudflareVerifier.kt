@@ -3,7 +3,11 @@ package com.hikari.app.net
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.hikari.app.HikariApp
 import com.hikari.app.web.WebViewActivity
 import okhttp3.Interceptor
@@ -22,23 +26,29 @@ import java.util.concurrent.TimeUnit
  * Mirrors CloudStream's own CloudflareKiller: a 403/503 whose `Server` header
  * says cloudflare is treated as a CF challenge. If the WebView cookie jar
  * already holds a cf_clearance for the host we attach it (plus the WebView UA,
- * the fingerprint the clearance was minted for) and retry; otherwise we
- * auto-open the "verify" WebView — the same view the Home globe button opens
- * manually, set to close itself the moment the challenge passes — wait for the
- * clearance to appear, then retry. A per-host in-flight guard keeps concurrent
- * requests from stacking WebViews, and a short dismissal cooldown keeps a
- * user who closed the view without solving from being re-prompted on every
- * retry of the same host.
+ * the fingerprint the clearance was minted for) and retry; otherwise we solve
+ * it — first in a hidden off-screen WebView (nothing ever pops over the
+ * player), falling back to the visible "verify" WebView — the same view the
+ * Home globe button opens manually, set to close itself the moment the
+ * challenge passes — for interactive challenges — wait for the clearance to
+ * appear, then retry. A per-host in-flight guard keeps concurrent requests
+ * from stacking WebViews, and a short dismissal cooldown keeps a user who
+ * closed the view without solving from being re-prompted on every retry of
+ * the same host.
  */
 object CloudflareVerifier {
 
     private const val SOLVE_TIMEOUT_MS = 90_000L
     private const val DISMISS_COOLDOWN_MS = 60_000L
+    // How long the hidden off-screen solver gets before the visible verify view
+    // takes over (interactive challenges need a human click).
+    private const val HIDDEN_SOLVE_TIMEOUT_MS = 15_000L
 
     private val lock = Any()
     private val inFlight = HashMap<String, CountDownLatch>()
     private val launchedFor = HashSet<String>()
     private val dismissedUntil = HashMap<String, Long>()
+    private val hiddenSolves = HashMap<String, WebView>()
 
     /** Master switch: auto-open the verify WebView on a challenge (vs. just
      *  returning the challenge response and letting the caller surface it). */
@@ -131,11 +141,6 @@ object CloudflareVerifier {
      */
     fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        // Nuvio provider fetches set this header: they still get any existing
-        // cf_clearance attached and a UA/cookie retry, but the verify WebView
-        // must NEVER auto-open full-screen over the player from one of them
-        // (ad/anti-bot pages were popping over playback).
-        val suppressAutoOpen = request.header("X-Hikari-NoCfAutoOpen") == "1"
         val firstReq = if (request.header("Cookie") == null) {
             val c = clearanceFor(request.url.toString())
             if (c != null) request.newBuilder().header("Cookie", c).build() else request
@@ -152,7 +157,7 @@ object CloudflareVerifier {
 
         val now = System.currentTimeMillis()
         val cooled = synchronized(lock) { (dismissedUntil[host] ?: 0L) < now }
-        if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled && !suppressAutoOpen &&
+        if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled &&
             Looper.myLooper() != Looper.getMainLooper()
         ) {
             solve(host, url)
@@ -170,30 +175,38 @@ object CloudflareVerifier {
         return chain.proceed(request)
     }
 
-    /** Blocking CF solve for [host]/[url]: auto-open the verify WebView once,
-     *  wait for the clearance (or the view closing / timeout). Only ever called
-     *  from background threads — it blocks. */
+    /** Blocking CF solve for [host]/[url]. First tries a hidden off-screen
+     *  WebView — nothing pops over the player; if that doesn't mint a
+     *  clearance within a short grace period (interactive Turnstile challenges
+     *  need a human click), it falls back to the visible verify WebView. Only
+     *  ever called from background threads — it blocks. */
     private fun solve(host: String, url: String) {
         val latch: CountDownLatch = synchronized(lock) {
             inFlight.getOrPut(host) { CountDownLatch(1) }
         }
         val creator = synchronized(lock) { launchedFor.add(host) }
         if (creator) {
-            Handler(Looper.getMainLooper()).post {
-                try {
-                    val app = HikariApp.instance
-                    val intent = Intent(app, WebViewActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        putExtra("url", url)
-                        putExtra("title", "Cloudflare verification")
-                        putExtra("autoCloseWhenCloudflarePassed", true)
-                        putExtra("verifyHost", host)
+            if (solveHidden(host, url)) {
+                // Hidden solver already minted the clearance — wake every waiter
+                // immediately instead of letting them sit out the deadline.
+                synchronized(lock) { latch.countDown() }
+            } else {
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        val app = HikariApp.instance
+                        val intent = Intent(app, WebViewActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            putExtra("url", url)
+                            putExtra("title", "Cloudflare verification")
+                            putExtra("autoCloseWhenCloudflarePassed", true)
+                            putExtra("verifyHost", host)
+                        }
+                        app.startActivity(intent)
+                    } catch (t: Throwable) {
+                        android.util.Log.e("CloudflareVerifier", "verify launch failed", t)
+                        // don't let waiters hang until the deadline
+                        synchronized(lock) { latch.countDown() }
                     }
-                    app.startActivity(intent)
-                } catch (t: Throwable) {
-                    android.util.Log.e("CloudflareVerifier", "verify launch failed", t)
-                    // don't let waiters hang until the deadline
-                    synchronized(lock) { latch.countDown() }
                 }
             }
         }
@@ -207,6 +220,54 @@ object CloudflareVerifier {
             launchedFor.remove(host)
             if (!cleared) dismissedUntil[host] = System.currentTimeMillis() + DISMISS_COOLDOWN_MS
         }
+    }
+
+    /** Hidden off-screen solver: loads the challenged URL in an INVISIBLE
+     *  WebView (real dimensions so the challenge JS gets a sane viewport, but
+     *  never attached to a window and never drawn) and polls the shared cookie
+     *  jar for cf_clearance. Returns true when a clearance appeared. */
+    private fun solveHidden(host: String, url: String): Boolean {
+        val created = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val wv = WebView(HikariApp.instance)
+                val ws = wv.settings
+                ws.javaScriptEnabled = true
+                ws.domStorageEnabled = true
+                ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                ws.userAgentString = runCatching { HikariApp.instance.effectiveWebViewUa() }
+                    .getOrNull() ?: Http.WEBVIEW_UA
+                wv.visibility = View.INVISIBLE
+                wv.layout(0, 0, 480, 320)
+                wv.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                wv.webViewClient = object : WebViewClient() {}
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+                synchronized(lock) { hiddenSolves[host] = wv }
+                wv.loadUrl(url)
+            } catch (t: Throwable) {
+                android.util.Log.e("CloudflareVerifier", "hidden solve create failed", t)
+            } finally {
+                created.countDown()
+            }
+        }
+        created.await(5, TimeUnit.SECONDS)
+        val deadline = System.currentTimeMillis() + HIDDEN_SOLVE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (clearanceFor(url) != null) break
+            Thread.sleep(400)
+        }
+        val solved = clearanceFor(url) != null
+        val wv = synchronized(lock) { hiddenSolves.remove(host) }
+        if (wv != null) {
+            Handler(Looper.getMainLooper()).post {
+                runCatching {
+                    wv.stopLoading()
+                    wv.destroy()
+                }
+            }
+        }
+        return solved
     }
 
     /** Called by the verify WebView when it closes (challenge passed or the
