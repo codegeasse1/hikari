@@ -34,7 +34,8 @@ import java.util.concurrent.TimeUnit
  *
  * A small pool of WebViews (bounded) lets several providers resolve sources in
  * parallel; each pooled WebView is initialized once with the shared runtime
- * harness + cheerio + crypto-js (see harness.js in assets).
+ * (runtime.html loads cheerio + crypto-js + harness.js as plain scripts — see
+ * app/src/main/assets/nuvio/runtime.html).
  */
 object NuvioRuntime {
 
@@ -63,6 +64,9 @@ object NuvioRuntime {
             // a provider fetch hits a CF challenge the verify WebView auto-opens
             // (and auto-closes once the challenge passes), then the request is
             // retried with the fresh cf_clearance cookie + browser UA.
+            // NOTE: Nuvio fetches send X-Hikari-NoCfAutoOpen so the verify WebView
+            // never auto-opens full-screen over the player (ad/anti-bot pages were
+            // popping up over playback); they still get clearance + UA retries.
             .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             .build()
     }
@@ -100,39 +104,25 @@ object NuvioRuntime {
         val p = PooledWebView(wv)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
-                initWebView(view, p)
+                if (p.ready.isCompleted) return
+                if (url.startsWith("file://")) {
+                    // runtime.html boots cheerio + crypto-js + harness as plain
+                    // scripts (no evaluateJavascript size ceiling), then sets
+                    // window.__nuvioReady. Confirm it actually ran.
+                    wv.evaluateJavascript(
+                        "window.__nuvioReady === true && typeof window.__nuvioRequire === 'function'"
+                    ) { r ->
+                        if (r?.contains("true") == true) p.ready.complete(Unit)
+                        else p.ready.completeExceptionally(Exception("nuvio runtime failed to boot"))
+                    }
+                } else {
+                    p.ready.completeExceptionally(Exception("nuvio runtime page failed to load: $url"))
+                }
             }
         }
-        wv.loadUrl("about:blank")
+        wv.loadUrl("file:///android_asset/nuvio/runtime.html")
         return p
     }
-
-    private fun initWebView(wv: WebView, p: PooledWebView) {
-        val ctx = wv.context
-        val harness = readAsset(ctx, "nuvio/harness.js")
-        val cheerio = readAsset(ctx, "nuvio/cheerio.js")
-        val cryptoJs = readAsset(ctx, "nuvio/crypto-js.js")
-        if (harness == null || cheerio == null || cryptoJs == null) {
-            p.ready.completeExceptionally(Exception("nuvio runtime assets missing"))
-            return
-        }
-        fun step(js: String, next: () -> Unit) {
-            wv.evaluateJavascript(js) {
-                if (!p.ready.isCompleted) p.ready.complete(Unit)
-                next()
-            }
-        }
-        // Sequential evals, each far below evaluateJavascript's practical
-        // input ceiling: harness, then cheerio, then crypto-js.
-        step(harness) {
-            step("__nuvioProvideModule('cheerio', ${quote(cheerio)});") {
-                step("__nuvioProvideModule('crypto-js', ${quote(cryptoJs)});") {}
-            }
-        }
-    }
-
-    private fun readAsset(context: Context, name: String): String? =
-        runCatching { context.assets.open(name).bufferedReader().use { it.readText() } }.getOrNull()
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
@@ -284,6 +274,7 @@ object NuvioRuntime {
                 val builder = Request.Builder()
                     .url(url)
                     .header("User-Agent", Http.UA)
+                    .header("X-Hikari-NoCfAutoOpen", "1")
                 val h = runCatching { JSONObject(headersJson) }.getOrNull()
                 if (h != null) {
                     h.keys().forEach { k -> runCatching { builder.header(k, h.getString(k)) } }

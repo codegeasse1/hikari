@@ -1,9 +1,10 @@
 /* HIKARI nuvio provider runtime harness.
  * Mirrors NuvioMobile's PluginRuntime/JsBindings calling conventions but runs in a Chromium WebView,
  * so providers get the real cheerio, crypto-js, fetch, URL, WebSocket, etc.
- * The host app injects: NuvioBridge (fetch + onGetStreamsDone + onSettingsDone + log) via addJavascriptInterface,
- * then evaluates this harness, then __nuvioProvideModule('cheerio', ...), __nuvioProvideModule('crypto-js', ...),
- * then per call: __nuvioRunProvider(source, id, cid, tmdbId, mediaType, season, episode).
+ * The host app injects: NuvioBridge (fetch + onGetStreamsDone + onSettingsDone + log) via addJavascriptInterface.
+ * The WebView loads assets/nuvio/runtime.html which loads cheerio.js + crypto-js.js as plain scripts
+ * (avoids evaluateJavascript's message-size ceiling), then this harness, then registers the two modules,
+ * then per call: window.__nuvioRunProvider(source, id, cid, tmdbId, mediaType, season, episode).
  */
 (function () {
   'use strict';
@@ -49,6 +50,20 @@
       __moduleCache['react-native-cheerio'] = mod;
     }
     return mod.exports;
+  }
+
+  // Registers a module whose exports were produced by loading the module source
+  // as a plain <script> (runtime.html) instead of evalModule — used for the
+  // big vendor libs (cheerio, crypto-js) so their content never travels
+  // through evaluateJavascript, which has a practical message-size ceiling.
+  function __nuvioRegisterModule(name, exports) {
+    var mod = { exports: exports };
+    __moduleCache[name] = mod;
+    if (name === 'cheerio') {
+      __moduleCache['cheerio-without-node-native'] = mod;
+      __moduleCache['react-native-cheerio'] = mod;
+    }
+    return exports;
   }
 
   function __nuvioLoadProvider(source, id) {
@@ -618,6 +633,7 @@
   g.__nuvioFetch = __nuvioFetch;
   g.__nuvioRequire = __nuvioRequire;
   g.__nuvioProvideModule = __nuvioProvideModule;
+  g.__nuvioRegisterModule = __nuvioRegisterModule;
   g.__nuvioLoadProvider = __nuvioLoadProvider;
   g.__nuvioRunProvider = __runProvider;
   g.__nuvioRunSettings = __runSettings;
@@ -639,6 +655,6 @@
   __builtins.events = __moduleCache['events'].exports;
 
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[nuvio] harness ready, version 2');
+    console.log('[nuvio] harness ready, version 3');
   }
 })();

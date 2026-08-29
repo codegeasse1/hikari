@@ -131,6 +131,11 @@ object CloudflareVerifier {
      */
     fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        // Nuvio provider fetches set this header: they still get any existing
+        // cf_clearance attached and a UA/cookie retry, but the verify WebView
+        // must NEVER auto-open full-screen over the player from one of them
+        // (ad/anti-bot pages were popping over playback).
+        val suppressAutoOpen = request.header("X-Hikari-NoCfAutoOpen") == "1"
         val firstReq = if (request.header("Cookie") == null) {
             val c = clearanceFor(request.url.toString())
             if (c != null) request.newBuilder().header("Cookie", c).build() else request
@@ -147,7 +152,7 @@ object CloudflareVerifier {
 
         val now = System.currentTimeMillis()
         val cooled = synchronized(lock) { (dismissedUntil[host] ?: 0L) < now }
-        if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled &&
+        if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled && !suppressAutoOpen &&
             Looper.myLooper() != Looper.getMainLooper()
         ) {
             solve(host, url)
