@@ -35,33 +35,130 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         private const val IMG = "https://image.tmdb.org/t/p/w500"
         private const val IMG_L = "https://image.tmdb.org/t/p/w1280"
         private const val MAX_SEASONS = 24
+
+        /** What a nuvio site actually hosts, inferred from its scraper file
+         *  name. Nuvio providers export no catalog/search API of their own, so
+         *  Hikari browses TMDB on their behalf — but the catalog must match the
+         *  site's niche (an anime provider showing live-action movies is
+         *  useless), and it must differ between providers so installing three
+         *  extensions doesn't show three identical home screens. */
+        private enum class Niche { ANIME, HINDI, KDRAMA, FRENCH, PERSIAN, GENERAL }
+
+        private class RowDef(
+            val id: String,
+            val type: MediaType,
+            val path: String,
+            val params: Map<String, String>,
+            val title: String,
+        )
+
+        private val GENERAL_ROWS = listOf(
+            RowDef("g0", MediaType.UNKNOWN, "/trending/all/week", emptyMap(), "Trending"),
+            RowDef("g1", MediaType.MOVIE, "/movie/popular", emptyMap(), "Popular Movies"),
+            RowDef("g2", MediaType.MOVIE, "/movie/top_rated", emptyMap(), "Top Rated Movies"),
+            RowDef("g3", MediaType.MOVIE, "/movie/now_playing", emptyMap(), "In Cinemas"),
+            RowDef("g4", MediaType.MOVIE, "/movie/upcoming", emptyMap(), "Coming Soon"),
+            RowDef("g5", MediaType.SERIES, "/tv/popular", emptyMap(), "Popular Series"),
+            RowDef("g6", MediaType.SERIES, "/tv/top_rated", emptyMap(), "Top Rated Series"),
+            RowDef("g7", MediaType.SERIES, "/tv/airing_today", emptyMap(), "Airing Today"),
+            RowDef("g8", MediaType.SERIES, "/tv/on_the_air", emptyMap(), "On TV"),
+        )
+
+        // TMDB genre 16 = Animation, restricted to Japanese origin so anime
+        // sites actually show anime (not Family Guy). vote_count.gte=100 keeps
+        // "Top Rated" rows free of obscure 1-vote junk.
+        private val ANIME_ROWS = listOf(
+            RowDef("a0", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime"),
+            RowDef("a1", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime"),
+            RowDef("a2", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "first_air_date.desc"), "New Anime"),
+            RowDef("a3", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime Movies"),
+            RowDef("a4", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime Movies"),
+            RowDef("a5", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "primary_release_date.desc"), "New Anime Movies"),
+        )
+
+        private val HINDI_ROWS = listOf(
+            RowDef("h0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "popularity.desc"), "Popular Hindi Movies"),
+            RowDef("h1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "hi", "sort_by" to "popularity.desc"), "Popular Hindi Series"),
+            RowDef("h2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Hindi Movies"),
+            RowDef("h3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "hi", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Hindi Series"),
+            RowDef("h4", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "primary_release_date.desc"), "New Hindi Movies"),
+        )
+
+        private val KDRAMA_ROWS = listOf(
+            RowDef("k0", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "popularity.desc"), "Popular Korean Dramas"),
+            RowDef("k1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Korean Dramas"),
+            RowDef("k2", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "first_air_date.desc"), "New Korean Dramas"),
+            RowDef("k3", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "ko", "sort_by" to "popularity.desc"), "Popular Korean Movies"),
+        )
+
+        private val FRENCH_ROWS = listOf(
+            RowDef("f0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fr", "sort_by" to "popularity.desc"), "Popular French Movies"),
+            RowDef("f1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fr", "sort_by" to "popularity.desc"), "Popular French Series"),
+            RowDef("f2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fr", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated French Movies"),
+            RowDef("f3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fr", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated French Series"),
+        )
+
+        private val PERSIAN_ROWS = listOf(
+            RowDef("p0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fa", "sort_by" to "popularity.desc"), "Popular Persian Movies"),
+            RowDef("p1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fa", "sort_by" to "popularity.desc"), "Popular Persian Series"),
+            RowDef("p2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fa", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Persian Movies"),
+            RowDef("p3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fa", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Persian Series"),
+        )
+
+        private fun nicheOf(name: String): Niche {
+            val n = name.lowercase()
+            return when {
+                listOf("anime", "hianime", "anidb", "anikoto", "kurage", "cartoon").any { n.contains(it) } -> Niche.ANIME
+                listOf(
+                    "desi", "hindi", "hindmoviez", "einthusan", "gramcinema", "moonflix", "ctgmovies",
+                    "hdghar", "hdhub", "moviebox", "movieblast", "movieshunt", "movies4u",
+                    "vegamovies", "zinkmovie", "bollywood",
+                ).any { n.contains(it) } -> Niche.HINDI
+                listOf("kdrama", "kisskh").any { n.contains(it) } -> Niche.KDRAMA
+                listOf("movix", "nakios", "purstream", "wiflix", "vostfr", "frenchstream", "streamingvf", "papadustream").any { n.contains(it) } -> Niche.FRENCH
+                n.contains("persian") -> Niche.PERSIAN
+                else -> Niche.GENERAL
+            }
+        }
+
+        /** Deterministic slice of [pool] so different providers of the same
+         *  niche still show different rows (seeded by the provider's name). */
+        private fun window(pool: List<RowDef>, take: Int, hash: Int): List<RowDef> {
+            val maxStart = pool.size - take
+            val start = if (maxStart <= 0) 0 else hash % (maxStart + 1)
+            return pool.subList(start, start + take)
+        }
     }
 
-    // Nuvio providers resolve sources purely from a TMDB id, and have no
-    // catalog of their own — so Hikari browses TMDB on their behalf. Same
-    // look-and-feel as the official NuvioMobile app (which also surfaces TMDB's
-    // databases through these providers). getStreams then resolves the picked
-    // item to its TMDB id and lets the provider do the rest.
-    override suspend fun catalogs(): List<CatalogRef> = listOf(
-        CatalogRef(config.id, MediaType.UNKNOWN, "tmdb-trending", "Trending"),
-        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-popular", "Popular Movies"),
-        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-top", "Top Rated Movies"),
-        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-now", "In Cinemas"),
-        CatalogRef(config.id, MediaType.SERIES, "tmdb-tv-popular", "Popular Series"),
-        CatalogRef(config.id, MediaType.SERIES, "tmdb-tv-top", "Top Rated Series"),
-    )
+    // Nuvio providers resolve sources purely from a TMDB id, and export no
+    // catalog/search API of their own — so Hikari browses TMDB on their
+    // behalf (same as the official NuvioMobile app). But instead of one shared
+    // catalog for every extension, each provider gets its own niche-matched
+    // catalog: anime sites show anime, Hindi sites show Hindi content, Korean
+    // drama sites show K-dramas, and general sites get the usual rows. Rows are
+    // picked deterministically from the niche's pool, so no two extensions end
+    // up with identical home screens.
+    private val rows: List<RowDef> by lazy {
+        val h = config.name.hashCode() and 0x7fffffff
+        when (nicheOf(config.name)) {
+            Niche.GENERAL -> window(GENERAL_ROWS, 5, h)
+            Niche.ANIME -> window(ANIME_ROWS, 4, h)
+            Niche.HINDI -> window(HINDI_ROWS, 3, h)
+            Niche.KDRAMA -> KDRAMA_ROWS
+            Niche.FRENCH -> FRENCH_ROWS
+            Niche.PERSIAN -> PERSIAN_ROWS
+        }
+    }
+
+    override suspend fun catalogs(): List<CatalogRef> = rows.map { r ->
+        CatalogRef(config.id, r.type, r.id, r.title)
+    }
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
-        val path = when (ref.id) {
-            "tmdb-trending" -> "/trending/all/week"
-            "tmdb-movie-popular" -> "/movie/popular"
-            "tmdb-movie-top" -> "/movie/top_rated"
-            "tmdb-movie-now" -> "/movie/now_playing"
-            "tmdb-tv-popular" -> "/tv/popular"
-            "tmdb-tv-top" -> "/tv/top_rated"
-            else -> return@withContext emptyList()
-        }
-        val data = TmdbResolver.apiGet(path, mapOf("page" to page.coerceAtLeast(1).toString()))
+        val def = rows.firstOrNull { it.id == ref.id } ?: return@withContext emptyList()
+        val params = LinkedHashMap(def.params)
+        params["page"] = page.coerceAtLeast(1).toString()
+        val data = TmdbResolver.apiGet(def.path, params)
         if (data == null) {
             catalogErrors[config.id] = "TMDB catalog unavailable right now (network or API key)."
             return@withContext emptyList()
