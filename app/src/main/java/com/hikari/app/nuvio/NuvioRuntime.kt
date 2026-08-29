@@ -7,7 +7,6 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.hikari.app.net.Http
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -40,8 +39,16 @@ import java.util.concurrent.TimeUnit
 object NuvioRuntime {
 
     private const val MAX_WEBVIEWS = 3
-    private const val FETCH_TIMEOUT_MS = 30_000L
-    private const val CALL_TIMEOUT_MS = 70_000L
+    private const val FETCH_TIMEOUT_MS = 60_000L
+    private const val CALL_TIMEOUT_MS = 90_000L
+
+    // NuvioMobile's default UA when a provider sets none of its own
+    // (FetchBridge.kt sends the provider's headers as-is; the provider side
+    // falls back to this exact desktop string). Hikari used its own full
+    // Chrome desktop UA here, which a few WAFs fingerprint and block — match
+    // nuvio so providers behave identically.
+    private const val NUVIO_DEFAULT_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
     private class PooledWebView(val wv: WebView) {
         val ready = CompletableDeferred<Unit>()
@@ -58,15 +65,15 @@ object NuvioRuntime {
         OkHttpClient.Builder()
             .followRedirects(true)
             .followSslRedirects(true)
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            // Auto Cloudflare handling, same as Hikari's own Http client: when
-            // a provider fetch hits a CF challenge it solves it — first in a
-            // hidden off-screen WebView (nothing pops over the player), falling
-            // back to the visible verify view only for interactive challenges —
-            // then the request is retried with the fresh cf_clearance cookie
-            // + browser UA.
-            .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            // Plain OkHttp, mirroring NuvioMobile's own httpRequestRaw: no
+            // Cloudflare interception, no cookie jar, no UA rewriting, no
+            // WebViews. nuvio's native fetch is deliberately bare — if a
+            // provider's site serves a CF challenge nuvio does NOT try to
+            // solve it (those addons simply return nothing), and neither do we.
+            // This also means no cf_clearance dance and no WebViewActivity
+            // popping over the player during nuvio searches.
             .build()
     }
 
@@ -272,10 +279,24 @@ object NuvioRuntime {
             try {
                 val builder = Request.Builder()
                     .url(url)
-                    .header("User-Agent", Http.UA)
+                    .header("User-Agent", NUVIO_DEFAULT_UA)
                 val h = runCatching { JSONObject(headersJson) }.getOrNull()
                 if (h != null) {
-                    h.keys().forEach { k -> runCatching { builder.header(k, h.getString(k)) } }
+                    h.keys().forEach { k ->
+                        // Strip the provider's explicit Accept-Encoding (nuvio
+                        // does the same: FetchBridge's withoutAcceptEncoding()).
+                        // OkHttp only transparently decompresses gzip/br when
+                        // the REQUEST doesn't carry its own Accept-Encoding —
+                        // passing "gzip, deflate, br" through made Hikari hand
+                        // the JS raw compressed bytes decoded as UTF-8, i.e.
+                        // garbage, so every provider that sets it (vidlink,
+                        // dvdplay, vidnest, vidrock, vixsrc, mallumv, castle,
+                        // xprime, ...) came back "no sources" here but fine in
+                        // nuvio. "identity" would be harmless, but drop it too
+                        // for exact parity.
+                        if (k.equals("Accept-Encoding", ignoreCase = true)) return@forEach
+                        runCatching { builder.header(k, h.getString(k)) }
+                    }
                 }
                 val m = method.uppercase()
                 if (body.isNotEmpty() && (m == "POST" || m == "PUT" || m == "PATCH")) {
@@ -293,12 +314,24 @@ object NuvioRuntime {
                     out.put("status", r.code)
                     out.put("statusText", r.message)
                     out.put("url", r.request.url.toString())
+                    // Lowercase header names, exactly like nuvio's response
+                    // headers map (provider JS does headers['content-type'],
+                    // headers.get('location'), ...).
                     val hdrs = JSONObject()
                     runCatching {
-                        r.headers.forEach { (k, v) -> if (!hdrs.has(k)) hdrs.put(k, v) }
+                        r.headers.forEach { (k, v) -> if (!hdrs.has(k.lowercase())) hdrs.put(k.lowercase(), v) }
                     }
                     out.put("headers", hdrs)
-                    out.put("body", String(bytes, Charsets.UTF_8))
+                    // Honor the response charset (nuvio: contentType().charset()
+                    // ?: UTF-8). Hikari decoded every body as UTF-8, which
+                    // mojibake'd latin-1/iso-8859-1 pages into garbage and made
+                    // providers miss their JSON/HTML markers.
+                    val charset = runCatching {
+                        val ct = r.headers["Content-Type"] ?: ""
+                        ct.substringAfter("charset=", "").trim().trim('"')
+                            .takeIf { it.isNotEmpty() }?.let { Charsets.forName(it) }
+                    }.getOrNull() ?: Charsets.UTF_8
+                    out.put("body", String(bytes, charset))
                     out.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP))
                     out.put("ms", System.currentTimeMillis() - started)
                     return@submit out
