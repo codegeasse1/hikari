@@ -25,6 +25,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 class ContentRepository(private val manager: ProviderManager) {
 
+    // Nuvio providers share a 3-WebView pool, so only the first few to
+    // acquire a view actually get to run within the search deadline. Order
+    // the queue by trust: a provider the user has seen work (4KHDHub) must
+    // grab a view before the ones that just burn the pool timing out on
+    // Cloudflare challenges. Ordered by NAME because nuvio config ids are
+    // hash-based ("nuvio|<hash>"); unknown providers follow in install order.
+    private val NUVIO_PRIORITY = listOf(
+        "4khdhub",
+        "vidlink",
+        "moviesdrive",
+        "vixsrc",
+    )
+
     /** Like runCatching but re-throws CancellationException — a coroutine that
      *  gets cancelled (e.g. the user switches tabs while Home is loading every
      *  provider) must stop its work instead of swallowing the cancellation and
@@ -195,12 +208,24 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             // Nuvio providers resolve purely from a TMDB id, so they can be
             // asked about ANY item we can map to TMDB — they add independent
-            // source servers alongside the origin. Cheap pre-filter first.
-            val nuvioTargets = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+            // source servers alongside the origin. Cheap pre-filter first,
+            // then sorted so the trusted providers are first in line for the
+            // 3-WebView pool. The same ordering is handed to the pool itself
+            // so acquisition follows it exactly (not whichever coroutine
+            // happens to reach the pool first).
+            val orderedNuvio = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
+                    .sortedBy { p ->
+                        val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
+                        if (idx >= 0) idx else NUVIO_PRIORITY.size
+                    }
             } else {
                 emptyList()
             }
+            com.hikari.app.nuvio.NuvioRuntime.setProviderPriorities(
+                orderedNuvio.mapIndexed { i, p -> p.config.id to i }.toMap()
+            )
+            val nuvioTargets = orderedNuvio
             val targets = primaryTargets + nuvioTargets
             if (targets.isEmpty()) return@withContext emptyList()
 
@@ -227,7 +252,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                 // report "cut off after 25s" without ever having
                                 // run (exactly what 0.3.56 did to 8 of 13).
                                 // Bound these jobs by the overall deadline; the
-                                // runtime's 25s CALL budget bounds real work.
+                                // runtime's CALL budget bounds real work.
                                 p.getStreams(item, episode)
                             } else {
                                 withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
@@ -250,9 +275,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 val started = System.currentTimeMillis()
                 // Ceiling for the whole lookup. It only binds when everything is
                 // failing — the instant any provider answers, playback opens via
-                // the early-close below. 55s lets all 13 nuvio providers pass
-                // through the 3-view pool with their fair 25s runs, and most
-                // searches end well before it (fast providers finish → allDone).
+                // the early-close below. 55s lets the trusted nuvio providers
+                // (priority order) plus a few fallbacks pass through the 3-view
+                // pool, and most searches end well before it (fast providers
+                // finish → allDone).
                 val deadline = started + 55_000L
                 // Merge EVERY provider's sources (deduped by url/infoHash). The
                 // old first-non-empty-wins behaviour is kept for the primary

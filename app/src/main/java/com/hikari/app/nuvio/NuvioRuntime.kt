@@ -9,7 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.suspendCancellableContinuation
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -50,7 +50,11 @@ object NuvioRuntime {
     // WebView is acquired. The queue wait behind the pool must never eat a
     // provider's budget: 0.3.56 started the 25s budget at job launch, so 8 of
     // 13 queued providers reported "cut off after 25s" without ever running.
-    private const val CALL_TIMEOUT_MS = 25_000L
+    // 35s (up from 25s) so CF-heavy providers can finish: MoviesDrive's
+    // goodstream.cc hidden solve alone takes ~22s and the parser needs a few
+    // more fetches after it — 25s was cutting every such provider off at the
+    // moment its site finally answered.
+    private const val CALL_TIMEOUT_MS = 35_000L
 
     // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches
     // (0.3.52 behaviour, verified working on the user's device). The shorter
@@ -69,9 +73,19 @@ object NuvioRuntime {
         var dead = false
     }
 
+    /** A provider waiting for a free WebView. Waits are served strictly by
+     *  [priority] (lower number = higher priority), so the providers that
+     *  historically answer get the first views instead of whichever coroutine
+     *  happened to reach the pool first. */
+    private class Waiter(
+        val priority: Int,
+        val cont: kotlinx.coroutines.CancellableContinuation<PooledWebView>,
+    )
+
     private val lock = Any()
     private val allViews = mutableListOf<PooledWebView>()
-    private val freeChannel = Channel<PooledWebView>(Channel.UNLIMITED)
+    private val freeViews = mutableListOf<PooledWebView>()
+    private val waiters = mutableListOf<Waiter>()
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(4)
 
@@ -87,6 +101,18 @@ object NuvioRuntime {
      *  queued behind the pool" from "cut off mid-run", instead of blaming
      *  every queued provider for being slow. */
     private val providerRunStart = ConcurrentHashMap<String, Long>()
+
+    /** Which providers get the pool's scarce WebViews first for this search.
+     *  Set by ContentRepository before the provider jobs launch (sorted nuvio
+     *  target order); a lower number acquires a WebView before a higher one. */
+    private val providerPriority = ConcurrentHashMap<String, Int>()
+
+    fun setProviderPriorities(map: Map<String, Int>) {
+        providerPriority.clear()
+        providerPriority.putAll(map)
+    }
+
+    private fun priorityOf(providerId: String): Int = providerPriority[providerId] ?: Int.MAX_VALUE
 
     fun resetRunTracking() {
         providerRunStart.clear()
@@ -183,30 +209,40 @@ object NuvioRuntime {
     private fun quote(s: String): String = JSONObject.quote(s)
 
     /** Grabs a free pooled WebView, creating one up to the pool cap. Suspends
-     *  until one is available; the WebView is guaranteed ready on return. */
-    private suspend fun acquire(context: Context): PooledWebView? {
-        freeChannel.tryReceive().getOrNull()?.let { p ->
-            if (!p.dead) { waitReady(p); return p }
-            runCatching { p.wv.destroy() }
-        }
-        var created: PooledWebView? = null
-        synchronized(lock) {
-            if (allViews.size < MAX_WEBVIEWS) {
-                val p = createAndInit(context)
-                allViews.add(p)
-                created = p
+     *  until one is available (waiting behind every higher-priority provider);
+     *  the WebView is guaranteed ready on return. All pool bookkeeping happens
+     *  under [lock], so exactly MAX_WEBVIEWS views ever exist at once. */
+    private suspend fun acquire(context: Context, priority: Int): PooledWebView? {
+        val p: PooledWebView? = suspendCancellableContinuation { cont ->
+            var readyNow: PooledWebView? = null
+            synchronized(lock) {
+                val free = freeViews.removeLastOrNull()
+                if (free != null && !free.dead) {
+                    readyNow = free
+                } else {
+                    if (free != null) runCatching { free.wv.destroy() }
+                    if (allViews.size < MAX_WEBVIEWS) {
+                        val np = createAndInit(context)
+                        allViews.add(np)
+                        readyNow = np
+                    } else {
+                        // Pool full — join the priority queue (lowest number
+                        // first) and wait for a release/recycle to hand us one.
+                        waiters.add(Waiter(priority, cont))
+                        waiters.sortBy { it.priority }
+                    }
+                }
+            }
+            if (readyNow != null) cont.resume(readyNow)
+            // If this caller is cancelled while still queued (search deadline
+            // or early-close), drop it so it never receives a view it can no
+            // longer use.
+            cont.invokeOnCancellation {
+                synchronized(lock) { waiters.removeAll { it.cont === cont } }
             }
         }
-        if (created != null) {
-            waitReady(created!!)
-            return created
-        }
-        // Pool full — block until an in-flight call returns its WebView.
-        while (true) {
-            val p = freeChannel.receive() ?: return null
-            if (!p.dead) { waitReady(p); return p }
-            runCatching { p.wv.destroy() }
-        }
+        waitReady(p!!)
+        return p
     }
 
     private suspend fun waitReady(p: PooledWebView) {
@@ -214,10 +250,18 @@ object NuvioRuntime {
         withTimeoutOrNull(15_000) { p.ready.await() }
     }
 
+    /** Hands a freed WebView to the highest-priority waiting provider, or
+     *  parks it for the next acquire. */
     private fun release(p: PooledWebView) {
-        if (p.dead) return
-        p.inUse = false
-        freeChannel.trySend(p)
+        var next: kotlinx.coroutines.CancellableContinuation<PooledWebView>? = null
+        synchronized(lock) {
+            if (p.dead) return
+            p.inUse = false
+            val idx = waiters.indexOfFirst { it.cont.isActive }
+            if (idx >= 0) next = waiters.removeAt(idx).cont
+            else freeViews.addLast(p)
+        }
+        next?.resume(p)
     }
 
     // ---- Public API ----
@@ -232,7 +276,7 @@ object NuvioRuntime {
         mediaType: String,
         season: Int?,
         episode: Int?,
-    ): String = callWebView(context, source, providerId) { wv, cid ->
+    ): String = callWebView(context, source, providerId, priorityOf(providerId)) { wv, cid ->
         val settings = loadSettings(providerId)
         val s = if (season == null) "null" else season.toString()
         val e = if (episode == null) "null" else episode.toString()
@@ -246,7 +290,7 @@ object NuvioRuntime {
         context: Context,
         source: String,
         providerId: String,
-    ): String = callWebView(context, source, providerId) { wv, cid ->
+    ): String = callWebView(context, source, providerId, priorityOf(providerId)) { wv, cid ->
         val settings = loadSettings(providerId)
         "window.__nuvioSetSettings($settings);" +
             "window.__nuvioRunSettings(${quote(source)}, ${quote(providerId)}, ${quote(cid)});"
@@ -255,7 +299,7 @@ object NuvioRuntime {
     /** True when the JS module loads and exports a usable getStreams function. */
     suspend fun validate(context: Context, source: String): String =
         withContext(Dispatchers.Main) {
-            val p = acquire(context) ?: return@withContext "ERR: all nuvio workers busy"
+            val p = acquire(context, Int.MAX_VALUE) ?: return@withContext "ERR: all nuvio workers busy"
             try {
                 var result = ""
                 val js = "(function(){ try { var m = window.__nuvioLoadProvider(${quote(source)}, 'validate');" +
@@ -283,9 +327,10 @@ object NuvioRuntime {
         context: Context,
         source: String,
         providerId: String,
+        priority: Int,
         buildJs: (WebView, String) -> String,
     ): String = withContext(Dispatchers.Main) {
-        val p = acquire(context) ?: return@withContext "{\"ok\":false,\"error\":\"all nuvio workers busy\"}"
+        val p = acquire(context, priority) ?: return@withContext "{\"ok\":false,\"error\":\"all nuvio workers busy\"}"
         providerRunStart[providerId] = System.currentTimeMillis()
         val cid = java.util.UUID.randomUUID().toString()
         val deferred = CompletableDeferred<String>()
@@ -296,7 +341,7 @@ object NuvioRuntime {
             val payload = withTimeoutOrNull(CALL_TIMEOUT_MS) { deferred.await() }
             if (payload == null) {
                 // Hung JS — drop this WebView and rebuild on demand.
-                recycle(p)
+                recycle(context, p)
                 "{\"ok\":false,\"error\":\"provider timed out after ${CALL_TIMEOUT_MS / 1000}s\"}"
             } else {
                 payload
@@ -310,17 +355,29 @@ object NuvioRuntime {
             val cancelled = runCatching {
                 kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive == false
             }.getOrDefault(false)
-            if (cancelled) recycle(p) else release(p)
+            if (cancelled) recycle(context, p) else release(p)
         }
     }
 
-    /** Rebuilds a wedged WebView from scratch (drops it from the pool). */
-    private fun recycle(p: PooledWebView) {
+    /** Rebuilds a wedged WebView from scratch (drops it from the pool and
+     *  immediately mints a replacement for the highest-priority waiter, so a
+     *  dead view never shrinks the pool while providers are queued). */
+    private fun recycle(context: Context, p: PooledWebView) {
+        var replacement: Pair<kotlinx.coroutines.CancellableContinuation<PooledWebView>, PooledWebView>? = null
         synchronized(lock) {
             p.dead = true
             allViews.remove(p)
+            freeViews.remove(p)
+            val idx = waiters.indexOfFirst { it.cont.isActive }
+            if (idx >= 0) {
+                val w = waiters.removeAt(idx)
+                val np = createAndInit(context)
+                allViews.add(np)
+                replacement = w.cont to np
+            }
         }
         runCatching { p.wv.destroy() }
+        replacement?.let { (c, np) -> c.resume(np) }
     }
 
     fun onDone(cid: String, payload: String) {
