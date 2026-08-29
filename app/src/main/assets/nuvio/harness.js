@@ -402,12 +402,149 @@
           return;
         }
         Promise.resolve(payload).then(function (p) {
-          resolve(__makeResponse(p, url));
+          resolve(__makeResponse(__nuvioIntercept(url, method, headers, body, followRedirects, p), url));
         }, function (e) { reject(e); });
       } catch (e) { reject(e); }
     });
   }
   g.fetch = __nuvioFetch;
+
+  // ---- response interceptors -------------------------------------------------
+  // Several nuvio providers lean on APIs that are flaky or whose responses
+  // omit fields the provider needs, and each provider bails to [] when its
+  // helper returns null. Instead of patching every provider, the harness
+  // rewrites those responses transparently:
+  //   * TMDB — if a /tv|movie/<id> or /external_ids call fails (revoked /
+  //     rate-limited api_key, network blip), retry it with Hikari's own
+  //     working keys. And if a main-details response is missing `imdb_id`,
+  //     fetch it from /external_ids and inject it (some anime providers read
+  //     `.imdb_id` from the MAIN endpoint and bail with [] when it's absent).
+  //   * Jikan (api.jikan.moe) — when it's down / 504ing (it frequently fails
+  //     to reach MyAnimeList), synthesize the Jikan-shaped response from
+  //     AniList's GraphQL API instead.
+  g.__nuvioTmdbKeys = ["68e094699525b18a70bab2f86b1fa706", "439c478a771f35c05022f9feabcca01c"];
+
+  function __nuvioIntercept(url, method, headers, body, followRedirects, p) {
+    try {
+      var tmdb = __nuvioTmdbMatch(url);
+      if (tmdb) {
+        var fixed = __nuvioFixTmdb(url, method, followRedirects, p, tmdb);
+        if (fixed) p = fixed;
+      }
+      if (/^https?:\/\/api\.jikan\.moe\/v4\/anime/i.test(url)) {
+        var j = __nuvioJikanFallback(url, method, followRedirects, p);
+        if (j) p = j;
+      }
+    } catch (e) {
+      // An interceptor bug must never break the provider's original response.
+    }
+    return p;
+  }
+
+  function __nuvioTryParse(p) {
+    if (!p || typeof p.body !== 'string') return null;
+    if (!(p.status >= 200 && p.status < 300)) return null;
+    try {
+      var o = JSON.parse(p.body);
+      return o && typeof o === 'object' ? o : null;
+    } catch (e) { return null; }
+  }
+
+  function __nuvioKeyFromUrl(url) {
+    var m = url.match(/[?&]api_key=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  function __nuvioReplaceKey(url, key) {
+    if (/[?&]api_key=/.test(url)) return url.replace(/([?&]api_key=)[^&]*/, '$1' + encodeURIComponent(key));
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' + encodeURIComponent(key);
+  }
+
+  function __nuvioTmdbMatch(url) {
+    var m = url.match(/^https?:\/\/api\.themoviedb\.org\/3\/(tv|movie)\/(\d+)(\/external_ids)?(?:\?|$)/i);
+    if (!m) return null;
+    return { type: m[1], id: m[2], isExternal: !!m[3] };
+  }
+
+  function __nuvioFixTmdb(url, method, followRedirects, p, tmdb) {
+    if (method !== 'GET') return null;
+    var origKey = __nuvioKeyFromUrl(url);
+    var key = origKey;
+    var q = p;
+    var obj = __nuvioTryParse(q);
+    var failed = !obj || (typeof q.body === 'string' && /invalid api key/i.test(q.body));
+    var changed = false;
+    if (failed) {
+      // Original call failed → retry with Hikari's own keys.
+      var keys = g.__nuvioTmdbKeys || [];
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i] === origKey) continue;
+        var altUrl = __nuvioReplaceKey(url, keys[i]);
+        var alt = null;
+        try { alt = __parseBridgePayload(__bridgeFetch(altUrl, 'GET', '{}', '', followRedirects), altUrl); } catch (e) { alt = null; }
+        var altObj = __nuvioTryParse(alt);
+        if (altObj) { q = alt; obj = altObj; key = keys[i]; failed = false; changed = true; break; }
+      }
+      if (failed) return null; // nothing fixed — leave the provider's response alone
+    }
+    // Main-details response missing imdb_id → pull it from /external_ids.
+    if (!tmdb.isExternal && obj && typeof obj === 'object' && !obj.imdb_id) {
+      var extUrl = 'https://api.themoviedb.org/3/' + tmdb.type + '/' + tmdb.id + '/external_ids?api_key=' + (key || '');
+      var ext = null;
+      try { ext = __parseBridgePayload(__bridgeFetch(extUrl, 'GET', '{}', '', followRedirects), extUrl); } catch (e) { ext = null; }
+      var extObj = __nuvioTryParse(ext);
+      if (extObj && extObj.imdb_id) { obj.imdb_id = extObj.imdb_id; changed = true; }
+    }
+    if (!changed) return null;
+    var out = {};
+    for (var kk in q) if (Object.prototype.hasOwnProperty.call(q, kk)) out[kk] = q[kk];
+    out.body = JSON.stringify(obj);
+    return out;
+  }
+
+  function __nuvioGraphQL(query, vars) {
+    try {
+      var bodyStr = JSON.stringify({ query: query, variables: vars || {} });
+      var raw = __bridgeFetch(
+        'https://graphql.anilist.co', 'POST',
+        JSON.stringify({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        bodyStr, true
+      );
+      return __nuvioTryParse(__parseBridgePayload(raw, 'https://graphql.anilist.co'));
+    } catch (e) { return null; }
+  }
+
+  function __nuvioJikanFallback(url, method, followRedirects, p) {
+    if (method !== 'GET') return null;
+    if (__nuvioTryParse(p)) return null; // Jikan answered fine — pass through.
+    var mId = url.match(/^https?:\/\/api\.jikan\.moe\/v4\/anime\/(\d+)/i);
+    var mSearch = url.match(/^https?:\/\/api\.jikan\.moe\/v4\/anime\?/i);
+    var synth = null;
+    if (mId) {
+      var gql = 'query ($id: Int) { Media(idMal: $id, type: ANIME) { idMal title { romaji english } } }';
+      var r = __nuvioGraphQL(gql, { id: parseInt(mId[1], 10) });
+      if (r && r.data && r.data.Media) {
+        var t = r.data.Media.title || {};
+        synth = { data: { mal_id: r.data.Media.idMal, title: t.english || t.romaji || '' } };
+      }
+    } else if (mSearch) {
+      var qm = url.match(/[?&]q=([^&]*)/i);
+      var title = qm ? decodeURIComponent(qm[1].replace(/\+/g, ' ')) : '';
+      if (title) {
+        var typeMovie = /[?&]type=movie/i.test(url);
+        var q2 = 'query ($s: String) { Media(search: $s, type: ANIME' + (typeMovie ? ', format: MOVIE' : '') + ') { idMal } }';
+        var r2 = __nuvioGraphQL(q2, { s: title });
+        if (r2 && r2.data && r2.data.Media) synth = { data: [{ mal_id: r2.data.Media.idMal }] };
+      }
+    }
+    if (!synth) return null;
+    var out = {};
+    for (var kk in p) if (Object.prototype.hasOwnProperty.call(p, kk)) out[kk] = p[kk];
+    out.status = 200;
+    out.statusText = 'OK';
+    out.body = JSON.stringify(synth);
+    return out;
+  }
 
   var __currentProvider = null;
   var __currentProviderId = null;
@@ -502,6 +639,6 @@
   __builtins.events = __moduleCache['events'].exports;
 
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[nuvio] harness ready, version 1');
+    console.log('[nuvio] harness ready, version 2');
   }
 })();

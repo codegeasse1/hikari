@@ -6,11 +6,13 @@ import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -74,6 +76,11 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             RowDef("a3", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime Movies"),
             RowDef("a4", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime Movies"),
             RowDef("a5", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "primary_release_date.desc"), "New Anime Movies"),
+            // Anime movies often lack the JP origin country tag but still have
+            // the ja original language — these catch the stragglers.
+            RowDef("a6", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_original_language" to "ja", "sort_by" to "popularity.desc"), "Japanese Anime Movies"),
+            RowDef("a7", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_original_language" to "ja", "sort_by" to "popularity.desc"), "Japanese Anime Series"),
+            RowDef("a8", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_count.desc"), "Most Discussed Anime"),
         )
 
         private val HINDI_ROWS = listOf(
@@ -122,11 +129,17 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         }
 
         /** Deterministic slice of [pool] so different providers of the same
-         *  niche still show different rows (seeded by the provider's name). */
-        private fun window(pool: List<RowDef>, take: Int, hash: Int): List<RowDef> {
-            val maxStart = pool.size - take
-            val start = if (maxStart <= 0) 0 else hash % (maxStart + 1)
-            return pool.subList(start, start + take)
+         *  niche still show different rows. Windows are CIRCULAR (they wrap
+         *  past the end of the pool), so every row gets a fair chance of
+         *  appearing and the number of distinct catalogs equals the pool size,
+         *  not pool.size - take + 1. The caller passes an [offset] that is
+         *  unique per provider (see [rows]) — two same-niche providers can then
+         *  never land on the same home screen. */
+        private fun window(pool: List<RowDef>, take: Int, offset: Int): List<RowDef> {
+            val n = pool.size
+            if (n <= 0) return emptyList()
+            val start = (offset % n + n) % n
+            return List(take) { i -> pool[(start + i) % n] }
         }
     }
 
@@ -136,17 +149,36 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
     // catalog for every extension, each provider gets its own niche-matched
     // catalog: anime sites show anime, Hindi sites show Hindi content, Korean
     // drama sites show K-dramas, and general sites get the usual rows. Rows are
-    // picked deterministically from the niche's pool, so no two extensions end
-    // up with identical home screens.
+    // picked deterministically from the niche's pool — CIRCULAR windows offset
+    // by the provider's ordinal among the installed same-niche nuvio providers
+    // (sorted by name) — so no two extensions ever end up with identical home
+    // screens, even when several of them share a niche (hianime + animepahe +
+    // allanime must show three different catalogs, not one).
     private val rows: List<RowDef> by lazy {
         val h = config.name.hashCode() and 0x7fffffff
-        when (nicheOf(config.name)) {
-            Niche.GENERAL -> window(GENERAL_ROWS, 5, h)
-            Niche.ANIME -> window(ANIME_ROWS, 4, h)
-            Niche.HINDI -> window(HINDI_ROWS, 3, h)
-            Niche.KDRAMA -> KDRAMA_ROWS
-            Niche.FRENCH -> FRENCH_ROWS
-            Niche.PERSIAN -> PERSIAN_ROWS
+        val niche = nicheOf(config.name)
+        // Order of this provider among the currently-installed nuvio providers
+        // of the same niche. Distinct ordinals ⇒ distinct window offsets ⇒
+        // distinct catalogs, guaranteed regardless of name-hash collisions.
+        // (One tiny blocking read of the already-loaded provider list — the
+        // home screen has to list providers anyway, so the DataStore value is
+        // hot by the time any catalog row is rendered.)
+        val ordinal = runCatching {
+            runBlocking {
+                HikariApp.instance.store.providers()
+                    .filter { it.type == ProviderType.NUVIO && nicheOf(it.name) == niche }
+                    .sortedBy { it.name.lowercase() }
+                    .indexOfFirst { it.id == config.id }
+            }
+        }.getOrDefault(-1)
+        val offset = if (ordinal >= 0) ordinal else h
+        when (niche) {
+            Niche.GENERAL -> window(GENERAL_ROWS, 5, offset)
+            Niche.ANIME -> window(ANIME_ROWS, 4, offset)
+            Niche.HINDI -> window(HINDI_ROWS, 3, offset)
+            Niche.KDRAMA -> window(KDRAMA_ROWS, 3, offset)
+            Niche.FRENCH -> window(FRENCH_ROWS, 3, offset)
+            Niche.PERSIAN -> window(PERSIAN_ROWS, 3, offset)
         }
     }
 

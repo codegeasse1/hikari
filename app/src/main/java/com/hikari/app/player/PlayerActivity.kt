@@ -48,6 +48,7 @@ import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1140,11 +1141,20 @@ class PlayerActivity : ComponentActivity() {
 
         val player = ExoPlayer.Builder(this)
             .setRenderersFactory(
-                // Decoder fallback: a hardware codec that chokes on a (perfectly
-                // valid) stream must degrade to a software decoder — not crash
-                // the whole process into a frozen black screen (the classic
-                // symptom of a native MediaCodec failure).
-                DefaultRenderersFactory(this).setEnableDecoderFallback(true)
+                // nextlib's NextRenderersFactory is a drop-in for
+                // DefaultRenderersFactory that ALSO registers FFmpeg software
+                // decoders (media3-extractor not needed for it; it's built
+                // against media3 1.7.1, matching libs.versions.toml). Mode ON =
+                // FFmpeg is only used when the platform MediaCodec can't handle
+                // a track — e.g. the EAC-3/DDP 5.1 audio on many 4kHDHub MKV
+                // streams, which otherwise plays with NO sound on devices
+                // lacking an EAC-3 hardware decoder. Hardware decoding of
+                // H.264/HEVC video is still preferred (avoids software-decoding
+                // 4K), and decoder fallback degrades a choking hardware codec to
+                // a software one instead of freezing into a black screen.
+                NextRenderersFactory(this)
+                    .setEnableDecoderFallback(true)
+                    .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()

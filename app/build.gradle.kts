@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 52
-        versionName = "0.3.49"
+        versionCode = 53
+        versionName = "0.3.50"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -131,6 +131,14 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer.dash)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.ui)
+    // nextlib-media3ext — prebuilt FFmpeg software decoders for Media3. Many
+    // provider streams (e.g. 4kHDHub MKVs) carry EAC-3/AC-3/DTS/TrueHD audio
+    // that the device's MediaCodec can't decode, so the video plays silently.
+    // NextRenderersFactory adds FfmpegAudioRenderer/FfmpegVideoRenderer that
+    // kick in (MODE_ON) whenever the hardware codecs can't handle a track.
+    // Built against media3 1.7.1 (see nextlib-media3ext POM) — keep the media3
+    // version in libs.versions.toml matched to it.
+    implementation("io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0")
     implementation(libs.androidx.splashscreen)
     implementation(libs.okhttp)
     implementation(libs.jsoup)
