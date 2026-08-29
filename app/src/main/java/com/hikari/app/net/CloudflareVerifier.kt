@@ -44,7 +44,7 @@ object CloudflareVerifier {
     // takes over (interactive challenges need a human click). Generous so a
     // solvable challenge usually passes invisibly and the view almost never
     // pops over whatever the user is doing.
-    private const val HIDDEN_SOLVE_TIMEOUT_MS = 15_000L
+    private const val HIDDEN_SOLVE_TIMEOUT_MS = 20_000L
 
     private val lock = Any()
     private val inFlight = HashMap<String, CountDownLatch>()
@@ -235,7 +235,14 @@ object CloudflareVerifier {
         synchronized(lock) {
             if (inFlight[host] === latch) inFlight.remove(host)
             launchedFor.remove(host)
-            if (!cleared) dismissedUntil[host] = System.currentTimeMillis() + DISMISS_COOLDOWN_MS
+            if (!cleared) {
+                // Background callers (skipVisible set) get a short cooldown so
+                // the next request to this host can retry the hidden solve
+                // soon; the long cooldown exists only to stop nagging a real
+                // user with the visible verify view.
+                val cooldown = if (skipVisible.get() == true) 5_000L else DISMISS_COOLDOWN_MS
+                dismissedUntil[host] = System.currentTimeMillis() + cooldown
+            }
         }
     }
 

@@ -46,7 +46,11 @@ object NuvioRuntime {
     // on slow providers, and every extension eventually reported nothing.
     private const val MAX_WEBVIEWS = 3
     private const val FETCH_TIMEOUT_MS = 30_000L
-    private const val CALL_TIMEOUT_MS = 70_000L
+    // CALL_TIMEOUT_MS bounds a provider's JS EXECUTION — it only starts once a
+    // WebView is acquired. The queue wait behind the pool must never eat a
+    // provider's budget: 0.3.56 started the 25s budget at job launch, so 8 of
+    // 13 queued providers reported "cut off after 25s" without ever running.
+    private const val CALL_TIMEOUT_MS = 25_000L
 
     // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches
     // (0.3.52 behaviour, verified working on the user's device). The shorter
@@ -77,6 +81,18 @@ object NuvioRuntime {
      *  Cloudflare challenge (site blocked the device IP), a network error, or
      *  just slow. Cleared at the start of each sources search. */
     private val fetchLogEntries = java.util.concurrent.ConcurrentLinkedDeque<String>()
+
+    /** When each provider's JS actually started (right after it acquired a
+     *  WebView) — lets the sources sheet distinguish "cut off while still
+     *  queued behind the pool" from "cut off mid-run", instead of blaming
+     *  every queued provider for being slow. */
+    private val providerRunStart = ConcurrentHashMap<String, Long>()
+
+    fun resetRunTracking() {
+        providerRunStart.clear()
+    }
+
+    fun providerStartedAt(providerId: String): Long? = providerRunStart[providerId]
 
     fun resetFetchLog() {
         fetchLogEntries.clear()
@@ -270,6 +286,7 @@ object NuvioRuntime {
         buildJs: (WebView, String) -> String,
     ): String = withContext(Dispatchers.Main) {
         val p = acquire(context) ?: return@withContext "{\"ok\":false,\"error\":\"all nuvio workers busy\"}"
+        providerRunStart[providerId] = System.currentTimeMillis()
         val cid = java.util.UUID.randomUUID().toString()
         val deferred = CompletableDeferred<String>()
         inFlight[cid] = deferred

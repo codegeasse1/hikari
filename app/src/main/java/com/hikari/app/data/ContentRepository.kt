@@ -207,34 +207,53 @@ class ContentRepository(private val manager: ProviderManager) {
             // Fresh diagnostic state for this lookup.
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
             com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
+            com.hikari.app.nuvio.NuvioRuntime.resetRunTracking()
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
-                        // Nuvio providers resolve purely from a TMDB id via a
-                        // handful of fast sequential fetches — 0.3.52's 25s
-                        // budget was enough for 4KHDHub to answer in seconds.
-                        // When the budget fires, record WHY so the sources sheet
-                        // can show it instead of a silent empty result.
-                        val budget = if (i < primaryTargets.size) 45_000L else 25_000L
-                        val r = withTimeoutOrNull(budget) {
-                            try {
+                        val isNuvio = p.config.type == ProviderType.NUVIO
+                        val startedJob = System.currentTimeMillis()
+                        try {
+                            if (isNuvio) {
+                                // Nuvio providers share a 3-WebView pool, so
+                                // most of them queue behind the pool instead of
+                                // running instantly. The nuvio runtime applies
+                                // its own per-provider timeout AFTER it acquires
+                                // a WebView — if this job's budget also covered
+                                // the queue wait, every queued provider would
+                                // report "cut off after 25s" without ever having
+                                // run (exactly what 0.3.56 did to 8 of 13).
+                                // Bound these jobs by the overall deadline; the
+                                // runtime's 25s CALL budget bounds real work.
                                 p.getStreams(item, episode)
-                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                if (p.config.type == ProviderType.NUVIO) {
-                                    com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] =
-                                        "✗ cut off after ${budget / 1000}s (too slow)"
-                                }
-                                throw e
+                            } else {
+                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
                             }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            if (isNuvio) {
+                                // Deadline or early-close cancelled us. Say
+                                // whether we actually got a WebView and ran.
+                                val ran = com.hikari.app.nuvio.NuvioRuntime.providerStartedAt(p.config.id)
+                                com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] =
+                                    if (ran != null)
+                                        "✗ cut off after ${(System.currentTimeMillis() - startedJob) / 1000}s (still searching)"
+                                    else
+                                        "✗ never got a WebView — search ended before it could run"
+                            }
+                            throw e
                         }
-                        r.orEmpty()
                     }
                 }
                 val started = System.currentTimeMillis()
-                val deadline = started + 30_000L
+                // Ceiling for the whole lookup. It only binds when everything is
+                // failing — the instant any provider answers, playback opens via
+                // the early-close below. 55s lets all 13 nuvio providers pass
+                // through the 3-view pool with their fair 25s runs, and most
+                // searches end well before it (fast providers finish → allDone).
+                val deadline = started + 55_000L
                 // Merge EVERY provider's sources (deduped by url/infoHash). The
                 // old first-non-empty-wins behaviour is kept for the primary
                 // targets so a fast Stremio/CS3 answer still opens instantly;
