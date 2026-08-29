@@ -170,7 +170,7 @@ fun SettingsScreen() {
                     if (checkingUpdates) {
                         Text("Checking GitHub…")
                     } else {
-                        Text(Updater.currentSha().take(7).let { "Build $it" })
+                        Text("Version ${Updater.currentVersion()}")
                     }
                 },
                 trailingContent = {

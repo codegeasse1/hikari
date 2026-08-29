@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -37,9 +39,11 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,6 +51,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -65,6 +70,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -349,6 +358,20 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
             }
         }
+        // Nuvio scraper files are one provider per file — delete when removed.
+        if (target != null && target.type == ProviderType.NUVIO &&
+            target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
+        ) {
+            val stillUsed = store.providers().any { it.url == target.url }
+            if (!stillUsed) {
+                withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
+            }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    com.hikari.app.nuvio.NuvioRuntime.settingsFile(id).delete()
+                }
+            }
+        }
     }
 
     suspend fun installHikiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -495,10 +518,46 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 when (p.type) {
                     ProviderType.CS3 -> if (extra.startsWith("http")) add(extra)
                     ProviderType.HIKARI -> if (extra.startsWith("http")) add(extra.substringBeforeLast('|'))
+                    ProviderType.NUVIO -> if (extra.startsWith("http")) add(extra)
                     else -> {}
                 }
             }
         }
+    }
+
+    suspend fun addNuvioRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.NUVIO)
+
+    suspend fun installNuvioPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        withContext(Dispatchers.IO) {
+            val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+                ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
+            val hash = plugin.fileHash
+            if (hash != null && hash.startsWith("sha256-")) {
+                val expected = hash.removePrefix("sha256-").lowercase()
+                val actual = sha256Hex(bytes)
+                if (actual != expected) {
+                    return@withContext Result.failure(
+                        Exception("Checksum mismatch — the provider file is corrupted or modified")
+                    )
+                }
+            }
+            val fileName = plugin.name.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: "provider"
+            com.hikari.app.nuvio.NuvioPluginManager.installScraper(
+                getApplication<Application>(),
+                bytes,
+                "$fileName.js",
+                sourceUrl = plugin.url,
+                iconUrl = plugin.iconUrl,
+            ).also { manager.refresh(); reloadInstalled() }
+        }
+
+    /** Removes every NUVIO provider that came from [pluginUrl]. */
+    suspend fun uninstallNuvioPlugin(pluginUrl: String) {
+        com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(
+            getApplication<Application>(),
+            pluginUrl,
+        )
+        reloadInstalled()
     }
 
     suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
@@ -510,15 +569,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var lastGoodRepoUrl: String = ""
 
-    /** Fetches a repo.json, trying the pasted URL first and then the raw-GitHub
-     *  variants for `github.com/o/r` links users commonly paste (the HTML page
-     *  would never parse as JSON). Remembers which variant succeeded. */
-    private fun fetchRepoRaw(url: String): Result<String> {
-        val variants = repoUrlVariants(url)
+    /** Fetches a repo manifest — repo.json for CloudStream/Hikari repos,
+     *  manifest.json for Nuvio repos — trying the pasted URL first and then the
+     *  raw-GitHub variants for `github.com/o/r` links users commonly paste (the
+     *  HTML page would never parse as JSON). Remembers which variant succeeded. */
+    private fun fetchRepoRaw(url: String, file: String = "repo.json"): Result<String> {
+        val variants = repoUrlVariants(url, file)
         if (variants.isEmpty()) {
             lastGoodRepoUrl = url
             return Http.fetchStringRobust(url).map { text ->
-                if (looksLikeHtml(text)) throw friendlyRepoError() else text
+                if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
             }
         }
         for (candidate in variants) {
@@ -530,10 +590,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 return r
             }
         }
-        // last resort: the pasted URL as-is (a non-main/mixed-branch repo.json)
+        // last resort: the pasted URL as-is (a non-main/mixed-branch manifest)
         lastGoodRepoUrl = url
         return Http.fetchStringRobust(url).map { text ->
-            if (looksLikeHtml(text)) throw friendlyRepoError() else text
+            if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
         }
     }
 
@@ -542,24 +602,26 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return t.startsWith("<!doctype") || t.startsWith("<html") || t.startsWith("<head")
     }
 
-    private fun friendlyRepoError(): Exception = Exception(
-        "That URL returned an HTML page instead of a repo.json. Paste a direct " +
-            "raw link: github.com/o/r → https://raw.githubusercontent.com/o/r/main/repo.json, " +
+    private fun friendlyRepoError(file: String): Exception = Exception(
+        "That URL returned an HTML page instead of a $file. Paste a direct " +
+            "raw link: github.com/o/r → https://raw.githubusercontent.com/o/r/main/$file, " +
             "or on a Gitea/Forgejo host (git.disroot.org, codeberg…) → " +
-            "https://host/o/r/raw/branch/main/repo.json"
+            "https://host/o/r/raw/branch/main/$file"
     )
 
-    private fun repoUrlVariants(raw: String): List<String> {
+    private fun repoUrlVariants(raw: String, file: String = "repo.json"): List<String> {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
+        // Already a direct raw URL — fetch as-is, no variant guessing.
+        if (t.contains("raw.githubusercontent.com") || t.endsWith("/$file")) return emptyList()
         val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
         if (gh != null) {
             val owner = gh.groupValues[1]
             val repo = gh.groupValues[2]
             return listOf(
-                "https://raw.githubusercontent.com/$owner/$repo/main/repo.json",
-                "https://raw.githubusercontent.com/$owner/$repo/master/repo.json",
-                "https://raw.githubusercontent.com/$owner/$repo/builds/repo.json",
+                "https://raw.githubusercontent.com/$owner/$repo/main/$file",
+                "https://raw.githubusercontent.com/$owner/$repo/master/$file",
+                "https://raw.githubusercontent.com/$owner/$repo/builds/$file",
             )
         }
         // Gitea/Forgejo instances (git.disroot.org, codeberg.org, …) serve raw
@@ -571,10 +633,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             val owner = gi.groupValues[2]
             val repo = gi.groupValues[3]
             return listOf(
-                "https://$host/$owner/$repo/raw/branch/main/repo.json",
-                "https://$host/$owner/$repo/raw/branch/master/repo.json",
-                "https://$host/$owner/$repo/raw/main/repo.json",
-                "https://$host/$owner/$repo/raw/master/repo.json",
+                "https://$host/$owner/$repo/raw/branch/main/$file",
+                "https://$host/$owner/$repo/raw/branch/master/$file",
+                "https://$host/$owner/$repo/raw/main/$file",
+                "https://$host/$owner/$repo/raw/master/$file",
             )
         }
         return emptyList()
@@ -585,11 +647,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             return Result.failure(Exception("Must start with http(s)://"))
         }
+        val file = if (kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
         return withContext(Dispatchers.IO) {
             runCatching {
-                val text = fetchRepoRaw(url).getOrElse { throw it }
+                val text = fetchRepoRaw(url, file).getOrElse { throw it }
                 val obj = runCatching { JSONObject(text) }.getOrElse {
-                    throw Exception("Invalid repo.json: ${it.message}")
+                    throw Exception("Invalid $file: ${it.message}")
                 }
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
@@ -652,10 +715,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
-        val text = fetchRepoRaw(repo.url)
+        val file = if (repo.kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
+        val text = fetchRepoRaw(repo.url, file)
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = runCatching { JSONObject(text) }.getOrElse {
-            throw Exception("Invalid repo.json: ${it.message}")
+            throw Exception("Invalid $file: ${it.message}")
+        }
+        if (repo.kind == RepoKind.NUVIO) {
+            // A nuvio manifest lists providers under `scrapers`, each served at
+            // baseUrl/filename where baseUrl = manifest URL minus /manifest.json.
+            val out = LinkedHashMap<String, Cs3RepoPlugin>()
+            val baseUrl = repo.url.substringBeforeLast('/')
+            root.optJSONArray("scrapers")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let {
+                        com.hikari.app.nuvio.NuvioPluginManager.repoPlugin(it, baseUrl)
+                            ?.let { p -> out[p.url] = p }
+                    }
+                }
+            }
+            val name = niceRepoName(repo.url, root.optString("name"))
+            val description = root.optString("description")
+            val meta = if (name != repo.name || description != repo.description)
+                repo.copy(name = name, description = description)
+            else null
+            return out.values.toList() to meta
         }
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
         root.optJSONArray("plugins")?.let { arr ->
@@ -907,6 +991,7 @@ fun ExtensionsScreen() {
             when (kind) {
                 RepoKind.CS3 -> vm.installCs3Plugin(p)
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
+                RepoKind.NUVIO -> vm.installNuvioPlugin(p)
             }
         }
     }
@@ -916,6 +1001,7 @@ fun ExtensionsScreen() {
             when (kind) {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
+                RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)
             }
         }
     }
@@ -953,6 +1039,7 @@ fun ExtensionsScreen() {
             },
             onAddRepo = { vm.clearStatus(); repoDialogKind = RepoKind.CS3; showRepoDialog = true },
             onAddHikiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
+            onAddNuvioRepo = { vm.clearStatus(); repoDialogKind = RepoKind.NUVIO; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onAddScraper = { vm.clearStatus(); showScraper = true },
             onAddCs3Url = { vm.clearStatus(); showCs3Url = true },
@@ -992,18 +1079,32 @@ fun ExtensionsScreen() {
 
     if (showRepoDialog) {
         val isHikari = repoDialogKind == RepoKind.HIKARI
+        val isNuvio = repoDialogKind == RepoKind.NUVIO
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
-            title = { Text(if (isHikari) "Add Hikari repo" else "Add CloudStream repo") },
+            title = {
+                Text(
+                    when (repoDialogKind) {
+                        RepoKind.HIKARI -> "Add Hikari repo"
+                        RepoKind.NUVIO -> "Add Nuvio repo"
+                        RepoKind.CS3 -> "Add CloudStream repo"
+                    }
+                )
+            },
             text = {
                 Column {
                     Text(
-                        if (isHikari)
-                            "Paste a Hikari-style repo URL (a repo.json). For example:\n" +
-                                "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json"
-                        else
-                            "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
-                                "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
+                        when {
+                            isHikari ->
+                                "Paste a Hikari-style repo URL (a repo.json). For example:\n" +
+                                    "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json"
+                            isNuvio ->
+                                "Paste a Nuvio provider repo URL (a manifest.json). For example:\n" +
+                                    "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json"
+                            else ->
+                                "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
+                                    "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
+                        }
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -1029,7 +1130,13 @@ fun ExtensionsScreen() {
                     onClick = {
                         vm.runTask(
                             "Fetching repo…",
-                            { if (isHikari) vm.addHikiRepo(repoUrl) else vm.addCs3Repo(repoUrl) },
+                            {
+                                when (repoDialogKind) {
+                                    RepoKind.HIKARI -> vm.addHikiRepo(repoUrl)
+                                    RepoKind.NUVIO -> vm.addNuvioRepo(repoUrl)
+                                    RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
+                                }
+                            },
                             onSuccess = { repo ->
                                 showRepoDialog = false
                                 repoUrl = ""
@@ -1330,6 +1437,7 @@ private fun RepoBrowserView(
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
     onAddHikiRepo: () -> Unit,
+    onAddNuvioRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onAddScraper: () -> Unit,
     onAddCs3Url: () -> Unit,
@@ -1345,6 +1453,7 @@ private fun RepoBrowserView(
     onRefreshRepo: (Cs3Repo) -> Unit,
 ) {
     var extFilter by remember { mutableStateOf("") }
+    var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
@@ -1372,6 +1481,18 @@ private fun RepoBrowserView(
                     Spacer(Modifier.width(6.dp))
                     Text("Add Hikari repo")
                 }
+            }
+        }
+        item {
+            Button(
+                onClick = onAddNuvioRepo,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Filled.Public, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Add Nuvio repo")
             }
         }
         item {
@@ -1504,7 +1625,7 @@ private fun RepoBrowserView(
             item {
                 EmptyState(
                     title = "No extension repos yet",
-                    subtitle = "Add a CloudStream or Hikari repo to browse and install extensions.",
+                    subtitle = "Add a CloudStream, Hikari or Nuvio repo to browse and install extensions.",
                     actionLabel = null,
                     action = null
                 )
@@ -1555,10 +1676,19 @@ private fun RepoBrowserView(
                 p = p,
                 status = pluginStatus(p),
                 onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
-                onDelete = { onDeleteProvider(p.config.id) }
+                onDelete = { onDeleteProvider(p.config.id) },
+                onSettings = if (p.config.type == ProviderType.NUVIO)
+                    { { settingsProvider = p } } else null,
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+
+    settingsProvider?.let { provider ->
+        NuvioSettingsDialog(
+            provider = provider,
+            onDismiss = { settingsProvider = null },
+        )
     }
 }
 
@@ -1604,7 +1734,11 @@ private fun RepoPluginsView(
                     )
                 }
             }
-            val unit = if (repo.kind == RepoKind.HIKARI) "extension" else "plugin"
+            val unit = when (repo.kind) {
+                RepoKind.HIKARI -> "extension"
+                RepoKind.NUVIO -> "provider"
+                RepoKind.CS3 -> "plugin"
+            }
             Text(
                 "${plugins.size} ${unit}${if (plugins.size == 1) "" else "s"}",
                 style = MaterialTheme.typography.labelSmall,
@@ -1654,7 +1788,7 @@ private fun RepoPluginsView(
             when {
                 state.loading && plugins.isEmpty() -> item {
                     Text(
-                        "Loading plugins…",
+                        "Loading ${unit}s…",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -1671,7 +1805,7 @@ private fun RepoPluginsView(
                 }
                 plugins.isEmpty() -> item {
                     Text(
-                        "No plugins found in this repo.",
+                        "No ${unit}s found in this repo.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -1749,6 +1883,7 @@ private fun ProviderCard(
     status: String?,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
+    onSettings: (() -> Unit)? = null,
 ) {
     Card(Modifier
         .fillMaxWidth()
@@ -1791,11 +1926,258 @@ private fun ProviderCard(
                 }
             }
             Switch(checked = p.config.enabled, onCheckedChange = onToggle)
+            if (onSettings != null) {
+                IconButton(onClick = onSettings) {
+                    Icon(
+                        Icons.Filled.Settings,
+                        contentDescription = "Provider settings",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = "Remove",
                     tint = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+    }
+}
+
+/** Settings editor for a Nuvio provider, driven by the provider's own
+ *  `onSettings()` layout (header/info/toggle/text/select elements). Values are
+ *  merged from each element's defaultValue and the saved settings file. */
+@Composable
+private fun NuvioSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var loading by remember(provider.config.id) { mutableStateOf(true) }
+    var loadError by remember(provider.config.id) { mutableStateOf<String?>(null) }
+    var layout by remember(provider.config.id) { mutableStateOf<JSONArray?>(null) }
+    var values by remember(provider.config.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var toggles by remember(provider.config.id) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+
+    LaunchedEffect(provider.config.id) {
+        val source = runCatching { File(provider.config.url).readText() }.getOrNull()
+        if (source.isNullOrBlank()) {
+            loadError = "Provider file missing — reinstall this extension"
+            loading = false
+            return@LaunchedEffect
+        }
+        val payload = com.hikari.app.nuvio.NuvioRuntime.getSettingsLayout(
+            context, source, provider.config.id,
+        )
+        val parsed = runCatching { JSONObject(payload) }.getOrNull()
+        val data = parsed?.takeIf { it.optBoolean("ok", false) }?.opt("data")
+        val elements = when (data) {
+            is JSONArray -> data
+            is JSONObject -> data.optJSONArray("items") ?: data.optJSONArray("elements")
+            else -> null
+        }
+        if (elements == null) {
+            loadError = parsed?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: "This provider exposes no settings"
+            loading = false
+            return@LaunchedEffect
+        }
+        val saved = runCatching {
+            JSONObject(com.hikari.app.nuvio.NuvioRuntime.loadSettings(provider.config.id))
+        }.getOrNull()
+        val v = LinkedHashMap<String, String>()
+        val t = LinkedHashMap<String, Boolean>()
+        for (i in 0 until elements.length()) {
+            val el = elements.optJSONObject(i) ?: continue
+            val key = el.optString("key").ifBlank { continue }
+            if (el.optString("type") == "toggle") {
+                val def = el.optBoolean("defaultValue", false)
+                t[key] = saved?.optBoolean(key, def) ?: def
+            } else {
+                val def = el.optString("defaultValue")
+                v[key] = saved?.optString(key, def) ?: def
+            }
+        }
+        values = v
+        toggles = t
+        layout = elements
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${provider.config.name} settings") },
+        text = {
+            when {
+                loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Loading settings…")
+                }
+                loadError != null -> Text(
+                    loadError!!,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                layout != null -> Column(
+                    Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    for (i in 0 until layout!!.length()) {
+                        val el = layout!!.optJSONObject(i) ?: continue
+                        SettingsElementRow(
+                            el = el,
+                            values = values,
+                            toggles = toggles,
+                            onValue = { key, v -> values = values + (key to v) },
+                            onToggle = { key, b -> toggles = toggles + (key to b) },
+                        )
+                    }
+                }
+                else -> Text("No settings available")
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !loading && layout != null,
+                onClick = {
+                    val out = JSONObject()
+                    layout?.let { arr ->
+                        for (i in 0 until arr.length()) {
+                            val el = arr.optJSONObject(i) ?: continue
+                            val key = el.optString("key").ifBlank { continue }
+                            if (el.optString("type") == "toggle") {
+                                out.put(key, toggles[key] ?: el.optBoolean("defaultValue", false))
+                            } else {
+                                out.put(key, values[key] ?: el.optString("defaultValue"))
+                            }
+                        }
+                    }
+                    com.hikari.app.nuvio.NuvioRuntime.saveSettings(provider.config.id, out.toString())
+                    onDismiss()
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun SettingsElementRow(
+    el: JSONObject,
+    values: Map<String, String>,
+    toggles: Map<String, Boolean>,
+    onValue: (String, String) -> Unit,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    val type = el.optString("type")
+    val label = el.optString("label")
+    val description = el.optString("description").ifBlank { null }
+    when (type) {
+        "header" -> Column(Modifier.padding(top = 12.dp, bottom = 4.dp)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            description?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        "info" -> Column(Modifier.padding(vertical = 6.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            description?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        "toggle" -> {
+            val key = el.optString("key")
+            val checked = toggles[key] ?: el.optBoolean("defaultValue", false)
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                        description?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Switch(checked = checked, onCheckedChange = { onToggle(key, it) })
+                }
+            }
+        }
+        "select" -> {
+            val key = el.optString("key")
+            val options = runCatching { el.getJSONArray("options") }.getOrNull()
+                ?: return
+            val selected = values[key] ?: el.optString("defaultValue")
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                description?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                for (i in 0 until options.length()) {
+                    val opt = options.optJSONObject(i) ?: continue
+                    val optValue = opt.optString("value")
+                    val optLabel = opt.optString("label").ifBlank { optValue }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onValue(key, optValue) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selected == optValue,
+                            onClick = { onValue(key, optValue) }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(optLabel, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+        else -> {
+            val key = el.optString("key")
+            val isPassword = el.optBoolean("isPassword", false)
+            val value = values[key] ?: el.optString("defaultValue")
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                description?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { onValue(key, it) },
+                    placeholder = { Text(el.optString("placeholder")) },
+                    singleLine = true,
+                    visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = if (isPassword)
+                        KeyboardOptions(keyboardType = KeyboardType.Password)
+                    else KeyboardOptions.Default,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -1852,6 +2234,7 @@ private fun RepoCard(
                         when (repo.kind) {
                             RepoKind.CS3 -> "CloudStream"
                             RepoKind.HIKARI -> "Hikari"
+                            RepoKind.NUVIO -> "Nuvio"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -1866,7 +2249,10 @@ private fun RepoCard(
                         state == null -> repo.description.ifBlank { "Not loaded yet — tap to open" }
                         state?.loading == true -> "Loading plugins…"
                         state?.error != null -> "Load failed — tap refresh to retry"
-                        pluginCount > 0 -> "${pluginCount} plugin${if (pluginCount == 1) "" else "s"}"
+                        pluginCount > 0 -> {
+                            val unit = if (repo.kind == RepoKind.NUVIO) "provider" else "plugin"
+                            "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
+                        }
                         else -> repo.description.ifBlank { "No plugins found" }
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -1965,6 +2351,12 @@ private fun PluginRow(
 }
 
 private fun pluginStatus(p: ContentProvider): String? {
+    if (p.config.type == ProviderType.NUVIO) {
+        if (com.hikari.app.nuvio.NuvioPluginManager.fileMissing(p.config)) {
+            return "Provider file missing — reinstall this extension"
+        }
+        return null
+    }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
     if (err != null) return err.take(200)

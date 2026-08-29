@@ -8,48 +8,80 @@ import androidx.core.content.FileProvider
 import com.hikari.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 
 object Updater {
 
     const val REPO = "codegeasse1/hikari"
-    const val UPDATE_URL =
-        "https://github.com/$REPO/releases/download/continuous/hikari-signed.apk"
     const val RELEASES_URL = "https://github.com/$REPO/releases/latest"
+    const val UPDATE_URL = "https://github.com/$REPO/releases/download/continuous/hikari-signed.apk"
 
     data class UpdateStatus(
         val available: Boolean,
-        val currentSha: String,
-        val latestSha: String,
+        val currentVersion: String,
+        val latestVersion: String,
         val apkUrl: String = UPDATE_URL,
         val releasesUrl: String = RELEASES_URL,
     )
 
-    /** The commit the running APK was compiled from (CI-injected at build time). */
-    fun currentSha(): String =
+    /** The app version the running APK was built with. */
+    fun currentVersion(): String =
         try {
-            BuildConfig.GIT_SHA.ifBlank { "unknown" }
+            BuildConfig.VERSION_NAME.ifBlank { "unknown" }
         } catch (e: Throwable) {
             "unknown"
         }
 
-    /** Compares main's HEAD commit against the commit this APK was built from. */
-    suspend fun checkForUpdate(): UpdateStatus = withContext(Dispatchers.IO) {
-        val current = currentSha()
-        val latestSha = try {
+    /** The newest non-draft, non-prerelease `v*` release tag (excludes the
+     *  `continuous` test channel), else null. */
+    private fun latestReleaseTag(): String? =
+        try {
             val json = Http.getString(
-                "https://api.github.com/repos/$REPO/commits/main",
+                "https://api.github.com/repos/$REPO/releases?per_page=10",
                 mapOf("Accept" to "application/vnd.github+json"),
-            ) ?: return@withContext UpdateStatus(false, current, "unknown")
-            JSONObject(json).getString("sha")
+            ) ?: return null
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val rel = arr.optJSONObject(i) ?: continue
+                if (rel.optBoolean("draft", false) || rel.optBoolean("prerelease", false)) continue
+                val tag = rel.optString("tag_name").ifBlank { continue }
+                if (tag == "continuous") continue
+                return tag
+            }
+            null
         } catch (e: Exception) {
-            return@withContext UpdateStatus(false, current, "unknown")
+            null
         }
+
+    /** Dotted version comparison ("0.3.46") — is [a] newer than [b]? */
+    private fun isNewer(a: String, b: String): Boolean {
+        fun parts(v: String): List<Long> =
+            v.trim().trimStart('v').split('.')
+                .mapNotNull { it.takeWhile { c -> c.isDigit() }.toLongOrNull() }
+        val pa = parts(a)
+        val pb = parts(b)
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val x = pa.getOrElse(i) { 0L }
+            val y = pb.getOrElse(i) { 0L }
+            if (x != y) return x > y
+        }
+        return false
+    }
+
+    /** Compares the running app version against the newest GitHub release. */
+    suspend fun checkForUpdate(): UpdateStatus = withContext(Dispatchers.IO) {
+        val current = currentVersion()
+        val tag = latestReleaseTag()
+        if (tag == null || current == "unknown") {
+            return@withContext UpdateStatus(false, current, tag ?: "unknown")
+        }
+        val latest = tag.removePrefix("v").ifBlank { tag }
         UpdateStatus(
-            available = current != "unknown" && latestSha.isNotBlank() && latestSha != current,
-            currentSha = current,
-            latestSha = latestSha,
+            available = isNewer(latest, current),
+            currentVersion = current,
+            latestVersion = latest,
+            apkUrl = "https://github.com/$REPO/releases/download/$tag/hikari.apk",
         )
     }
 
@@ -61,10 +93,11 @@ object Updater {
     suspend fun download(
         context: Context,
         onProgress: (downloaded: Long, total: Long) -> Unit,
+        url: String = UPDATE_URL,
     ): Result<File> = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates")
         val apk = File(dir, "hikari-update.apk")
-        val ok = Http.downloadTo(UPDATE_URL, apk) { d, t -> onProgress(d, t) }
+        val ok = Http.downloadTo(url, apk) { d, t -> onProgress(d, t) }
         if (ok && apk.length() > 1_000_000) {
             Result.success(apk)
         } else {

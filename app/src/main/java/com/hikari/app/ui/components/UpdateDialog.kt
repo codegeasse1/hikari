@@ -98,13 +98,13 @@ fun UpdateDialog(
                     s.available -> Column {
                         Text(
                             "A new version is available " +
-                                "(commit ${s.latestSha.take(7)} — you're on ${s.currentSha.take(7)}).\n\n" +
+                                "(v${s.latestVersion} — you're on v${s.currentVersion}).\n\n" +
                                 "Download and install it right here, or grab the APK from GitHub."
                         )
                     }
 
                     else -> Text(
-                        "You're on the latest build (commit ${s.currentSha.take(7)})."
+                        "You're on the latest version (v${s.currentVersion})."
                     )
                 }
             }
@@ -115,12 +115,16 @@ fun UpdateDialog(
                 TextButton(onClick = {
                     scope.launch {
                         downloading = 0f
-                        val result = Updater.download(context) { done, total ->
-                            // onProgress runs on a background thread — hop back to main.
-                            scope.launch {
-                                downloading = if (total > 0) done.toFloat() / total else 0f
-                            }
-                        }
+                        val result = Updater.download(
+                            context,
+                            onProgress = { done, total ->
+                                // onProgress runs on a background thread — hop back to main.
+                                scope.launch {
+                                    downloading = if (total > 0) done.toFloat() / total else 0f
+                                }
+                            },
+                            url = s?.apkUrl ?: Updater.UPDATE_URL,
+                        )
                         downloading = null
                         result.fold(
                             onSuccess = { file: File ->

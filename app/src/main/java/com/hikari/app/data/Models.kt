@@ -1,6 +1,6 @@
 package com.hikari.app.data
 
-enum class ProviderType { STREMIO, UNIVERSAL, CS3, HIKARI }
+enum class ProviderType { STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO }
 
 data class ProviderConfig(
     val id: String,
@@ -13,7 +13,7 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
-enum class RepoKind { CS3, HIKARI }
+enum class RepoKind { CS3, HIKARI, NUVIO }
 
 /** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(

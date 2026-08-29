@@ -124,11 +124,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The set of addons asked for sources, Stremio-style: every installed
      *  Stremio addon plus the origin provider itself (so CS3 plugins and
-     *  universal scrapers keep their own pipeline). */
+     *  universal scrapers keep their own pipeline), plus any Nuvio provider
+     *  that could resolve the item to a TMDB id. */
     private fun streamTargets(item: MediaItem): List<ContentProvider> =
         manager.providers.value.filter {
             it.config.enabled &&
-                (it.config.type == ProviderType.STREMIO || it.config.id == item.providerId)
+                (it.config.type == ProviderType.STREMIO ||
+                    it.config.id == item.providerId ||
+                    (it.config.type == ProviderType.NUVIO &&
+                        com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)))
         }
 
     private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
@@ -148,6 +152,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.providers.HikariProviderAdapter.streamErrors[item.providerId]
                 ProviderType.UNIVERSAL ->
                     com.hikari.app.providers.UniversalScraper.streamErrors[item.providerId]
+                ProviderType.NUVIO ->
+                    com.hikari.app.nuvio.NuvioScraper.streamErrors[item.providerId]
                 else -> null
             }
         } else {

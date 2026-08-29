@@ -25,6 +25,7 @@ class ProviderManager(private val store: AppStore) {
         ProviderType.UNIVERSAL -> UniversalScraper(c)
         ProviderType.CS3 -> Cs3MainApiProvider(c)
         ProviderType.HIKARI -> HikariProviderAdapter(c)
+        ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper(c)
     }
 
     fun byId(id: String): ContentProvider? =

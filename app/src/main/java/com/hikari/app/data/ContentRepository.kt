@@ -183,7 +183,7 @@ class ContentRepository(private val manager: ProviderManager) {
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
             val origin = manager.byId(item.providerId)
-            val targets = if (origin?.config?.type == ProviderType.STREMIO) {
+            val primaryTargets = if (origin?.config?.type == ProviderType.STREMIO) {
                 // Like the real client: ask every Stremio addon plus the origin.
                 all.filter { p ->
                     p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
@@ -193,34 +193,65 @@ class ContentRepository(private val manager: ProviderManager) {
                 // its own ids, so asking the Stremio addons just adds latency.
                 listOfNotNull(origin)
             }
+            // Nuvio providers resolve purely from a TMDB id, so they can be
+            // asked about ANY item we can map to TMDB — they add independent
+            // source servers alongside the origin. Cheap pre-filter first.
+            val nuvioTargets = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+                all.filter { it.config.type == ProviderType.NUVIO }
+            } else {
+                emptyList()
+            }
+            val targets = primaryTargets + nuvioTargets
             if (targets.isEmpty()) return@withContext emptyList()
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
             try {
-                val jobs = targets.map { p ->
+                val jobs = targets.mapIndexed { i, p ->
                     scope.async {
                         cancellableCatching {
-                            withTimeoutOrNull(45_000) { p.getStreams(item, episode) }.orEmpty()
+                            // Nuvio providers get a shorter budget — their
+                            // pipeline is several sequential fetches per source.
+                            val budget = if (i < primaryTargets.size) 45_000L else 25_000L
+                            withTimeoutOrNull(budget) { p.getStreams(item, episode) }.orEmpty()
                         }.getOrDefault(emptyList())
                     }
                 }
                 val started = System.currentTimeMillis()
-                while (true) {
-                    for (j in jobs) {
-                        if (j.isCompleted) {
-                            val r = runCatching { j.getCompleted() }.getOrDefault(emptyList())
-                            if (r.isNotEmpty()) {
-                                result = r
-                                break
-                            }
-                        }
+                val deadline = started + 30_000L
+                // Merge EVERY provider's sources (deduped by url/infoHash). The
+                // old first-non-empty-wins behaviour is kept for the primary
+                // targets so a fast Stremio/CS3 answer still opens instantly;
+                // nuvio results trickle in during a short grace window.
+                val merged = LinkedHashMap<String, StreamSource>()
+                fun merge(job: kotlinx.coroutines.Deferred<List<StreamSource>>) {
+                    if (job.isCompleted) {
+                        runCatching { job.getCompleted() }.getOrDefault(emptyList())
+                            .forEach { s -> merged.putIfAbsent(s.infoHash ?: s.url, s) }
                     }
-                    if (result.isNotEmpty() || jobs.all { it.isCompleted }) break
-                    if (System.currentTimeMillis() - started > 45_000) break
+                }
+                while (true) {
+                    jobs.forEach { merge(it) }
+                    val primaryDone = primaryTargets.isNotEmpty() &&
+                        primaryTargets.indices.any { i ->
+                            jobs[i].isCompleted && runCatching { jobs[i].getCompleted() }
+                                .getOrDefault(emptyList()).isNotEmpty()
+                        }
+                    val nuvioDone = (primaryTargets.size until targets.size).any { i ->
+                        jobs[i].isCompleted && runCatching { jobs[i].getCompleted() }
+                            .getOrDefault(emptyList()).isNotEmpty()
+                    }
+                    val allDone = jobs.all { it.isCompleted }
+                    if (allDone) break
+                    val now = System.currentTimeMillis()
+                    // Open early: a primary provider already answered (fast
+                    // path), or a nuvio answer has waited its grace window.
+                    if (merged.isNotEmpty() && (primaryDone || (nuvioDone && now - started > 1_500))) break
+                    if (now > deadline) break
                     kotlinx.coroutines.delay(80)
                 }
                 jobs.forEach { it.cancel() }
+                result = merged.values.toList()
             } finally {
                 scope.cancel()
             }
@@ -285,6 +316,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.CS3 -> Cs3MainApiProvider.streamErrors
             ProviderType.HIKARI -> HikariProviderAdapter.streamErrors
             ProviderType.UNIVERSAL -> UniversalScraper.streamErrors
+            ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
         }
         if (message == null) map.remove(id) else map[id] = message
     }
