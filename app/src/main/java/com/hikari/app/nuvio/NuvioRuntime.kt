@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -328,8 +329,8 @@ object NuvioRuntime {
                     // providers miss their JSON/HTML markers.
                     val charset = runCatching {
                         val ct = r.headers["Content-Type"] ?: ""
-                        ct.substringAfter("charset=", "").trim().trim('"')
-                            .takeIf { it.isNotEmpty() }?.let { Charsets.forName(it) }
+                        val enc = ct.substringAfter("charset=", "").trim().trim('"')
+                        if (enc.isEmpty()) Charsets.UTF_8 else Charset.forName(enc)
                     }.getOrNull() ?: Charsets.UTF_8
                     out.put("body", String(bytes, charset))
                     out.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP))
