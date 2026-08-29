@@ -112,7 +112,10 @@ object NuvioRuntime {
             return
         }
         fun step(js: String, next: () -> Unit) {
-            wv.evaluateJavascript(js) { p.ready.complete(Unit); next() }
+            wv.evaluateJavascript(js) {
+                if (!p.ready.isCompleted) p.ready.complete(Unit)
+                next()
+            }
         }
         // Sequential evals, each far below evaluateJavascript's practical
         // input ceiling: harness, then cheerio, then crypto-js.
@@ -201,7 +204,13 @@ object NuvioRuntime {
                 val js = "(function(){ try { var m = window.__nuvioLoadProvider(${quote(source)}, 'validate');" +
                     " if (m && typeof m.getStreams === 'function') return 'OK'; return 'NO';" +
                     " } catch(e) { return 'ERR:' + String(e && e.message || e); } })();"
-                p.wv.evaluateJavascript(js) { r -> result = r }
+                p.wv.evaluateJavascript(js) { r ->
+                    // evaluateJavascript returns the JS string JSON-quoted, so a
+                    // verdict of "OK" arrives as "\"OK\"" — strip the quotes or
+                    // installScraper's startsWith("OK") check would reject every
+                    // valid provider.
+                    result = r?.trim()?.removeSurrounding("\"") ?: ""
+                }
                 // evaluateJavascript is async — poll for the callback result.
                 for (i in 0 until 100) {
                     if (result.isNotBlank()) break

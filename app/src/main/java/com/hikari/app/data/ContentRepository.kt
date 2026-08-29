@@ -256,13 +256,23 @@ class ContentRepository(private val manager: ProviderManager) {
                 scope.cancel()
             }
             // Same torrent/video surfaced by several addons = one entry.
-            var finalResult = result.distinctBy { it.infoHash ?: it.url }
+            var finalResult = result.filterNot { isGarbageUrl(it.url) }
+                .distinctBy { it.infoHash ?: it.url }
             // App-wide universal last resort: every provider type funnels
             // through here, so when they ALL come up empty the bundled yt-dlp
             // extractor still gets one shot at the page (see the helper).
             if (finalResult.isEmpty()) finalResult = ytdlpUniversalFallback(item, episode)
             finalResult
         }
+
+    /** True for URLs that point at non-content scaffolding (e.g. the SVG
+     *  xmlns namespace http://www.w3.org/2000/svg). Such links must never be
+     *  handed to the player, which would otherwise open them in the web view. */
+    private fun isGarbageUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "w3.org" || host.endsWith(".w3.org")
+    }
 
     /**
      * App-wide universal last resort: native .hiki providers, the .cs3 bridge,

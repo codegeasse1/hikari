@@ -104,6 +104,11 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         if (url.isBlank() && s.optString("externalUrl").isBlank() && s.optString("ytId").isBlank()) {
             return null
         }
+        // Generic providers sometimes capture non-content links — the classic
+        // being the SVG xmlns namespace (http://www.w3.org/2000/svg), which
+        // must never become a playable source (or open a w3.org page in the
+        // web view). Drop such streams outright.
+        if (isGarbageUrl(url) || isGarbageUrl(s.optString("externalUrl"))) return null
         val name = s.optString("name").ifBlank { s.optString("title") }.ifBlank { config.name }
         val quality = s.optString("quality").ifBlank { "" }
         val displayName = if (quality.isNotBlank() && !name.contains(quality, true)) "$name $quality" else name
@@ -164,6 +169,15 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         Regex("""[?&]xt=urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
         Regex("""urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
         return null
+    }
+
+    /** True for URLs that point at non-content scaffolding (e.g. the SVG
+     *  xmlns namespace http://www.w3.org/2000/svg). Such links must never be
+     *  handed to the player, which would otherwise open them in the web view. */
+    private fun isGarbageUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "w3.org" || host.endsWith(".w3.org")
     }
 
     /** Best-effort season number from the episode's id or name. */
