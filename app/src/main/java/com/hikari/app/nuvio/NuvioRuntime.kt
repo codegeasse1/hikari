@@ -40,8 +40,8 @@ import java.util.concurrent.TimeUnit
 object NuvioRuntime {
 
     private const val MAX_WEBVIEWS = 3
-    private const val FETCH_TIMEOUT_MS = 60_000L
-    private const val CALL_TIMEOUT_MS = 90_000L
+    private const val FETCH_TIMEOUT_MS = 120_000L
+    private const val CALL_TIMEOUT_MS = 150_000L
 
     // NuvioMobile's default UA when a provider sets none of its own
     // (FetchBridge.kt sends the provider's headers as-is; the provider side
@@ -69,12 +69,14 @@ object NuvioRuntime {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             // Plain OkHttp, mirroring NuvioMobile's own httpRequestRaw: no
-            // Cloudflare interception, no cookie jar, no UA rewriting, no
-            // WebViews. nuvio's native fetch is deliberately bare — if a
-            // provider's site serves a CF challenge nuvio does NOT try to
-            // solve it (those addons simply return nothing), and neither do we.
-            // This also means no cf_clearance dance and no WebViewActivity
-            // popping over the player during nuvio searches.
+            // cookie jar, no UA rewriting, transparent gzip via the bridge's
+            // Accept-Encoding stripping. One deliberate divergence from nuvio:
+            // the Cloudflare interceptor stays ON the nuvio path so addons
+            // whose sites sit behind CF (4KHDHub, …) actually resolve — nuvio
+            // itself just fails on those, but the user expects them to play.
+            // It solves hidden-first (nothing pops over the player) and only
+            // shows the verify WebView for interactive challenges.
+            .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             .build()
     }
 

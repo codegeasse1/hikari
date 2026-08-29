@@ -41,8 +41,10 @@ object CloudflareVerifier {
     private const val SOLVE_TIMEOUT_MS = 90_000L
     private const val DISMISS_COOLDOWN_MS = 60_000L
     // How long the hidden off-screen solver gets before the visible verify view
-    // takes over (interactive challenges need a human click).
-    private const val HIDDEN_SOLVE_TIMEOUT_MS = 15_000L
+    // takes over (interactive challenges need a human click). Generous so a
+    // solvable challenge usually passes invisibly and the view almost never
+    // pops over whatever the user is doing.
+    private const val HIDDEN_SOLVE_TIMEOUT_MS = 30_000L
 
     private val lock = Any()
     private val inFlight = HashMap<String, CountDownLatch>()
