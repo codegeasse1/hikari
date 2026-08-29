@@ -340,7 +340,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             }
             if (!parsed.optBoolean("ok", false)) {
                 val err = parsed.optString("error").ifBlank { "no sources found" }
-                val msg = if (err == "timeout") "✗ provider timed out after 100s." else "✗ $err"
+                val msg = if (err == "timeout") "✗ provider timed out after 60s." else "✗ $err"
                 streamErrors[config.id] = msg.take(400)
                 lastOutcome[config.id] = msg.take(80)
                 return@withContext emptyList()

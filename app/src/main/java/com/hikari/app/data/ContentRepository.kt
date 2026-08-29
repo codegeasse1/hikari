@@ -213,15 +213,12 @@ class ContentRepository(private val manager: ProviderManager) {
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
-                        // Nuvio providers need a real budget — a single lookup
-                        // is several sequential fetches (search → detail →
-                        // player → resolve) that can take well over 60s on a
-                        // mobile connection. The old 25s cut killed them mid-
-                        // pipeline and every extension reported "no sources"
-                        // even though the providers work when given time. When
-                        // the budget fires, record WHY so the sources sheet can
-                        // show it instead of a silent empty result.
-                        val budget = if (i < primaryTargets.size) 45_000L else 110_000L
+                        // Nuvio providers resolve purely from a TMDB id via a
+                        // handful of fast sequential fetches — 0.3.52's 25s
+                        // budget was enough for 4KHDHub to answer in seconds.
+                        // When the budget fires, record WHY so the sources sheet
+                        // can show it instead of a silent empty result.
+                        val budget = if (i < primaryTargets.size) 45_000L else 25_000L
                         val r = withTimeoutOrNull(budget) {
                             try {
                                 p.getStreams(item, episode)
@@ -237,7 +234,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 val started = System.currentTimeMillis()
-                val deadline = started + 115_000L
+                val deadline = started + 30_000L
                 // Merge EVERY provider's sources (deduped by url/infoHash). The
                 // old first-non-empty-wins behaviour is kept for the primary
                 // targets so a fast Stremio/CS3 answer still opens instantly;

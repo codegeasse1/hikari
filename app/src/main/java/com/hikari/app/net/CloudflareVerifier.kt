@@ -44,7 +44,7 @@ object CloudflareVerifier {
     // takes over (interactive challenges need a human click). Generous so a
     // solvable challenge usually passes invisibly and the view almost never
     // pops over whatever the user is doing.
-    private const val HIDDEN_SOLVE_TIMEOUT_MS = 30_000L
+    private const val HIDDEN_SOLVE_TIMEOUT_MS = 15_000L
 
     private val lock = Any()
     private val inFlight = HashMap<String, CountDownLatch>()
@@ -56,6 +56,16 @@ object CloudflareVerifier {
      *  returning the challenge response and letting the caller surface it). */
     @Volatile
     var autoOpenEnabled = true
+
+    /** Scoped override for callers that must never flash the visible verify
+     *  WebView (e.g. background nuvio provider searches). When set on the
+     *  calling thread, a failed hidden solve just hands the caller the
+     *  challenge response instead of launching the verify activity. */
+    private val skipVisible = ThreadLocal<Boolean>()
+
+    fun setSkipVisible(v: Boolean) {
+        skipVisible.set(v)
+    }
 
     /** cf_clearance (or the full cookie string containing it) for [url] from the
      *  WebView cookie jar — the jar the verify WebView keeps populated. */
@@ -191,6 +201,11 @@ object CloudflareVerifier {
             if (solveHidden(host, url)) {
                 // Hidden solver already minted the clearance — wake every waiter
                 // immediately instead of letting them sit out the deadline.
+                synchronized(lock) { latch.countDown() }
+            } else if (skipVisible.get() == true) {
+                // Background caller opted out of the visible verify view — wake
+                // every waiter so the retry runs with the challenge response
+                // right away instead of sitting out the 90s solve deadline.
                 synchronized(lock) { latch.countDown() }
             } else {
                 Handler(Looper.getMainLooper()).post {

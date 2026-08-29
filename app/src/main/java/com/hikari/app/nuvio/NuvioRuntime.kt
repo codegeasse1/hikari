@@ -39,26 +39,30 @@ import java.util.concurrent.TimeUnit
  */
 object NuvioRuntime {
 
-    // 5 hidden WebViews = up to 5 providers resolving at once. The old 3-view
-    // pool meant that with a dozen+ installed extensions most of them queued
-    // behind the slowest three and were cut off by the app's search deadline
-    // before ever running — every addon reported "no sources" even though the
-    // providers work fine on their own (verified against the live sites).
-    private const val MAX_WEBVIEWS = 5
-    private const val FETCH_TIMEOUT_MS = 120_000L
-    private const val CALL_TIMEOUT_MS = 150_000L
+    // Timing restored to the profile that shipped with 0.3.52 — the build the
+    // user actually saw play 4KHDHub within seconds. Inflating these (0.3.55
+    // went to 110s budgets / 120s fetches) turned a quick "first provider that
+    // answers wins" search into a 5-minute stall while the pool of WebViews sat
+    // on slow providers, and every extension eventually reported nothing.
+    private const val MAX_WEBVIEWS = 3
+    private const val FETCH_TIMEOUT_MS = 30_000L
+    private const val CALL_TIMEOUT_MS = 70_000L
 
-    // NuvioMobile's default UA when a provider sets none of its own
-    // (FetchBridge.kt sends the provider's headers as-is; the provider side
-    // falls back to this exact desktop string). Hikari used its own full
-    // Chrome desktop UA here, which a few WAFs fingerprint and block — match
-    // nuvio so providers behave identically.
-    private const val NUVIO_DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches
+    // (0.3.52 behaviour, verified working on the user's device). The shorter
+    // "nuvio parity" string lacked a Chrome version and is exactly the kind of
+    // odd UA WAFs fingerprint and challenge. Providers that set their own UA
+    // header still override this.
+    private const val NUVIO_DEFAULT_UA = com.hikari.app.net.Http.UA
 
     private class PooledWebView(val wv: WebView) {
         val ready = CompletableDeferred<Unit>()
         var inUse = false
+        /** True once the view has been recycled (destroyed) — release() must
+         *  not return a destroyed view to the pool, or every later provider
+         *  that acquires it runs in a dead WebView and silently hangs. */
+        @Volatile
+        var dead = false
     }
 
     private val lock = Any()
@@ -165,7 +169,10 @@ object NuvioRuntime {
     /** Grabs a free pooled WebView, creating one up to the pool cap. Suspends
      *  until one is available; the WebView is guaranteed ready on return. */
     private suspend fun acquire(context: Context): PooledWebView? {
-        freeChannel.tryReceive().getOrNull()?.let { p -> waitReady(p); return p }
+        freeChannel.tryReceive().getOrNull()?.let { p ->
+            if (!p.dead) { waitReady(p); return p }
+            runCatching { p.wv.destroy() }
+        }
         var created: PooledWebView? = null
         synchronized(lock) {
             if (allViews.size < MAX_WEBVIEWS) {
@@ -179,9 +186,11 @@ object NuvioRuntime {
             return created
         }
         // Pool full — block until an in-flight call returns its WebView.
-        val p = freeChannel.receive() ?: return null
-        waitReady(p)
-        return p
+        while (true) {
+            val p = freeChannel.receive() ?: return null
+            if (!p.dead) { waitReady(p); return p }
+            runCatching { p.wv.destroy() }
+        }
     }
 
     private suspend fun waitReady(p: PooledWebView) {
@@ -190,6 +199,7 @@ object NuvioRuntime {
     }
 
     private fun release(p: PooledWebView) {
+        if (p.dead) return
         p.inUse = false
         freeChannel.trySend(p)
     }
@@ -276,16 +286,21 @@ object NuvioRuntime {
             }
         } finally {
             inFlight.remove(cid)
-            if (!p.wv.isAttachedToWindow && p.ready.isCompleted) {
-                // no-op guard; keep the view in the pool regardless
-            }
-            release(p)
+            // If THIS coroutine was cancelled (search deadline / early-close /
+            // provider budget), the WebView's JS is still mid-execution and
+            // wedged on a synchronous bridgeFetch — returning it to the pool
+            // poisons the next provider that acquires it. Recycle instead.
+            val cancelled = runCatching {
+                kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive == false
+            }.getOrDefault(false)
+            if (cancelled) recycle(p) else release(p)
         }
     }
 
     /** Rebuilds a wedged WebView from scratch (drops it from the pool). */
     private fun recycle(p: PooledWebView) {
         synchronized(lock) {
+            p.dead = true
             allViews.remove(p)
         }
         runCatching { p.wv.destroy() }
@@ -307,6 +322,13 @@ object NuvioRuntime {
         val started = System.currentTimeMillis()
         val m = method.uppercase()
         val task = fetchExecutor.submit<JSONObject> {
+            // Nuvio searches run in the background while the user waits — a
+            // Cloudflare challenge must never pop the visible "verify" WebView
+            // over the app. The hidden off-screen solver still gets its chance
+            // (it's what mints 4KHDHub's clearance); if it fails we just hand
+            // the provider the challenge response and record it in the fetch
+            // log instead of flashing a scary window at the user.
+            com.hikari.app.net.CloudflareVerifier.setSkipVisible(true)
             try {
                 val builder = Request.Builder()
                     .url(url)
@@ -340,13 +362,27 @@ object NuvioRuntime {
                 resp.use { r ->
                     val bytes = r.body?.bytes() ?: ByteArray(0)
                     val host = hostOf(url)
-                    val extra = if (r.code == 403 || r.code == 503) {
+                    val extra = StringBuilder()
+                    if (r.code == 403 || r.code == 503) {
                         val low = String(bytes, Charsets.ISO_8859_1).lowercase()
                         if (low.contains("just a moment") || low.contains("attention required") ||
                             low.contains("cf-chl") || low.contains("checking your browser")
-                        ) " CF-CHALLENGE-UNSOLVED" else ""
-                    } else ""
-                    fetchLogLine(host, m, r.code.toString(), bytes.size, System.currentTimeMillis() - started, extra)
+                        ) extra.append(" CF-CHALLENGE-UNSOLVED")
+                    }
+                    val ce = r.headers["Content-Encoding"]
+                    if (ce != null && ce.isNotBlank()) extra.append(" CE=").append(ce)
+                    // For failures or big bodies, log what the bytes actually
+                    // look like — tells us if a 200 is a JSON API hit, an HTML
+                    // challenge page, or (CE!=gzip) compressed garbage the
+                    // provider can't parse.
+                    if (r.code != 200 || bytes.size > 100_000) {
+                        val ct = (r.headers["Content-Type"] ?: "?").substringBefore(";")
+                        extra.append(" CT=").append(ct)
+                        val preview = String(bytes, Charsets.ISO_8859_1).trim().take(60)
+                            .replace(Regex("[^\\x20-\\x7E]"), ".")
+                        extra.append(" [").append(preview).append("]")
+                    }
+                    fetchLogLine(host, m, r.code.toString(), bytes.size, System.currentTimeMillis() - started, extra.toString())
                     val out = JSONObject()
                     out.put("ok", r.isSuccessful)
                     out.put("status", r.code)
@@ -386,6 +422,8 @@ object NuvioRuntime {
                 out.put("bodyBase64", "")
                 out.put("error", e.message ?: "network error")
                 return@submit out
+            } finally {
+                com.hikari.app.net.CloudflareVerifier.setSkipVisible(false)
             }
         }
         return try {
