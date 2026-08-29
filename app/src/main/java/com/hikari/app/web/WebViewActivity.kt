@@ -416,6 +416,16 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest
             ): Boolean {
+                // Cloudflare-verification mode: ONLY the CF challenge may ever
+                // load (the site + Cloudflare's challenge infra). Any other
+                // redirect target is cancelled before it loads — the view is
+                // open solely to pass the challenge, never to surf.
+                if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
+                    !isVerifyAllowed(request.url.toString())
+                ) {
+                    showBlockedToast("Blocked redirect to ${request.url.host ?: "unknown"}")
+                    return true
+                }
                 // Redirect protection: cancel main-frame navigations away from
                 // the site before they load (ad-hijack redirects). Same-site
                 // pages, subdomains, whitelisted hosts and user-allowed
@@ -462,6 +472,16 @@ class WebViewActivity : ComponentActivity() {
                 // image placeholders never populate the chip.
                 if (VIDEO_URL_RE.containsMatchIn(u)) {
                     maybeAddVideo(u)
+                }
+                // Cloudflare-verification mode: never let a redirect land on a
+                // foreign page while the view is just passing a challenge.
+                if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
+                    !isVerifyAllowed(u)
+                ) {
+                    showBlockedToast("Blocked redirect to $host")
+                    return WebResourceResponse(
+                        "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                    )
                 }
                 // Redirect protection: never let an ad hijack navigate the main
                 // frame away to a foreign domain (the twinrdengine.com-class
@@ -861,6 +881,20 @@ class WebViewActivity : ComponentActivity() {
     /** Same host or one being a subdomain of the other (registrable-domain-ish). */
     private fun isSameSite(host: String, current: String): Boolean =
         host == current || host.endsWith("." + current) || current.endsWith("." + host)
+
+    /** In Cloudflare-verification mode ONLY the challenge may be shown: the
+     *  site we started on plus Cloudflare's own challenge infra. Anything else
+     *  (ad-hijack redirects, parked/redirect pages, trackers) is blocked —
+     *  the auto-opened view must never land on a random site. */
+    private fun isVerifyAllowed(url: String?): Boolean {
+        if (url == null) return false
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        val orig = runCatching { java.net.URI(startUrl).host?.lowercase() }.getOrNull() ?: return true
+        if (host == orig) return true
+        return host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com") ||
+            host == "cloudflare.com" || host.endsWith(".cloudflare.com") ||
+            host == "cloudflareinsights.com" || host.endsWith(".cloudflareinsights.com")
+    }
 
     /** One toast per page so ad spam doesn't toast-spam the user. Thread-safe:
      *  shouldInterceptRequest runs on a WebView background thread (no Looper),

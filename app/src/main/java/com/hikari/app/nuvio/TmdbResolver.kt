@@ -156,7 +156,7 @@ object TmdbResolver {
     }
 
     /** GETs a TMDB endpoint, rotating the API key on auth/rate errors. */
-    private suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? {
+    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? {
         for (key in API_KEYS) {
             val params = query + ("api_key" to key)
             val qs = params.entries.joinToString("&") { (k, v) ->

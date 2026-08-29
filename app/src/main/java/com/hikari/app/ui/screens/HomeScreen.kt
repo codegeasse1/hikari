@@ -310,6 +310,7 @@ fun HomeScreen(nav: NavHostController) {
                         val reason =
                             com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
                                 ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
+                                ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[selected]
                         val streamOnly =
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
                         if (streamOnly) {

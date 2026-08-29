@@ -52,11 +52,19 @@ object CloudflareVerifier {
         return cookie?.takeIf { it.contains("cf_clearance") }
     }
 
-    /** CloudStream's own CloudflareKiller heuristic — a 403/503 served by Cloudflare. */
-    fun isCloudflareChallenge(response: Response): Boolean {
-        if (response.code != 403 && response.code != 503) return false
-        val server = response.header("Server")?.lowercase() ?: return false
-        return server.contains("cloudflare")
+    /** CloudStream's own CloudflareKiller heuristic — a 403/503 served by
+     *  Cloudflare — OR any response whose body is a known CF challenge/block
+     *  page (some challenge modes answer with a 200/other status carrying the
+     *  challenge HTML, so the status+Server check alone would miss them and
+     *  the verify WebView would never auto-open). */
+    fun isCloudflareChallenge(response: Response, bodyText: String = peekBody(response)): Boolean {
+        if (response.code == 403 || response.code == 503) {
+            val server = response.header("Server")?.lowercase()
+            if (server != null && server.contains("cloudflare")) return true
+        }
+        if (bodyText.isEmpty()) return false
+        return HARD_BLOCK_MARKERS.any { bodyText.contains(it) } ||
+            CHALLENGE_MARKERS.any { bodyText.contains(it) }
     }
 
     /** Body markers that mean a Cloudflare response is a HARD WAF block
@@ -91,20 +99,24 @@ object CloudflareVerifier {
         "performing security verification",
     )
 
-    /** True when the challenge response is one the verify WebView can actually
-     *  solve. Peeks the body (without consuming it, so the caller still reads
-     *  it normally) — explicitly-blocked pages return false, undecidable bodies
-     *  default to solvable so the feature keeps working if decoding fails. */
-    private fun isSolvableChallenge(response: Response): Boolean {
-        val body = runCatching {
+    /** Peeks the first 64 KiB of the response body (without consuming it, so
+     *  the caller still reads it normally), gunzipping when needed. */
+    private fun peekBody(response: Response): String {
+        return runCatching {
             val bytes = response.peekBody(64 * 1024).bytes()
             val raw = if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
                 java.util.zip.GZIPInputStream(bytes.inputStream().buffered()).readBytes()
             } else bytes
             String(raw, 0, minOf(raw.size, 64 * 1024), Charsets.UTF_8).lowercase()
         }.getOrNull().orEmpty()
-        if (HARD_BLOCK_MARKERS.any { body.contains(it) }) return false
-        return body.isBlank() || CHALLENGE_MARKERS.any { body.contains(it) }
+    }
+
+    /** True when the challenge response is one the verify WebView can actually
+     *  solve. Explicitly-blocked pages return false, undecidable bodies
+     *  default to solvable so the feature keeps working if decoding fails. */
+    private fun isSolvableChallenge(response: Response, bodyText: String): Boolean {
+        if (HARD_BLOCK_MARKERS.any { bodyText.contains(it) }) return false
+        return bodyText.isBlank() || CHALLENGE_MARKERS.any { bodyText.contains(it) }
     }
 
     /**
@@ -124,9 +136,10 @@ object CloudflareVerifier {
             if (c != null) request.newBuilder().header("Cookie", c).build() else request
         } else request
         val first = chain.proceed(firstReq)
-        if (!isCloudflareChallenge(first)) return first
+        val bodyText = peekBody(first)
+        if (!isCloudflareChallenge(first, bodyText)) return first
         val url = request.url.toString()
-        val solvable = isSolvableChallenge(first)
+        val solvable = isSolvableChallenge(first, bodyText)
         first.close()
 
         val host = request.url.host

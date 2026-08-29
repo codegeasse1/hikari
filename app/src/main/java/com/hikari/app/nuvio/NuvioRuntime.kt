@@ -59,6 +59,11 @@ object NuvioRuntime {
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // Auto Cloudflare handling, same as Hikari's own Http client: when
+            // a provider fetch hits a CF challenge the verify WebView auto-opens
+            // (and auto-closes once the challenge passes), then the request is
+            // retried with the fresh cf_clearance cookie + browser UA.
+            .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             .build()
     }
 

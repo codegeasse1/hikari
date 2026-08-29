@@ -29,13 +29,143 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
     companion object {
         /** Per-provider last failure (shown on the Detail screen). */
         val streamErrors = ConcurrentHashMap<String, String>()
+        /** Per-provider catalog failure (shown on the Home empty state). */
+        val catalogErrors = ConcurrentHashMap<String, String>()
+
+        private const val IMG = "https://image.tmdb.org/t/p/w500"
+        private const val IMG_L = "https://image.tmdb.org/t/p/w1280"
+        private const val MAX_SEASONS = 24
     }
 
-    override suspend fun catalogs(): List<CatalogRef> = emptyList()
-    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = emptyList()
-    override suspend fun search(query: String, page: Int): List<MediaItem> = emptyList()
-    override suspend fun getMeta(item: MediaItem): MediaItem = item
-    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = null
+    // Nuvio providers resolve sources purely from a TMDB id, and have no
+    // catalog of their own — so Hikari browses TMDB on their behalf. Same
+    // look-and-feel as the official NuvioMobile app (which also surfaces TMDB's
+    // databases through these providers). getStreams then resolves the picked
+    // item to its TMDB id and lets the provider do the rest.
+    override suspend fun catalogs(): List<CatalogRef> = listOf(
+        CatalogRef(config.id, MediaType.UNKNOWN, "tmdb-trending", "Trending"),
+        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-popular", "Popular Movies"),
+        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-top", "Top Rated Movies"),
+        CatalogRef(config.id, MediaType.MOVIE, "tmdb-movie-now", "In Cinemas"),
+        CatalogRef(config.id, MediaType.SERIES, "tmdb-tv-popular", "Popular Series"),
+        CatalogRef(config.id, MediaType.SERIES, "tmdb-tv-top", "Top Rated Series"),
+    )
+
+    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+        val path = when (ref.id) {
+            "tmdb-trending" -> "/trending/all/week"
+            "tmdb-movie-popular" -> "/movie/popular"
+            "tmdb-movie-top" -> "/movie/top_rated"
+            "tmdb-movie-now" -> "/movie/now_playing"
+            "tmdb-tv-popular" -> "/tv/popular"
+            "tmdb-tv-top" -> "/tv/top_rated"
+            else -> return@withContext emptyList()
+        }
+        val data = TmdbResolver.apiGet(path, mapOf("page" to page.coerceAtLeast(1).toString()))
+        if (data == null) {
+            catalogErrors[config.id] = "TMDB catalog unavailable right now (network or API key)."
+            return@withContext emptyList()
+        }
+        catalogErrors.remove(config.id)
+        val arr = data.optJSONArray("results") ?: return@withContext emptyList()
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            fromTmdbRow(o)
+        }
+    }
+
+    override suspend fun search(query: String, page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        val data = TmdbResolver.apiGet(
+            "/search/multi", mapOf("query" to query, "page" to page.coerceAtLeast(1).toString())
+        ) ?: return@withContext emptyList()
+        val arr = data.optJSONArray("results") ?: return@withContext emptyList()
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val mt = o.optString("media_type")
+            if (mt != "movie" && mt != "tv") return@mapNotNull null
+            fromTmdbRow(o)
+        }
+    }
+
+    override suspend fun getMeta(item: MediaItem): MediaItem {
+        if (item.id.isBlank() || !item.id.all { it.isDigit() }) return item
+        val type = if (item.type == MediaType.SERIES) "tv" else "movie"
+        val d = TmdbResolver.apiGet("/$type/${item.id}", emptyMap()) ?: return item
+        val year = listOf("release_date", "first_air_date")
+            .firstNotNullOfOrNull { k ->
+                d.optString(k).takeIf { it.isNotBlank() }?.take(4)?.toIntOrNull()
+            }
+        return MediaItem(
+            providerId = item.providerId,
+            id = item.id,
+            title = d.optString("title").ifBlank { d.optString("name") }.ifBlank { item.title },
+            type = item.type,
+            posterUrl = d.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it } ?: item.posterUrl,
+            year = year ?: item.year,
+            overview = d.optString("overview").ifBlank { item.overview.orEmpty() }.ifBlank { null },
+            genres = (0 until (d.optJSONArray("genres")?.length() ?: 0)).mapNotNull { i ->
+                d.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }
+            },
+            backdropUrl = d.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_L + it } ?: item.backdropUrl,
+            rawType = item.rawType,
+        )
+    }
+
+    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        if (item.type != MediaType.SERIES) return@withContext null
+        val id = item.id
+        if (id.isBlank() || !id.all { it.isDigit() }) return@withContext null
+        val tv = TmdbResolver.apiGet("/tv/$id", emptyMap()) ?: return@withContext null
+        val seasons = tv.optJSONArray("seasons") ?: return@withContext null
+        val nums = (0 until seasons.length()).mapNotNull { i ->
+            val s = seasons.optJSONObject(i) ?: return@mapNotNull null
+            val n = s.optInt("season_number")
+            if (n > 0 && s.optInt("episode_count") > 0) n else null
+        }.take(MAX_SEASONS)
+        val out = mutableListOf<Episode>()
+        var global = 0
+        for (sn in nums) {
+            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap()) ?: continue
+            val eps = sd.optJSONArray("episodes") ?: continue
+            for (i in 0 until eps.length()) {
+                val e = eps.optJSONObject(i) ?: continue
+                val en = e.optInt("episode_number")
+                if (en <= 0) continue
+                global++
+                out += Episode(
+                    number = global,
+                    id = "S${sn}E$en",
+                    name = e.optString("name").takeIf { it.isNotBlank() },
+                    image = e.optString("still_path").takeIf { it.isNotBlank() }?.let { IMG + it },
+                )
+            }
+        }
+        out
+    }
+
+    /** Maps a TMDB result object (movie/tv/trending rows) to a MediaItem. */
+    private fun fromTmdbRow(o: JSONObject): MediaItem? {
+        val id = o.optString("id")
+        if (id.isBlank()) return null
+        val title = o.optString("title").ifBlank { o.optString("name") }
+        if (title.isBlank()) return null
+        val isTv = o.optString("media_type") == "tv" || o.has("name") || o.has("first_air_date")
+        val t = if (isTv) MediaType.SERIES else MediaType.MOVIE
+        val year = listOf("release_date", "first_air_date")
+            .firstNotNullOfOrNull { k -> o.optString(k).takeIf { it.isNotBlank() }?.take(4)?.toIntOrNull() }
+        return MediaItem(
+            providerId = config.id,
+            id = id,
+            title = title,
+            type = t,
+            posterUrl = o.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it },
+            year = year,
+            overview = o.optString("overview").takeIf { it.isNotBlank() },
+            backdropUrl = o.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_L + it },
+            rawType = if (t == MediaType.SERIES) "tv" else "movie",
+        )
+    }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
@@ -53,7 +183,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             // Series: nuvio needs the season + episode numbers. The episode's
             // id/name usually carries them ("S2E5", "2x3", …).
             val season = if (episode == null) null else seasonOf(episode)
-            val epNum = episode?.number ?: 1
+            val epNum = if (episode == null) 1 else epNumberInSeason(episode)
             val payload = NuvioRuntime.getStreams(
                 HikariApp.instance,
                 source,
@@ -194,5 +324,18 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             m.groupValues[1].toIntOrNull()?.let { return it }
         }
         return 1
+    }
+
+    /** Best-effort in-season episode number from the episode's id or name
+     *  (e.g. "S2E5" → 5). Falls back to [Episode.number]. */
+    private fun epNumberInSeason(ep: Episode): Int {
+        val text = listOfNotNull(ep.id, ep.name).firstOrNull { it.isNotBlank() } ?: return ep.number
+        Regex("""(?i)[sS]\s*(\d+)\s*[eE]\s*(\d+)""").find(text)?.let { m ->
+            m.groupValues[2].toIntOrNull()?.let { return it }
+        }
+        Regex("""(?:^|[^\d])(\d+)\s*[xX:.\-]\s*(\d+)(?:$|[^\d])""").find(text)?.let { m ->
+            m.groupValues[2].toIntOrNull()?.let { return it }
+        }
+        return ep.number
     }
 }
