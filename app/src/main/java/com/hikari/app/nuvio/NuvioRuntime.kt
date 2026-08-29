@@ -321,19 +321,19 @@ object NuvioRuntime {
         }
     }
 
-    private inner class NuvioBridge {
+    private class NuvioBridge {
         @JavascriptInterface
         fun fetch(url: String, method: String, headersJson: String, body: String, followRedirects: Boolean): String =
-            bridgeFetch(url, method, headersJson, body, followRedirects)
+            NuvioRuntime.bridgeFetch(url, method, headersJson, body, followRedirects)
 
         @JavascriptInterface
         fun onGetStreamsDone(cid: String, payload: String) {
-            onDone(cid, payload)
+            NuvioRuntime.onDone(cid, payload)
         }
 
         @JavascriptInterface
         fun onSettingsDone(cid: String, payload: String) {
-            onDone(cid, payload)
+            NuvioRuntime.onDone(cid, payload)
         }
 
         @JavascriptInterface
