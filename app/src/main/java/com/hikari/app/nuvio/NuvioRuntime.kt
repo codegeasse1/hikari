@@ -1,14 +1,13 @@
 package com.hikari.app.nuvio
 
-import android.annotation.SuppressLint
-import android.content.Context
 import android.util.Base64
-import android.webkit.JavascriptInterface
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.content.Context
+import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.binding.function
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -18,100 +17,80 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
 /**
- * Runs NuvioMobile-style JS providers inside hidden WebViews. Each provider is a
- * plain CommonJS module exporting `getStreams(tmdbId, mediaType, season, episode)`
- * (plus an optional `onSettings()`), following the official NuvioMobile
- * plugin-runtime conventions. The WebView only ever executes the provider code —
- * every network request goes through the synchronous NuvioBridge.fetch bridge
- * (OkHttp), so the WebView needs no real network access of its own.
+ * Runs NuvioMobile-style JS providers inside a fresh embedded QuickJS engine
+ * per call — exactly how the real NuvioMobile app runs plugins (com.nuvio.app
+ * PluginRuntime: one `QuickJs.create` per provider call, plain HTTP through a
+ * synchronous fetch bridge, no WebView, no Cloudflare verification).
  *
- * A small pool of WebViews (bounded) lets several providers resolve sources in
- * parallel; each pooled WebView is initialized once with the shared runtime
- * (runtime.html loads cheerio + crypto-js + harness.js as plain scripts — see
- * app/src/main/assets/nuvio/runtime.html).
+ * Each provider is a plain CommonJS module exporting
+ * `getStreams(tmdbId, mediaType, season, episode)` (plus an optional
+ * `onSettings()`), following the official NuvioMobile plugin conventions. The
+ * engine only ever executes the provider code — every network request goes
+ * through the synchronous `__hikariFetch` bridge (OkHttp), so the JS runtime
+ * needs no WebView and no network capability of its own. The shared runtime
+ * (assets/nuvio/boot.js polyfills + assets/nuvio/cheerio.js + assets/nuvio/
+ * harness.js) is evaluated into the engine before each provider runs, so no
+ * state ever leaks between providers and a hung/crashing provider can only
+ * kill its own fresh engine.
+ *
+ * Compared with the previous WebView pool this removes:
+ *   - the WebView pool (PooledWebView/Waiter/acquire/release/recycle) — the
+ *     whole engine is torn down per call, so no shared state can wedge,
+ *   - CloudflareVerifier interception — nuvio itself does no CF solving, it
+ *     just hands the provider whatever HTTP returns, so neither do we,
+ *   - the main-thread hop — everything runs on Dispatchers.Default.
  */
 object NuvioRuntime {
 
-    // Timing restored to the profile that shipped with 0.3.52 — the build the
-    // user actually saw play 4KHDHub within seconds. Inflating these (0.3.55
-    // went to 110s budgets / 120s fetches) turned a quick "first provider that
-    // answers wins" search into a 5-minute stall while the pool of WebViews sat
-    // on slow providers, and every extension eventually reported nothing.
-    private const val MAX_WEBVIEWS = 3
+    // A small cap on concurrently-running engines. Each engine is a native
+    // QuickJS VM plus its own JS context (cheerio is ~450KB to parse), so we
+    // bound the count and let the extra providers queue on the semaphore
+    // instead of spawning 13 VMs at once. nuvio has no such cap (it runs one
+    // provider at a time); Hikari searches many providers in parallel, and
+    // this limit still lets the historically-fast ones answer in ~2s.
+    private const val MAX_CONCURRENT = 6
     private const val FETCH_TIMEOUT_MS = 30_000L
-    // CALL_TIMEOUT_MS bounds a provider's JS EXECUTION — it only starts once a
-    // WebView is acquired. The queue wait behind the pool must never eat a
-    // provider's budget: 0.3.56 started the 25s budget at job launch, so 8 of
-    // 13 queued providers reported "cut off after 25s" without ever running.
-    // 35s (up from 25s) so CF-heavy providers can finish: MoviesDrive's
-    // goodstream.cc hidden solve alone takes ~22s and the parser needs a few
-    // more fetches after it — 25s was cutting every such provider off at the
-    // moment its site finally answered.
-    private const val CALL_TIMEOUT_MS = 35_000L
+    // CALL_TIMEOUT_MS bounds a provider's whole JS execution, matching the
+    // 45s ceiling planned for ContentRepository's per-provider budget. The
+    // same value is set as QuickJS's evaluationTimeoutMillis, so even a
+    // provider stuck in busy JS (infinite loop) is cut off natively instead
+    // of hanging the engine forever.
+    private const val CALL_TIMEOUT_MS = 45_000L
+    private const val VALIDATE_TIMEOUT_MS = 20_000L
 
-    // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches
-    // (0.3.52 behaviour, verified working on the user's device). The shorter
-    // "nuvio parity" string lacked a Chrome version and is exactly the kind of
-    // odd UA WAFs fingerprint and challenge. Providers that set their own UA
-    // header still override this.
+    // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches.
+    // Providers that set their own UA header still override this.
     private const val NUVIO_DEFAULT_UA = com.hikari.app.net.Http.UA
 
-    private class PooledWebView(val wv: WebView) {
-        val ready = CompletableDeferred<Unit>()
-        var inUse = false
-        /** True once the view has been recycled (destroyed) — release() must
-         *  not return a destroyed view to the pool, or every later provider
-         *  that acquires it runs in a dead WebView and silently hangs. */
-        @Volatile
-        var dead = false
-    }
-
-    /** A provider waiting for a free WebView. Waits are served strictly by
-     *  [priority] (lower number = higher priority), so the providers that
-     *  historically answer get the first views instead of whichever coroutine
-     *  happened to reach the pool first. */
-    private class Waiter(
-        val priority: Int,
-        val deferred: CompletableDeferred<PooledWebView>,
-    )
-
-    private val lock = Any()
-    private val allViews = mutableListOf<PooledWebView>()
-    private val freeViews = mutableListOf<PooledWebView>()
-    private val waiters = mutableListOf<Waiter>()
-    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String>>()
-    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(4)
+    /** Bounds how many providers run their JS engines at once (see above). */
+    private val concurrency = Semaphore(MAX_CONCURRENT)
 
     /** Diagnostic ring buffer of every bridgeFetch outcome (host, status,
      *  size, latency). Shown on the Detail screen when no sources are found so
      *  a failing provider reports exactly what HTTP really returned — a 403
      *  Cloudflare challenge (site blocked the device IP), a network error, or
      *  just slow. Cleared at the start of each sources search. */
-    private val fetchLogEntries = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private val fetchLogEntries = ConcurrentLinkedDeque<String>()
 
-    /** When each provider's JS actually started (right after it acquired a
-     *  WebView) — lets the sources sheet distinguish "cut off while still
-     *  queued behind the pool" from "cut off mid-run", instead of blaming
-     *  every queued provider for being slow. */
+    /** When each provider's JS actually started (right after it acquired an
+     *  engine slot) — lets the sources sheet distinguish "cut off while still
+     *  queued" from "cut off mid-run". */
     private val providerRunStart = ConcurrentHashMap<String, Long>()
 
-    /** Which providers get the pool's scarce WebViews first for this search.
-     *  Set by ContentRepository before the provider jobs launch (sorted nuvio
-     *  target order); a lower number acquires a WebView before a higher one. */
-    private val providerPriority = ConcurrentHashMap<String, Int>()
+    /** Engine scripts, read from assets once and cached (they never change
+     *  while the app runs). */
+    private val bootJs: String by lazy { readAsset("nuvio/boot.js") }
+    private val cheerioJs: String by lazy { readAsset("nuvio/cheerio.js") }
+    private val harnessJs: String by lazy { readAsset("nuvio/harness.js") }
 
-    fun setProviderPriorities(map: Map<String, Int>) {
-        providerPriority.clear()
-        providerPriority.putAll(map)
-    }
-
-    private fun priorityOf(providerId: String): Int = providerPriority[providerId] ?: Int.MAX_VALUE
+    private fun readAsset(path: String): String =
+        com.hikari.app.HikariApp.instance.assets.open(path).bufferedReader().readText()
 
     fun resetRunTracking() {
         providerRunStart.clear()
@@ -134,24 +113,6 @@ object NuvioRuntime {
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(url).host ?: url.take(48) }.getOrDefault(url.take(48))
 
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            // Plain OkHttp, mirroring NuvioMobile's own httpRequestRaw: no
-            // cookie jar, no UA rewriting, transparent gzip via the bridge's
-            // Accept-Encoding stripping. One deliberate divergence from nuvio:
-            // the Cloudflare interceptor stays ON the nuvio path so addons
-            // whose sites sit behind CF (4KHDHub, …) actually resolve — nuvio
-            // itself just fails on those, but the user expects them to play.
-            // It solves hidden-first (nothing pops over the player) and only
-            // shows the verify WebView for interactive challenges.
-            .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
-            .build()
-    }
-
     // ---- Settings persistence (per provider, filesDir/nuvio/settings/<id>.json) ----
 
     fun settingsFile(providerId: String): File {
@@ -171,109 +132,97 @@ object NuvioRuntime {
         runCatching { settingsFile(providerId).takeIf { it.exists() }?.readText() }
             .getOrNull()?.takeIf { it.isNotBlank() } ?: "{}"
 
-    // ---- WebView pool ----
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun createAndInit(context: Context): PooledWebView {
-        val wv = WebView(context.applicationContext)
-        wv.settings.javaScriptEnabled = true
-        wv.settings.domStorageEnabled = true
-        wv.settings.allowFileAccess = true
-        wv.settings.blockNetworkLoads = true
-        wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
-        wv.addJavascriptInterface(NuvioBridge(), "NuvioBridge")
-        val p = PooledWebView(wv)
-        wv.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView, url: String) {
-                if (p.ready.isCompleted) return
-                if (url.startsWith("file://")) {
-                    // runtime.html boots cheerio + crypto-js + harness as plain
-                    // scripts (no evaluateJavascript size ceiling), then sets
-                    // window.__nuvioReady. Confirm it actually ran.
-                    wv.evaluateJavascript(
-                        "window.__nuvioReady === true && typeof window.__nuvioRequire === 'function'"
-                    ) { r ->
-                        if (r?.contains("true") == true) p.ready.complete(Unit)
-                        else p.ready.completeExceptionally(Exception("nuvio runtime failed to boot"))
-                    }
-                } else {
-                    p.ready.completeExceptionally(Exception("nuvio runtime page failed to load: $url"))
-                }
-            }
-        }
-        wv.loadUrl("file:///android_asset/nuvio/runtime.html")
-        return p
-    }
+    // ---- Engine plumbing ----
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
-    /** Grabs a free pooled WebView, creating one up to the pool cap. Suspends
-     *  until one is available (waiting behind every higher-priority provider);
-     *  the WebView is guaranteed ready on return. The free-check and the
-     *  enqueue happen in ONE critical section, so a release that lands between
-     *  them can never strand a free view. All pool bookkeeping happens under
-     *  [lock], so exactly MAX_WEBVIEWS views ever exist at once. */
-    private suspend fun acquire(context: Context, priority: Int): PooledWebView? {
-        val deferred = CompletableDeferred<PooledWebView>()
-        val immediate: PooledWebView? = synchronized(lock) {
-            val free = freeViews.removeLastOrNull()
-            when {
-                free != null && !free.dead -> free
-                else -> {
-                    if (free != null) runCatching { free.wv.destroy() }
-                    if (allViews.size < MAX_WEBVIEWS) {
-                        val np = createAndInit(context)
-                        allViews.add(np)
-                        np
-                    } else {
-                        // Pool full — join the priority queue (lowest number
-                        // first) and wait for a release/recycle to complete us.
-                        waiters.add(Waiter(priority, deferred))
-                        waiters.sortBy { it.priority }
-                        null
-                    }
-                }
-            }
-        }
-        if (immediate != null) {
-            waitReady(immediate)
-            return immediate
-        }
-        try {
-            val p = deferred.await()
-            waitReady(p)
-            return p
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            // Cancelled while still queued (search deadline or early-close) —
-            // drop our waiter so we never receive a view we can no longer use.
-            synchronized(lock) { waiters.removeAll { it.deferred === deferred } }
-            throw e
-        }
+    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(4)
+
+    private val client by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            // Plain OkHttp, mirroring NuvioMobile's own httpRequestRaw: no
+            // cookie jar, no UA rewriting, transparent gzip via the bridge's
+            // Accept-Encoding stripping, and — unlike the 0.3.5x builds — NO
+            // CloudflareVerifier interceptor. nuvio does no CF solving and no
+            // hidden verify WebView; it hands the provider whatever HTTP
+            // returns and the provider either works or reports its own error.
+            // That is exactly the behaviour the user asked to port. Sites that
+            // sit behind an interactive Cloudflare challenge simply won't
+            // resolve (they don't in nuvio either); the fetch log records the
+            // challenge so it's diagnosable.
+            .build()
     }
 
-    private suspend fun waitReady(p: PooledWebView) {
-        if (p.ready.isCompleted) return
-        withTimeoutOrNull(15_000) { p.ready.await() }
-    }
+    /** Boots a fresh engine: native bridges, then boot.js + cheerio.js +
+     *  harness.js + the bridge/register glue. Returns the engine; caller must
+     *  close() it in a finally. */
+    private fun createEngine(deferred: CompletableDeferred<String>): QuickJs {
+        val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
+        qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
 
-    /** Hands a freed WebView to the highest-priority waiting provider, or
-     *  parks it for the next acquire. */
-    private fun release(p: PooledWebView) {
-        var next: CompletableDeferred<PooledWebView>? = null
-        synchronized(lock) {
-            if (p.dead) return
-            p.inUse = false
-            val idx = waiters.indexOfFirst { it.deferred.isActive }
-            if (idx >= 0) next = waiters.removeAt(idx).deferred
-            else freeViews.addLast(p)
+        // Native bridges (synchronous, called from JS on the engine thread).
+        qjs.function("__hikariFetch") { args ->
+            val url = args.getOrNull(0)?.toString() ?: ""
+            val method = args.getOrNull(1)?.toString() ?: "GET"
+            val headersJson = args.getOrNull(2)?.toString() ?: "{}"
+            val body = args.getOrNull(3)?.toString() ?: ""
+            val followRedirects = args.getOrNull(4) as? Boolean ?: true
+            bridgeFetch(url, method, headersJson, body, followRedirects)
         }
-        next?.complete(p)
+        qjs.function("__hikariOnStreamsDone") { args ->
+            val payload = args.getOrNull(1)?.toString() ?: ""
+            deferred.complete(payload)
+            ""
+        }
+        qjs.function("__hikariLog") { args ->
+            val msg = args.getOrNull(0)?.toString() ?: ""
+            android.util.Log.d("Nuvio", msg)
+            ""
+        }
+        NuvioCryptoBridge.bindAll(qjs)
+
+        // 1. Polyfills (console, TextEncoder/Decoder, Blob, URL, AbortController,
+        //    crypto/CryptoJS backed by NuvioCryptoBridge, array/object/string).
+        qjs.evaluate<Any?>(bootJs, "boot.js", false)
+        // 2. The real cheerio bundle, captured as a plain module like nuvio's
+        //    runtime.html did (evaluateJavascript's size ceiling is a non-issue
+        //    here, but booting it as a script keeps the exact same path).
+        qjs.evaluate<Any?>("var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;", "cheerio-head.js", false)
+        qjs.evaluate<Any?>(cheerioJs, "cheerio.js", false)
+        qjs.evaluate<Any?>("globalThis.__nuvioCheerio = module.exports;", "cheerio-tail.js", false)
+        // 3. Provider harness (CommonJS require, fetch, provider loader, shims).
+        qjs.evaluate<Any?>(harnessJs, "harness.js", false)
+        // 4. Glue: register cheerio/crypto-js modules (harness aliases
+        //    cheerio-without-node-native + react-native-cheerio), point the
+        //    harness's fetch at the native bridge, and give __bridge() a stub
+        //    whose onGetStreamsDone/onSettingsDone flow back to the native
+        //    completion. This mirrors exactly what the WebView's
+        //    addJavascriptInterface + runtime.html provided.
+        qjs.evaluate<Any?>(
+            "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
+                "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
+                "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
+                "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
+                "};" +
+                "globalThis.__nuvioBridgeStub = {" +
+                "  onGetStreamsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
+                "  onSettingsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
+                "  fetch: null," +
+                "  log: function (msg) { if (typeof globalThis.__hikariLog === 'function') globalThis.__hikariLog(String(msg)); }" +
+                "};",
+            "register.js", false,
+        )
+        return qjs
     }
 
     // ---- Public API ----
 
-    /** Runs provider.getStreams(...) and returns the raw JSON payload string
-     *  (`{"ok":true,"data":[...]}` or `{"ok":false,"error":"..."}`). */
+    /** Runs provider.getStreams(...) in a fresh engine and returns the raw JSON
+     *  payload string (`{"ok":true,"data":[...]}` or `{"ok":false,"error":"..."}`). */
     suspend fun getStreams(
         context: Context,
         source: String,
@@ -282,116 +231,140 @@ object NuvioRuntime {
         mediaType: String,
         season: Int?,
         episode: Int?,
-    ): String = callWebView(context, source, providerId, priorityOf(providerId)) { wv, cid ->
-        val settings = loadSettings(providerId)
-        val s = if (season == null) "null" else season.toString()
-        val e = if (episode == null) "null" else episode.toString()
-        "window.__nuvioSetSettings($settings);" +
-            "window.__nuvioRunProvider(${quote(source)}, ${quote(providerId)}, ${quote(cid)}, " +
-            "${quote(tmdbId)}, ${quote(mediaType)}, $s, $e);"
-    }
+    ): String {
+        val settings = loadSettings(providerId).ifBlank { "{}" }
+        return runProvider(
+            source = source,
+            providerId = providerId,
+            settings = settings,
+            buildCall = { cid ->
+                val s = if (season == null) "null" else season.toString()
+                val e = if (episode == null) "null" else episode.toString()
+                "(async function () {" +
+                "  try {" +
+                "    globalThis.__nuvioSetSettings($settings);" +
+                "    var provider = globalThis.__nuvioLoadProvider(${quote(source)}, ${quote(providerId)});" +
+                "    var getStreams = provider && typeof provider.getStreams === 'function' ? provider.getStreams : globalThis.getStreams;" +
+                "    if (typeof getStreams !== 'function') { globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: false, error: 'provider has no getStreams export' })); return; }" +
+                "    var result = await getStreams(${quote(tmdbId)}, ${quote(mediaType)}, $s, $e);" +
+                "    if (result === undefined || result === null) result = [];" +
+                "    globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: true, data: result }));" +
+                "  } catch (e) {" +
+                "    globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: false, error: String(e && e.message || e) }));" +
+                "  }" +
+                "})();"
+        },
+    )
 
-    /** Runs provider.onSettings() and returns the layout JSON payload. */
+    /** Runs provider.onSettings() in a fresh engine and returns the layout JSON
+     *  payload. */
     suspend fun getSettingsLayout(
         context: Context,
         source: String,
         providerId: String,
-    ): String = callWebView(context, source, providerId, priorityOf(providerId)) { wv, cid ->
-        val settings = loadSettings(providerId)
-        "window.__nuvioSetSettings($settings);" +
-            "window.__nuvioRunSettings(${quote(source)}, ${quote(providerId)}, ${quote(cid)});"
-    }
+    ): String {
+        val settings = loadSettings(providerId).ifBlank { "{}" }
+        return runProvider(
+            source = source,
+            providerId = providerId,
+            settings = settings,
+            buildCall = { cid ->
+                "(async function () {" +
+                    "  try {" +
+                    "    globalThis.__nuvioSetSettings($settings);" +
+                    "    var provider = globalThis.__nuvioLoadProvider(${quote(source)}, ${quote(providerId)});" +
+                    "    var onSettings = provider && typeof provider.onSettings === 'function' ? provider.onSettings : null;" +
+                "    if (!onSettings) { globalThis.__nuvioBridgeStub.onSettingsDone(${quote(cid)}, JSON.stringify({ ok: true, data: [] })); return; }" +
+                "    var layout = await onSettings();" +
+                "    globalThis.__nuvioBridgeStub.onSettingsDone(${quote(cid)}, JSON.stringify({ ok: true, data: layout || [] }));" +
+                "  } catch (e) {" +
+                "    globalThis.__nuvioBridgeStub.onSettingsDone(${quote(cid)}, JSON.stringify({ ok: false, error: String(e && e.message || e) }));" +
+                "  }" +
+                "})();"
+        },
+    )
 
-    /** True when the JS module loads and exports a usable getStreams function. */
-    suspend fun validate(context: Context, source: String): String =
-        withContext(Dispatchers.Main) {
-            val p = acquire(context, Int.MAX_VALUE) ?: return@withContext "ERR: all nuvio workers busy"
-            try {
-                var result = ""
-                val js = "(function(){ try { var m = window.__nuvioLoadProvider(${quote(source)}, 'validate');" +
-                    " if (m && typeof m.getStreams === 'function') return 'OK'; return 'NO';" +
-                    " } catch(e) { return 'ERR:' + String(e && e.message || e); } })();"
-                p.wv.evaluateJavascript(js) { r ->
-                    // evaluateJavascript returns the JS string JSON-quoted, so a
-                    // verdict of "OK" arrives as "\"OK\"" — strip the quotes or
-                    // installScraper's startsWith("OK") check would reject every
-                    // valid provider.
-                    result = r?.trim()?.removeSurrounding("\"") ?: ""
-                }
-                // evaluateJavascript is async — poll for the callback result.
-                for (i in 0 until 100) {
-                    if (result.isNotBlank()) break
-                    kotlinx.coroutines.delay(100)
-                }
-                return@withContext result.ifBlank { "ERR: validation timed out" }
-            } finally {
-                release(p)
-            }
-        }
-
-    private suspend fun callWebView(
-        context: Context,
+    private suspend fun runProvider(
         source: String,
         providerId: String,
-        priority: Int,
-        buildJs: (WebView, String) -> String,
-    ): String = withContext(Dispatchers.Main) {
-        val p = acquire(context, priority) ?: return@withContext "{\"ok\":false,\"error\":\"all nuvio workers busy\"}"
-        providerRunStart[providerId] = System.currentTimeMillis()
-        val cid = java.util.UUID.randomUUID().toString()
-        val deferred = CompletableDeferred<String>()
-        inFlight[cid] = deferred
-        try {
-            val js = buildJs(p.wv, cid)
-            p.wv.evaluateJavascript(js, null)
-            val payload = withTimeoutOrNull(CALL_TIMEOUT_MS) { deferred.await() }
-            if (payload == null) {
-                // Hung JS — drop this WebView and rebuild on demand.
-                recycle(context, p)
-                "{\"ok\":false,\"error\":\"provider timed out after ${CALL_TIMEOUT_MS / 1000}s\"}"
-            } else {
-                payload
-            }
-        } finally {
-            inFlight.remove(cid)
-            // If THIS coroutine was cancelled (search deadline / early-close /
-            // provider budget), the WebView's JS is still mid-execution and
-            // wedged on a synchronous bridgeFetch — returning it to the pool
-            // poisons the next provider that acquires it. Recycle instead.
-            val cancelled = runCatching {
-                kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive == false
-            }.getOrDefault(false)
-            if (cancelled) recycle(context, p) else release(p)
+        settings: String,
+        buildCall: (String) -> String,
+    ): String {
+        return concurrency.withPermit {
+            withTimeoutOrNull(CALL_TIMEOUT_MS) {
+                withContext(Dispatchers.Default) {
+                    val cid = java.util.UUID.randomUUID().toString()
+                    val deferred = CompletableDeferred<String>()
+                    val qjs = createEngine(deferred)
+                    providerRunStart[providerId] = System.currentTimeMillis()
+                    try {
+                        qjs.evaluate<Any?>(buildCall(cid), "call.js", false)
+                        // evaluate() returns once the async IIFE settles, which
+                        // happens when onGetStreamsDone/onSettingsDone completed
+                        // the deferred above — so await() returns immediately.
+                        deferred.await()
+                    } catch (e: Throwable) {
+                        // Engine-level failure (boot error, native interrupt after
+                        // evaluationTimeoutMillis, coroutine cancellation). The
+                        // provider's own errors already flow through the bridge.
+                        if (deferred.isCompleted) deferred.await()
+                        else "{\"ok\":false,\"error\":${quote(e.message ?: e.javaClass.simpleName)}}"
+                    } finally {
+                        runCatching { qjs.close() }
+                    }
+                }
+            } ?: "{\"ok\":false,\"error\":\"provider timed out after ${CALL_TIMEOUT_MS / 1000}s\"}"
         }
     }
 
-    /** Rebuilds a wedged WebView from scratch (drops it from the pool and
-     *  immediately mints a replacement for the highest-priority waiter, so a
-     *  dead view never shrinks the pool while providers are queued). */
-    private fun recycle(context: Context, p: PooledWebView) {
-        var replacement: Pair<CompletableDeferred<PooledWebView>, PooledWebView>? = null
-        synchronized(lock) {
-            p.dead = true
-            allViews.remove(p)
-            freeViews.remove(p)
-            val idx = waiters.indexOfFirst { it.deferred.isActive }
-            if (idx >= 0) {
-                val w = waiters.removeAt(idx)
-                val np = createAndInit(context)
-                allViews.add(np)
-                replacement = w.deferred to np
+    /** True when the JS module loads and exports a usable getStreams function.
+     *  Must start with "OK"; "ERR:..." carries a detail message; anything else
+     *  means "not a valid nuvio provider". */
+    suspend fun validate(context: Context, source: String): String =
+        withContext(Dispatchers.Default) {
+            val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
+            qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+            try {
+                NuvioCryptoBridge.bindAll(qjs)
+                qjs.function("__hikariFetch") { args ->
+                    bridgeFetch(
+                        args.getOrNull(0)?.toString() ?: "",
+                        args.getOrNull(1)?.toString() ?: "GET",
+                        args.getOrNull(2)?.toString() ?: "{}",
+                        args.getOrNull(3)?.toString() ?: "",
+                        args.getOrNull(4) as? Boolean ?: true,
+                    )
+                }
+                qjs.evaluate<Any?>(bootJs, "boot.js", false)
+                qjs.evaluate<Any?>("var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;", "cheerio-head.js", false)
+                qjs.evaluate<Any?>(cheerioJs, "cheerio.js", false)
+                qjs.evaluate<Any?>("globalThis.__nuvioCheerio = module.exports;", "cheerio-tail.js", false)
+                qjs.evaluate<Any?>(harnessJs, "harness.js", false)
+                qjs.evaluate<Any?>(
+                    "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
+                        "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
+                        "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
+                        "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
+                        "};" +
+                        "globalThis.__nuvioBridgeStub = { onGetStreamsDone: function () {}, onSettingsDone: function () {}, fetch: null, log: function () {} };",
+                    "register.js", false,
+                )
+                val result = qjs.evaluate<String?>(
+                    "(function () { try { var m = globalThis.__nuvioLoadProvider(${quote(source)}, 'validate');" +
+                        " if (m && typeof m.getStreams === 'function') return 'OK'; return 'NO';" +
+                        " } catch (e) { return 'ERR:' + String(e && e.message || e); } })();",
+                    "validate.js", false,
+                )
+                result?.trim()?.takeIf { it.isNotBlank() } ?: "NO"
+            } catch (e: Throwable) {
+                "ERR: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                runCatching { qjs.close() }
             }
         }
-        runCatching { p.wv.destroy() }
-        replacement?.let { (d, np) -> d.complete(np) }
-    }
 
-    fun onDone(cid: String, payload: String) {
-        inFlight.remove(cid)?.complete(payload)
-    }
-
-    /** Synchronous fetch bridge invoked from the WebView's JavaBridge thread.
-     *  Returns a JSON string the harness parses into a fetch-like response. */
+    /** Synchronous fetch bridge invoked from JS on the engine thread. Returns a
+     *  JSON string the harness parses into a fetch-like response. */
     fun bridgeFetch(
         url: String,
         method: String,
@@ -402,13 +375,6 @@ object NuvioRuntime {
         val started = System.currentTimeMillis()
         val m = method.uppercase()
         val task = fetchExecutor.submit<JSONObject> {
-            // Nuvio searches run in the background while the user waits — a
-            // Cloudflare challenge must never pop the visible "verify" WebView
-            // over the app. The hidden off-screen solver still gets its chance
-            // (it's what mints 4KHDHub's clearance); if it fails we just hand
-            // the provider the challenge response and record it in the fetch
-            // log instead of flashing a scary window at the user.
-            com.hikari.app.net.CloudflareVerifier.setSkipVisible(true)
             try {
                 val builder = Request.Builder()
                     .url(url)
@@ -477,9 +443,7 @@ object NuvioRuntime {
                     }
                     out.put("headers", hdrs)
                     // Honor the response charset (nuvio: contentType().charset()
-                    // ?: UTF-8). Hikari decoded every body as UTF-8, which
-                    // mojibake'd latin-1/iso-8859-1 pages into garbage and made
-                    // providers miss their JSON/HTML markers.
+                    // ?: UTF-8).
                     val charset = runCatching {
                         val ct = r.headers["Content-Type"] ?: ""
                         val enc = ct.substringAfter("charset=", "").trim().trim('"')
@@ -502,8 +466,6 @@ object NuvioRuntime {
                 out.put("bodyBase64", "")
                 out.put("error", e.message ?: "network error")
                 return@submit out
-            } finally {
-                com.hikari.app.net.CloudflareVerifier.setSkipVisible(false)
             }
         }
         return try {
@@ -512,27 +474,6 @@ object NuvioRuntime {
             fetchLogLine(hostOf(url), m, "TIMEOUT", 0, System.currentTimeMillis() - started, " fetch did not finish in ${FETCH_TIMEOUT_MS / 1000}s")
             "{\"ok\":false,\"status\":0,\"statusText\":\"fetch timed out\",\"url\":${quote(url)}," +
                 "\"headers\":{},\"body\":\"\",\"bodyBase64\":\"\"}"
-        }
-    }
-
-    private class NuvioBridge {
-        @JavascriptInterface
-        fun fetch(url: String, method: String, headersJson: String, body: String, followRedirects: Boolean): String =
-            NuvioRuntime.bridgeFetch(url, method, headersJson, body, followRedirects)
-
-        @JavascriptInterface
-        fun onGetStreamsDone(cid: String, payload: String) {
-            NuvioRuntime.onDone(cid, payload)
-        }
-
-        @JavascriptInterface
-        fun onSettingsDone(cid: String, payload: String) {
-            NuvioRuntime.onDone(cid, payload)
-        }
-
-        @JavascriptInterface
-        fun log(msg: String) {
-            android.util.Log.d("Nuvio", msg)
         }
     }
 }
