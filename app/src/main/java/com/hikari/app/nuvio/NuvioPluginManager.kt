@@ -70,10 +70,8 @@ object NuvioPluginManager {
             if (name.isBlank() || !SEED_PROVIDERS.any { name.equals(it, true) }) continue
             val filename = o.optString("filename")
             if (filename.isBlank()) continue
-            val codeUrl = if (filename.startsWith("http")) filename else "$base/$filename"
-            val bytes = runCatching {
-                Http.fetchBytesRobust(codeUrl, mapOf("User-Agent" to Http.NUVIO_UA))
-            }.getOrNull() ?: continue
+            val codeUrl = "$base/$filename"
+            val bytes = runCatching { Http.fetchBytesRobust(codeUrl) }.getOrNull() ?: continue
             val rawName = filename.substringAfterLast('/')
             runCatching { installScraper(context, bytes, rawName, codeUrl, o.optString("logo").ifBlank { null }) }
         }
@@ -167,9 +165,13 @@ object NuvioPluginManager {
         return Cs3RepoPlugin(
             name = name,
             description = o.optString("description"),
-            // Some manifests (e.g. Eclipsia) list absolute URLs as filenames —
-            // use them as-is instead of gluing them onto the repo base.
-            url = if (filename.startsWith("http")) filename else "$baseUrl/$filename",
+            // Some manifests (e.g. Eclipsia) put a FULL absolute URL in
+            // `filename` rather than a relative path — joining that with
+            // baseUrl would produce a garbage double URL whose 404 body
+            // ("Not found.") fails validation with "expecting ';'". Use the
+            // filename as-is when it's already absolute.
+            url = if (filename.startsWith("http://") || filename.startsWith("https://")) filename
+            else "$baseUrl/$filename",
             iconUrl = o.optString("logo").ifBlank { null },
             version = version,
             tvTypes = types,
