@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -179,7 +180,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (showBar) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    // Slimmer bar so the five tabs fit comfortably and every
+                    // label shows in full on narrow phones.
+                    modifier = Modifier.height(62.dp),
+                ) {
                     Tabs.forEach { tab ->
                         NavigationBarItem(
                             selected = tabRoute == tab.route,
@@ -194,14 +200,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                             label = {
                                 Text(
                                     tab.label,
-                                    // Force the label onto a single line — the
-                                    // default wraps long tab names (e.g.
-                                    // "Extensions") onto a second line on
-                                    // narrow phones.
+                                    // Force the label onto a single line with no
+                                    // ellipsis — the default wraps long tab
+                                    // names (e.g. "Extensions") onto a second
+                                    // line on narrow phones.
                                     maxLines = 1,
                                     softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontSize = 11.sp,
+                                    overflow = TextOverflow.Clip,
+                                    fontSize = 9.sp,
                                 )
                             }
                         )
