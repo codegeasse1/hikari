@@ -62,15 +62,16 @@ jobs:
       - name: Configure repo
         run: |
           PASS=$(cat fdroid/signing/keystore.pass)
-          cat > fdroid/config.py <<EOF
-          repo_url = "https://codegeasse1.github.io/hikari/fdroid/repo"
-          repo_name = "Hikari"
-          repo_description = "Hikari - a universal streaming app: Stremio addons, universal scrapers, CloudStream .cs3 plugins and more. Modern Material 3 UI."
-          keystore = "signing/keystore.p12"
-          keystorepass = "$PASS"
-          keyalias = "hikari"
-          keypass = "$PASS"
-          archive_older = 0
+          cat > fdroid/config.yml <<EOF
+          repo_url: "https://codegeasse1.github.io/hikari/fdroid/repo"
+          repo_name: "Hikari"
+          repo_description: "Hikari - a universal streaming app: Stremio addons, universal scrapers, CloudStream .cs3 plugins and more. Modern Material 3 UI."
+          repo_icon: ""
+          keystore: "signing/keystore.p12"
+          keystorepass: "$PASS"
+          keyalias: "hikari"
+          keypass: "$PASS"
+          archive_older: 0
           EOF
 
       - name: Generate F-Droid index
