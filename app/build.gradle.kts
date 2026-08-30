@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 62
-        versionName = "0.3.59"
+        versionCode = 63
+        versionName = "0.3.60"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -101,6 +101,10 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(files(cloudstreamCleanJar))
+    // nuvio provider runtime — dokar quickjs-kt (the exact engine the real
+    // NuvioMobile app bundles) vendored as an AAR in app/libs/. Runs provider
+    // JS in an embedded QuickJS VM instead of a WebView.
+    implementation(files("libs/quickjs-kt-android-1.0.5-nuvio.aar"))
     // TorrServer — the Go torrent engine CloudStream's own Torrent object uses.
     // Lets Stremio torrent addons (Torrentio, Comet, MediaFusion…) actually play:
     // magnet/infoHash streams become HLS served from a local TorrServer process.
