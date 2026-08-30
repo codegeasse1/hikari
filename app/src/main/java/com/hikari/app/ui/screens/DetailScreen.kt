@@ -217,7 +217,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  sources" for a movie that plays fine on its own. */
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<List<StreamSource>>>()
 
-    private suspend fun resolveStreams(item: MediaItem, ep: Episode?): List<StreamSource> {
+    private suspend fun resolveStreams(
+        item: MediaItem,
+        ep: Episode?,
+        onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+    ): List<StreamSource> {
         val key = cacheKey(item, ep)
         streamCache[key]?.let { return it }
         val existing = inflight[key]
@@ -227,7 +231,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         if (prev != null) return prev.await()
         try {
             val result = withContext(Dispatchers.IO) {
-                runCatching { repo.streamsFor(item, ep) }.getOrDefault(emptyList())
+                runCatching { repo.streamsFor(item, ep, onProgress) }.getOrDefault(emptyList())
             }
             streamCache[key] = result
             recordOutcome(result, item)
@@ -257,16 +261,24 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _streamsReady.value = true
             return
         }
-        resolveStreams(item, ep)
+        // Set "ready" as soon as the FIRST source arrives (not only after every
+        // provider has been searched), so the Play button lights up early while
+        // the slower providers keep adding servers in the background.
+        resolveStreams(item, ep) { partial ->
+            if (partial.isNotEmpty()) _streamsReady.value = true
+        }
         _streamsReady.value = true
     }
 
     private fun cacheKey(item: MediaItem, ep: Episode?): String =
         item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
 
-    suspend fun getStreams(episode: Episode?): List<StreamSource> {
+    suspend fun getStreams(
+        episode: Episode?,
+        onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+    ): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
-        return resolveStreams(m, episode)
+        return resolveStreams(m, episode, onProgress)
     }
 }
 
@@ -377,18 +389,25 @@ fun DetailScreen(
         loadingStreams = true
         showSheet = true
         scope.launch {
-            streams = vm.getStreams(ep)
+            // Progressively show servers as each provider answers, then
+            // auto-play once every provider has finished (or the search
+            // deadline hits) so the player's "Select server" dialog carries
+            // the complete list from ALL installed nuvio providers, not just
+            // whichever one answered first.
+            val final = vm.getStreams(ep) { partial ->
+                if (partial.isNotEmpty()) streams = partial
+            }
+            streams = final
             loadingStreams = false
             // Player-able sources: direct URLs AND torrents (the player boots
             // the bundled TorrServer engine). YouTube/external sources open in
             // the web view instead.
-            val playable = streams.filter { s ->
+            val playable = final.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
-            // Auto-play as soon as any playable source exists (fastest in the
-            // list). All sources ride along in the player payload, so the
-            // player's own "Select server" dialog can switch between them mid-
-            // playback — the same as earlier builds.
+            // Auto-play as soon as any playable source exists. All sources ride
+            // along in the player payload, so the player's own "Select server"
+            // dialog can switch between them mid-playback.
             if (playable.isNotEmpty()) {
                 showSheet = false
                 launchPlayer(playable, ep)
@@ -620,7 +639,7 @@ fun DetailScreen(
             )
             Spacer(Modifier.height(8.dp))
             when {
-                loadingStreams -> Box(
+                streams.isEmpty() && loadingStreams -> Box(
                     Modifier
                         .fillMaxWidth()
                         .padding(24.dp),
@@ -693,11 +712,12 @@ fun DetailScreen(
                         }
                     }
                 }
-                else -> LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    itemsIndexed(streams) { index, s ->
+                else -> Column(Modifier.fillMaxWidth()) {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 400.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        itemsIndexed(streams) { index, s ->
                         val enabled = when {
                             s.ytId != null -> true
                             s.externalUrl -> s.url.isNotBlank()
@@ -749,11 +769,38 @@ fun DetailScreen(
                                         }
                                         else -> {
                                             showSheet = false
-                                            launchPlayer(listOf(s), selectedEp)
+                                            // Play the tapped server first, but carry
+                                            // every other found server in the payload so
+                                            // the player's "Select server" dialog lists
+                                            // them all.
+                                            val key = s.infoHash ?: s.url
+                                            val others = streams.filter { o ->
+                                                (o.infoHash ?: o.url) != key &&
+                                                    o.ytId == null && !o.externalUrl &&
+                                                    (o.url.isNotBlank() || o.isTorrent)
+                                            }
+                                            launchPlayer(listOf(s) + others, selectedEp)
                                         }
                                     }
                                 }
                         )
+                    }
+                    }
+                    if (loadingStreams) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Searching for more servers…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
                 }
