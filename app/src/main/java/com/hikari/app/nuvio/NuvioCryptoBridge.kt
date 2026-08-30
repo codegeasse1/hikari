@@ -1,6 +1,7 @@
 package com.hikari.app.nuvio
 
 import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.binding.function
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
