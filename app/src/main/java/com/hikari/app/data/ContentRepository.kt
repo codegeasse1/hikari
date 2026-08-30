@@ -209,11 +209,9 @@ class ContentRepository(private val manager: ProviderManager) {
             // Nuvio providers resolve purely from a TMDB id, so they can be
             // asked about ANY item we can map to TMDB — they add independent
             // source servers alongside the origin. Cheap pre-filter first,
-            // then sorted so the trusted providers are first in line for the
-            // 3-WebView pool. The same ordering is handed to the pool itself
-            // so acquisition follows it exactly (not whichever coroutine
-            // happens to reach the pool first).
-            val orderedNuvio = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+            // then sorted so the historically-fast providers get first shot
+            // at the parallel engine slots (NUVIO_PRIORITY order).
+            val nuvioTargets = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
                     .sortedBy { p ->
                         val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
@@ -222,10 +220,6 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 emptyList()
             }
-            com.hikari.app.nuvio.NuvioRuntime.setProviderPriorities(
-                orderedNuvio.mapIndexed { i, p -> p.config.id to i }.toMap()
-            )
-            val nuvioTargets = orderedNuvio
             val targets = primaryTargets + nuvioTargets
             if (targets.isEmpty()) return@withContext emptyList()
 
@@ -243,30 +237,29 @@ class ContentRepository(private val manager: ProviderManager) {
                         val startedJob = System.currentTimeMillis()
                         try {
                             if (isNuvio) {
-                                // Nuvio providers share a 3-WebView pool, so
-                                // most of them queue behind the pool instead of
-                                // running instantly. The nuvio runtime applies
-                                // its own per-provider timeout AFTER it acquires
-                                // a WebView — if this job's budget also covered
-                                // the queue wait, every queued provider would
-                                // report "cut off after 25s" without ever having
-                                // run (exactly what 0.3.56 did to 8 of 13).
-                                // Bound these jobs by the overall deadline; the
-                                // runtime's CALL budget bounds real work.
-                                p.getStreams(item, episode)
+                                // Nuvio providers run in fresh QuickJS engines
+                                // and share a small concurrency cap, so some
+                                // queue behind the slots instead of running
+                                // instantly. The runtime applies its own 45s
+                                // per-provider timeout AFTER a slot is acquired
+                                // — the queue wait must not eat a provider's
+                                // budget. Bound these jobs by the overall
+                                // deadline; the runtime's CALL budget bounds
+                                // real work.
+                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
                             } else {
                                 withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             if (isNuvio) {
                                 // Deadline or early-close cancelled us. Say
-                                // whether we actually got a WebView and ran.
+                                // whether we actually got an engine slot and ran.
                                 val ran = com.hikari.app.nuvio.NuvioRuntime.providerStartedAt(p.config.id)
                                 com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] =
                                     if (ran != null)
                                         "✗ cut off after ${(System.currentTimeMillis() - startedJob) / 1000}s (still searching)"
                                     else
-                                        "✗ never got a WebView — search ended before it could run"
+                                        "✗ search ended before it could run (still waiting for an engine slot)"
                             }
                             throw e
                         }
