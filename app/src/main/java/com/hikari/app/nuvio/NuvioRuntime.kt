@@ -160,7 +160,7 @@ object NuvioRuntime {
     /** Boots a fresh engine: native bridges, then boot.js + cheerio.js +
      *  harness.js + the bridge/register glue. Returns the engine; caller must
      *  close() it in a finally. */
-    private fun createEngine(deferred: CompletableDeferred<String>): QuickJs {
+    private suspend fun createEngine(deferred: CompletableDeferred<String>): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
 
@@ -255,6 +255,7 @@ object NuvioRuntime {
                 "})();"
         },
     )
+    }
 
     /** Runs provider.onSettings() in a fresh engine and returns the layout JSON
      *  payload. */
@@ -283,6 +284,7 @@ object NuvioRuntime {
                 "})();"
         },
     )
+    }
 
     private suspend fun runProvider(
         source: String,
