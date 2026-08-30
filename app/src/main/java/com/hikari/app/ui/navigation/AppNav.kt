@@ -26,6 +26,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -189,7 +191,19 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                                 }
                             },
                             icon = { Icon(tab.icon, contentDescription = null) },
-                            label = { Text(tab.label) }
+                            label = {
+                                Text(
+                                    tab.label,
+                                    // Force the label onto a single line — the
+                                    // default wraps long tab names (e.g.
+                                    // "Extensions") onto a second line on
+                                    // narrow phones.
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 11.sp,
+                                )
+                            }
                         )
                     }
                 }
