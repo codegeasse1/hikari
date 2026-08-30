@@ -613,7 +613,25 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
         // Already a direct raw URL — fetch as-is, no variant guessing.
-        if (t.contains("raw.githubusercontent.com") || t.endsWith("/$file")) return emptyList()
+        if (t.contains("raw.githubusercontent.com")) return emptyList()
+        // A raw URL on a Gitea/Forgejo host: fetch the pasted raw link first,
+        // then the host's REST API mirror (/api/v1/repos/…/raw/…) — the API
+        // endpoint answers 200 where the raw path's WAF sometimes 403s (codeberg).
+        if (t.endsWith("/$file")) {
+            val gr = Regex("https?://([^/]+)/([^/]+)/([^/]+)/raw/(?:branch/)?([^/]+)/(.+)$").find(t)
+            if (gr != null) {
+                val host = gr.groupValues[1]
+                val owner = gr.groupValues[2]
+                val repo = gr.groupValues[3]
+                val branch = gr.groupValues[4]
+                val path = gr.groupValues[5]
+                return listOf(
+                    t,
+                    "https://$host/api/v1/repos/$owner/$repo/raw/$path?ref=$branch",
+                )
+            }
+            return emptyList()
+        }
         val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
         if (gh != null) {
             val owner = gh.groupValues[1]
