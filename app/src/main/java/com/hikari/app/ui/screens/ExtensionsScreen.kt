@@ -529,8 +529,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun installNuvioPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
-            val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
-                ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
+            val bytes = withTimeoutOrNull(90_000) {
+                Http.fetchBytesRobust(plugin.url, mapOf("User-Agent" to Http.NUVIO_UA))
+            } ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
             val hash = plugin.fileHash
             if (hash != null && hash.startsWith("sha256-")) {
                 val expected = hash.removePrefix("sha256-").lowercase()
@@ -573,16 +574,20 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  manifest.json for Nuvio repos — trying the pasted URL first and then the
      *  raw-GitHub variants for `github.com/o/r` links users commonly paste (the
      *  HTML page would never parse as JSON). Remembers which variant succeeded. */
-    private fun fetchRepoRaw(url: String, file: String = "repo.json"): Result<String> {
+    private fun fetchRepoRaw(url: String, file: String = "repo.json", ua: String? = null): Result<String> {
+        // Nuvio manifests/scrapers live on Codeberg, which 403s the shared
+        // desktop-Chrome UA but serves the nuvio app's own UA fine — override
+        // for nuvio repos (mirrors the real nuvio app's client).
+        val headers = if (ua != null) mapOf("User-Agent" to ua) else emptyMap()
         val variants = repoUrlVariants(url, file)
         if (variants.isEmpty()) {
             lastGoodRepoUrl = url
-            return Http.fetchStringRobust(url).map { text ->
+            return Http.fetchStringRobust(url, headers).map { text ->
                 if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
             }
         }
         for (candidate in variants) {
-            val r = Http.fetchStringRobust(candidate)
+            val r = Http.fetchStringRobust(candidate, headers)
             if (r.isSuccess) {
                 val text = r.getOrNull() ?: continue
                 if (looksLikeHtml(text)) continue
@@ -592,7 +597,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         // last resort: the pasted URL as-is (a non-main/mixed-branch manifest)
         lastGoodRepoUrl = url
-        return Http.fetchStringRobust(url).map { text ->
+        return Http.fetchStringRobust(url, headers).map { text ->
             if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
         }
     }
@@ -613,25 +618,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
         // Already a direct raw URL — fetch as-is, no variant guessing.
-        if (t.contains("raw.githubusercontent.com")) return emptyList()
-        // A raw URL on a Gitea/Forgejo host: fetch the pasted raw link first,
-        // then the host's REST API mirror (/api/v1/repos/…/raw/…) — the API
-        // endpoint answers 200 where the raw path's WAF sometimes 403s (codeberg).
-        if (t.endsWith("/$file")) {
-            val gr = Regex("https?://([^/]+)/([^/]+)/([^/]+)/raw/(?:branch/)?([^/]+)/(.+)$").find(t)
-            if (gr != null) {
-                val host = gr.groupValues[1]
-                val owner = gr.groupValues[2]
-                val repo = gr.groupValues[3]
-                val branch = gr.groupValues[4]
-                val path = gr.groupValues[5]
-                return listOf(
-                    t,
-                    "https://$host/api/v1/repos/$owner/$repo/raw/$path?ref=$branch",
-                )
-            }
-            return emptyList()
-        }
+        if (t.contains("raw.githubusercontent.com") || t.endsWith("/$file")) return emptyList()
         val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
         if (gh != null) {
             val owner = gh.groupValues[1]
@@ -668,7 +655,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val file = if (kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
         return withContext(Dispatchers.IO) {
             runCatching {
-                val text = fetchRepoRaw(url, file).getOrElse { throw it }
+                val text = fetchRepoRaw(url, file, ua = if (kind == RepoKind.NUVIO) Http.NUVIO_UA else null)
+                    .getOrElse { throw it }
                 val obj = runCatching { JSONObject(text) }.getOrElse {
                     throw Exception("Invalid $file: ${it.message}")
                 }
@@ -734,7 +722,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
         val file = if (repo.kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
-        val text = fetchRepoRaw(repo.url, file)
+        val text = fetchRepoRaw(
+            repo.url, file, ua = if (repo.kind == RepoKind.NUVIO) Http.NUVIO_UA else null
+        )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = runCatching { JSONObject(text) }.getOrElse {
             throw Exception("Invalid $file: ${it.message}")
