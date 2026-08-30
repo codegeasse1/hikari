@@ -18,213 +18,277 @@
   var SHIM_UTIL = "function inherits(ctor, superCtor) {\n  if (superCtor) {\n    ctor.super_ = superCtor;\n    ctor.prototype = Object.create(superCtor.prototype, {\n      constructor: { value: ctor, enumerable: false, writable: true, configurable: true }\n    });\n  }\n}\n\nfunction deprecate(fn, msg) { return fn; }\n\nfunction inspect(value, opts) {\n  if (value === null || value === undefined) return String(value);\n  if (typeof value === 'string') return \"'\" + value + \"'\";\n  if (typeof value === 'function') return '[Function]';\n  if (Array.isArray(value)) return '[' + value.map(function (v) { return inspect(v, opts); }).join(', ') + ']';\n  if (typeof value === 'object') {\n    var depth = (opts && opts.depth != null) ? opts.depth : 2;\n    if (depth <= 0) return '[' + (value.constructor && value.constructor.name || 'Object') + ']';\n    var keys = Object.keys(value);\n    var parts = keys.slice(0, 8).map(function (k) {\n      return k + ': ' + inspect(value[k], { depth: depth - 1 });\n    });\n    if (keys.length > 8) parts.push('... ' + (keys.length - 8) + ' more items');\n    return '{ ' + parts.join(', ') + ' }';\n  }\n  return String(value);\n}\n\nfunction format(f) {\n  var args = Array.prototype.slice.call(arguments, 1);\n  if (typeof f !== 'string') {\n    return args.map(function (a) { return inspect(a); }).join(' ');\n  }\n  return f.replace(/%[sdjif%]/g, function (tok) {\n    if (tok === '%%') return '%';\n    var a = args.shift();\n    if (a === undefined) return tok;\n    if (tok === '%d') return String(Math.round(Number(a)));\n    if (tok === '%j') return JSON.stringify(a);\n    if (tok === '%i') return String(parseInt(a, 10));\n    return String(a);\n  });\n}\n\nfunction isArray(v) { return Array.isArray(v); }\nfunction isBoolean(v) { return typeof v === 'boolean'; }\nfunction isNull(v) { return v === null; }\nfunction isNullOrUndefined(v) { return v == null; }\nfunction isNumber(v) { return typeof v === 'number'; }\nfunction isString(v) { return typeof v === 'string'; }\nfunction isSymbol(v) { return typeof v === 'symbol'; }\nfunction isUndefined(v) { return typeof v === 'undefined'; }\nfunction isObject(v) { return v !== null && typeof v === 'object'; }\nfunction isFunction(v) { return typeof v === 'function'; }\nfunction isRegExp(v) { return v instanceof RegExp; }\nfunction isDate(v) { return v instanceof Date; }\nfunction isError(v) { return v instanceof Error; }\nfunction isBuffer(b) { return !!(b && b._isBuffer); }\n\nmodule.exports = {\n  inherits: inherits,\n  deprecate: deprecate,\n  inspect: inspect,\n  format: format,\n  isArray: isArray,\n  isBoolean: isBoolean,\n  isNull: isNull,\n  isNullOrUndefined: isNullOrUndefined,\n  isNumber: isNumber,\n  isString: isString,\n  isSymbol: isSymbol,\n  isUndefined: isUndefined,\n  isObject: isObject,\n  isFunction: isFunction,\n  isRegExp: isRegExp,\n  isDate: isDate,\n  isError: isError,\n  isBuffer: isBuffer\n};\n";
   var SHIM_EVENTS = "function EventEmitter() {\n  this._events = Object.create(null);\n  this._eventsCount = 0;\n  this._maxListeners = undefined;\n}\nEventEmitter.prototype._maxListenersDefault = 10;\nEventEmitter.defaultMaxListeners = 10;\n\nEventEmitter.prototype.setMaxListeners = function (n) {\n  this._maxListeners = n;\n  return this;\n};\nEventEmitter.prototype.getMaxListeners = function () {\n  return this._maxListeners === undefined ? EventEmitter.defaultMaxListeners : this._maxListeners;\n};\n\nEventEmitter.prototype.eventNames = function () {\n  return Object.keys(this._events);\n};\n\nfunction _getListeners(emitter, type) {\n  return emitter._events[type] || (emitter._events[type] = []);\n}\n\nEventEmitter.prototype.listeners = function (type) {\n  var arr = this._events[type];\n  return arr ? arr.slice() : [];\n};\nEventEmitter.prototype.rawListeners = EventEmitter.prototype.listeners;\nEventEmitter.prototype.listenerCount = function (type) {\n  var arr = this._events[type];\n  return arr ? arr.length : 0;\n};\nEventEmitter.listenerCount = function (emitter, type) {\n  return emitter.listenerCount(type);\n};\n\nfunction _addListener(emitter, type, fn, prepend) {\n  if (typeof fn !== 'function') throw new TypeError('listener must be a function');\n  var arr = _getListeners(emitter, type);\n  if (prepend) arr.unshift(fn); else arr.push(fn);\n  emitter._eventsCount = Object.keys(emitter._events).length;\n  return emitter;\n}\n\nEventEmitter.prototype.addListener = function (type, fn) { return _addListener(this, type, fn, false); };\nEventEmitter.prototype.on = EventEmitter.prototype.addListener;\nEventEmitter.prototype.prependListener = function (type, fn) { return _addListener(this, type, fn, true); };\nEventEmitter.prototype.once = function (type, fn) {\n  var self = this;\n  function g() {\n    self.removeListener(type, g);\n    fn.apply(this, arguments);\n  }\n  g.listener = fn;\n  _addListener(this, type, g, false);\n  return this;\n};\nEventEmitter.prototype.prependOnceListener = function (type, fn) {\n  var self = this;\n  function g() {\n    self.removeListener(type, g);\n    fn.apply(this, arguments);\n  }\n  g.listener = fn;\n  _addListener(this, type, g, true);\n  return this;\n};\n\nEventEmitter.prototype.removeListener = function (type, fn) {\n  var arr = this._events[type];\n  if (!arr) return this;\n  for (var i = arr.length - 1; i >= 0; i--) {\n    if (arr[i] === fn || (arr[i].listener && arr[i].listener === fn)) {\n      arr.splice(i, 1);\n      break;\n    }\n  }\n  if (arr.length === 0) delete this._events[type];\n  this._eventsCount = Object.keys(this._events).length;\n  return this;\n};\nEventEmitter.prototype.off = EventEmitter.prototype.removeListener;\n\nEventEmitter.prototype.removeAllListeners = function (type) {\n  if (type === undefined) { this._events = Object.create(null); }\n  else { delete this._events[type]; }\n  this._eventsCount = Object.keys(this._events).length;\n  return this;\n};\n\nEventEmitter.prototype.emit = function (type) {\n  var arr = this._events[type];\n  if (!arr || arr.length === 0) return false;\n  var args = Array.prototype.slice.call(arguments, 1);\n  var copy = arr.slice();\n  for (var i = 0; i < copy.length; i++) {\n    try { copy[i].apply(this, args); }\n    catch (e) {\n      if (type === 'error') throw e;\n      if (typeof console !== 'undefined' && console.error) console.error('Unhandled error in event listener:', e);\n    }\n  }\n  return true;\n};\n\nEventEmitter.once = function (emitter, name) {\n  return new Promise(function (resolve, reject) {\n    function errorListener(err) { emitter.removeListener(name, good); reject(err); }\n    function good() {\n      emitter.removeListener('error', errorListener);\n      resolve(Array.prototype.slice.call(arguments));\n    }\n    emitter.once(name, good);\n    emitter.once('error', errorListener);\n  });\n};\n\nmodule.exports = EventEmitter;\nmodule.exports.EventEmitter = EventEmitter;\nmodule.exports.once = EventEmitter.once;\n";
 
-  // ---- ESM -> CommonJS ---------------------------------------------------
-  // A few nuvio providers are authored as ES modules (import/export) instead
-  // of the CommonJS (require/module.exports) the runtime expects. QuickJS (and
-  // a plain new Function) parse import/export as a SyntaxError, which made
-  // those providers fail to install with "Not a valid nuvio provider: Unexpected
-  // identifier ...". We rewrite the common top-level ESM statement shapes into
-  // their CJS equivalents before evaluating. Kept narrow: only statements that
-  // START a line with import/export are touched, strings/templates/comments are
-  // skipped, and anything unrecognized is left as the original text (the
-  // provider then fails with its real error, not a mangled one).
-  function __esmToCjs(src) {
-    if (src.indexOf('import') < 0 && src.indexOf('export') < 0) return src;
-    var out = [];
-    var len = src.length;
-    var i = 0;
-    var cut = 0;
-    var state = 'code';
-    var quote = '';
-    var esc = false;
-    var stmtType = '';
-    var stmtStart = 0;
-    var stmtLead = '';
-    var depth = 0;
-    var ownsBrace = false;
-
-    function flushStmt() {
-      var text = src.slice(stmtStart, i);
-      var res = stmtType === 'import' ? __esmImport(text) : __esmExport(text);
-      if (res) out.push(stmtLead + res);
-      else out.push(src.slice(stmtStart - stmtLead.length, i));
-      stmtType = '';
-      cut = i;
+  // ---- ESM -> CJS: some nuvio providers ship as ES modules (import/export)
+  // even though evalModule evaluates CommonJS. __nuvioCjsify rewrites those
+  // statements into their CJS equivalents first (this is what let AllWish and
+  // other phisher/eclipsia providers that use `import cheerio from ...` load).
+  function __nuvioSkipWs(src, k) {
+    var n = src.length;
+    while (k < n) {
+      var c = src[k];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { k++; continue; }
+      if (c === '/' && src[k + 1] === '/') { var j = src.indexOf('\n', k); k = j < 0 ? n : j; continue; }
+      if (c === '/' && src[k + 1] === '*') { var j2 = src.indexOf('*/', k + 2); k = j2 < 0 ? n : j2 + 2; continue; }
+      break;
     }
-
-    while (i < len) {
-      var c = src.charAt(i);
-      var nxt = src.charAt(i + 1);
-      if (state === 'code') {
-        if (c === '/' && nxt === '/') { state = 'linecomment'; i += 2; continue; }
-        if (c === '/' && nxt === '*') { state = 'blockcomment'; i += 2; continue; }
-        if (c === '"' || c === "'" || c === '`') {
-          state = c === '`' ? 'template' : 'string';
-          quote = c; esc = false; i += 1; continue;
-        }
-        if (c === '\n' || i === 0) {
-          var j = i;
-          if (c === '\n') j = i + 1;
-          while (j < len && (src.charAt(j) === ' ' || src.charAt(j) === '\t')) j++;
-          var isImp = src.slice(j, j + 6) === 'import' && !/[A-Za-z0-9_$]/.test(src.charAt(j + 6) || '');
-          var isExp = src.slice(j, j + 6) === 'export' && !/[A-Za-z0-9_$]/.test(src.charAt(j + 6) || '');
-          if ((isImp || isExp) && stmtType === '') {
-            out.push(src.slice(cut, i));
-            cut = i;
-            stmtType = isImp ? 'import' : 'export';
-            stmtStart = j;
-            stmtLead = src.slice(i, j);
-            depth = 0;
-            ownsBrace = false;
-            i = j + 6;
-            continue;
-          }
-        }
-        if (stmtType !== '') {
-          if (c === '{' || c === '(' || c === '[') {
-            if (c === '{' && depth === 0) ownsBrace = true;
-            depth++;
-          } else if (c === '}' || c === ')' || c === ']') {
-            depth--;
-            if (depth === 0 && c === '}' && ownsBrace) {
-              var stmtText = src.slice(stmtStart, i);
-              var hasFnKw = /\b(?:function|class)\b/.test(stmtText);
-              var k = i + 1;
-              while (k < len && (src.charAt(k) === ' ' || src.charAt(k) === '\t')) k++;
-              var after = k < len ? src.charAt(k) : '';
-              if (hasFnKw || after !== 'f') {
-                i += 1;
-                flushStmt();
-                continue;
-              }
-              ownsBrace = false;
-              depth = 0;
-            } else if (depth < 0) depth = 0;
-          } else if (c === ';' && depth === 0 && !ownsBrace) {
-            flushStmt();
-            cut = i + 1;
-          } else if (c === '"' || c === "'" || c === '`') {
-            state = c === '`' ? 'template' : 'string';
-            quote = c; esc = false;
-          }
-        }
-        i += 1;
-        continue;
-      }
-      if (state === 'linecomment') {
-        if (c === '\n') state = 'code';
-        i += 1; continue;
-      }
-      if (state === 'blockcomment') {
-        if (c === '*' && nxt === '/') { state = 'code'; i += 2; }
-        else i += 1;
-        continue;
-      }
-      if (state === 'template') {
-        if (c === '\\') { i += 2; continue; }
-        if (c === '`') state = 'code';
-        i += 1; continue;
-      }
-      if (state === 'string') {
-        if (esc) { esc = false; i += 1; continue; }
-        if (c === '\\') { esc = true; i += 1; continue; }
-        if (c === quote) state = 'code';
-        i += 1; continue;
-      }
-      i += 1;
-    }
-    if (stmtType !== '') flushStmt();
-    if (cut < len) out.push(src.slice(cut));
-    return out.join('');
+    return k;
   }
-
-  function __esmNamedImport(braced, mod) {
-    var inner = braced.replace(/^\{/, '').replace(/\}$/, '');
-    var names = inner.split(',');
-    var out = [];
-    for (var k = 0; k < names.length; k++) {
-      var n = names[k].replace(/^[ \t\n]+|[ \t\n]+$/g, '');
-      if (!n) continue;
-      var asm = n.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-      var local, remote;
-      if (asm) { local = asm[2]; remote = asm[1]; }
-      else { local = n; remote = n; }
-      out.push('var ' + local + ' = require(' + JSON.stringify(mod) + ').' + remote + ';');
-    }
-    return out.join('\n');
+  function __nuvioWordAt(src, k) {
+    var m = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(src.slice(k));
+    return m ? { word: m[0], end: k + m[0].length } : null;
   }
-
-  function __esmImport(text) {
-    var m;
-    m = text.match(/^import\s+["']([^"']+)["']\s*$/);
-    if (m) return 'require(' + JSON.stringify(m[1]) + ');';
-    m = text.match(/^import\s+([A-Za-z_$][\w$]*)\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) return 'var ' + m[1] + ' = require(' + JSON.stringify(m[2]) + ');';
-    m = text.match(/^import\s+([A-Za-z_$][\w$]*)\s*,\s*(\{[^}]*\}|\*\s+as\s+[A-Za-z_$][\w$]*)\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) {
-      var def = m[1], second = m[2], mod = m[3];
-      var out = 'var ' + def + ' = require(' + JSON.stringify(mod) + ');\n';
-      if (/^\{/.test(second)) out += __esmNamedImport(second, mod);
-      else out += 'var ' + second.replace(/^\*\s+as\s+/, '') + ' = require(' + JSON.stringify(mod) + ');';
-      return out;
+  function __nuvioReadStringLit(src, k) {
+    var c = src[k], n = src.length, j = k + 1;
+    while (j < n) {
+      if (src[j] === '\\') { j += 2; continue; }
+      if (src[j] === c) break;
+      j++;
     }
-    m = text.match(/^import\s+(\{[^}]*\})\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) return __esmNamedImport(m[1], m[2]);
-    m = text.match(/^import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) return 'var ' + m[1] + ' = require(' + JSON.stringify(m[2]) + ');';
-    return null;
+    return { end: Math.min(j + 1, n) };
   }
-
-  function __esmExport(text) {
-    var m;
-    m = text.match(/^export\s+default\s+([\s\S]+)$/);
-    if (m) return 'module.exports.default = ' + m[1].replace(/;\s*$/, '') + ';';
-    m = text.match(/^export\s+\{([^}]*)\}\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) {
-      var rn = '__re' + Math.floor(Math.random() * 1e9);
-      var parts = m[1].split(',');
-      var out = ['var ' + rn + ' = require(' + JSON.stringify(m[2]) + ');'];
-      for (var k = 0; k < parts.length; k++) {
-        var n = parts[k].replace(/^[ \t\n]+|[ \t\n]+$/g, '');
-        if (!n) continue;
-        var asm = n.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-        var local = asm ? asm[2] : n, remote = asm ? asm[1] : n;
-        out.push('module.exports.' + local + ' = ' + rn + '.' + remote + ';');
-      }
-      return out.join('\n');
+  function __nuvioReadTemplateLit(src, k) {
+    var j = k + 1, n = src.length;
+    while (j < n) {
+      if (src[j] === '\\') { j += 2; continue; }
+      if (src[j] === '`') break;
+      j++;
     }
-    m = text.match(/^export\s+\{([^}]*)\}\s*$/);
-    if (m) {
-      var sets = [];
-      var names = m[1].split(',');
-      for (var q = 0; q < names.length; q++) {
-        var nm = names[q].replace(/^[ \t\n]+|[ \t\n]+$/g, '');
-        if (!nm) continue;
-        var a = nm.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-        if (a) sets.push(a[2] + ': ' + a[1]);
-        else sets.push(nm + ': ' + nm);
-      }
-      if (sets.length) return 'module.exports = Object.assign(module.exports || {}, { ' + sets.join(', ') + ' });';
-      return null;
-    }
-    m = text.match(/^export\s+\*\s+from\s+["']([^"']+)["']\s*$/);
-    if (m) return 'Object.assign(module.exports || (module.exports = {}), require(' + JSON.stringify(m[1]) + '));';
-    m = text.match(/^export\s+(function|class|const|let|var)\b([\s\S]+)$/);
-    if (m) {
-      var kw = m[1];
-      var body = m[2].replace(/^\s+/, '');
-      var code = kw + ' ' + body;
-      if (kw === 'function' || kw === 'class') {
-        var nm2 = body.match(/^([A-Za-z_$][\w$]*)/);
-        if (nm2) code += '\nmodule.exports.' + nm2[1] + ' = ' + nm2[1] + ';';
+    return { end: Math.min(j + 1, n) };
+  }
+  function __nuvioReadNamed(src, k) {
+    var specs = [];
+    var j = __nuvioSkipWs(src, k + 1);
+    while (j < src.length) {
+      var c = src[j];
+      if (c === '}') break;
+      if (c === ',') { j = __nuvioSkipWs(src, j + 1); continue; }
+      var w = __nuvioWordAt(src, j);
+      if (!w) { j++; continue; }
+      var left = w.word;
+      j = __nuvioSkipWs(src, w.end);
+      if (src.slice(j, j + 2) === 'as') {
+        j = __nuvioSkipWs(src, j + 2);
+        var w2 = __nuvioWordAt(src, j);
+        if (w2) { specs.push({ left: left, right: w2.word }); j = w2.end; }
+        else { specs.push({ left: left, right: left }); }
       } else {
-        var declRe = /(?:^|[,;]\s*)([A-Za-z_$][\w$]*)\s*=/g;
-        var dm;
-        while ((dm = declRe.exec(body)) !== null) code += '\nmodule.exports.' + dm[1] + ' = ' + dm[1] + ';';
+        specs.push({ left: left, right: left });
       }
-      return code;
+      j = __nuvioSkipWs(src, j);
     }
-    return null;
+    return { specs: specs, end: __nuvioSkipWs(src, j + 1) };
+  }
+  function __nuvioSkipSemi(src, k) {
+    k = __nuvioSkipWs(src, k);
+    if (src[k] === ';') k++;
+    return k;
+  }
+  function __nuvioScanToSemi(src, k) {
+    var n = src.length, depth = 0, j = k;
+    while (j < n) {
+      var c = src[j];
+      if (c === '"' || c === "'") { j = __nuvioReadStringLit(src, j).end; continue; }
+      if (c === '`') { j = __nuvioReadTemplateLit(src, j).end; continue; }
+      if (c === '/' && src[j + 1] === '/') { var nl = src.indexOf('\n', j); j = nl < 0 ? n : nl; continue; }
+      if (c === '/' && src[j + 1] === '*') { var bl = src.indexOf('*/', j + 2); j = bl < 0 ? n : bl + 2; continue; }
+      if (c === '(' || c === '{' || c === '[') depth++;
+      else if (c === ')' || c === '}' || c === ']') depth--;
+      else if (c === ';' && depth === 0) { j++; break; }
+      j++;
+    }
+    return { text: src.slice(k, j), end: j };
+  }
+  function __nuvioScanBalanced(src, k) {
+    var n = src.length, depth = 0, j = k, sawBody = false;
+    while (j < n) {
+      var c = src[j];
+      if (c === '"' || c === "'") { j = __nuvioReadStringLit(src, j).end; continue; }
+      if (c === '`') { j = __nuvioReadTemplateLit(src, j).end; continue; }
+      if (c === '/' && src[j + 1] === '/') { var nl = src.indexOf('\n', j); j = nl < 0 ? n : nl; continue; }
+      if (c === '/' && src[j + 1] === '*') { var bl = src.indexOf('*/', j + 2); j = bl < 0 ? n : bl + 2; continue; }
+      if (c === '{') { sawBody = true; depth++; }
+      else if (c === '}' ) { depth--; if (sawBody && depth === 0) { j++; break; } }
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      j++;
+    }
+    return { text: src.slice(k, j), end: j };
+  }
+  function __nuvioRewriteEs(src, start, kw) {
+    var k = __nuvioSkipWs(src, start + kw.length);
+    var out = '';
+    if (kw === 'import') {
+      var c = src[k];
+      if (c === '"' || c === "'") {
+        var lit = __nuvioReadStringLit(src, k);
+        return { out: 'require(' + src.slice(k, lit.end) + ');', i: __nuvioSkipSemi(src, lit.end) };
+      }
+      var defaultName = null, nsName = null, named = null;
+      if (c === '{') {
+        named = __nuvioReadNamed(src, k);
+        k = named.end;
+      } else if (c === '*') {
+        k = __nuvioSkipWs(src, k + 1);
+        var wa = __nuvioWordAt(src, k);
+        if (wa && wa.word === 'as') {
+          k = __nuvioSkipWs(src, wa.end);
+          var wb = __nuvioWordAt(src, k);
+          if (wb) { nsName = wb.word; k = wb.end; }
+        }
+      } else {
+        var w = __nuvioWordAt(src, k);
+        if (w) {
+          defaultName = w.word;
+          k = w.end;
+          var k2 = __nuvioSkipWs(src, k);
+          if (src[k2] === ',') {
+            k = __nuvioSkipWs(src, k2 + 1);
+            if (src[k] === '{') { named = __nuvioReadNamed(src, k); k = named.end; }
+            else if (src[k] === '*') {
+              k = __nuvioSkipWs(src, k + 1);
+              var wc = __nuvioWordAt(src, k);
+              if (wc && wc.word === 'as') {
+                k = __nuvioSkipWs(src, wc.end);
+                var wd = __nuvioWordAt(src, k);
+                if (wd) { nsName = wd.word; k = wd.end; }
+              }
+            }
+          }
+        }
+      }
+      k = __nuvioSkipWs(src, k);
+      var wf = __nuvioWordAt(src, k);
+      if (wf && wf.word === 'from') k = __nuvioSkipWs(src, wf.end);
+      var mod = __nuvioReadStringLit(src, k);
+      var modExpr = src.slice(k, mod.end);
+      var end = __nuvioSkipSemi(src, mod.end);
+      var parts = [];
+      if (nsName) parts.push('var ' + nsName + ' = require(' + modExpr + ');');
+      if (defaultName) {
+        parts.push('var ' + defaultName + ' = (function(){ var m = require(' + modExpr + '); return (m && m.__esModule && m.default !== undefined) ? m.default : (m && m.default !== undefined) ? m.default : m; })();');
+      }
+      if (named) {
+        parts.push('var __nuvioImp = require(' + modExpr + ');');
+        for (var p = 0; p < named.specs.length; p++) {
+          parts.push('var ' + named.specs[p].right + ' = __nuvioImp[' + JSON.stringify(named.specs[p].left) + '];');
+        }
+      }
+      return { out: parts.join('\n'), i: end };
+    }
+    var w = __nuvioWordAt(src, k);
+    if (src[k] === '{') {
+      var ns2 = __nuvioReadNamed(src, k);
+      var e2 = __nuvioSkipSemi(src, ns2.end);
+      var o3 = '';
+      for (var r = 0; r < ns2.specs.length; r++) o3 += 'exports.' + ns2.specs[r].right + ' = ' + ns2.specs[r].left + ';\n';
+      return { out: o3, i: e2 };
+    }
+    if (src[k] === '*') {
+      var st3 = __nuvioScanToSemi(src, k);
+      return { out: '/* nuvio: export * from dropped */', i: st3.end };
+    }
+    if (!w) return { out: '', i: start + kw.length };
+    var word = w.word;
+    if (word === 'default') {
+      var k2 = __nuvioSkipWs(src, w.end);
+      var w2 = __nuvioWordAt(src, k2);
+      if (w2 && (w2.word === 'function' || w2.word === 'class')) {
+        var k3 = __nuvioSkipWs(src, w2.end);
+        var w3 = __nuvioWordAt(src, k3);
+        var name = null, k4 = k3;
+        if (w3 && w3.word !== '(') { name = w3.word; k4 = w3.end; }
+        var rest = __nuvioScanBalanced(src, k4);
+        if (name) return { out: (w2.word === 'function' ? 'function ' : 'class ') + name + ' ' + rest.text + '\nexports.default = ' + name + ';', i: rest.end };
+        return { out: 'exports.default = ' + (w2.word === 'function' ? 'function ' : 'class ') + rest.text + ';', i: rest.end };
+      }
+      var rex = __nuvioScanToSemi(src, k2);
+      return { out: 'exports.default = ' + rex.text + ';', i: rex.end };
+    }
+    if (word === 'function' || word === 'class') {
+      var k5 = __nuvioSkipWs(src, w.end);
+      var w4 = __nuvioWordAt(src, k5);
+      if (!w4) return { out: '', i: start + kw.length };
+      var fname = w4.word;
+      var frest = __nuvioScanBalanced(src, w4.end);
+      return { out: (word === 'function' ? 'function ' : 'class ') + fname + ' ' + frest.text + '\nexports.' + fname + ' = ' + fname + ';', i: frest.end };
+    }
+    if (word === 'async') {
+      var k6 = __nuvioSkipWs(src, w.end);
+      var w5 = __nuvioWordAt(src, k6);
+      if (w5 && w5.word === 'function') {
+        var k7 = __nuvioSkipWs(src, w5.end);
+        var w6 = __nuvioWordAt(src, k7);
+        var aname = w6 ? w6.word : null;
+        var k8 = w6 ? w6.end : k7;
+        var arest = __nuvioScanBalanced(src, k8);
+        var o = 'async function ' + (aname ? aname + ' ' : '') + arest.text;
+        if (aname) o += '\nexports.' + aname + ' = ' + aname + ';';
+        return { out: o, i: arest.end };
+      }
+    }
+    if (word === 'const' || word === 'let' || word === 'var') {
+      var k9 = __nuvioSkipWs(src, w.end);
+      var vrest = __nuvioScanToSemi(src, k9);
+      var names = [];
+      var re = /[A-Za-z_$][A-Za-z0-9_$]*/g, m;
+      while ((m = re.exec(vrest.text)) !== null) names.push(m[0]);
+      var o2 = word + ' ' + vrest.text + '\n';
+      for (var q = 0; q < names.length; q++) o2 += 'exports.' + names[q] + ' = ' + names[q] + ';\n';
+      return { out: o2, i: vrest.end };
+    }
+    var uns = __nuvioScanToSemi(src, k);
+    return { out: '/* nuvio: unsupported export dropped */', i: uns.end };
+  }
+  function __nuvioCjsify(source) {
+    if (source.indexOf('import') < 0 && source.indexOf('export') < 0) return source;
+    var n = source.length, i = 0, out = '', depth = 0;
+    while (i < n) {
+      var c = source[i];
+      if (c === '/' && source[i + 1] === '/') {
+        var j = source.indexOf('\n', i);
+        if (j < 0) j = n;
+        out += source.slice(i, j); i = j; continue;
+      }
+      if (c === '/' && source[i + 1] === '*') {
+        var jb = source.indexOf('*/', i + 2);
+        if (jb < 0) jb = n - 2;
+        out += source.slice(i, jb + 2); i = jb + 2; continue;
+      }
+      if (c === '"' || c === "'") {
+        var sl = __nuvioReadStringLit(source, i);
+        out += source.slice(i, sl.end); i = sl.end; continue;
+      }
+      if (c === '`') {
+        var tl = __nuvioReadTemplateLit(source, i);
+        out += source.slice(i, tl.end); i = tl.end; continue;
+      }
+      if (c === '{') { depth++; out += c; i++; continue; }
+      if (c === '}') { depth--; out += c; i++; continue; }
+      if (depth === 0 && (c === 'i' || c === 'e')) {
+        var prev = i > 0 ? source[i - 1] : ' ';
+        if (!/[A-Za-z0-9_$]/.test(prev)) {
+          var w = __nuvioWordAt(source, i);
+          if (w && (w.word === 'import' || w.word === 'export')) {
+            var after = __nuvioSkipWs(source, w.end);
+            var ac = after < n ? source[after] : '';
+            if (w.word === 'import') {
+              if (ac === '{' || ac === '*' || ac === '"' || ac === "'" || /[A-Za-z_$]/.test(ac)) {
+                var r = __nuvioRewriteEs(source, i, w.word);
+                out += r.out; i = r.i; continue;
+              }
+            } else {
+              if (ac === '{' || ac === '*' || ac === 'd' || /[A-Za-z_$]/.test(ac)) {
+                var r2 = __nuvioRewriteEs(source, i, w.word);
+                out += r2.out; i = r2.i; continue;
+              }
+            }
+          }
+        }
+      }
+      out += c;
+      i++;
+    }
+    return out;
   }
 
   function evalModule(source) {
@@ -232,7 +296,6 @@
       var nl = source.indexOf('\n');
       source = nl >= 0 ? source.slice(nl + 1) : '';
     }
-    source = __esmToCjs(source);
     var mod = { exports: {} };
     var fn = new Function('module', 'exports', 'require', '__dirname', '__filename', source);
     fn(mod, mod.exports, __nuvioRequire, '/', '/provider.js');
@@ -278,7 +341,7 @@
 
   function __nuvioLoadProvider(source, id) {
     g.SCRAPER_ID = id;
-    var mod = evalModule(source);
+    var mod = evalModule(__nuvioCjsify(source));
     var ex = mod.exports;
     if (typeof ex === 'function' && String(ex).indexOf('class ') !== 0 && typeof ex.getStreams !== 'function') ex = { getStreams: ex };
     else if (ex && typeof ex === 'object' && ex.default && typeof ex.default.getStreams === 'function' && typeof ex.getStreams !== 'function') {
@@ -845,6 +908,7 @@
   g.__nuvioProvideModule = __nuvioProvideModule;
   g.__nuvioRegisterModule = __nuvioRegisterModule;
   g.__nuvioLoadProvider = __nuvioLoadProvider;
+  g.__nuvioCjsify = __nuvioCjsify;
   g.__nuvioRunProvider = __runProvider;
   g.__nuvioRunSettings = __runSettings;
   g.__nuvioGetProvider = function () { return __currentProvider; };
