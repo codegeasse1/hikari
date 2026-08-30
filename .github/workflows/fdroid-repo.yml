@@ -66,13 +66,14 @@ jobs:
           repo_url: "https://codegeasse1.github.io/hikari/fdroid/repo"
           repo_name: "Hikari"
           repo_description: "Hikari - a universal streaming app: Stremio addons, universal scrapers, CloudStream .cs3 plugins and more. Modern Material 3 UI."
-          repo_icon: ""
-          keystore: "signing/keystore.p12"
-          keystorepass: "$PASS"
-          keyalias: "hikari"
-          keypass: "$PASS"
+          repo_icon: "icons/icon.png"
+          repo_keystore: "signing/keystore.p12"
+          repo_keystorepass: "$PASS"
+          repo_keyalias: "hikari"
+          repo_keypass: "$PASS"
           archive_older: 0
           EOF
+          chmod 600 fdroid/config.yml fdroid/signing/keystore.p12 fdroid/signing/keystore.pass
 
       - name: Generate F-Droid index
         run: |
