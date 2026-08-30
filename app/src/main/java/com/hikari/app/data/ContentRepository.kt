@@ -273,10 +273,12 @@ class ContentRepository(private val manager: ProviderManager) {
                 // pool, and most searches end well before it (fast providers
                 // finish → allDone).
                 val deadline = started + 55_000L
-                // Merge EVERY provider's sources (deduped by url/infoHash). The
-                // old first-non-empty-wins behaviour is kept for the primary
-                // targets so a fast Stremio/CS3 answer still opens instantly;
-                // nuvio results trickle in during a short grace window.
+                // Merge EVERY provider's sources (deduped by url/infoHash).
+                // The early-open only applies when no nuvio provider is still
+                // searching, so a fast Stremio/CS3 answer still opens quickly
+                // while a lookup that involves nuvio providers always waits
+                // for every one of them (their servers show up all together,
+                // like the real nuvio app).
                 val merged = LinkedHashMap<String, StreamSource>()
                 fun merge(job: kotlinx.coroutines.Deferred<List<StreamSource>>) {
                     if (job.isCompleted) {
@@ -291,16 +293,17 @@ class ContentRepository(private val manager: ProviderManager) {
                             jobs[i].isCompleted && runCatching { jobs[i].getCompleted() }
                                 .getOrDefault(emptyList()).isNotEmpty()
                         }
-                    val nuvioDone = (primaryTargets.size until targets.size).any { i ->
-                        jobs[i].isCompleted && runCatching { jobs[i].getCompleted() }
-                            .getOrDefault(emptyList()).isNotEmpty()
-                    }
                     val allDone = jobs.all { it.isCompleted }
                     if (allDone) break
                     val now = System.currentTimeMillis()
-                    // Open early: a primary provider already answered (fast
-                    // path), or a nuvio answer has waited its grace window.
-                    if (merged.isNotEmpty() && (primaryDone || (nuvioDone && now - started > 1_500))) break
+                    // A nuvio provider is still searching? Then keep waiting —
+                    // every nuvio provider's servers must accumulate (like the
+                    // real nuvio app shows them all together), so the early
+                    // open is only allowed when no nuvio provider is in flight
+                    // (a pure Stremio/CS3 lookup can still open instantly).
+                    val nuvioInFlight = (primaryTargets.size until targets.size)
+                        .any { !jobs[it].isCompleted }
+                    if (!nuvioInFlight && merged.isNotEmpty() && primaryDone) break
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
                 }
