@@ -192,7 +192,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *    returns sources, the rest are cancelled and playback starts. Only if
      *    every addon comes up empty do we wait for all of them.
      */
-    suspend fun streamsFor(item: MediaItem, episode: Episode?): List<StreamSource> =
+    suspend fun streamsFor(
+        item: MediaItem,
+        episode: Episode?,
+        /** Called with the merged server list each time a provider adds new
+         *  results, so callers can show servers progressively (Stremio-style)
+         *  while the slower providers are still searching. */
+        onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+    ): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
             val origin = manager.byId(item.providerId)
@@ -252,8 +259,8 @@ class ContentRepository(private val manager: ProviderManager) {
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             if (isNuvio) {
-                                // Deadline or early-close cancelled us. Say
-                                // whether we actually got an engine slot and ran.
+                                // Deadline cancelled us. Say whether we actually
+                                // got an engine slot and ran.
                                 val ran = com.hikari.app.nuvio.NuvioRuntime.providerStartedAt(p.config.id)
                                 com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] =
                                     if (ran != null)
@@ -266,19 +273,16 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 val started = System.currentTimeMillis()
-                // Ceiling for the whole lookup. It only binds when everything is
-                // failing — the instant any provider answers, playback opens via
-                // the early-close below. 55s lets the trusted nuvio providers
-                // (priority order) plus a few fallbacks pass through the 3-view
-                // pool, and most searches end well before it (fast providers
-                // finish → allDone).
+                // Ceiling for the whole lookup. It only binds when providers are
+                // slow/failing — normally they finish → allDone well before it.
+                // 55s lets the trusted nuvio providers (priority order) pass
+                // through the concurrency cap plus a few fallbacks. Results are
+                // emitted progressively via onProgress, so the UI never sits on
+                // an empty spinner while this runs.
                 val deadline = started + 55_000L
-                // Merge EVERY provider's sources (deduped by url/infoHash).
-                // The early-open only applies when no nuvio provider is still
-                // searching, so a fast Stremio/CS3 answer still opens quickly
-                // while a lookup that involves nuvio providers always waits
-                // for every one of them (their servers show up all together,
-                // like the real nuvio app).
+                // Merge EVERY provider's sources (deduped by url/infoHash): a
+                // fast Stremio/CS3 answer no longer cuts the wait short — every
+                // installed nuvio provider gets its chance to add servers.
                 val merged = LinkedHashMap<String, StreamSource>()
                 fun merge(job: kotlinx.coroutines.Deferred<List<StreamSource>>) {
                     if (job.isCompleted) {
@@ -286,24 +290,25 @@ class ContentRepository(private val manager: ProviderManager) {
                             .forEach { s -> merged.putIfAbsent(s.infoHash ?: s.url, s) }
                     }
                 }
+                var lastEmitted = -1
                 while (true) {
                     jobs.forEach { merge(it) }
-                    val primaryDone = primaryTargets.isNotEmpty() &&
-                        primaryTargets.indices.any { i ->
-                            jobs[i].isCompleted && runCatching { jobs[i].getCompleted() }
-                                .getOrDefault(emptyList()).isNotEmpty()
-                        }
+                    // Progressive emission: hand over every newly-found server
+                    // so the UI can show them while the rest keep searching.
+                    if (onProgress != null && merged.size != lastEmitted) {
+                        lastEmitted = merged.size
+                        onProgress(merged.values.toList())
+                    }
                     val allDone = jobs.all { it.isCompleted }
                     if (allDone) break
                     val now = System.currentTimeMillis()
-                    // A nuvio provider is still searching? Then keep waiting —
-                    // every nuvio provider's servers must accumulate (like the
-                    // real nuvio app shows them all together), so the early
-                    // open is only allowed when no nuvio provider is in flight
-                    // (a pure Stremio/CS3 lookup can still open instantly).
-                    val nuvioInFlight = (primaryTargets.size until targets.size)
-                        .any { !jobs[it].isCompleted }
-                    if (!nuvioInFlight && merged.isNotEmpty() && primaryDone) break
+                    // Wait for EVERY provider (like Stremio aggregating every
+                    // addon): each installed nuvio provider is independent
+                    // (it resolves from the TMDB id alone), so each one that
+                    // finds streams adds selectable servers to the list. The
+                    // old first-non-empty early-close cancelled every provider
+                    // that hadn't answered within ~1.5s, which is why only one
+                    // provider's servers ever showed up in the player.
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
                 }
