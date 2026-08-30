@@ -1,11 +1,23 @@
 package com.hikari.app.net
 
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebChromeClient
+import android.webkit.WebViewClient
+import com.hikari.app.HikariApp
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 object Http {
 
@@ -23,6 +35,33 @@ object Http {
 
     private lateinit var client: OkHttpClient
 
+    /** Hosts whose WAF rejects OkHttp's bare request fingerprint (Codeberg is
+     *  known to 403 non-browser clients even with a Chrome UA — their raw
+     *  links work fine in a browser, i.e. the same network). For these hosts we
+     *  attach a full browser-grade header set, and if OkHttp still fails we
+     *  fall back to a WebView fetch, which uses the platform browser's real TLS
+     *  fingerprint and header set (the same mechanism CloudflareVerifier uses).
+     *  Repo manifests and nuvio plugin files live on these hosts, so without
+     *  this every install from e.g. codeberg.org 403s. */
+    private val STRICT_HOSTS = setOf("codeberg.org")
+
+    private fun isStrictHost(url: String): Boolean {
+        val h = runCatching { java.net.URI(url).host }.getOrNull() ?: return false
+        return STRICT_HOSTS.any { h == it || h.endsWith(".$it") }
+    }
+
+    private fun applyBrowserHeaders(builder: Request.Builder) {
+        builder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "none")
+            .header("Sec-Fetch-User", "?1")
+            .header("Upgrade-Insecure-Requests", "1")
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
+    }
+
     fun init() {
         client = OkHttpClient.Builder()
             .followRedirects(true)
@@ -38,6 +77,7 @@ object Http {
 
     fun get(url: String, headers: Map<String, String> = emptyMap()): Response {
         val builder = Request.Builder().url(url).header("User-Agent", UA)
+        if (isStrictHost(url)) applyBrowserHeaders(builder)
         headers.forEach { (k, v) -> builder.header(k, v) }
         return client.newCall(builder.build()).execute()
     }
@@ -159,6 +199,12 @@ object Http {
                 }
             }
         }
+        // Last resort for WAF-guarded hosts: load the URL in a WebView (real
+        // browser TLS fingerprint + header set). Codeberg serves raw text
+        // files as text/plain, so the body comes back verbatim.
+        if (isStrictHost(url)) {
+            fetchStringViaWebView(url)?.let { return Result.success(it) }
+        }
         return Result.failure(last)
     }
 
@@ -174,7 +220,82 @@ object Http {
                 }
             }
         }
+        if (isStrictHost(url)) {
+            fetchStringViaWebView(url)?.let { return it.toByteArray(Charsets.UTF_8) }
+        }
         return null
+    }
+
+    /**
+     * Fetches [url] through an off-screen WebView on the main thread, blocking
+     * the caller until the page finishes (or 30s elapses). Uses the platform
+     * browser's real TLS stack and header set, which passes WAFs that 403
+     * OkHttp's fingerprint. Returns the rendered text (raw text/plain bodies
+     * come through unchanged), or null on network error / timeout. Caller must
+     * not already be on the main thread. */
+    private fun fetchStringViaWebView(url: String): String? {
+        val latch = CountDownLatch(1)
+        val handler = Handler(Looper.getMainLooper())
+        val failed = AtomicBoolean(false)
+        val out = AtomicReference<String?>(null)
+        handler.post {
+            val wv = try {
+                WebView(HikariApp.instance)
+            } catch (e: Throwable) {
+                failed.set(true)
+                latch.countDown()
+                return@post
+            }
+            wv.settings.javaScriptEnabled = true
+            wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+            wv.webChromeClient = WebChromeClient()
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String?) {
+                    view.evaluateJavascript(
+                        "(function(){var b=document.body;return b?b.innerText:'';})()"
+                    ) { r ->
+                        out.set(try {
+                            org.json.JSONTokener(r).nextValue() as? String
+                        } catch (e: Exception) {
+                            r
+                        })
+                        latch.countDown()
+                        runCatching { view.destroy() }
+                    }
+                }
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                    failed.set(true)
+                    latch.countDown()
+                    runCatching { view.destroy() }
+                }
+
+                @Suppress("DEPRECATION")
+                override fun onReceivedError(
+                    view: WebView,
+                    errorCode: Int,
+                    description: String?,
+                    failingUrl: String?
+                ) {
+                    failed.set(true)
+                    latch.countDown()
+                    runCatching { view.destroy() }
+                }
+            }
+            wv.loadUrl(url)
+        }
+        try {
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                failed.set(true)
+            }
+        } catch (e: InterruptedException) {
+            failed.set(true)
+        }
+        return if (failed.get()) null else out.get()
     }
 
     /**
