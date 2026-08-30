@@ -46,10 +46,12 @@ import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -80,6 +82,27 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** Live-update subscription to the detail screen's ongoing server search
+     *  (playback starts with the first server found; this keeps appending the
+     *  rest as slower providers answer). */
+    private var liveStreamsJob: Job? = null
+
+    /** Converts a detail-screen source (data layer) into a player source —
+     *  mirrors the JSON payload parser so live-appended servers land in the
+     *  "Select server" list exactly like the initial batch. */
+    private fun StreamSource.toPlayerSource() = PlayerSource(
+        name,
+        Http.normalizeDriveUrl(url),
+        headers,
+        subtitles,
+        isM3u8,
+        isMpd,
+        isTorrent,
+        infoHash,
+        fileIdx,
+        trackers,
+    )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
      *  keeps rejecting our requests. 0 = the extractor's full headers,
@@ -410,6 +433,24 @@ class PlayerActivity : ComponentActivity() {
         if (sources.isEmpty()) {
             showError("No playable sources received.", false)
             return
+        }
+
+        val liveId = intent.getStringExtra("streamsLiveId")
+        if (liveId != null) {
+            // The detail screen launched playback with the first server found
+            // and keeps searching every installed provider; append each newly
+            // found server here so "Select server" lists everything.
+            liveStreamsJob = lifecycleScope.launch {
+                StreamsLive.flow(liveId).collect { incoming ->
+                    if (incoming.isEmpty()) return@collect
+                    val have = sources.map { it.infoHash ?: it.url }.toHashSet()
+                    val fresh = incoming
+                        .map { it.toPlayerSource() }
+                        .filter { (it.infoHash ?: it.url) !in have }
+                    if (fresh.isEmpty()) return@collect
+                    sources = sources + fresh
+                }
+            }
         }
 
         client = OkHttpClient.Builder()
@@ -1609,6 +1650,9 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         recordProgress()
+        liveStreamsJob?.cancel()
+        liveStreamsJob = null
+        intent.getStringExtra("streamsLiveId")?.let { StreamsLive.remove(it) }
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
         dismissSlowDialog()

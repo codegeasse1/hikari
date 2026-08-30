@@ -71,6 +71,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.player.PlayerActivity
+import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
@@ -85,6 +86,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
@@ -119,6 +121,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _streamsReady = MutableStateFlow(false)
     val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
+
+    /** Growing list of sources found SO FAR for the current lookup, re-emitted
+     *  after every provider answers — lets the UI start playback the instant
+     *  the first server appears instead of waiting for all providers. */
+    private val _liveStreams = MutableStateFlow<List<StreamSource>>(emptyList())
+    val liveStreams: StateFlow<List<StreamSource>> = _liveStreams.asStateFlow()
 
     /** How many addons were asked for sources on the last lookup. */
     private val _searchedProviders = MutableStateFlow(0)
@@ -223,17 +231,28 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
     ): List<StreamSource> {
         val key = cacheKey(item, ep)
-        streamCache[key]?.let { return it }
+        streamCache[key]?.let { cached ->
+            _liveStreams.value = cached
+            return cached
+        }
         val existing = inflight[key]
         if (existing != null) return existing.await()
         val deferred = CompletableDeferred<List<StreamSource>>()
         val prev = inflight.putIfAbsent(key, deferred)
         if (prev != null) return prev.await()
         try {
+            // Every provider response is mirrored into the live feed so the UI
+            // can start playback with the first server found, regardless of
+            // which caller kicked off the search (prefetch or Play tap).
+            val feed: (suspend (List<StreamSource>) -> Unit) = { partial ->
+                _liveStreams.value = partial
+                onProgress?.invoke(partial)
+            }
             val result = withContext(Dispatchers.IO) {
-                runCatching { repo.streamsFor(item, ep, onProgress) }.getOrDefault(emptyList())
+                runCatching { repo.streamsFor(item, ep, feed) }.getOrDefault(emptyList())
             }
             streamCache[key] = result
+            _liveStreams.value = result
             recordOutcome(result, item)
             deferred.complete(result)
             return result
@@ -279,6 +298,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     ): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
         return resolveStreams(m, episode, onProgress)
+    }
+
+    /** New play session (a fresh tap of Play / a new episode): clear the live
+     *  feed so stale servers from a previous lookup never leak into the next. */
+    fun resetLiveStreams() {
+        _liveStreams.value = emptyList()
     }
 }
 
@@ -333,6 +358,9 @@ fun DetailScreen(
     var selectedEp by remember { mutableStateOf<Episode?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
+    /** Live-update session handed to the player: while playback runs, the
+     *  ongoing multi-provider search keeps appending servers to it. */
+    var sessionId by remember { mutableStateOf("") }
     var rangeStart by rememberSaveable { mutableStateOf<Int?>(null) }
     var rangeExpanded by remember { mutableStateOf(false) }
 
@@ -358,7 +386,7 @@ fun DetailScreen(
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { playerLaunched = false }
-    val launchPlayer: (List<StreamSource>, Episode?) -> Unit = launchPlayer@{ playable, ep ->
+    val launchPlayer: (List<StreamSource>, Episode?, String) -> Unit = launchPlayer@{ playable, ep, liveId ->
         if (playerLaunched) return@launchPlayer
         playerLaunched = true
         val payload = playerPayload(playable)
@@ -370,6 +398,10 @@ fun DetailScreen(
             Intent(context, PlayerActivity::class.java).apply {
                 putExtra("title", m?.title ?: title)
                 putExtra("sources", payload)
+                // Live server feed: playback starts with the first server found
+                // while the detail screen keeps searching every installed
+                // provider; the player appends them to its "Select server" list.
+                putExtra("streamsLiveId", liveId)
                 putExtra("histProviderId", providerId)
                 putExtra("histMediaId", mediaId)
                 putExtra("histType", (m?.type ?: type).name)
@@ -388,29 +420,52 @@ fun DetailScreen(
         streams = emptyList()
         loadingStreams = true
         showSheet = true
-        scope.launch {
-            // Progressively show servers as each provider answers, then
-            // auto-play once every provider has finished (or the search
-            // deadline hits) so the player's "Select server" dialog carries
-            // the complete list from ALL installed nuvio providers, not just
-            // whichever one answered first.
-            val final = vm.getStreams(ep) { partial ->
-                if (partial.isNotEmpty()) streams = partial
+        // One live-update session per play tap: the player subscribes to it and
+        // keeps receiving servers as slower providers answer, so its "Select
+        // server" dialog shows every source from every installed provider.
+        sessionId = UUID.randomUUID().toString()
+        vm.resetLiveStreams()
+        // Local once-only flag: playback launches exactly ONCE per tap (either
+        // the feed or the final batch) — afterwards new servers are appended to
+        // the player's live session, never re-launched.
+        var launched = false
+        // Watch the live feed and start playback the instant the FIRST
+        // playable server appears — no waiting for all providers. The sheet
+        // only lingers when nothing playable has been found yet.
+        val feed = scope.launch {
+            vm.liveStreams.collect { current ->
+                val playable = current.filter { s ->
+                    s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
+                }
+                if (playable.isEmpty()) return@collect
+                streams = current
+                if (launched || playerLaunched) {
+                    // Player is already up — hand it the newly found servers.
+                    StreamsLive.append(sessionId, playable)
+                } else {
+                    launched = true
+                    showSheet = false
+                    loadingStreams = false
+                    launchPlayer(playable, ep, sessionId)
+                }
             }
-            streams = final
+        }
+        scope.launch {
+            val final = vm.getStreams(ep)
+            feed.cancel()
             loadingStreams = false
-            // Player-able sources: direct URLs AND torrents (the player boots
-            // the bundled TorrServer engine). YouTube/external sources open in
-            // the web view instead.
+            streams = final
             val playable = final.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
-            // Auto-play as soon as any playable source exists. All sources ride
-            // along in the player payload, so the player's own "Select server"
-            // dialog can switch between them mid-playback.
-            if (playable.isNotEmpty()) {
+            if (launched || playerLaunched) {
+                // Search finished — hand the player the complete list.
+                StreamsLive.append(sessionId, playable)
+            } else if (playable.isNotEmpty()) {
+                // Cached/instant result arrived before the feed attached.
+                launched = true
                 showSheet = false
-                launchPlayer(playable, ep)
+                launchPlayer(playable, ep, sessionId)
             }
         }
     }
@@ -779,7 +834,7 @@ fun DetailScreen(
                                                     o.ytId == null && !o.externalUrl &&
                                                     (o.url.isNotBlank() || o.isTorrent)
                                             }
-                                            launchPlayer(listOf(s) + others, selectedEp)
+                                            launchPlayer(listOf(s) + others, selectedEp, sessionId)
                                         }
                                     }
                                 }
