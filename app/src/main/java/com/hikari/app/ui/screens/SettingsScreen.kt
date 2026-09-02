@@ -70,6 +70,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 72.dp),
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+    )
+}
+
+@Composable
 fun SettingsScreen() {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
@@ -96,131 +104,136 @@ fun SettingsScreen() {
             Spacer(Modifier.height(8.dp))
         }
         item {
-            ListItem(
-                leadingContent = {
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column {
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text("Version") },
+                        supportingContent = { Text(BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")") }
                     )
-                },
-                headlineContent = { Text("Version") },
-                supportingContent = { Text("${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})") }
-            )
-        }
-        item {
-            Box {
-                ListItem(
-                    leadingContent = {
-                        Icon(
-                            if (currentTheme == HikariThemeMode.LIGHT) Icons.Filled.LightMode
-                            else Icons.Filled.DarkMode,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    },
-                    headlineContent = { Text("Theme") },
-                    supportingContent = { Text(currentTheme.label) },
-                    trailingContent = {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    modifier = Modifier.clickable { themeMenuOpen = true }
-                )
-                DropdownMenu(
-                    expanded = themeMenuOpen,
-                    onDismissRequest = { themeMenuOpen = false }
-                ) {
-                    HikariThemeMode.entries.forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(mode.label) },
-                            onClick = {
-                                themeKey = mode.key
-                                themeMenuOpen = false
-                                scope.launch { app.store.setTheme(mode.key) }
+                    SettingsDivider()
+                    Box {
+                        ListItem(
+                            leadingContent = {
+                                Icon(
+                                    if (currentTheme == HikariThemeMode.LIGHT) Icons.Filled.LightMode
+                                    else Icons.Filled.DarkMode,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                             },
-                            leadingIcon = {
-                                if (themeKey == mode.key) {
-                                    Icon(
-                                        Icons.Filled.CheckCircle,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
+                            headlineContent = { Text("Theme") },
+                            supportingContent = { Text(currentTheme.label) },
+                            trailingContent = {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            modifier = Modifier.clickable { themeMenuOpen = true }
+                        )
+                        DropdownMenu(
+                            expanded = themeMenuOpen,
+                            onDismissRequest = { themeMenuOpen = false }
+                        ) {
+                            HikariThemeMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode.label) },
+                                    onClick = {
+                                        themeKey = mode.key
+                                        themeMenuOpen = false
+                                        scope.launch { app.store.setTheme(mode.key) }
+                                    },
+                                    leadingIcon = {
+                                        if (themeKey == mode.key) {
+                                            Icon(
+                                                Icons.Filled.CheckCircle,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    SettingsDivider()
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.SystemUpdate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text("Check for updates") },
+                        supportingContent = {
+                            if (checkingUpdates) {
+                                Text("Checking GitHub…")
+                            } else {
+                                Text("Version " + Updater.currentVersion())
+                            }
+                        },
+                        trailingContent = {
+                            if (checkingUpdates) {
+                                CircularProgressIndicator(
+                                    Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        },
+                        modifier = Modifier.clickable {
+                            if (!checkingUpdates) {
+                                checkingUpdates = true
+                                scope.launch {
+                                    updateStatus = runCatching { Updater.checkForUpdate() }.getOrNull()
+                                    checkingUpdates = false
+                                    showUpdateDialog = true
                                 }
                             }
-                        )
-                    }
+                        }
+                    )
+                    SettingsDivider()
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text("GitHub") },
+                        supportingContent = { Text("github.com/codegeasse1/hikari — releases & source") },
+                        trailingContent = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://github.com/codegeasse1/hikari")
+                                )
+                            )
+                        }
+                    )
                 }
             }
         }
-        item {
-            ListItem(
-                leadingContent = {
-                    Icon(
-                        Icons.Filled.SystemUpdate,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
-                headlineContent = { Text("Check for updates") },
-                supportingContent = {
-                    if (checkingUpdates) {
-                        Text("Checking GitHub…")
-                    } else {
-                        Text("Version ${Updater.currentVersion()}")
-                    }
-                },
-                trailingContent = {
-                    if (checkingUpdates) {
-                        CircularProgressIndicator(
-                            Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-                    }
-                },
-                modifier = Modifier.clickable {
-                    if (!checkingUpdates) {
-                        checkingUpdates = true
-                        scope.launch {
-                            updateStatus = runCatching { Updater.checkForUpdate() }.getOrNull()
-                            checkingUpdates = false
-                            showUpdateDialog = true
-                        }
-                    }
-                }
-            )
-        }
-        item {
-            ListItem(
-                leadingContent = {
-                    Icon(
-                        Icons.Filled.OpenInNew,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
-                headlineContent = { Text("GitHub") },
-                supportingContent = { Text("github.com/codegeasse1/hikari — releases & source") },
-                trailingContent = {
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                },
-                modifier = Modifier.clickable {
-                    context.startActivity(
-                        Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("https://github.com/codegeasse1/hikari")
-                        )
-                    )
-                }
-            )
-        }
+
         item {
             Card(
                 Modifier
@@ -286,13 +299,13 @@ fun SettingsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "✓ Stremio addons\n" +
-                            "✓ Universal scrapers\n" +
-                            "✓ HLS/DASH player with headers + subtitles\n" +
-                            "✓ CloudStream .cs3 plugin loader\n" +
-                            "✓ Torrent engine for infoHash streams\n" +
-                            "• Downloads, continue-watching (next)\n" +
-                            "• SkyStream extensions, scriptable scrapers (planned)",
+                        "â Stremio addons\n" +
+                            "â Universal scrapers\n" +
+                            "â HLS/DASH player with headers + subtitles\n" +
+                            "â CloudStream .cs3 plugin loader\n" +
+                            "â Torrent engine for infoHash streams\n" +
+                            "â¢ Downloads, continue-watching (next)\n" +
+                            "â¢ SkyStream extensions, scriptable scrapers (planned)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -314,7 +327,7 @@ fun SettingsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Hikari (光) — a universal streaming app built from scratch. " +
+                        "Hikari (å) â a universal streaming app built from scratch. " +
                             "One player, every extension ecosystem.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -571,7 +584,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Stock Android WebView UA — passes Cloudflare checks.",
+                    "Stock Android WebView UA â passes Cloudflare checks.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -587,7 +600,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("Mozilla/5.0 …") },
+                    placeholder = { Text("Mozilla/5.0 â¦") },
                     singleLine = true,
                     label = { Text("Custom user agent") },
                     modifier = Modifier.weight(1f)
@@ -598,7 +611,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 ) { Text("Save") }
             }
             Text(
-                "Currently used: ${app.effectiveWebViewUa().take(70)}…",
+                "Currently used: ${app.effectiveWebViewUa().take(70)}â¦",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -695,7 +708,7 @@ private fun UserscriptsCard(app: HikariApp) {
                 Column {
                     Text(
                         "Paste a userscript with a // ==UserScript== header " +
-                            "(name, @match, @run-at…). It runs only in the WebView.",
+                            "(name, @match, @run-atâ¦). It runs only in the WebView.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -789,7 +802,7 @@ private fun AdBlockingCard(app: HikariApp) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Applies only to WebView sites — the video player is never affected.",
+            "Applies only to WebView sites â the video player is never affected.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -828,7 +841,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             }
                         }
                     ) {
-                        Text(if (isAdded) "✓ ${preset.name}" else "+ ${preset.name}")
+                        Text(if (isAdded) "â ${preset.name}" else "+ ${preset.name}")
                     }
                 }
             }
@@ -873,7 +886,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onClick = {
                         updating = true
                         updateStatus = null
-                        // Downloads are blocking okhttp + retries — must NOT run
+                        // Downloads are blocking okhttp + retries â must NOT run
                         // on the main thread (it froze the app / ANR-crashed).
                         // One bad list can never abort the rest or crash.
                         scope.launch(Dispatchers.IO) {
@@ -884,7 +897,7 @@ private fun AdBlockingCard(app: HikariApp) {
                                 updateStatus = if (total > 0) {
                                     "$total blocked domains ready"
                                 } else {
-                                    "Couldn't update lists — check connection"
+                                    "Couldn't update lists â check connection"
                                 }
                             }
                         }
@@ -897,7 +910,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             strokeWidth = 2.dp
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Updating…")
+                        Text("Updatingâ¦")
                     } else {
                         Icon(
                             Icons.Filled.Refresh,
