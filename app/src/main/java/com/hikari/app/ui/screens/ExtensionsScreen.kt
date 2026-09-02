@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
@@ -42,7 +43,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -98,6 +98,7 @@ import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
@@ -1000,6 +1001,8 @@ fun ExtensionsScreen() {
     var openRepoUrl by remember { mutableStateOf<String?>(null) }
     var sourcesOpen by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SourceFolder?>(null) }
+    var allReposOpen by remember { mutableStateOf(false) }
+    var installedOpen by remember { mutableStateOf(false) }
     var showStremio by remember { mutableStateOf(false) }
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
@@ -1126,6 +1129,37 @@ fun ExtensionsScreen() {
             },
             onOpenSettings = { settingsProvider = it },
         )
+        allReposOpen -> AllReposView(
+            repos = repos,
+            pluginsByRepo = pluginsByRepo,
+            repoState = repoState,
+            busy = busy,
+            busyMsg = busyMsg,
+            successMsg = successMsg,
+            errorMsg = errorMsg,
+            onBack = { allReposOpen = false; vm.clearStatus() },
+            onOpenRepo = { repo ->
+                openRepoUrl = repo.url
+                vm.clearStatus()
+                if (pluginsByRepo[repo.url] == null) vm.refreshRepo(repo)
+            },
+            onAddRepo = { vm.clearStatus(); repoDialogKind = RepoKind.CS3; showRepoDialog = true },
+            onRemoveRepo = { url ->
+                if (openRepoUrl == url) openRepoUrl = null
+                vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
+            },
+            onRefreshRepo = { repo -> vm.clearStatus(); vm.refreshRepo(repo) },
+        )
+        installedOpen -> InstalledExtensionsView(
+            providers = providers,
+            busy = busy,
+            busyMsg = busyMsg,
+            successMsg = successMsg,
+            errorMsg = errorMsg,
+            onBack = { installedOpen = false; vm.clearStatus() },
+            onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
+            onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
+        )
         sourcesOpen -> SourcesOverviewView(
             repos = repos,
             pluginsByRepo = pluginsByRepo,
@@ -1171,6 +1205,8 @@ fun ExtensionsScreen() {
             },
             onOpenSources = { sourcesOpen = true; vm.clearStatus() },
             onOpenFolder = { f -> openFolder = f; vm.clearStatus() },
+            onOpenAllRepos = { allReposOpen = true; vm.clearStatus() },
+            onOpenInstalled = { installedOpen = true; vm.clearStatus() },
             onAddScraper = { vm.clearStatus(); showScraper = true },
             onAddCs3Url = { vm.clearStatus(); showCs3Url = true },
             onAddHikiUrl = { vm.clearStatus(); showHikiUrl = true },
@@ -1202,8 +1238,6 @@ fun ExtensionsScreen() {
                 vm.clearStatus()
                 vm.refreshRepo(repo)
             },
-            onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
-            onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
         )
     }
 
@@ -1649,21 +1683,19 @@ private fun RepoBrowserView(
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
     onOpenFolder: (SourceFolder) -> Unit,
+    onOpenAllRepos: () -> Unit,
+    onOpenInstalled: () -> Unit,
     onAddScraper: () -> Unit,
     onAddCs3Url: () -> Unit,
     onPickCs3File: () -> Unit,
     onAddHikiUrl: () -> Unit,
     onPickHikiFile: () -> Unit,
     onRemoveRepo: (String) -> Unit,
-    onToggleProvider: (String, Boolean) -> Unit,
-    onDeleteProvider: (String) -> Unit,
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
     onRemoveSite: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
 ) {
-    var extFilter by remember { mutableStateOf("") }
-    var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
@@ -1684,7 +1716,7 @@ private fun RepoBrowserView(
         }
         item {
             val enabledCount = providers.count { it.config.enabled }
-            Card(
+            GlassCard(
                 onClick = onOpenSources,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1734,7 +1766,7 @@ private fun RepoBrowserView(
         }
         item { SectionHeader("Add a source") }
         item {
-            Card(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
@@ -1799,6 +1831,20 @@ private fun RepoBrowserView(
                         subtitle = "Opens in the ad-free web view",
                         onClick = onAddSite
                     )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Folder,
+                        title = "All installed repos",
+                        subtitle = "All repos you've added · " + repos.size + " total",
+                        onClick = onOpenAllRepos
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = "Installed extensions",
+                        subtitle = "Manage, toggle & uninstall · " + providers.size + " installed",
+                        onClick = onOpenInstalled
+                    )
                 }
             }
         }
@@ -1834,66 +1880,6 @@ private fun RepoBrowserView(
             }
         }
 
-        item { SectionHeader("Extension repos") }
-        if (repos.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "No extension repos yet",
-                    subtitle = "Add a CloudStream, Hikari or Nuvio repo to browse and install extensions.",
-                    actionLabel = null,
-                    action = null
-                )
-            }
-        }
-        items(repos, key = { it.url }) { repo ->
-            RepoCard(
-                repo = repo,
-                pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
-                state = repoState[repo.url],
-                onClick = { onOpenRepo(repo) },
-                onRefresh = { onRefreshRepo(repo) },
-                onRemoveRepo = { onRemoveRepo(repo.url) }
-            )
-        }
-
-        item { SectionHeader("Installed extensions") }
-        item {
-            GlassSearchField(
-                value = extFilter,
-                onValueChange = { extFilter = it },
-                placeholder = "Search installed extensions…",
-                height = 48.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-        }
-        val filteredProviders = providers.filter {
-            extFilter.isBlank() || it.config.name.contains(extFilter, ignoreCase = true)
-        }
-        if (filteredProviders.isEmpty()) {
-            item {
-                EmptyState(
-                    title = if (providers.isEmpty()) "No extensions yet" else "No matches",
-                    subtitle = if (providers.isEmpty())
-                        "Add a CloudStream repo, a Stremio addon, a universal scraper, a .cs3 plugin, or a .hiki extension."
-                    else
-                        "No installed extension matches \"$extFilter\".",
-                    actionLabel = null,
-                    action = null
-                )
-            }
-        }
-        items(filteredProviders, key = { it.config.id }) { p ->
-            ProviderCard(
-                p = p,
-                status = pluginStatus(p),
-                onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
-                onDelete = { onDeleteProvider(p.config.id) },
-                onSettings = if (p.config.type == ProviderType.NUVIO)
-                    { { settingsProvider = p } } else null,
-            )
-        }
         item { SectionHeader("Webview sites") }
         item {
             SitesFolder(
@@ -1903,13 +1889,6 @@ private fun RepoBrowserView(
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
-    }
-
-    settingsProvider?.let { provider ->
-        NuvioSettingsDialog(
-            provider = provider,
-            onDismiss = { settingsProvider = null },
-        )
     }
 }
 
@@ -2129,7 +2108,7 @@ private fun ProviderCard(
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
 ) {
-    Card(Modifier
+    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2437,7 +2416,7 @@ private fun RepoCard(
     onRefresh: () -> Unit,
     onRemoveRepo: () -> Unit,
 ) {
-    Card(
+    GlassCard(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
@@ -2615,7 +2594,7 @@ private fun SitesFolder(
     onRemove: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Card(
+    GlassCard(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -2692,7 +2671,7 @@ private fun SiteRow(
     onOpen: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    Card(Modifier
+    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3158,5 +3137,206 @@ private fun AddRepoButton(label: String, onClick: () -> Unit) {
         Icon(Icons.Filled.Add, contentDescription = null)
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+@Composable
+private fun AllReposView(
+    repos: List<Cs3Repo>,
+    pluginsByRepo: Map<String, List<Cs3RepoPlugin>>,
+    repoState: Map<String, RepoLoadState>,
+    busy: Boolean,
+    busyMsg: String,
+    successMsg: String?,
+    errorMsg: String?,
+    onBack: () -> Unit,
+    onOpenRepo: (Cs3Repo) -> Unit,
+    onAddRepo: () -> Unit,
+    onRemoveRepo: (String) -> Unit,
+    onRefreshRepo: (Cs3Repo) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Column(Modifier.weight(1f)) {
+                Text("All installed repos", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${repos.size} repo${if (repos.size == 1) "" else "s"} added",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        HorizontalDivider()
+        if (busy) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                busyMsg,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
+        successMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        errorMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        LazyColumn(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(bottom = 8.dp)
+        ) {
+            if (repos.isEmpty()) {
+                item {
+                    EmptyState(
+                        title = "No repos added yet",
+                        subtitle = "Tap \"Add repo\" below to add a CloudStream, Hikari or Nuvio repo.",
+                        actionLabel = null,
+                        action = null
+                    )
+                }
+            }
+            items(repos, key = { it.url }) { repo ->
+                RepoCard(
+                    repo = repo,
+                    pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
+                    state = repoState[repo.url],
+                    onClick = { onOpenRepo(repo) },
+                    onRefresh = { onRefreshRepo(repo) },
+                    onRemoveRepo = { onRemoveRepo(repo.url) }
+                )
+            }
+        }
+        AddRepoButton(label = "Add repo", onClick = onAddRepo)
+    }
+}
+
+@Composable
+private fun InstalledExtensionsView(
+    providers: List<ContentProvider>,
+    busy: Boolean,
+    busyMsg: String,
+    successMsg: String?,
+    errorMsg: String?,
+    onBack: () -> Unit,
+    onToggleProvider: (String, Boolean) -> Unit,
+    onDeleteProvider: (String) -> Unit,
+) {
+    var extFilter by remember { mutableStateOf("") }
+    var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Installed extensions", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${providers.size} extension${if (providers.size == 1) "" else "s"} installed",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        HorizontalDivider()
+        if (busy) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                busyMsg,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
+        successMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        errorMsg?.let { msg ->
+            Text(
+                msg,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+        LazyColumn(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                GlassSearchField(
+                    value = extFilter,
+                    onValueChange = { extFilter = it },
+                    placeholder = "Search installed extensions…",
+                    height = 48.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            val filteredProviders = providers.filter {
+                extFilter.isBlank() || it.config.name.contains(extFilter, ignoreCase = true)
+            }
+            if (filteredProviders.isEmpty()) {
+                item {
+                    EmptyState(
+                        title = if (providers.isEmpty()) "No extensions yet" else "No matches",
+                        subtitle = if (providers.isEmpty())
+                            "Add a CloudStream repo, a Stremio addon, a universal scraper, a .cs3 plugin, or a .hiki extension."
+                        else
+                            "No installed extension matches \"$extFilter\".",
+                        actionLabel = null,
+                        action = null
+                    )
+                }
+            }
+            items(filteredProviders, key = { it.config.id }) { p ->
+                ProviderCard(
+                    p = p,
+                    status = pluginStatus(p),
+                    onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
+                    onDelete = { onDeleteProvider(p.config.id) },
+                    onSettings = if (p.config.type == ProviderType.NUVIO)
+                        { { settingsProvider = p } } else null,
+                )
+            }
+        }
+    }
+
+    settingsProvider?.let { provider ->
+        NuvioSettingsDialog(
+            provider = provider,
+            onDismiss = { settingsProvider = null },
+        )
     }
 }
