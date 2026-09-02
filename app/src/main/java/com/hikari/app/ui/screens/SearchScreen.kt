@@ -43,6 +43,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.SearchResultsCache
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
@@ -114,18 +115,33 @@ class SearchViewModel(
                         _searching.value = false
                         return@collectLatest
                     }
+                    val providers = _selectedProviders.value
+                    val key = cacheKey(q, providers)
+                    // Returning from the player re-creates this ViewModel. The
+                    // last finished results for this query are cached (already
+                    // tokenized, so they're small) — restore them instantly
+                    // instead of re-running the whole multi-page search.
+                    SearchResultsCache.get(key)?.let { cached ->
+                        _results.value = cached
+                        _searching.value = false
+                        return@collectLatest
+                    }
                     _searching.value = true
                     try {
-                        repo.searchStreaming(q, providerIds = _selectedProviders.value)
+                        repo.searchStreaming(q, providerIds = providers)
                             .collect { raw ->
                                 _results.value = withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
                             }
+                        SearchResultsCache.put(key, _results.value)
                     } finally {
                         _searching.value = false
                     }
                 }
         }
     }
+
+    private fun cacheKey(query: String, providers: Set<String>): String =
+        query.trim() + "\u0000" + providers.sorted().joinToString(",")
 
     fun setQuery(q: String) {
         _query.value = q
