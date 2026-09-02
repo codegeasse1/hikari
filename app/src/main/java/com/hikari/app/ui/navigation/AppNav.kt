@@ -2,10 +2,18 @@ package com.hikari.app.ui.navigation
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.History
@@ -14,19 +22,21 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,7 +67,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     // Same Search screen, but pre-filled with a query (genre tags, "show all",
-    // search suggestions…). A separate route (not "search?q=" on the tab route)
+    // search suggestionsâ¦). A separate route (not "search?q=" on the tab route)
     // so the query string carries through nav without clobbering the tab's own
     // remembered state; the tab bar matches it by stripping the query.
     const val SEARCH_QUERY = "search?q={q}"
@@ -97,7 +107,7 @@ object Routes {
         val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ")
             .trim().take(500)
         var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(safeTitle)}"
-        // MRDS/51CG posters are decrypted into huge data: URIs — dropping them
+        // MRDS/51CG posters are decrypted into huge data: URIs â dropping them
         // from the route keeps the NavController from exploding on a monster
         // deep link. The detail page re-fetches the poster via /meta anyway.
         val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
@@ -111,11 +121,72 @@ object Routes {
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
     fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}"
 
-    /** navigate() that can never crash the app on a malformed route — some
+    /** navigate() that can never crash the app on a malformed route â some
      *  extensions return titles/ids that trip up the route parser, and one
      *  junk item must not be able to kill the whole app. */
     fun safeNavigate(nav: NavHostController, route: String) {
         runCatching { nav.navigate(route) }
+    }
+}
+
+
+@Composable
+private fun AppBottomBar(
+    currentRoute: String?,
+    onNavigate: (String) -> Unit,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            shadowElevation = 10.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(60.dp)
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Tabs.forEach { tab ->
+                    val selected = currentRoute == tab.route
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(if (selected) primary.copy(alpha = 0.16f) else Color.Transparent)
+                            .clickable { onNavigate(tab.route) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            tab.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = if (selected) primary else muted
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            tab.label,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            fontSize = 9.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) primary else muted
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -138,11 +209,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    // SEARCH_QUERY is "search?q=…" — strip the query so the tab still matches.
+    // SEARCH_QUERY is "search?q=â¦" â strip the query so the tab still matches.
     val tabRoute = currentRoute?.substringBefore('?')
     val showBar = tabRoute in Tabs.map { it.route }
 
-    // The WebView's "Go to app home" menu item bumps this — landing on the
+    // The WebView's "Go to app home" menu item bumps this â landing on the
     // app's own Home tab (not the website's home page).
     val context = LocalContext.current
     val homeRequest by (context.applicationContext as HikariApp).homeTabRequest.collectAsState()
@@ -157,7 +228,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        // Dark Glass UI backdrop — a vivid gradient sits behind the translucent
+        // Dark Glass UI backdrop â a vivid gradient sits behind the translucent
         // surfaces so cards/nav bar read as frosted glass. Solid themes draw
         // nothing (the Scaffold's background color covers it).
         if (themeKey == HikariThemeMode.GLASS.key) {
@@ -181,39 +252,16 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (showBar) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    // Slimmer bar so the five tabs fit comfortably and every
-                    // label shows in full on narrow phones.
-                    modifier = Modifier.height(62.dp),
-                ) {
-                    Tabs.forEach { tab ->
-                        NavigationBarItem(
-                            selected = tabRoute == tab.route,
-                            onClick = {
-                                nav.navigate(tab.route) {
-                                    popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Icon(tab.icon, contentDescription = null) },
-                            label = {
-                                Text(
-                                    tab.label,
-                                    // Force the label onto a single line with no
-                                    // ellipsis — the default wraps long tab
-                                    // names (e.g. "Extensions") onto a second
-                                    // line on narrow phones.
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Clip,
-                                    fontSize = 9.sp,
-                                )
-                            }
-                        )
+                AppBottomBar(
+                    currentRoute = tabRoute,
+                    onNavigate = { route ->
+                        nav.navigate(route) {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     }
-                }
+                )
             }
         }
     ) { padding ->
