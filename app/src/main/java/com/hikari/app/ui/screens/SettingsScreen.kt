@@ -299,13 +299,13 @@ fun SettingsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "â Stremio addons\n" +
-                            "â Universal scrapers\n" +
-                            "â HLS/DASH player with headers + subtitles\n" +
-                            "â CloudStream .cs3 plugin loader\n" +
-                            "â Torrent engine for infoHash streams\n" +
-                            "â¢ Downloads, continue-watching (next)\n" +
-                            "â¢ SkyStream extensions, scriptable scrapers (planned)",
+                        "✓ Stremio addons\n" +
+                            "✓ Universal scrapers\n" +
+                            "✓ HLS/DASH player with headers + subtitles\n" +
+                            "✓ CloudStream .cs3 plugin loader\n" +
+                            "✓ Torrent engine for infoHash streams\n" +
+                            "• Downloads, continue-watching (next)\n" +
+                            "• SkyStream extensions, scriptable scrapers (planned)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -327,7 +327,7 @@ fun SettingsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Hikari (å) â a universal streaming app built from scratch. " +
+                        "Hikari (光) — a universal streaming app built from scratch. " +
                             "One player, every extension ecosystem.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -584,7 +584,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Stock Android WebView UA â passes Cloudflare checks.",
+                    "Stock Android WebView UA — passes Cloudflare checks.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -600,7 +600,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("Mozilla/5.0 â¦") },
+                    placeholder = { Text("Mozilla/5.0 …") },
                     singleLine = true,
                     label = { Text("Custom user agent") },
                     modifier = Modifier.weight(1f)
@@ -611,7 +611,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 ) { Text("Save") }
             }
             Text(
-                "Currently used: ${app.effectiveWebViewUa().take(70)}â¦",
+                "Currently used: ${app.effectiveWebViewUa().take(70)}…",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -708,7 +708,7 @@ private fun UserscriptsCard(app: HikariApp) {
                 Column {
                     Text(
                         "Paste a userscript with a // ==UserScript== header " +
-                            "(name, @match, @run-atâ¦). It runs only in the WebView.",
+                            "(name, @match, @run-at…). It runs only in the WebView.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -802,7 +802,7 @@ private fun AdBlockingCard(app: HikariApp) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Applies only to WebView sites â the video player is never affected.",
+            "Applies only to WebView sites — the video player is never affected.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -841,7 +841,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             }
                         }
                     ) {
-                        Text(if (isAdded) "â ${preset.name}" else "+ ${preset.name}")
+                        Text(if (isAdded) "✓ ${preset.name}" else "+ ${preset.name}")
                     }
                 }
             }
@@ -886,7 +886,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onClick = {
                         updating = true
                         updateStatus = null
-                        // Downloads are blocking okhttp + retries â must NOT run
+                        // Downloads are blocking okhttp + retries — must NOT run
                         // on the main thread (it froze the app / ANR-crashed).
                         // One bad list can never abort the rest or crash.
                         scope.launch(Dispatchers.IO) {
@@ -897,7 +897,7 @@ private fun AdBlockingCard(app: HikariApp) {
                                 updateStatus = if (total > 0) {
                                     "$total blocked domains ready"
                                 } else {
-                                    "Couldn't update lists â check connection"
+                                    "Couldn't update lists — check connection"
                                 }
                             }
                         }
@@ -910,7 +910,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             strokeWidth = 2.dp
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Updatingâ¦")
+                        Text("Updating…")
                     } else {
                         Icon(
                             Icons.Filled.Refresh,
