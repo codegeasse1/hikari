@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -255,6 +257,39 @@ fun GlassSearchField(
                     )
                 }
             }
+        }
+    }
+}
+
+/** A rounded, translucent glass card — the app's frosted look for lists and
+ *  settings rows. Same idiom as AppBottomBar / GlassSearchField: translucent
+ *  surface + large pill-ish radius + soft shadow. Drop-in for material3 Card. */
+@Composable
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(22.dp),
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val glass = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+    if (onClick != null) {
+        Surface(
+            onClick = onClick,
+            shape = shape,
+            color = glass,
+            shadowElevation = 4.dp,
+            modifier = modifier,
+        ) {
+            Column(Modifier.fillMaxWidth(), content = content)
+        }
+    } else {
+        Surface(
+            shape = shape,
+            color = glass,
+            shadowElevation = 4.dp,
+            modifier = modifier,
+        ) {
+            Column(Modifier.fillMaxWidth(), content = content)
         }
     }
 }
