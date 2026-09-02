@@ -18,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -37,6 +38,15 @@ class ContentRepository(private val manager: ProviderManager) {
         "moviesdrive",
         "vixsrc",
     )
+
+    // Search paging: scan a provider's search results page by page (no
+    // arbitrary cap) until the site stops returning results, so the app's
+    // count matches the website. The budgets keep a dead/hung provider from
+    // stalling the whole search forever.
+    private val MAX_SEARCH_PAGES = 30
+    private val SEARCH_PAGE_TIMEOUT_MS = 90_000L
+    private val SEARCH_PROVIDER_BUDGET_MS = 240_000L
+    private val SEARCH_TOTAL_BUDGET_MS = 260_000L
 
     /** Like runCatching but re-throws CancellationException — a coroutine that
      *  gets cancelled (e.g. the user switches tabs while Home is loading every
@@ -141,26 +151,43 @@ class ContentRepository(private val manager: ProviderManager) {
             val jobs = active.map { p ->
                 scope.async {
                     gate.withPermit {
-                        val items = cancellableCatching {
-                            // Generous per-provider budget — heavy scrapers (e.g.
-                            // MRDS) fetch several pages AND download/decrypt every
-                            // poster into a data: URI before returning, which can
-                            // take 1-3 minutes on a slow network. CloudStream has
-                            // no such cap, so it shows those results while a short
-                            // cap here used to blank them ("Nothing matched").
-                            withTimeoutOrNull(240_000) { p.search(query, page) } ?: emptyList()
-                        }.getOrDefault(emptyList())
-                        aggregate.value = (aggregate.value + items).distinctBy { it.uniqueId }
+                        // Page through the provider's search (page 1, 2, …) and
+                        // fold each page into the aggregate AS IT LANDS, so the
+                        // UI shows page 1 immediately and then grows page by page
+                        // instead of freezing for the whole scan. Scanning
+                        // continues until the provider returns an empty page (the
+                        // site has no more results) — that's what lets the app's
+                        // result count match the website instead of an arbitrary
+                        // page cap.
+                        var pageNo = page.coerceAtLeast(1)
+                        val deadline = System.currentTimeMillis() + SEARCH_PROVIDER_BUDGET_MS
+                        while (pageNo <= MAX_SEARCH_PAGES && System.currentTimeMillis() < deadline) {
+                            val items = cancellableCatching {
+                                // Generous per-page budget — heavy scrapers (e.g.
+                                // MRDS) also download+decrypt every poster into a
+                                // data: URI on the page, which is slow on a weak
+                                // network.
+                                withTimeoutOrNull(SEARCH_PAGE_TIMEOUT_MS) { p.search(query, pageNo) } ?: emptyList()
+                            }.getOrDefault(emptyList())
+                            val seen = aggregate.value
+                            val fresh = items.filter { i -> seen.none { it.uniqueId == i.uniqueId } }
+                            // Empty page = end of results; a page that adds no
+                            // NEW items also means done (old-style plugins return
+                            // every page at once).
+                            if (fresh.isEmpty()) break
+                            aggregate.update { (it + fresh).distinctBy { m -> m.uniqueId } }
+                            pageNo++
+                        }
                     }
                 }
             }
-            // Poll-and-emit the running aggregate so the UI shows each
-            // provider's hits the moment they land.
+            // Poll-and-emit the running aggregate so the UI shows each page of
+            // every provider's results the moment they land.
             val started = System.currentTimeMillis()
             var lastEmitted: List<MediaItem>? = null
             while (true) {
                 val allDone = jobs.all { it.isCompleted }
-                val timedOut = System.currentTimeMillis() - started > 250_000
+                val timedOut = System.currentTimeMillis() - started > SEARCH_TOTAL_BUDGET_MS
                 if (allDone || timedOut) {
                     emit(translateItems(aggregate.value))
                     break
@@ -505,5 +532,25 @@ class ContentRepository(private val manager: ProviderManager) {
             } else e
         }
         return if (anyChanged) out else eps
+    }
+}
+
+/** Process-wide LRU of finished search results, keyed by query + the selected
+ *  provider set. Items are stored already tokenized (tiny disk-cache tokens),
+ *  so the cache is cheap — and it lets Search restore the grid instantly when
+ *  the user returns from the player instead of re-running the whole multi-page
+ *  search from scratch. Entries are replaced whenever a search completes, and
+ *  evicted LRU-style to stay bounded. */
+object SearchResultsCache {
+    private const val MAX_ENTRIES = 16
+    private val map = object : LinkedHashMap<String, List<MediaItem>>(16, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, List<MediaItem>>?,
+        ): Boolean = size > MAX_ENTRIES
+    }
+
+    fun get(key: String): List<MediaItem>? = synchronized(map) { map[key] }
+    fun put(key: String, value: List<MediaItem>) {
+        synchronized(map) { map[key] = value }
     }
 }
