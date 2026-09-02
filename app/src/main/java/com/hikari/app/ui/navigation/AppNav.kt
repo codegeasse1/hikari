@@ -67,7 +67,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     // Same Search screen, but pre-filled with a query (genre tags, "show all",
-    // search suggestionsâ¦). A separate route (not "search?q=" on the tab route)
+    // search suggestions…). A separate route (not "search?q=" on the tab route)
     // so the query string carries through nav without clobbering the tab's own
     // remembered state; the tab bar matches it by stripping the query.
     const val SEARCH_QUERY = "search?q={q}"
@@ -107,7 +107,7 @@ object Routes {
         val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ")
             .trim().take(500)
         var s = "detail?providerId=${Uri.encode(providerId)}&type=${Uri.encode(type.name)}&mediaId=${Uri.encode(mediaId)}&title=${Uri.encode(safeTitle)}"
-        // MRDS/51CG posters are decrypted into huge data: URIs â dropping them
+        // MRDS/51CG posters are decrypted into huge data: URIs — dropping them
         // from the route keeps the NavController from exploding on a monster
         // deep link. The detail page re-fetches the poster via /meta anyway.
         val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
@@ -121,7 +121,7 @@ object Routes {
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
     fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}"
 
-    /** navigate() that can never crash the app on a malformed route â some
+    /** navigate() that can never crash the app on a malformed route — some
      *  extensions return titles/ids that trip up the route parser, and one
      *  junk item must not be able to kill the whole app. */
     fun safeNavigate(nav: NavHostController, route: String) {
@@ -209,11 +209,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    // SEARCH_QUERY is "search?q=â¦" â strip the query so the tab still matches.
+    // SEARCH_QUERY is "search?q=…" — strip the query so the tab still matches.
     val tabRoute = currentRoute?.substringBefore('?')
     val showBar = tabRoute in Tabs.map { it.route }
 
-    // The WebView's "Go to app home" menu item bumps this â landing on the
+    // The WebView's "Go to app home" menu item bumps this — landing on the
     // app's own Home tab (not the website's home page).
     val context = LocalContext.current
     val homeRequest by (context.applicationContext as HikariApp).homeTabRequest.collectAsState()
@@ -228,7 +228,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        // Dark Glass UI backdrop â a vivid gradient sits behind the translucent
+        // Dark Glass UI backdrop — a vivid gradient sits behind the translucent
         // surfaces so cards/nav bar read as frosted glass. Solid themes draw
         // nothing (the Scaffold's background color covers it).
         if (themeKey == HikariThemeMode.GLASS.key) {
