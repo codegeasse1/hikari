@@ -7,7 +7,9 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,10 +18,15 @@ import android.os.Looper
 import android.util.Base64
 import android.util.Rational
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -41,6 +48,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
 import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
@@ -172,6 +180,15 @@ class PlayerActivity : ComponentActivity() {
     /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
     private var resizeIndex = 0
 
+    /** Subtitle preferences (size scale + sync offset), persisted per device. */
+    private val subsPrefs by lazy { getSharedPreferences("player_subs", MODE_PRIVATE) }
+    private var subtitleScale = 1f
+    private var subtitleOffsetMs = 0L
+
+    /** url -> raw subtitle text, cached so a sync offset can re-time existing
+     *  subtitles without re-fetching them over the network. */
+    private val subtitleRawCache = HashMap<String, String>()
+
     private var torrentDialog: android.app.ProgressDialog? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
@@ -247,6 +264,9 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        subtitleScale = subsPrefs.getFloat("sub_scale", 1f)
+        subtitleOffsetMs = subsPrefs.getLong("sub_offset", 0L)
+        applySubtitleSize(subtitleScale)
         // YouTube-style: fade the controls out after 3s instead of media3's 5s.
         playerView?.controllerShowTimeoutMs = 3000
         // Keep our own mirror of the controller visibility (media3's
@@ -686,13 +706,17 @@ class PlayerActivity : ComponentActivity() {
      * Subtitle control. Lists every available text track (HLS/DASH subtitle
      * groups AND the provider-supplied .srt/.vtt), plus Off and Auto — so a
      * stream that forces subtitles on can finally be muted, and a stream with
-     * several languages gets a real picker.
+     * several languages gets a real picker. Below the track list sit two
+     * settings rows: text size (A−/A+, applied live to the SubtitleView) and
+     * sync (slow/fast, re-times the provider subtitle data so it lines up
+     * with the audio when a source's subs are off by a fraction of a second).
      */
     private fun showSubsDialog() {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
         val params = p.trackSelectionParameters
         val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val density = resources.displayMetrics.density
 
         val items = mutableListOf<String>()
         val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
@@ -716,33 +740,137 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        AlertDialog.Builder(this)
-            .setTitle("Subtitles")
-            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
-                userPickedSubs = true
-                when (which) {
-                    0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                        .build()
-                    1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                        .build()
-                    else -> {
-                        val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
-                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                            .setOverrideForType(
-                                TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                            )
-                            .build()
+
+        // Pill-shaped translucent +/- buttons, matching the app's glass theme.
+        fun pill(text: String, onClick: () -> Unit): TextView {
+            val bg = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = (14 * density).toFloat()
+                setColor(0x1AFFFFFF.toInt())
+            }
+            return TextView(this).apply {
+                this.text = text
+                textSize = 14f
+                setTextColor(0xFFF5C569.toInt())
+                gravity = Gravity.CENTER
+                background = bg
+                setPadding((16 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+                setOnClickListener { onClick() }
+            }
+        }
+        fun rowLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(0xFFE6EAF3.toInt())
+        }
+        fun valueLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            textSize = 13f
+            setTextColor(0xFF9AA5B5.toInt())
+            gravity = Gravity.CENTER
+            minWidth = (56 * density).toInt()
+        }
+        fun weightSpacer(): View = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+
+        var initializing = true
+        val radioGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        items.forEachIndexed { idx, label ->
+            radioGroup.addView(RadioButton(this).apply {
+                text = label
+                textSize = 15f
+                setTextColor(0xFFE6EAF3.toInt())
+                buttonTintList = ColorStateList.valueOf(0xFFF5C569.toInt())
+                id = View.generateViewId()
+                isChecked = idx == checked
+                setOnCheckedChangeListener { _, isChecked ->
+                    if (!initializing && isChecked) {
+                        userPickedSubs = true
+                        when (idx) {
+                            0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                .build()
+                            1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                .build()
+                            else -> {
+                                val (group, ti) = indexMap[idx] ?: return@setOnCheckedChangeListener
+                                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                    .setOverrideForType(
+                                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                                    )
+                                    .build()
+                            }
+                        }
                     }
                 }
-                d.dismiss()
-            }
+            })
+        }
+        initializing = false
+
+        val trackList = ScrollView(this).apply {
+            addView(radioGroup)
+        }
+
+        val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
+        fun applySize() {
+            sizeValue.text = "${(subtitleScale * 100).toInt()}%"
+            subsPrefs.edit().putFloat("sub_scale", subtitleScale).apply()
+            applySubtitleSize(subtitleScale)
+        }
+        val syncValue = valueLabel(syncLabel(subtitleOffsetMs))
+        fun applySync() {
+            syncValue.text = syncLabel(subtitleOffsetMs)
+            subsPrefs.edit().putLong("sub_offset", subtitleOffsetMs).apply()
+            attachExternalSubtitles()
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * density).toInt(), (4 * density).toInt(), (20 * density).toInt(), (4 * density).toInt())
+            addView(trackList, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (Math.min(items.size, 6) * 46 * density).toInt()
+            ))
+            addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, (14 * density).toInt(), 0, 0)
+                addView(rowLabel("Text size"))
+                addView(weightSpacer())
+                addView(pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() })
+                addView(sizeValue)
+                addView(pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() })
+            })
+            addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, (10 * density).toInt(), 0, 0)
+                addView(rowLabel("Sync"))
+                addView(weightSpacer())
+                addView(pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() })
+                addView(syncValue)
+                addView(pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() })
+                addView(pill("0") { subtitleOffsetMs = 0L; applySync() })
+            })
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Subtitles")
+            .setView(root)
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    private fun syncLabel(offsetMs: Long): String = if (offsetMs == 0L) "0.0s" else String.format("%+.1fs", offsetMs / 1000.0)
+
+    /** Applies the saved text-size scale to the player's subtitle view. */
+    private fun applySubtitleSize(scale: Float) {
+        runCatching { playerView?.getSubtitleView()?.setFractionalTextSize(0.0533f * scale) }
     }
 
     /**
@@ -1268,8 +1396,8 @@ class PlayerActivity : ComponentActivity() {
             try {
                 val valid = withContext(Dispatchers.IO) {
                     src.subtitles.mapNotNull { s ->
-                        val data = validateSubtitle(s, src.headers)
-                        if (data == null) null else s to data
+                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
+                        s to encodeSubtitle(shiftSubtitleText(raw, subtitleOffsetMs, s.url))
                     }
                 }
                 if (valid.isEmpty()) return@launch
@@ -1396,13 +1524,14 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Fetches a subtitle file with the given headers and returns it as a
-     * self-contained data URI — but only if the content actually looks like a
-     * subtitle. Returns null for anything that 404s, errors, or returns junk,
-     * so a dead provider subtitle is silently dropped instead of crashing the
-     * player.
+     * Fetches a subtitle file with the given headers, validates it, and caches
+     * its raw text (so a later sync-offset change can re-time it without a
+     * second network fetch). Returns null for anything that 404s, errors, or
+     * returns junk, so a dead provider subtitle is silently dropped instead of
+     * crashing the player.
      */
-    private fun validateSubtitle(s: SubtitleSource, headers: Map<String, String>): String? {
+    private fun fetchSubtitleText(s: SubtitleSource, headers: Map<String, String>): String? {
+        subtitleRawCache[s.url]?.let { return it }
         val bytes = Http.getBytes(s.url, headers) ?: return null
         if (bytes.size > 4 * 1024 * 1024) return null
         val text = String(bytes, Charsets.UTF_8).trimStart('\uFEFF')
@@ -1419,8 +1548,106 @@ class PlayerActivity : ComponentActivity() {
                     Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
         }
         if (!ok) return null
-        return "data:text/plain;base64," +
-            Base64.encodeToString(bytes, Base64.NO_WRAP)
+        subtitleRawCache[s.url] = text
+        return text
+    }
+
+    private fun encodeSubtitle(text: String): String =
+        "data:text/plain;base64," +
+            Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+    /** Shifts every cue timestamp in an SRT/VTT/ASS subtitle by offsetMs
+     *  (negative = earlier / "slow" the subtitles, positive = later / "fast"),
+     *  clamped to ≥ 0. Unrecognised formats are returned unchanged. */
+    private fun shiftSubtitleText(text: String, offsetMs: Long, url: String): String {
+        if (offsetMs == 0L) return text
+        val isAss = text.contains("Dialogue:", true) ||
+            url.contains(".ass", true) || url.contains(".ssa", true)
+        if (isAss) {
+            return Regex("(Dialogue:\\s*[^,]*,\\s*)(\\d+:\\d{2}:\\d{2}\\.\\d{2})(,)(\\s*\\d+:\\d{2}:\\d{2}\\.\\d{2})")
+                .replace(text) { m ->
+                    m.groupValues[1] + shiftAssClock(m.groupValues[2], offsetMs) +
+                        m.groupValues[3] + shiftAssClock(m.groupValues[4], offsetMs)
+                }
+        }
+        val isVtt = text.contains("WEBVTT", true) && !text.contains("X-TIMESTAMP-MAP", true)
+        return if (isVtt) {
+            Regex("(\\d{1,2}):(\\d{2}):(\\d{2})\\.(\\d{3})").replace(text) { m ->
+                formatClock(shiftClock(m, offsetMs), ".")
+            }
+        } else {
+            Regex("(\\d{1,2}):(\\d{2}):(\\d{2}),(\\d{3})").replace(text) { m ->
+                formatClock(shiftClock(m, offsetMs), ",")
+            }
+        }
+    }
+
+    private fun shiftClock(m: MatchResult, offsetMs: Long): Long {
+        val ms = m.groupValues[1].toLong() * 3_600_000L +
+            m.groupValues[2].toLong() * 60_000L +
+            m.groupValues[3].toLong() * 1000L +
+            m.groupValues[4].toLong()
+        return (ms + offsetMs).coerceAtLeast(0L)
+    }
+
+    private fun formatClock(ms: Long, sep: String): String = String.format(
+        "%d:%02d:%02d%s%03d",
+        ms / 3_600_000L, (ms % 3_600_000L) / 60_000L, (ms % 60_000L) / 1000L, sep, ms % 1000L
+    )
+
+    private fun shiftAssClock(clock: String, offsetMs: Long): String {
+        val m = Regex("(\\d+):(\\d{2}):(\\d{2})\\.(\\d{2})").find(clock) ?: return clock
+        val ms = m.groupValues[1].toLong() * 3_600_000L +
+            m.groupValues[2].toLong() * 60_000L +
+            m.groupValues[3].toLong() * 1000L +
+            m.groupValues[4].toLong() * 10L
+        val shifted = (ms + offsetMs).coerceAtLeast(0L)
+        return String.format(
+            "%d:%02d:%02d.%02d",
+            shifted / 3_600_000L, (shifted % 3_600_000L) / 60_000L,
+            (shifted % 60_000L) / 1000L, (shifted % 1000L) / 10L
+        )
+    }
+
+    /** Re-attaches the current source's external subtitles shifted by the
+     *  saved sync offset, keeping the current playback position. */
+    private fun attachExternalSubtitles() {
+        val p = player ?: return
+        if (noSubsRetry) return
+        val src = sources.getOrNull(currentIndex) ?: return
+        if (src.subtitles.isEmpty()) {
+            Toast.makeText(this, "Sync applies to downloaded subtitles", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val playedIndex = currentIndex
+        val mime = when {
+            src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
+                MimeTypes.APPLICATION_M3U8
+            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
+            else -> null
+        }
+        lifecycleScope.launch {
+            try {
+                val configs = withContext(Dispatchers.IO) {
+                    src.subtitles.mapNotNull { s ->
+                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
+                        val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
+                        MediaItem.SubtitleConfiguration.Builder(Uri.parse(encodeSubtitle(shifted)))
+                            .setMimeType(mimeFor(s.url))
+                            .setLanguage(s.lang)
+                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                            .build()
+                    }
+                }
+                if (configs.isEmpty() || currentIndex != playedIndex) return@launch
+                val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
+                if (mime != null) item.setMimeType(mime)
+                p.setMediaItem(item.build(), false)
+                p.prepare()
+            } catch (t: Throwable) {
+                android.util.Log.e("HikariPlayer", "subtitle sync attach failed", t)
+            }
+        }
     }
 
     private val listener = object : Player.Listener {
