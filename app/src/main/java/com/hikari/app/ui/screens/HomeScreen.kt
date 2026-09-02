@@ -55,7 +55,9 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
+import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
@@ -117,10 +119,25 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         loadJob = viewModelScope.launch {
             _loading.value = true
             _rows.value = emptyList()
-            _rows.value = repo.homeRows(_selectedProvider.value)
+            val rows = repo.homeRows(_selectedProvider.value)
+            // MRDS/51CG catalogs carry full-size base64 data: posters; the Home
+            // feed keeps hundreds of them alive at once and OOMs on a stock
+            // heap. Collapse each into a tiny disk-cache token (same as the
+            // catalog/search screens) — [PosterLoader.model] resolves the token
+            // back to the bytes, so the grid still shows the images.
+            _rows.value = withContext(Dispatchers.IO) {
+                rows.map { row -> row.copy(items = row.items.map { it.tokenizePoster() }) }
+            }
             _loading.value = false
         }
         loadJob?.join()
+    }
+
+    private fun MediaItem.tokenizePoster(): MediaItem {
+        val p = PosterLoader.tokenize(posterUrl)
+        val b = PosterLoader.tokenize(backdropUrl)
+        return if (p == posterUrl && b == backdropUrl) this
+        else copy(posterUrl = p, backdropUrl = b)
     }
 
     fun refresh() {
