@@ -116,6 +116,12 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
             }
+            // Apply vendored nuvio provider patches (see NuvioPluginManager's
+            // PROVIDER_PATCHES) so already-installed broken providers get the
+            // fixed JS in place without a manual reinstall.
+            runCatching {
+                com.hikari.app.nuvio.NuvioPluginManager.applyPatchesToInstalled(this@HikariApp)
+            }
             providers.refresh()
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()

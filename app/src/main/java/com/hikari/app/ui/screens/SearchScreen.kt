@@ -16,14 +16,11 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +46,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -166,24 +164,11 @@ fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
     }
 
     Column(Modifier.fillMaxSize()) {
-        OutlinedTextField(
+        GlassSearchField(
             value = query,
             onValueChange = vm::setQuery,
-            placeholder = {
-                Text(
-                    if (selected.isEmpty()) "Search across all providers…"
-                    else "Search in ${selected.size} selected provider${if (selected.size == 1) "" else "s"}…"
-                )
-            },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { vm.setQuery("") }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear")
-                    }
-                }
-            },
-            singleLine = true,
+            placeholder = if (selected.isEmpty()) "Search across all providers…"
+            else "Search in ${selected.size} selected provider${if (selected.size == 1) "" else "s"}…",
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -199,19 +184,11 @@ fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
                 if (providers.size > 5) {
                     // With many extensions installed the chip row is unusable —
                     // a mini search box narrows it to the ones you mean.
-                    OutlinedTextField(
+                    GlassSearchField(
                         value = providerFilter,
                         onValueChange = { providerFilter = it },
-                        placeholder = { Text("Filter providers…") },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (providerFilter.isNotEmpty()) {
-                                IconButton(onClick = { providerFilter = "" }) {
-                                    Icon(Icons.Filled.Close, contentDescription = "Clear")
-                                }
-                            }
-                        },
-                        singleLine = true,
+                        placeholder = "Filter providers…",
+                        height = 44.dp,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 2.dp)
@@ -225,14 +202,28 @@ fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
                         FilterChip(
                             selected = selected.isEmpty(),
                             onClick = { vm.selectAll() },
-                            label = { Text("All") }
+                            label = { Text("All") },
+                            shape = RoundedCornerShape(24.dp),
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedLabelColor = MaterialTheme.colorScheme.primary,
+                            )
                         )
                     }
                     items(visibleProviders, key = { it.config.id }) { p ->
                         FilterChip(
                             selected = p.config.id in selected,
                             onClick = { vm.toggleProvider(p.config.id) },
-                            label = { Text(p.config.name) }
+                            label = { Text(p.config.name) },
+                            shape = RoundedCornerShape(24.dp),
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedLabelColor = MaterialTheme.colorScheme.primary,
+                            )
                         )
                     }
                 }

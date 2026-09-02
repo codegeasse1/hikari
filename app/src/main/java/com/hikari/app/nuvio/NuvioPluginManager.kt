@@ -89,11 +89,14 @@ object NuvioPluginManager {
         if (bytes.size > MAX_BYTES) {
             return@withContext Result.failure(Exception("File too large (max 5MB)"))
         }
+        // Vendored fix: replace known-broken upstream providers with the
+        // patched JS shipped in assets (see PROVIDER_PATCHES).
+        val effective = patchedBytes(sourceUrl) ?: bytes
         val clean = rawName.substringAfterLast('/').ifBlank { "provider.js" }
             .let { if (it.endsWith(".js", true)) it else "$it.js" }
         val file = File(scrapersDir(context), clean)
         file.setWritable(true)
-        val wrote = runCatching { file.writeBytes(bytes) }
+        val wrote = runCatching { file.writeBytes(effective) }
         if (wrote.isFailure) {
             return@withContext Result.failure(
                 Exception("Could not write scraper file: ${wrote.exceptionOrNull()?.message}")
@@ -150,6 +153,72 @@ object NuvioPluginManager {
     fun fileMissing(config: ProviderConfig): Boolean =
         config.type == ProviderType.NUVIO &&
             (config.url.isBlank() || !File(config.url).exists())
+
+    /**
+     * Vendored fixes for upstream nuvio providers that are broken at the
+     * source (their repo owners are unreachable/slow to fix). Each entry maps
+     * a URL fragment of the provider's `sourceUrl` to a patched JS file shipped
+     * in assets/nuvio/patches/. When a provider matching a fragment is
+     * installed (or re-patched on launch), the patched file is used instead of
+     * the upstream bytes.
+     *
+     * vornix.js  — MoviesDrive: hubcloud download links use a newer button
+     *              layout ("Download [Server: 10Gbps]" → pixel.hubcloud.cx)
+     *              that the upstream filter never matched, so no links were
+     *              ever extracted.
+     * streamflix.js — the upstream provider returns only the dead wasabisys
+     *              premium bucket (NoSuchBucket) and requires a WebSocket
+     *              (which hikari's QuickJS runtime does not have) for TV; the
+     *              patched build probes every server, drops dead ones and uses
+     *              deterministic TV paths.
+     */
+    private val PROVIDER_PATCHES = listOf(
+        "vornix.js" to "nuvio/patches/vornix.js",
+        "streamflix.js" to "nuvio/patches/streamflix.js",
+    )
+
+    private fun patchedBytes(sourceUrl: String?): ByteArray? {
+        val url = sourceUrl ?: return null
+        for ((fragment, asset) in PROVIDER_PATCHES) {
+            if (url.endsWith(fragment, ignoreCase = true) || url.contains("/$fragment", ignoreCase = true)) {
+                return runCatching {
+                    HikariApp.instance.assets.open(asset).use { it.readBytes() }
+                }.getOrNull()
+            }
+        }
+        return null
+    }
+
+    /** Applies the vendored patches to ALREADY-INSTALLED providers whose file
+     *  on disk still matches the (broken) upstream bytes — i.e. providers the
+     *  user installed before the patch shipped. Rewrites the file in place and
+     *  re-validates so the fix takes effect without a reinstall. */
+    suspend fun applyPatchesToInstalled(context: Context) {
+        val store = HikariApp.instance.store
+        val targets = store.providers().filter { it.type == ProviderType.NUVIO }
+        for (cfg in targets) {
+            val patched = patchedBytes(cfg.extra) ?: continue
+            val file = File(cfg.url)
+            if (!file.exists()) continue
+            val current = runCatching { file.readBytes() }.getOrNull() ?: continue
+            if (current.contentEquals(patched)) continue
+            // Only replace when the on-disk file is actually the upstream
+            // version (not something the user already modified themselves).
+            val sourceText = runCatching { String(current, Charsets.UTF_8) }.getOrNull()
+            val isUpstream = sourceText != null && !sourceText.contains("Hikari patched build")
+            if (!isUpstream) continue
+            if (!runCatching {
+                    file.setWritable(true)
+                    file.writeBytes(patched)
+                    true
+                }.getOrDefault(false)) continue
+            val verdict = NuvioRuntime.validate(context, String(patched, Charsets.UTF_8))
+            if (!verdict.startsWith("OK")) {
+                // Revert on validation failure — never ship a broken file.
+                runCatching { file.writeBytes(current) }
+            }
+        }
+    }
 
     /** Builds a Cs3RepoPlugin for a repo listing entry (manifest `scrapers`
      *  array). baseUrl is the manifest URL minus the /manifest.json suffix. */
