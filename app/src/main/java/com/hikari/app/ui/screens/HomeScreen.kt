@@ -2,6 +2,7 @@ package com.hikari.app.ui.screens
 
 import android.app.Application
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -33,7 +34,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -171,17 +171,12 @@ fun HomeScreen(nav: NavHostController) {
     // by a WAF check, this globe button opens the site in the WebView so the
     // user can verify once; the WebView auto-closes once the challenge passes
     // and the catalog reloads (the extension's cookie jar is now cleared).
+    // The button shows for EVERY selected extension — the site URL is resolved
+    // lazily on tap, off the main thread (for CS3 plugins that loads the plugin
+    // dex to read its mainUrl, which can take seconds and must never block the
+    // UI thread — this is why the old version hid the button whenever that
+    // lookup hadn't finished or transiently failed).
     val context = LocalContext.current
-    // Resolved off the main thread: for CS3 plugins this loads the plugin dex
-    // to read its mainUrl, which must never block the UI thread (it can take
-    // seconds and previously froze/ANR'd the app when Home recomposed during
-    // heavy loads or right after an extension install).
-    var webUrl by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(selected, providers) {
-        webUrl = withContext(Dispatchers.IO) {
-            providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
-        }
-    }
     val verifyLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         vm.refresh()
     }
@@ -230,7 +225,8 @@ fun HomeScreen(nav: NavHostController) {
                     }
                     // Translate: per-extension toggle — turns this extension's
                     // titles/text into English inside the app. Shown whenever a
-                    // provider is selected (content exists regardless of webUrl).
+                    // provider is selected (content exists regardless of the
+                    // site URL).
                     selected?.let { pid ->
                         val translateOn = com.hikari.app.data.Translator.isOn(pid)
                         IconButton(
@@ -246,17 +242,31 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         }
                     }
-                    if (webUrl != null) {
+                    if (selected != null) {
                         IconButton(
                             onClick = {
-                                verifyLauncher.launch(
-                                    Intent(context, WebViewActivity::class.java).apply {
-                                        putExtra("url", webUrl)
-                                        putExtra("title", "Verify: ${selectedName ?: "site"}")
-                                        putExtra("providerId", selected)
-                                        putExtra("autoCloseWhenCloudflarePassed", true)
+                                scope.launch {
+                                    val url = withContext(Dispatchers.IO) {
+                                        providers.firstOrNull { it.config.id == selected }
+                                            ?.let { webUrlFor(it) }
                                     }
-                                )
+                                    if (url != null) {
+                                        verifyLauncher.launch(
+                                            Intent(context, WebViewActivity::class.java).apply {
+                                                putExtra("url", url)
+                                                putExtra("title", "Verify: ${selectedName ?: "site"}")
+                                                putExtra("providerId", selected)
+                                                putExtra("autoCloseWhenCloudflarePassed", true)
+                                            }
+                                        )
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "Couldn't determine this extension's site",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
                             }
                         ) {
                             Icon(
