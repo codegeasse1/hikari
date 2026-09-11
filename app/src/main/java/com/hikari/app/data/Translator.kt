@@ -9,6 +9,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 /**
@@ -46,6 +47,36 @@ object Translator {
     private val EN_STOP = Regex(
         """^(the|and|of|to|in|is|are|was|were|for|with|on|at|by|this|that|these|those|you|your|we|our|they|their|them|it|its|a|an|or|but|as|from|not|be|have|has|had|i|me|my|do|does|did|what|which|who|when|where|why|there|here|can|will|would|should|could|then|than|so|if|up|out|about|just|more|most|all|any|some|also|only|into|over|under|no|yes)$""",
         RegexOption.IGNORE_CASE
+    )
+
+    /** Target languages offered by the search-bar translator: ISO code to
+     *  display label. English is first (the default source); Chinese is the
+     *  one-tap target. */
+    val LANGUAGES: List<Pair<String, String>> = listOf(
+        "en" to "English",
+        "zh-CN" to "Chinese (Simplified)",
+        "zh-TW" to "Chinese (Traditional)",
+        "ja" to "Japanese",
+        "ko" to "Korean",
+        "es" to "Spanish",
+        "fr" to "French",
+        "de" to "German",
+        "it" to "Italian",
+        "pt" to "Portuguese",
+        "ru" to "Russian",
+        "ar" to "Arabic",
+        "hi" to "Hindi",
+        "bn" to "Bengali",
+        "id" to "Indonesian",
+        "th" to "Thai",
+        "vi" to "Vietnamese",
+        "tr" to "Turkish",
+        "pl" to "Polish",
+        "nl" to "Dutch",
+        "uk" to "Ukrainian",
+        "fa" to "Persian",
+        "ms" to "Malay",
+        "tl" to "Filipino",
     )
 
     /** Loads the persisted config + translation cache. Call once at app start. */
@@ -138,6 +169,43 @@ object Translator {
             if (EN_STOP.matches(m.value)) return true
         }
         return false
+    }
+
+    /** One-off translation of arbitrary user text into [targetLang] (an ISO
+     *  code like "zh-CN", "en", "ja"). This is the search-bar translator: it
+     *  does NOT skip text that already looks English, because the caller
+     *  explicitly asked for a direction change — Google auto-detects the
+     *  source language. Returns the input unchanged when the request fails. */
+    suspend fun translateTo(text: String, targetLang: String): String {
+        if (text.isBlank() || targetLang.isBlank()) return text
+        return withContext(Dispatchers.IO) { runCatching { fetchTo(text, targetLang) }.getOrDefault("") }
+            .ifBlank { text }
+    }
+
+    /** Detects [text]'s language code (e.g. "en", "zh-CN"), or "" when unknown. */
+    suspend fun detectLang(text: String): String = withContext(Dispatchers.IO) {
+        if (text.isBlank()) return@withContext ""
+        runCatching {
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
+                "&sl=auto&tl=en&dt=t&q=" + java.net.URLEncoder.encode(text, "UTF-8")
+            val body = Http.get(url).use { it.body?.string() } ?: return@runCatching ""
+            JSONArray(body).optString(2)
+        }.getOrDefault("")
+    }
+
+    /** The gtx endpoint splits a long input into several sentence chunks; every
+     *  chunk's translated text is concatenated so nothing is dropped. */
+    private fun fetchTo(text: String, targetLang: String): String {
+        val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
+            "&sl=auto&tl=" + java.net.URLEncoder.encode(targetLang, "UTF-8") +
+            "&dt=t&q=" + java.net.URLEncoder.encode(text, "UTF-8")
+        val body = Http.get(url).use { it.body?.string() } ?: return ""
+        val arr = JSONArray(body).optJSONArray(0) ?: return ""
+        val sb = StringBuilder()
+        for (i in 0 until arr.length()) {
+            sb.append(arr.optJSONArray(i)?.optString(0).orEmpty())
+        }
+        return sb.toString()
     }
 
     private fun fetch(text: String): String {

@@ -100,7 +100,8 @@ fun SettingsScreen() {
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
 
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
-    val hideContinue by app.store.hideContinueFlow().collectAsState(initial = false)
+    val hideContinueFlow = remember { app.store.hideContinueFlow() }
+    val hideContinue by hideContinueFlow.collectAsState(initial = false)
 
     LazyColumn(
         Modifier.fillMaxSize(),

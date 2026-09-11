@@ -211,6 +211,7 @@ fun HomeScreen(nav: NavHostController) {
     var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
     var showPicker by remember { mutableStateOf(false) }
     var showTranslate by remember { mutableStateOf(false) }
+    var showSearchDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
@@ -230,9 +231,16 @@ fun HomeScreen(nav: NavHostController) {
     val app = context.applicationContext as HikariApp
     // Continue Watching: history entries that were meaningfully started and
     // aren't within a minute of the end (those read as finished), newest first.
-    val history by app.store.historyFlow().collectAsState(initial = emptyList())
+    // IMPORTANT: remember the Flow instances. Building `store.historyFlow()`
+    // inline creates a NEW Flow object on every recomposition, so
+    // collectAsState re-subscribes from scratch each time and resets to its
+    // `initial` value (emptyList) — which is exactly why the Continue Watching
+    // shelf stayed blank no matter how much was watched.
+    val historyFlow = remember { app.store.historyFlow() }
+    val hideContinueFlow = remember { app.store.hideContinueFlow() }
+    val history by historyFlow.collectAsState(initial = emptyList())
     // Settings → "Continue Watching": lets the user hide the shelf entirely.
-    val hideContinue by app.store.hideContinueFlow().collectAsState(initial = false)
+    val hideContinue by hideContinueFlow.collectAsState(initial = false)
     val continueEntries = remember(history) {
         history.filter {
             it.positionMs > 5_000L &&
@@ -256,12 +264,19 @@ fun HomeScreen(nav: NavHostController) {
         val first = rows.firstOrNull()?.items.orEmpty()
         (first.filter { !it.backdropUrl.isNullOrBlank() }.ifEmpty { first }).take(8)
     }
-    val openSearch: () -> Unit = {
+    val openGlobalSearch: () -> Unit = {
         nav.navigate(Routes.SEARCH) {
             popUpTo(nav.graph.findStartDestination().id) { saveState = true }
             launchSingleTop = true
             restoreState = true
         }
+    }
+    // Tapping the header search icon asks HOW to search when a specific
+    // extension's catalog is being browsed: globally across every provider, or
+    // scoped to the extension you're looking at. With no extension selected
+    // there's only one sensible answer, so it goes straight to global search.
+    val openSearch: () -> Unit = {
+        if (selected != null) showSearchDialog = true else openGlobalSearch()
     }
     val openVerify: () -> Unit = {
         scope.launch {
@@ -512,6 +527,34 @@ fun HomeScreen(nav: NavHostController) {
             },
             dismissButton = {
                 TextButton(onClick = { showTranslate = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Search scope chooser: global (every provider, with the provider chips to
+    // narrow it) or scoped to the extension whose catalog is on screen.
+    val searchSel = selected
+    if (showSearchDialog && searchSel != null) {
+        val pname = selectedName ?: "this extension"
+        AlertDialog(
+            onDismissRequest = { showSearchDialog = false },
+            title = { Text("Search") },
+            text = { Text("Search across every provider, or only inside $pname?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSearchDialog = false
+                    openGlobalSearch()
+                }) {
+                    Text("Global search")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showSearchDialog = false
+                    Routes.safeNavigate(nav, Routes.searchInProvider(searchSel))
+                }) {
+                    Text("In $pname")
+                }
             },
         )
     }

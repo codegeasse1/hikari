@@ -67,10 +67,11 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     // Same Search screen, but pre-filled with a query (genre tags, "show all",
-    // search suggestions…). A separate route (not "search?q=" on the tab route)
-    // so the query string carries through nav without clobbering the tab's own
-    // remembered state; the tab bar matches it by stripping the query.
-    const val SEARCH_QUERY = "search?q={q}"
+    // search suggestions…) and/or scoped to one provider (Home's "Search this
+    // extension" entry point). A separate route (not "search?q=" on the tab
+    // route) so the query string carries through nav without clobbering the
+    // tab's own remembered state; the tab bar matches it by stripping the query.
+    const val SEARCH_QUERY = "search?q={q}&provider={provider}"
     // All args live in the query string: mediaIds are URLs (slashes would break
     // a path segment) and posters can be megabytes of base64 (see detail()).
     const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
@@ -119,7 +120,12 @@ object Routes {
     }
 
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
-    fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}"
+    fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}&provider="
+
+    /** Opens the Search tab with the query scoped to one provider — Home's
+     *  "Search this extension" entry point. */
+    fun searchInProvider(providerId: String, q: String = ""): String =
+        "search?q=${Uri.encode(q)}&provider=${Uri.encode(providerId)}"
 
     /** navigate() that can never crash the app on a malformed route — some
      *  extensions return titles/ids that trip up the route parser, and one
@@ -274,10 +280,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             composable(Routes.SEARCH) { SearchScreen(nav) }
             composable(
                 route = Routes.SEARCH_QUERY,
-                arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" })
+                arguments = listOf(
+                    navArgument("q") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("provider") { type = NavType.StringType; defaultValue = "" },
+                )
             ) { entry ->
                 val q = Uri.decode(entry.arguments?.getString("q").orEmpty())
-                SearchScreen(nav, initialQuery = q)
+                val provider = Uri.decode(entry.arguments?.getString("provider").orEmpty())
+                SearchScreen(nav, initialQuery = q, initialProvider = provider)
             }
             composable(Routes.HISTORY) { HistoryScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }

@@ -27,6 +27,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,8 +53,12 @@ fun HistoryScreen(nav: NavHostController) {
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
 
-    val entries by app.store.historyFlow().collectAsState(initial = emptyList())
-    val paused by app.store.historyPausedFlow().collectAsState(initial = false)
+    // Flows must be remembered, not rebuilt inline — a fresh Flow per
+    // recomposition makes collectAsState reset to `initial` every time.
+    val historyFlow = remember { app.store.historyFlow() }
+    val pausedFlow = remember { app.store.historyPausedFlow() }
+    val entries by historyFlow.collectAsState(initial = emptyList())
+    val paused by pausedFlow.collectAsState(initial = false)
 
     LazyColumn(
         Modifier.fillMaxSize(),

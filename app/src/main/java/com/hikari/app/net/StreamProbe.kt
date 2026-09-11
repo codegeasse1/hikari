@@ -19,7 +19,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -48,8 +51,8 @@ object StreamProbe {
 
     private const val MAX_DEPTH = 3
     private const val HEAD_BYTES = 131_072
-    private const val RESOLVE_TIMEOUT_MS = 9_000L
-    private const val SHARED_WAIT_MS = 11_000L
+    private const val RESOLVE_TIMEOUT_MS = 12_000L
+    private const val SHARED_WAIT_MS = 14_000L
     private const val CACHE_FILE = "stream_probe_cache.json"
     private const val CACHE_MAX = 400
 
@@ -67,16 +70,14 @@ object StreamProbe {
 
     /** One client for every probe: the connection pool + TLS sessions stay warm
      *  across sources, activities and calls, which is what makes the second and
-     *  later probes noticeably faster than a per-Activity client could be. */
+     *  later probes noticeably faster than a per-Activity client could be.
+     *  NO callTimeout: a slow-but-working wrapper hop must be allowed to finish
+     *  (the walk self-limits via a clock deadline instead), and a total-call cap
+     *  here was cutting off resolvable 4KHDHub/HubCloud chains mid-walk. */
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
-            // Hard per-request cap: a single hung hop can otherwise stall the
-            // whole walk (and the player's "Preparing stream…" dialog) far past
-            // the walk's own deadline, since a blocking socket read can't be
-            // interrupted by a coroutine timeout.
-            .callTimeout(7, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
@@ -222,10 +223,11 @@ object StreamProbe {
     // ---- internals -------------------------------------------------------
 
     /** Fetches [url] and classifies the head of the response; on a wrapper page
-     *  digs out the embedded media URLs and follows the most promising one.
-     *  Sequential (not raced): a handful of simultaneous requests to the same
-     *  hub host throttles it and can end up SLOWER than walking candidates one
-     *  at a time best-first. Returns null — never throws — on any failure. */
+     *  digs out the embedded media URLs and follows the most promising one. At
+     *  the TOP level the candidates are raced in parallel, so one dead/slow
+     *  candidate no longer serializes the walk behind its own timeout; deeper
+     *  hops stay sequential so the thread fan-out can't explode. Returns null —
+     *  never throws — on any failure. */
     private fun follow(
         url: String,
         headers: Map<String, String>,
@@ -269,7 +271,27 @@ object StreamProbe {
             ) {
                 return Resolved(url, null)
             }
-            for (c in candidates(head, url)) {
+            val candidates = candidates(head, url)
+            if (candidates.isEmpty()) return null
+            if (depth == 0 && candidates.size > 1) {
+                val pool = Executors.newFixedThreadPool(minOf(candidates.size, 4)) { runnable ->
+                    Thread(runnable, "hikari-probe").apply { isDaemon = true }
+                }
+                try {
+                    val done = ExecutorCompletionService<Resolved?>(pool)
+                    candidates.forEach { c ->
+                        done.submit(Callable { follow(c, headers, depth + 1, deadline) })
+                    }
+                    repeat(candidates.size) {
+                        val res = runCatching { done.take().get() }.getOrNull()
+                        if (res != null) return res
+                    }
+                } finally {
+                    pool.shutdownNow()
+                }
+                return null
+            }
+            for (c in candidates) {
                 val res = follow(c, headers, depth + 1, deadline)
                 if (res != null) return res
             }
@@ -277,11 +299,14 @@ object StreamProbe {
         }
     }
 
-    /** Fetches [url] for probing. Close the body after reading the head — no
-     *  Range header, since some hub/wrapper endpoints answer a range request
-     *  with 416/400 and a plain GET is what those pages expect. */
+    /** Fetches [url] for probing. Sends a Range header so hosts stream just the
+     *  opening bytes instead of holding the connection for the whole file, and
+     *  closes the body right after reading the head. Returns null — never
+     *  throws — on any failure. */
     private fun get(url: String, headers: Map<String, String>): Response? = try {
-        val b = okhttp3.Request.Builder().url(url).header("User-Agent", Http.UA)
+        val b = okhttp3.Request.Builder().url(url)
+            .header("User-Agent", Http.UA)
+            .header("Range", "bytes=0-262143")
         headers.forEach { (k, v) -> if (!k.equals("Range", ignoreCase = true)) b.header(k, v) }
         client.newCall(b.build()).execute()
     } catch (t: Throwable) {

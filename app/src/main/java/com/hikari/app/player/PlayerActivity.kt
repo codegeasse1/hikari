@@ -1425,27 +1425,17 @@ class PlayerActivity : ComponentActivity() {
             probeDialog?.let { runCatching { it.dismiss() } }
             probeDialog = null
             if (currentIndex != index) return@launch
-            if (resolved != null) {
-                applyProbe(index, src, resolved)
-                playDirectInner(index)
-            } else if (headerVariant < 2 && src.headers.isNotEmpty()) {
-                // The probe couldn't resolve this URL. The usual cause is a CDN
-                // that 403s any request carrying a Referer (4KHDHub's workers.dev
-                // links are referer-only), so walk the headers down — full → no
-                // Referer → none — and retry the SAME server before skipping it.
-                headerVariant++
-                probeAndPlay(index)
-            } else if (index + 1 < sources.size) {
-                // Unresolvable wrapper page: playing the raw URL would only
-                // fail again after the player's own error timeout — go straight
-                // to the next server.
-                noSubsRetry = false
-                playSource(index + 1)
-            } else {
-                // Last server — hand it over anyway (some hosts serve playable
-                // media at extension-less paths without any wrapper at all).
-                playDirectInner(index)
-            }
+            if (resolved != null) applyProbe(index, src, resolved)
+            // ALWAYS hand the source to ExoPlayer — resolved when the probe
+            // identified a real media URL, otherwise the ORIGINAL url. This is
+            // the 0.3.65 behavior and it matters: 4KHDHub's HubCloud wrapper
+            // pages are served at extension-less paths, and ExoPlayer follows
+            // the redirect chain itself and sniffs the container, so playing
+            // the raw URL works even when our probe can't classify it. Skipping
+            // to the next server on an inconclusive probe was what made 4KHDHub
+            // "just skip" on every source. If the raw URL really is unplayable,
+            // the player's own error handler advances to the next server.
+            playDirectInner(index)
         }
     }
 
@@ -2076,12 +2066,23 @@ class PlayerActivity : ComponentActivity() {
         if (startPositionMs > 0L || !intent.getBooleanExtra("histAskResume", true)) return
         resumeOffered = true
         val key = historyKey
+        val he = historyEntry
         val hintPos = resumeHintMs
         val hintDur = resumeHintDurMs
         (applicationContext as HikariApp).appScope.launch {
-            val h = runCatching {
-                (applicationContext as HikariApp).store.history().firstOrNull { it.uniqueKey == key }
-            }.getOrNull()
+            val all = runCatching {
+                (applicationContext as HikariApp).store.history()
+            }.getOrDefault(emptyList())
+            // Exact identity first. The user very often reopens the SAME video
+            // through a DIFFERENT extension, so fall back to matching on the
+            // media + episode id (ignoring provider/type) and take the most
+            // recent — otherwise a cross-provider replay never saw its saved
+            // progress and the "continue?" prompt silently never appeared.
+            val h = all.firstOrNull { it.uniqueKey == key }
+                ?: he?.let { e ->
+                    all.filter { it.mediaId == e.mediaId && it.episodeId == e.episodeId }
+                        .maxByOrNull { it.watchedAt }
+                }
             var pos = h?.positionMs ?: 0L
             var dur = h?.durationMs ?: 0L
             if (pos <= 0L && hintPos > 0L) {

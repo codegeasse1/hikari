@@ -2,13 +2,16 @@ package com.hikari.app.ui.screens
 
 import android.app.Application
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -17,8 +20,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -28,12 +36,16 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -154,6 +166,14 @@ class SearchViewModel(
         savedState["providers"] = ArrayList<String>()
     }
 
+    /** Selects exactly one provider — used by Home's "Search this extension"
+     *  entry point, which scopes the search to the catalog you were browsing. */
+    fun selectProvider(id: String) {
+        if (id.isBlank()) return
+        _selectedProviders.value = setOf(id)
+        savedState["providers"] = ArrayList(listOf(id))
+    }
+
     /** Toggle one provider in/out of the multi-select. Refuses to empty the
      *  selection (which would silently become "All"); use selectAll() for that. */
     fun toggleProvider(id: String) {
@@ -167,7 +187,11 @@ class SearchViewModel(
 }
 
 @Composable
-fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
+fun SearchScreen(
+    nav: NavHostController,
+    initialQuery: String = "",
+    initialProvider: String = "",
+) {
     val vm: SearchViewModel = viewModel()
     val query by vm.query.collectAsState()
     val results by vm.results.collectAsState()
@@ -175,19 +199,99 @@ fun SearchScreen(nav: NavHostController, initialQuery: String = "") {
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
 
+    // Search-bar translator state: the text the user typed before translating
+    // (null while showing English), the current target language, the language
+    // menu, and whether a translation is in flight.
+    var translatedFrom by remember { mutableStateOf<String?>(null) }
+    var targetLang by rememberSaveable { mutableStateOf("zh-CN") }
+    var langMenu by remember { mutableStateOf(false) }
+    var translating by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
     LaunchedEffect(Unit) {
         if (initialQuery.isNotBlank()) vm.setQuery(initialQuery)
+        if (initialProvider.isNotBlank()) vm.selectProvider(initialProvider)
+    }
+
+    // One tap EN -> target language (Chinese by default), tap again to restore
+    // the original English the user typed. The source language is whatever the
+    // user wrote, auto-detected by the translator, so the same button also
+    // turns a Chinese title back into English when it was already translated.
+    fun toggleTranslate() {
+        if (translating) return
+        val restore = translatedFrom
+        if (restore != null) {
+            vm.setQuery(restore)
+            translatedFrom = null
+            return
+        }
+        val src = query.trim()
+        if (src.isEmpty()) return
+        scope.launch {
+            translating = true
+            val out = com.hikari.app.data.Translator.translateTo(src, targetLang)
+            translating = false
+            if (out.isNotBlank() && out != src) {
+                translatedFrom = src
+                vm.setQuery(out)
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
         GlassSearchField(
             value = query,
-            onValueChange = vm::setQuery,
+            onValueChange = { vm.setQuery(it); translatedFrom = null },
             placeholder = if (selected.isEmpty()) "Search across all providers…"
             else "Search in ${selected.size} selected provider${if (selected.size == 1) "" else "s"}…",
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            trailing = {
+                Box {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(50))
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { toggleTranslate() },
+                                    onLongPress = { langMenu = true },
+                                )
+                            }
+                            .padding(10.dp)
+                    ) {
+                        if (translating) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                Icons.Filled.Translate,
+                                contentDescription = if (translatedFrom != null)
+                                    "Show original English" else "Translate to $targetLang",
+                                tint = if (translatedFrom != null) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = langMenu,
+                        onDismissRequest = { langMenu = false },
+                    ) {
+                        com.hikari.app.data.Translator.LANGUAGES.forEach { (code, label) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (code == targetLang) "$label  ✓" else label)
+                                },
+                                onClick = {
+                                    targetLang = code
+                                    langMenu = false
+                                    translatedFrom = null
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         )
         if (providers.isNotEmpty()) {
             Column {

@@ -144,7 +144,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     private var installJob: Job? = null
     private var backgroundGeneration = 0L
-    private var reposLoadStarted = false
+
+    /** Repos whose plugin list is being fetched right now — guards the window
+     *  between a load starting and `repoState` reporting it as loading. */
+    private val reposLoading = mutableSetOf<String>()
 
     private inline fun <T> cancellableCatching(block: () -> T): Result<T> =
         try {
@@ -263,15 +266,24 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { refreshRepoPlugins(repo) }
     }
 
-    /** Loads every repo's plugin list once (and only once) — re-entering the
-     *  screen used to re-download every repo from scratch every time, which
-     *  re-flagged everything as loading and made a slow load look like a crash. */
+    /** Ensures every repo has its plugin list loaded, skipping the ones that
+     *  already have data or are mid-load. Safe to call any number of times from
+     *  any lifecycle point: the old one-shot flag could be consumed by an early
+     *  call made before `repos` had been read from the store, which then left
+     *  every repo permanently unloaded — so the extensions search only ever
+     *  found already-installed providers, never the installable repo entries. */
     fun loadReposIfNeeded() {
-        if (reposLoadStarted) return
-        reposLoadStarted = true
         viewModelScope.launch {
             for (repo in repos.value) {
-                if (pluginsByRepo.value[repo.url] == null) refreshRepoPlugins(repo)
+                if (pluginsByRepo.value[repo.url] != null) continue
+                if (repoState.value[repo.url]?.loading == true) continue
+                if (repo.url in reposLoading) continue
+                reposLoading.add(repo.url)
+                try {
+                    refreshRepoPlugins(repo)
+                } finally {
+                    reposLoading.remove(repo.url)
+                }
             }
         }
     }
@@ -1196,6 +1208,7 @@ fun ExtensionsScreen() {
             providers = providers,
             sites = sites,
             busy = busy,
+            onEnsureReposLoaded = { vm.loadReposIfNeeded() },
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
@@ -1686,6 +1699,7 @@ private fun RepoBrowserView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    onEnsureReposLoaded: () -> Unit,
     installedUrls: Set<String>,
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
@@ -1708,10 +1722,15 @@ private fun RepoBrowserView(
     onToggleProvider: (String, Boolean) -> Unit,
 ) {
     // Search across EVERYTHING on this screen: installed extensions (with
-    // uninstall/toggle) and every loaded repo's plugin list (with instant
+    // uninstall/toggle) and every added repo's plugin list (with instant
     // install/uninstall) — so a user with hundreds of extensions can find and
-    // act on one by typing its name instead of scrolling.
+    // act on one by typing its name instead of scrolling. Typing also kicks the
+    // repos that haven't loaded yet, so a fresh install still finds the
+    // not-yet-installed entries instead of only the installed ones.
     var query by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(query) {
+        if (query.isNotBlank()) onEnsureReposLoaded()
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
@@ -1780,6 +1799,7 @@ private fun RepoBrowserView(
                 installedUrls = installedUrls,
                 busy = busy,
                 onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
                 onInstallPlugin = onInstallPlugin,
                 onUninstallPlugin = onUninstallPlugin,
                 onDeleteProvider = onDeleteProvider,
@@ -1949,6 +1969,7 @@ private fun LazyListScope.extensionsSearchItems(
     installedUrls: Set<String>,
     busy: Boolean,
     onOpenRepo: (Cs3Repo) -> Unit,
+    onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -1958,10 +1979,15 @@ private fun LazyListScope.extensionsSearchItems(
     val installedMatches = providers.filter { it.config.name.contains(q, ignoreCase = true) }
     val pluginMatches = repos.flatMap { repo ->
         (pluginsByRepo[repo.url] ?: emptyList())
-            .filter { it.name.contains(q, ignoreCase = true) }
+            .filter { it.name.contains(q, ignoreCase = true) || it.url.contains(q, ignoreCase = true) }
             .map { repo to it }
     }
-    val stillLoading = repos.any { repoState[it.url]?.loading == true }
+    // Repos we added but whose plugin list hasn't arrived yet (still loading, or
+    // the fetch failed). Surfaced below so a search never silently hides the
+    // installable entries of a repo that's slow/failing.
+    val pendingRepos = repos.filter { pluginsByRepo[it.url] == null }
+    val failedRepos = pendingRepos.filter { repoState[it.url]?.error != null }
+    val stillLoading = pendingRepos.isNotEmpty()
 
     if (installedMatches.isEmpty() && pluginMatches.isEmpty()) {
         item {
@@ -1971,10 +1997,13 @@ private fun LazyListScope.extensionsSearchItems(
                     "Repos are still loading — results will appear as they arrive."
                 else
                     "Nothing matches \"$q\". Try a different name.",
-                actionLabel = null,
-                action = null
+                actionLabel = if (failedRepos.isNotEmpty()) "Retry failed repos" else null,
+                action = if (failedRepos.isNotEmpty()) {
+                    { failedRepos.forEach { onRefreshRepo(it) } }
+                } else null
             )
         }
+        if (pendingRepos.isNotEmpty()) repoStatusItems(pendingRepos, repoState, onRefreshRepo)
         return
     }
 
@@ -2017,6 +2046,58 @@ private fun LazyListScope.extensionsSearchItems(
                     installed = p.url in installedUrls,
                     onInstall = { onInstallPlugin(p, repo.kind) },
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
+                )
+            }
+        }
+    }
+
+    if (pendingRepos.isNotEmpty()) repoStatusItems(pendingRepos, repoState, onRefreshRepo)
+}
+
+/** Rows for repos whose plugin list isn't loaded yet — a spinner while it's on
+ *  its way, or the error plus a Retry button when the fetch failed. Keeps the
+ *  search results honest instead of quietly omitting those repos' entries. */
+private fun LazyListScope.repoStatusItems(
+    repos: List<Cs3Repo>,
+    repoState: Map<String, RepoLoadState>,
+    onRefreshRepo: (Cs3Repo) -> Unit,
+) {
+    item { SectionHeader("Repos loading · ${repos.size}") }
+    items(repos, key = { "pending-" + it.url }) { repo ->
+        val state = repoState[repo.url]
+        val err = state?.error
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    repo.name.ifBlank { repo.url },
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    when {
+                        err != null -> err
+                        state?.loading == true -> "Loading plugins…"
+                        else -> "Not loaded yet"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (err != null) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (err != null) {
+                TextButton(onClick = { onRefreshRepo(repo) }) { Text("Retry") }
+            } else {
+                CircularProgressIndicator(
+                    Modifier.size(18.dp),
+                    strokeWidth = 2.dp
                 )
             }
         }

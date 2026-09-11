@@ -218,6 +218,9 @@ fun GlassSearchField(
     placeholder: String,
     modifier: Modifier = Modifier,
     height: Dp = 52.dp,
+    /** Optional controls rendered at the end of the field (e.g. the search
+     *  screen's translate button). Shown after the clear button. */
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -269,6 +272,7 @@ fun GlassSearchField(
                     )
                 }
             }
+            trailing?.invoke()
         }
     }
 }

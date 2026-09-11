@@ -42,7 +42,10 @@ class MainActivity : AppCompatActivity() {
         }
         val store = (application as HikariApp).store
         setContent {
-            val themeKey by store.themeFlow().collectAsState(initial = HikariThemeMode.DARK.key)
+            // Remember the Flow — a fresh store.themeFlow() per recomposition
+            // would make collectAsState reset to the initial key each time.
+            val themeFlow = remember { store.themeFlow() }
+            val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
             LaunchedEffect(themeMode) {

@@ -81,6 +81,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -334,6 +335,12 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
     return msg?.let { "$name: $it" }
 }
 
+/** How long a replay waits for the server it was last played with to appear in
+ *  the multi-provider source search before falling back to the first server
+ *  found. Long enough for a slower provider to answer, short enough that a tap
+ *  never appears to hang. */
+private const val PREFERRED_GRACE_MS = 10_000L
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(
@@ -422,7 +429,12 @@ fun DetailScreen(
     // play immediately sees the progress the player just wrote — otherwise the
     // "Continue from where you left off?" prompt never appeared on the second
     // open of a title, because this screen's keys hadn't changed.
-    val allHistory by app.store.historyFlow().collectAsState(initial = emptyList())
+    // The Flow is `remember`ed: an inline `app.store.historyFlow()` would be a
+    // brand-new Flow on every recomposition, so collectAsState kept re-attaching
+    // and resetting to `initial` (empty) — which left the resume hint empty and
+    // the in-video "continue?" prompt never fired.
+    val historyFlow = remember { app.store.historyFlow() }
+    val allHistory by historyFlow.collectAsState(initial = emptyList())
     // Match by provider+id first; if the same title/episode was watched on a
     // DIFFERENT provider (the user's stated pattern — started on one extension,
     // reopened from another), fall back to id (then title) so the saved
@@ -497,43 +509,77 @@ fun DetailScreen(
         sessionId = UUID.randomUUID().toString()
         vm.resetLiveStreams()
         // Local once-only flag: playback launches exactly ONCE per tap (either
-        // the feed or the final batch) — afterwards new servers are appended to
-        // the player's live session, never re-launched.
+        // the feed, the preferred-server grace period, or the final batch) —
+        // afterwards new servers are appended to the player's live session,
+        // never re-launched.
         var launched = false
-        // Watch the live feed and start playback the instant the FIRST
-        // playable server appears — no waiting for all providers. The sheet
-        // only lingers when nothing playable has been found yet.
-        val feed = scope.launch {
-            vm.liveStreams.collect { current ->
-                val playable = current.filter { s ->
-                    s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
-                }
-                if (playable.isEmpty()) return@collect
-                streams = current
-                // Resolve wrapper URLs ahead of playback so "Select server" and
-                // any failover are instant (the source search outlives the play
-                // tap, so most servers are already resolved by the time the user
-                // needs them).
-                StreamProbe.warmAsync(playable)
-                if (launched || playerLaunched) {
-                    // Player is already up — hand it the newly found servers.
-                    StreamsLive.append(sessionId, playable)
-                } else {
-                    launched = true
-                    showSheet = false
-                    loadingStreams = false
-                    launchPlayer(playable, ep, sessionId, startPos)
-                }
-            }
+        // The server this video was last played with, remembered by the player
+        // under the same key as the watch-history entry. When it exists we hold
+        // playback until that exact server shows up (up to [PREFERRED_GRACE_MS])
+        // instead of jumping onto whichever provider answers first — this is
+        // what made a replay always land on "the first server found".
+        val historyKey = "${providerId}|${(m?.type ?: type).name}|$mediaId|${ep?.id.orEmpty()}"
+        val playableEvery = { list: List<StreamSource> ->
+            list.filter { s -> s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) }
         }
         scope.launch {
+            val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
+            val prefUrl = last?.url.orEmpty()
+            val prefName = last?.name.orEmpty()
+            val wantPreferred = prefUrl.isNotBlank() || prefName.isNotBlank()
+            val preferredIndex = { list: List<StreamSource> ->
+                if (prefUrl.isBlank() && prefName.isBlank()) -1
+                else list.indexOfFirst { s ->
+                    (prefUrl.isNotBlank() && s.url == prefUrl) ||
+                        (prefName.isNotBlank() && s.name.equals(prefName, ignoreCase = true))
+                }
+            }
+            // Remembered server first, everything else in arrival order, so the
+            // player's own preferredStartIndex() (which matches against the list
+            // it was handed) lands on it too.
+            val ordered = { list: List<StreamSource> ->
+                val i = preferredIndex(list)
+                if (i <= 0) list else listOf(list[i]) + list.filterIndexed { idx, _ -> idx != i }
+            }
+            val startNow = startNow@{
+                if (launched || playerLaunched) return@startNow
+                val playable = playableEvery(streams)
+                if (playable.isEmpty()) return@startNow
+                launched = true
+                showSheet = false
+                loadingStreams = false
+                launchPlayer(ordered(playable), ep, sessionId, startPos)
+            }
+            // Live feed: start the instant a playable server appears — unless a
+            // preferred server is remembered, in which case keep waiting for it.
+            val feed = launch {
+                vm.liveStreams.collect { current ->
+                    val playable = playableEvery(current)
+                    if (playable.isEmpty()) return@collect
+                    streams = current
+                    // Resolve wrapper URLs ahead of playback so "Select server"
+                    // and any failover are instant.
+                    StreamProbe.warmAsync(playable)
+                    if (launched || playerLaunched) {
+                        // Player already up — hand it the newly found servers.
+                        StreamsLive.append(sessionId, playable)
+                    } else if (!wantPreferred || preferredIndex(playable) >= 0) {
+                        startNow()
+                    }
+                }
+            }
+            // Give a slow-but-remembered provider a bounded head start, then
+            // fall back to whatever has been found so the tap never hangs.
+            val grace = launch {
+                delay(PREFERRED_GRACE_MS)
+                startNow()
+            }
             val final = vm.getStreams(ep)
             feed.cancel()
+            grace.cancel()
             loadingStreams = false
             streams = final
-            val playable = final.filter { s ->
-                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
-            }
+            val playable = playableEvery(final)
             StreamProbe.warmAsync(playable)
             if (launched || playerLaunched) {
                 // Search finished — hand the player the complete list.
@@ -542,7 +588,7 @@ fun DetailScreen(
                 // Cached/instant result arrived before the feed attached.
                 launched = true
                 showSheet = false
-                launchPlayer(playable, ep, sessionId, startPos)
+                launchPlayer(ordered(playable), ep, sessionId, startPos)
             }
         }
     }
