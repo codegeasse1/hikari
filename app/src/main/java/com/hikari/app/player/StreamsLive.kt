@@ -14,11 +14,16 @@ object StreamsLive {
     private val sessions = ConcurrentHashMap<String, MutableStateFlow<List<StreamSource>>>()
 
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
-        sessions.getOrPut(id) { MutableStateFlow(emptyList()) }
+        sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
 
     fun append(id: String, sources: List<StreamSource>) {
-        val flow = sessions[id] ?: return
         if (sources.isEmpty()) return
+        // Create the session if the player hasn't subscribed yet. The detail
+        // screen now opens the player the instant Play is tapped and keeps
+        // appending servers, so the first batch can land before the player's
+        // collector attaches. A MutableStateFlow replays its current value, so
+        // nothing is lost.
+        val flow = sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
         flow.value = (flow.value + sources).distinctBy { it.infoHash ?: it.url }
     }
 

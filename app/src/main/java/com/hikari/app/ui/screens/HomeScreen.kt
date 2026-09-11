@@ -97,14 +97,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     // provider, paints this INSTANTLY and refreshes in the background instead
     // of blanking the screen to a spinner and re-fetching every catalog.
     //
-    // Bounded (LRU, 4 feeds): every feed is a whole catalog sweep, so keeping
-    // one per visited provider grew without limit as the user browsed their
-    // extensions — a real contributor to the out-of-memory crashes.
-    private val homeCache = object : LinkedHashMap<String, List<CatalogRow>>(4, 0.75f, true) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, List<CatalogRow>>?,
-        ): Boolean = size > 4
-    }
+    // Remembers EVERY feed the user has viewed (no eviction) so switching back
+    // to any provider is always instant. Each row holds poster-cache tokens
+    // rather than full images ([tokenizePoster] below), so the whole map stays
+    // cheap no matter how many extensions were browsed.
+    private val homeCache = LinkedHashMap<String, List<CatalogRow>>()
 
     init {
         viewModelScope.launch {

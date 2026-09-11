@@ -71,6 +71,7 @@ import com.hikari.app.ui.PosterLoader
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -552,7 +553,13 @@ class PlayerActivity : ComponentActivity() {
             // single row.
             .distinctBy { it.infoHash ?: it.url }
 
-        if (sources.isEmpty()) {
+        val liveId = intent.getStringExtra("streamsLiveId")
+        // The detail screen now opens the player the instant Play is tapped,
+        // BEFORE any server is found, and streams servers to us over
+        // [StreamsLive]. An empty list plus a live session id therefore means
+        // "wait for the first server", not "nothing to play".
+        val awaitLive = sources.isEmpty() && liveId != null
+        if (sources.isEmpty() && !awaitLive) {
             showError("No playable sources received.", false)
             return
         }
@@ -562,12 +569,17 @@ class PlayerActivity : ComponentActivity() {
         // your server" screen continuous until real video is on screen.
         if (bannerMode) showLoadingBanner()
 
-        val liveId = intent.getStringExtra("streamsLiveId")
         if (liveId != null) {
-            // The detail screen launched playback with the first server found
-            // and keeps searching every installed provider; append each newly
-            // found server here so "Select server" lists everything.
+            // The detail screen keeps searching every installed provider while
+            // playback runs; append each newly found server here so "Select
+            // server" lists everything. When we opened with no servers yet, the
+            // FIRST batch that arrives also starts playback.
             liveStreamsJob = lifecycleScope.launch {
+                var pendingStart = awaitLive
+                val waitTimeout = if (awaitLive) launch {
+                    delay(LIVE_WAIT_TIMEOUT_MS)
+                    if (sources.isEmpty()) showError("No playable sources received.", false)
+                } else null
                 StreamsLive.flow(liveId).collect { incoming ->
                     if (incoming.isEmpty()) return@collect
                     val have = sources.map { it.infoHash ?: it.url }.toHashSet()
@@ -580,6 +592,11 @@ class PlayerActivity : ComponentActivity() {
                     // one from "Select server" doesn't fall back to a probe wait.
                     lifecycleScope.launch(Dispatchers.IO) {
                         runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
+                    }
+                    if (pendingStart) {
+                        pendingStart = false
+                        waitTimeout?.cancel()
+                        playSource(preferredStartIndex())
                     }
                 }
             }
@@ -599,10 +616,13 @@ class PlayerActivity : ComponentActivity() {
             runCatching { StreamProbe.warm(sources.map { it.toStreamSource() }) }
         }
 
-        // Start on the server this video was last played with (matched by URL
-        // then by name), so a replay picks up on a known-good, already-resolved
-        // source instead of starting the search from scratch.
-        lifecycleScope.launch { playSource(preferredStartIndex()) }
+        // If servers are already here (e.g. WebView playback or a source list
+        // handed in directly), start on the server this video was last played
+        // with (matched by URL then by name) so a replay picks up on a
+        // known-good, already-resolved source. On the instant open (no servers
+        // yet) the live collector above starts playback the moment the first
+        // server arrives.
+        if (sources.isNotEmpty()) lifecycleScope.launch { playSource(preferredStartIndex()) }
     }
 
     /** Index of the server the user last played this video with — matched by
@@ -2324,6 +2344,10 @@ class PlayerActivity : ComponentActivity() {
     }
 
     companion object {
+        /** How long an instantly-opened player waits for the first server from
+         *  the detail screen's live search before reporting that none arrived. */
+        private const val LIVE_WAIT_TIMEOUT_MS = 30_000L
+
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
         /** Fallback public trackers for addons that don't ship their own. */

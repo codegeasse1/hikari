@@ -524,10 +524,12 @@ fun DetailScreen(
     }
 
     val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
-        // Show the source sheet + spinner IMMEDIATELY — instant feedback that the
-        // tap registered (this is what the old build did) — then keep resolving
-        // sources in the background and play the first playable server
-        // automatically, which closes the sheet again.
+        // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
+        // style). The player has its own title-card screen, so instead of the
+        // detail page sitting on a spinner for several seconds while the first
+        // server is found, the player comes up instantly and starts playback the
+        // moment a server lands on the live session. Source resolution keeps
+        // running here in the background.
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
@@ -546,6 +548,12 @@ fun DetailScreen(
         // server" dialog shows every source from every installed provider.
         sessionId = UUID.randomUUID().toString()
         vm.resetLiveStreams()
+        // Launch the player NOW with an empty source list — it shows its own
+        // title card and waits for the first servers on [sessionId]. If the
+        // launch itself fails (the activity can't be resolved), the coroutine
+        // below falls back to the old "resolve here, then open the player" path
+        // and the source sheet.
+        launchPlayer(emptyList<StreamSource>(), ep, sessionId, startPos)
         // Local once-only flag: playback launches exactly ONCE per tap (either
         // the feed, the preferred-server grace period, or the final batch) —
         // afterwards new servers are appended to the player's live session,
