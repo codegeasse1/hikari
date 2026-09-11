@@ -13,6 +13,106 @@
         app:controller_layout_id="@layout/player_controller"
         app:show_buffering="when_playing" />
 
+    <!-- Title-card loading cover (Nuvio/Stremio style): the title's backdrop
+         with its name breathing in and out, shown from the instant the player
+         opens until the first server paints its first frame. It replaces both
+         the old source-sheet spinner and the player's own buffering spinner, so
+         tapping Play reads as one continuous "finding your server" screen.
+         Sits directly above the PlayerView so it covers the video surface; the
+         error panel and lock button are declared after it and stay on top. -->
+    <FrameLayout
+        android:id="@+id/loading_banner"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/loading_backdrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/player_banner_scrim" />
+
+        <LinearLayout
+            android:id="@+id/loading_title_box"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp">
+
+            <TextView
+                android:id="@+id/loading_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:maxLines="3"
+                android:ellipsize="end"
+                android:textColor="#FFFFFF"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.10"
+                android:shadowColor="#CC000000"
+                android:shadowRadius="18"
+                android:shadowDx="0"
+                android:shadowDy="3" />
+
+            <TextView
+                android:id="@+id/loading_episode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:textColor="#F5C569"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/loading_detail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:maxLines="2"
+                android:ellipsize="end"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="56dp">
+
+            <ProgressBar
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:indeterminateTint="#F5C569" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="Finding the best server…"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </FrameLayout>
+
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
          rewind/forward arrow + the amount next to it. -->
     <LinearLayout

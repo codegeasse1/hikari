@@ -14,6 +14,12 @@ import java.io.File
  * yields the same bytes), so the home catalog's posters are instant on the
  * next app open. Http(s) posters pass through untouched — Coil's own disk
  * cache (see HikariApp) covers those.
+ *
+ * The in-memory cache is bounded by BYTES, not by entry count: one decrypted
+ * poster is a full-size image (0.5–2 MB), so an entry-counted cache ("256
+ * items") could itself occupy the whole app heap and OOM the process. That was
+ * the "Failed to allocate … after GC" crash during Compose layout — the heap
+ * was already full of decoded posters.
  */
 object PosterLoader {
 
@@ -25,10 +31,15 @@ object PosterLoader {
      *  heap while the grid still renders them. */
     private const val CACHE_TOKEN = "data:cache/"
 
-    private val memCache = object : LinkedHashMap<String, ByteArray>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean =
-            size > 256
-    }
+    /** Hard cap for the decoded-poster memory cache. 24 MB comfortably holds a
+     *  screenful of full-size covers while staying a small slice of even the
+     *  smallest (128 MB) app heap. */
+    private const val MEM_CACHE_BYTES = 24L * 1024 * 1024
+
+    // Access-order LRU; `memBytes` tracks the live byte total so eviction is by
+    // memory, not by a fixed number of wildly-variable-sized posters.
+    private val memCache = LinkedHashMap<String, ByteArray>(32, 0.75f, true)
+    private var memBytes = 0L
 
     private val diskDir: File? by lazy {
         runCatching {
@@ -41,20 +52,20 @@ object PosterLoader {
         if (url.startsWith(CACHE_TOKEN)) return fromToken(url)
         if (!url.startsWith(DATA_IMAGE)) return url
 
-        memCache[url]?.let { return it }
+        recall(url)?.let { return it }
 
         val file = diskDir?.let { File(it, fnv1a(url)) }
         val onDisk = file?.takeIf { it.exists() }?.let {
             runCatching { it.readBytes() }.getOrNull()
         }
         if (onDisk != null && onDisk.isNotEmpty()) {
-            memCache[url] = onDisk
+            remember(url, onDisk)
             return onDisk
         }
 
         val bytes = decodeDataUri(url) ?: return null
         if (bytes.isNotEmpty()) {
-            memCache[url] = bytes
+            remember(url, bytes)
             if (file != null) runCatching { file.writeBytes(bytes) }
         }
         return bytes
@@ -93,13 +104,13 @@ object PosterLoader {
 
     /** Resolves a [CACHE_TOKEN] token back to the persisted poster bytes. */
     private fun fromToken(token: String): ByteArray? {
-        memCache[token]?.let { return it }
+        recall(token)?.let { return it }
         val hash = token.removePrefix(CACHE_TOKEN)
         val bytes = diskDir?.let { File(it, hash) }?.takeIf { it.exists() }?.let {
             runCatching { it.readBytes() }.getOrNull()
         }
         if (bytes != null && bytes.isNotEmpty()) {
-            memCache[token] = bytes
+            remember(token, bytes)
             return bytes
         }
         return null
@@ -114,4 +125,21 @@ object PosterLoader {
         }
         return (h.toUInt()).toString(16) + "_" + s.length
     }
+
+    /** Byte-budgeted insert with LRU eviction (safe from any thread). */
+    @Synchronized
+    private fun remember(key: String, bytes: ByteArray) {
+        val old = memCache.put(key, bytes)
+        if (old != null) memBytes -= old.size.toLong()
+        memBytes += bytes.size.toLong()
+        val it = memCache.entries.iterator()
+        while (memBytes > MEM_CACHE_BYTES && it.hasNext()) {
+            val e = it.next()
+            memBytes -= e.value.size.toLong()
+            it.remove()
+        }
+    }
+
+    @Synchronized
+    private fun recall(key: String): ByteArray? = memCache[key]
 }

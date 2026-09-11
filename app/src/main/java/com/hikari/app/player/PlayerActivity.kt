@@ -1,5 +1,7 @@
 package com.hikari.app.player
 
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.app.AlertDialog
 import android.app.Dialog
 import android.app.PictureInPictureParams
@@ -28,6 +30,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -54,6 +57,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import coil.load
 import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
@@ -63,6 +67,7 @@ import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.net.StreamProbe
+import com.hikari.app.ui.PosterLoader
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -185,6 +190,21 @@ class PlayerActivity : ComponentActivity() {
     private var resizeBtn: TextView? = null
     private var skipBtn: TextView? = null
     private var unlockBtn: TextView? = null
+
+    /** Full-screen title-card cover shown while the first server is being
+     *  found / buffered (Nuvio/Stremio style). See [showLoadingBanner]. */
+    private var loadingBanner: View? = null
+    private var loadingBackdrop: ImageView? = null
+    private var loadingTitleBox: View? = null
+    private var loadingTitle: TextView? = null
+    private var loadingEpisode: TextView? = null
+    private var loadingDetail: TextView? = null
+    private var bannerAnimators: List<android.animation.Animator> = emptyList()
+
+    /** True while playback should be covered by the loading banner until the
+     *  first frame lands (set from the launch intent, default ON). */
+    private var bannerMode = true
+
     private var speedIndex = 2
 
     /** True while the controls are locked — the media3 controller stays hidden
@@ -360,6 +380,21 @@ class PlayerActivity : ComponentActivity() {
 
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
 
+        loadingBanner = findViewById(R.id.loading_banner)
+        loadingBackdrop = findViewById(R.id.loading_backdrop)
+        loadingTitleBox = findViewById(R.id.loading_title_box)
+        loadingTitle = findViewById(R.id.loading_title)
+        loadingEpisode = findViewById(R.id.loading_episode)
+        loadingDetail = findViewById(R.id.loading_detail)
+        bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
+
+        // Tap the card to skip straight to the player/controls (and stop it
+        // from re-appearing if a later server attempt would show it again).
+        loadingBanner?.setOnClickListener {
+            bannerMode = false
+            hideLoadingBanner(immediate = true)
+        }
+
         speedChip?.setOnClickListener { cycleSpeed() }
         rotateBtn?.setOnClickListener { cycleRotation() }
         qualityBtn?.setOnClickListener { showQualityDialog() }
@@ -522,6 +557,11 @@ class PlayerActivity : ComponentActivity() {
             return
         }
 
+        // Cover the very first frames with the title card: the detail screen
+        // showed the same card while it searched, so this keeps the "finding
+        // your server" screen continuous until real video is on screen.
+        if (bannerMode) showLoadingBanner()
+
         val liveId = intent.getStringExtra("streamsLiveId")
         if (liveId != null) {
             // The detail screen launched playback with the first server found
@@ -640,6 +680,7 @@ class PlayerActivity : ComponentActivity() {
         inPip = isInPictureInPictureMode
         val pv = playerView ?: return
         if (isInPictureInPictureMode) {
+            hideLoadingBanner(immediate = true)
             pv.useController = false
             pv.hideController()
             unlockBtn?.visibility = View.GONE
@@ -1406,12 +1447,16 @@ class PlayerActivity : ComponentActivity() {
             playDirectInner(index)
             return
         }
-        probeDialog = ProgressDialog(this).apply {
-            setTitle(src.name)
-            setMessage("Preparing stream…")
-            setCancelable(false)
-            setIndeterminate(true)
-            show()
+        // The full-screen title card already signals "finding a server", so the
+        // little probe dialog would just flicker on top of it.
+        if (loadingBanner?.visibility != View.VISIBLE) {
+            probeDialog = ProgressDialog(this).apply {
+                setTitle(src.name)
+                setMessage("Preparing stream…")
+                setCancelable(false)
+                setIndeterminate(true)
+                show()
+            }
         }
         lifecycleScope.launch {
             val clean = sanitizeHeaders(src.headers)
@@ -1456,6 +1501,7 @@ class PlayerActivity : ComponentActivity() {
 
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
+        if (bannerMode && loadingBanner?.visibility != View.VISIBLE) showLoadingBanner()
 
         player?.let { old ->
             old.removeListener(listener)
@@ -1866,6 +1912,7 @@ class PlayerActivity : ComponentActivity() {
             renderedFirstFrame = true
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
+            hideLoadingBanner()
             // Playback actually started — persist this server + the header
             // variant that got us here, so the next replay of this video jumps
             // straight onto it (no re-probe, no header trial-and-error).
@@ -1876,6 +1923,9 @@ class PlayerActivity : ComponentActivity() {
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 dismissSlowDialog()
+                // Fallback: audio-only streams never fire onRenderedFirstFrame,
+                // so drop the title card shortly after playback is ready.
+                bufferingWatchdog.postDelayed({ hideLoadingBanner() }, 1200L)
                 watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
                 watchdogTask = null
                 // Resume from history: seek once the first frame is ready.
@@ -1895,6 +1945,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            hideLoadingBanner(immediate = true)
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             val details = buildString {
@@ -1976,7 +2027,102 @@ class PlayerActivity : ComponentActivity() {
             if (c.isBlank()) null else k to c
         }.toMap()
 
+    /**
+     * Shows the full-screen title-card cover: the title's backdrop with its
+     * name slowly breathing (zoom in/out), plus a "finding the best server"
+     * line. It is the first thing on screen when the player opens and stays up
+     * until the first frame of video is drawn, so tapping Play never reads as
+     * "nothing happened". Purely decorative — playback state is untouched.
+     */
+    private fun showLoadingBanner() {
+        val banner = loadingBanner ?: return
+        val box = loadingTitleBox ?: return
+        loadingTitle?.text = intent.getStringExtra("title").orEmpty().ifBlank { "Loading" }.uppercase()
+
+        // Episode line, mirroring the player's own two-line title block.
+        val epText = findViewById<TextView>(R.id.subtitle_text)?.text?.toString().orEmpty()
+        loadingEpisode?.apply {
+            text = epText
+            visibility = if (epText.isBlank()) View.GONE else View.VISIBLE
+        }
+        val epName = intent.getStringExtra("histEpisodeName").orEmpty()
+        loadingDetail?.apply {
+            val show = epName.isNotBlank() && !epText.contains(epName)
+            text = epName
+            visibility = if (show) View.VISIBLE else View.GONE
+        }
+
+        // Backdrop (or the poster as a fallback) — already tokenized by the
+        // detail screen, so this never carries a multi-MB base64 string.
+        val model = PosterLoader.model(
+            intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() }
+                ?: intent.getStringExtra("histPoster")
+        )
+        loadingBackdrop?.let { iv ->
+            if (model != null) {
+                iv.visibility = View.VISIBLE
+                iv.load(model)
+            } else {
+                iv.setImageDrawable(null)
+                iv.visibility = View.GONE
+            }
+        }
+
+        stopBannerAnimators()
+        // The name breathes in and out, exactly like Nuvio/Stremio's title card.
+        val titleScale = ObjectAnimator.ofPropertyValuesHolder(
+            box,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 0.94f, 1.06f, 0.94f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.94f, 1.06f, 0.94f)
+        ).apply {
+            duration = 2600L
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            repeatCount = android.animation.ValueAnimator.INFINITE
+        }
+        // Slow Ken-Burns drift on the artwork (zooming in only, so a
+        // centre-cropped image never reveals its edges).
+        val backdropScale = loadingBackdrop?.let { iv ->
+            ObjectAnimator.ofPropertyValuesHolder(
+                iv,
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.12f, 1f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.12f, 1f)
+            ).apply {
+                duration = 12_000L
+                interpolator = android.view.animation.LinearInterpolator()
+                repeatCount = android.animation.ValueAnimator.INFINITE
+            }
+        }
+        bannerAnimators = listOfNotNull(titleScale, backdropScale)
+        bannerAnimators.forEach { runCatching { it.start() } }
+        banner.animate().cancel()
+        banner.alpha = 1f
+        banner.visibility = View.VISIBLE
+    }
+
+    /** Fades the title card away (or removes it instantly) once real video is
+     *  on screen. Safe to call repeatedly and from any state. */
+    private fun hideLoadingBanner(immediate: Boolean = false) {
+        val banner = loadingBanner ?: return
+        if (banner.visibility != View.VISIBLE) return
+        stopBannerAnimators()
+        banner.animate().cancel()
+        if (immediate || isFinishing || isDestroyed) {
+            banner.alpha = 0f
+            banner.visibility = View.GONE
+        } else {
+            banner.animate().alpha(0f).setDuration(320L).withEndAction {
+                banner.visibility = View.GONE
+            }.start()
+        }
+    }
+
+    private fun stopBannerAnimators() {
+        bannerAnimators.forEach { runCatching { it.cancel() } }
+        bannerAnimators = emptyList()
+    }
+
     private fun showError(message: String, hasNext: Boolean) {
+        hideLoadingBanner(immediate = true)
         var text = message
         // px.* / tracker domains that resolve to 0.0.0.0 are the signature of
         // a system-level ad-blocker or DNS filter — tell the user, since it
@@ -2153,6 +2299,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        stopBannerAnimators()
         recordProgress()
         liveStreamsJob?.cancel()
         liveStreamsJob = null

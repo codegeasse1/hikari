@@ -261,6 +261,16 @@ class HikariApp : Application() {
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
+                // Decoded bitmaps live in RAM. Coil's default is 25% of the app
+                // heap, which on a poster grid (a few hundred covers, several
+                // full-size) can fill the heap on its own and OOM the process.
+                // 32 MB is plenty for a screenful or two of thumbnails and keeps
+                // the rest of the heap free for catalogs and Compose.
+                .memoryCache {
+                    coil.memory.MemoryCache.Builder(this)
+                        .maxSizeBytes(32 * 1024 * 1024)
+                        .build()
+                }
                 .diskCache {
                     coil.disk.DiskCache.Builder()
                         .directory(File(cacheDir, "coil_image_cache"))

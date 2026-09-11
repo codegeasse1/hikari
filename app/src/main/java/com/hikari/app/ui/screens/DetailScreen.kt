@@ -4,6 +4,13 @@ import android.app.Application
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -54,8 +61,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -371,6 +380,10 @@ fun DetailScreen(
     val scope = rememberCoroutineScope()
 
     var showSheet by remember { mutableStateOf(false) }
+    // The full-screen title-card cover shown from the moment the user taps Play
+    // until the player activity takes over (Nuvio/Stremio style). It is the
+    // instant feedback for a tap, replacing the old bare source sheet.
+    var showLoadingBanner by remember { mutableStateOf(false) }
     var selectedEp by remember { mutableStateOf<Episode?>(null) }
     // Resume position for the current play session — applied when the user
     // picks a server from the sheet too, not just on the auto-launched one.
@@ -457,7 +470,7 @@ fun DetailScreen(
     // 10-episode melon list only ever played its first video.
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { playerLaunched = false }
+    ) { playerLaunched = false; showLoadingBanner = false }
     val launchPlayer: (List<StreamSource>, Episode?, String, Long) -> Boolean = launchPlayer@{ playable, ep, liveId, startPos ->
         if (playerLaunched) return@launchPlayer false
         // Build the payload BEFORE flipping the once-only guard. It used to be
@@ -481,7 +494,15 @@ fun DetailScreen(
                 putExtra("histProviderId", providerId)
                 putExtra("histMediaId", mediaId)
                 putExtra("histType", (m?.type ?: type).name)
-                putExtra("histPoster", (m?.posterUrl ?: posterUrl).orEmpty())
+                putExtra("histPoster", PosterLoader.tokenize((m?.posterUrl ?: posterUrl).orEmpty()).orEmpty())
+                // Backdrop (poster fallback) for the player's own title card —
+                // passed as a disk-cache token so the intent never carries a
+                // multi-MB base64 string.
+                putExtra(
+                    "bannerBackdrop",
+                    PosterLoader.tokenize(((m?.backdropUrl ?: posterUrl)).orEmpty()).orEmpty()
+                )
+                putExtra("showLoadingBanner", true)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
@@ -511,7 +532,10 @@ fun DetailScreen(
         pendingStartPos = startPos
         streams = emptyList()
         loadingStreams = true
-        showSheet = true
+        // Full-screen title card from the very first frame of the tap (the
+        // source sheet only appears if nothing playable can be found at all).
+        showLoadingBanner = true
+        showSheet = false
         // A fresh tap must always be allowed to open the player. If an earlier
         // launch never reported back (activity result lost, process reshuffle),
         // the once-only guard could stay stuck ON and silently swallow every
@@ -568,6 +592,7 @@ fun DetailScreen(
                     // — leave the source sheet up with its per-extension
                     // diagnostics so the user can still pick a server.
                     loadingStreams = false
+                    showLoadingBanner = false
                     showSheet = true
                 }
             }
@@ -613,11 +638,13 @@ fun DetailScreen(
                     launched = true
                     showSheet = false
                 } else {
+                    showLoadingBanner = false
                     showSheet = true
                 }
             } else {
                 // Nothing playable anywhere — keep the source sheet up, with the
                 // per-extension diagnostics explaining what failed.
+                showLoadingBanner = false
                 showSheet = true
             }
         }
@@ -665,6 +692,7 @@ fun DetailScreen(
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         // Header renders immediately from the poster we already have, so the hero
         // image shows at once instead of waiting for the slow meta fetch.
@@ -873,6 +901,18 @@ fun DetailScreen(
         }
     }
 
+    if (showLoadingBanner) {
+        PlayLoadingBanner(
+            title = m?.title ?: title,
+            episodeLabel = selectedEp?.let {
+                if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}"
+            },
+            detail = selectedEp?.name?.takeIf { it.isNotBlank() },
+            image = (m?.backdropUrl?.takeIf { it.isNotBlank() }) ?: posterUrl
+        )
+    }
+    }
+
     if (showSheet) {
         ModalBottomSheet(onDismissRequest = { showSheet = false }) {
             Text(
@@ -1057,6 +1097,120 @@ fun DetailScreen(
                 }
                 Spacer(Modifier.height(12.dp))
             }
+        }
+    }
+}
+
+/**
+ * Full-screen title-card cover shown from the instant the user taps Play until
+ * the player activity takes over: the title's backdrop (Ken-Burns drift) under
+ * a heavy scrim, the title breathing in/out, the episode line, and a "finding
+ * the best server" spinner. Mirrors the in-player card, so the hand-off from
+ * the detail screen into the player is seamless.
+ */
+@Composable
+private fun PlayLoadingBanner(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+    image: String?,
+) {
+    val transition = rememberInfiniteTransition()
+    val breath by transition.animateFloat(
+        initialValue = 0.94f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val drift by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 12_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
+        if (model != null) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val s = 1f + drift * 0.12f
+                        scaleX = s
+                        scaleY = s
+                        alpha = 0.62f
+                    }
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xE6000000), Color(0x40000000), Color(0xE6000000))
+                    )
+                )
+        )
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 32.dp)
+                .graphicsLayer {
+                    scaleX = breath
+                    scaleY = breath
+                },
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                title.uppercase(),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            if (!episodeLabel.isNullOrBlank()) {
+                Text(
+                    episodeLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFFF5C569),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            if (!detail.isNullOrBlank()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xCCFFFFFF),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 56.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+                color = Color(0xFFF5C569)
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Finding the best server…",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xCCFFFFFF)
+            )
         }
     }
 }

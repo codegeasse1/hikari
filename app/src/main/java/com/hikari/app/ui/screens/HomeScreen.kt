@@ -96,7 +96,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     // is on the combined feed). Returning to Home, or re-picking the same
     // provider, paints this INSTANTLY and refreshes in the background instead
     // of blanking the screen to a spinner and re-fetching every catalog.
-    private val homeCache = HashMap<String, List<CatalogRow>>()
+    //
+    // Bounded (LRU, 4 feeds): every feed is a whole catalog sweep, so keeping
+    // one per visited provider grew without limit as the user browsed their
+    // extensions — a real contributor to the out-of-memory crashes.
+    private val homeCache = object : LinkedHashMap<String, List<CatalogRow>>(4, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, List<CatalogRow>>?,
+        ): Boolean = size > 4
+    }
 
     init {
         viewModelScope.launch {
@@ -311,6 +319,36 @@ fun HomeScreen(nav: NavHostController) {
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 72.dp)
         ) {
+            // Crash report FIRST: an uncaught OOM/exception from the previous
+            // launch is the most important thing on this screen. It used to be
+            // rendered after the hero + Continue Watching row, so it appeared in
+            // the middle of the page; as the leading item it now sits at the top.
+            if (showCrash && HikariApp.lastCrash != null) {
+                item(key = "crash-banner") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.errorContainer)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "The app crashed on a previous launch:\n${HikariApp.lastCrash}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            showCrash = false
+                            HikariApp.instance.clearCrash()
+                        }) {
+                            Text("Dismiss")
+                        }
+                    }
+                }
+            }
             item {
                 if (featured.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth()) {
@@ -361,32 +399,6 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         },
                     )
-                }
-            }
-            if (showCrash && HikariApp.lastCrash != null) {
-                item {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.errorContainer)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "The app crashed on a previous launch:\n${HikariApp.lastCrash}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = {
-                            showCrash = false
-                            HikariApp.instance.clearCrash()
-                        }) {
-                            Text("Dismiss")
-                        }
-                    }
                 }
             }
             if (loading) {
