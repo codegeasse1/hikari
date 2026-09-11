@@ -1,5 +1,6 @@
 package com.hikari.app.player
 
+import com.hikari.app.data.Episode
 import com.hikari.app.data.StreamSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ConcurrentHashMap
@@ -12,6 +13,8 @@ import java.util.concurrent.ConcurrentHashMap
  *  provider to switch between. */
 object StreamsLive {
     private val sessions = ConcurrentHashMap<String, MutableStateFlow<List<StreamSource>>>()
+    private val episodes = ConcurrentHashMap<String, MutableStateFlow<Episode?>>()
+    private val dones = ConcurrentHashMap<String, MutableStateFlow<Boolean>>()
 
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
         sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
@@ -27,7 +30,30 @@ object StreamsLive {
         flow.value = (flow.value + sources).distinctBy { it.infoHash ?: it.url }
     }
 
+    /** The episode the detail screen settled on for this session. Sent when a
+     *  Play tap happened before the origin addon finished listing episodes, so
+     *  the already-open player can adopt the right episode (title card, resume
+     *  key and watch-history entry) instead of treating it as a movie. */
+    fun episodeFlow(id: String): MutableStateFlow<Episode?> =
+        episodes.computeIfAbsent(id) { MutableStateFlow<Episode?>(null) }
+
+    fun setEpisode(id: String, episode: Episode) {
+        episodeFlow(id).value = episode
+    }
+
+    /** True once the detail screen's source search has finished (whether or not
+     *  it found anything). The instantly-opened player uses this to stop
+     *  waiting and report "no sources" the moment the search really is over. */
+    fun doneFlow(id: String): MutableStateFlow<Boolean> =
+        dones.computeIfAbsent(id) { MutableStateFlow(false) }
+
+    fun markDone(id: String) {
+        doneFlow(id).value = true
+    }
+
     fun remove(id: String) {
         sessions.remove(id)
+        episodes.remove(id)
+        dones.remove(id)
     }
 }

@@ -94,8 +94,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -119,6 +121,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  a spinner instead of a misleading "no episodes" for the first seconds). */
     private val _episodesLoading = MutableStateFlow(false)
     val episodesLoading: StateFlow<Boolean> = _episodesLoading.asStateFlow()
+
+    /** True once the origin addon has FINISHED listing episodes (success or
+     *  failure). Lets a Play tap tell "episodes still loading" apart from "this
+     *  item genuinely has none", so a series is never searched with no episode. */
+    private val _episodesLoaded = MutableStateFlow(false)
+    val episodesLoaded: StateFlow<Boolean> = _episodesLoaded.asStateFlow()
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -193,9 +201,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _error.value = null
             _streamsReady.value = false
             _streamError.value = null
+            _episodes.value = null
+            _episodesLoaded.value = false
             if (manager.byId(providerId) == null) {
                 _error.value = "Provider not found"
                 _loading.value = false
+                _episodesLoaded.value = true
                 return@launch
             }
             // The catalog row already carries the poster — render the page
@@ -232,6 +243,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     _episodes.value = runCatching { repo.episodesFor(meta) }.getOrNull()
                 } finally {
                     _episodesLoading.value = false
+                    _episodesLoaded.value = true
                 }
             }
             prefetchFirstStreams(_meta.value ?: base)
@@ -349,6 +361,12 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  found. Long enough for a slower provider to answer, short enough that a tap
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
+
+/** How long a Play tap made while episodes are still loading waits for the
+ *  episode list before falling back to a movie-style search. The player is
+ *  already open on its title card for the whole wait, so the tap still feels
+ *  instant — this only decides which episode the source search runs for. */
+private const val EPISODE_WAIT_MS = 25_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -523,6 +541,25 @@ fun DetailScreen(
             .fold(onSuccess = { true }, onFailure = { playerLaunched = false; false })
     }
 
+    // The episode a bare Play tap should search for: the tapped episode, or —
+    // when the origin addon is still listing episodes — episode 1 as soon as it
+    // lands (bounded, so a genuine movie is never held up for long). The player
+    // is already open on its title card for the whole wait, so tapping Play
+    // always gives immediate feedback and playback starts the instant episode 1
+    // resolves, instead of searching for a series with no episode and finding
+    // nothing.
+    val firstEpisodeOrNull: suspend () -> Episode? = {
+        val t = (vm.meta.value ?: m)?.type
+        val eps = vm.episodes.value
+        val mightBeSeries = t == MediaType.SERIES || (eps?.isNotEmpty() == true)
+        if (mightBeSeries && eps == null && !vm.episodesLoaded.value) {
+            withTimeoutOrNull(EPISODE_WAIT_MS) { vm.episodesLoaded.first { it } }
+        }
+        vm.episodes.value
+            ?.sortedWith(compareBy({ it.season }, { it.number }))
+            ?.firstOrNull()
+    }
+
     val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
         // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
         // style). The player has its own title-card screen, so instead of the
@@ -559,16 +596,28 @@ fun DetailScreen(
         // afterwards new servers are appended to the player's live session,
         // never re-launched.
         var launched = false
-        // The server this video was last played with, remembered by the player
-        // under the same key as the watch-history entry. When it exists we hold
-        // playback until that exact server shows up (up to [PREFERRED_GRACE_MS])
-        // instead of jumping onto whichever provider answers first — this is
-        // what made a replay always land on "the first server found".
-        val historyKey = "${providerId}|${(m?.type ?: type).name}|$mediaId|${ep?.id.orEmpty()}"
         val playableEvery = { list: List<StreamSource> ->
             list.filter { s -> s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) }
         }
         scope.launch {
+            // Which episode the search runs for: the tapped one, or episode 1
+            // when the origin addon was still listing episodes. The player is
+            // already open on its title card during this wait, so it opens and
+            // starts playing the instant episode 1 resolves.
+            val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
+            if (ep == null && epForSearch != null) {
+                selectedEp = epForSearch
+                // Hand the already-open player the episode it ended up on, so
+                // its title card, resume key and watch history are per-episode
+                // rather than the movie-level entry.
+                StreamsLive.setEpisode(sessionId, epForSearch)
+            }
+            // The server this video was last played with, remembered by the
+            // player under the same key as the watch-history entry. When it
+            // exists we hold playback until that exact server shows up (up to
+            // [PREFERRED_GRACE_MS]) instead of jumping onto whichever provider
+            // answers first.
+            val historyKey = "${providerId}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
             val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
             val prefUrl = last?.url.orEmpty()
             val prefName = last?.name.orEmpty()
@@ -591,7 +640,7 @@ fun DetailScreen(
                 if (launched || playerLaunched) return@startNow
                 val playable = playableEvery(streams)
                 if (playable.isEmpty()) return@startNow
-                if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
+                if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
                     launched = true
                     showSheet = false
                     loadingStreams = false
@@ -628,7 +677,7 @@ fun DetailScreen(
                 delay(PREFERRED_GRACE_MS)
                 startNow()
             }
-            val final = vm.getStreams(ep)
+            val final = vm.getStreams(epForSearch)
             feed.cancel()
             grace.cancel()
             loadingStreams = false
@@ -642,7 +691,7 @@ fun DetailScreen(
                 StreamsLive.append(sessionId, playable)
             } else if (playable.isNotEmpty()) {
                 // Cached/instant result arrived before the feed attached.
-                if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
+                if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
                     launched = true
                     showSheet = false
                 } else {
@@ -655,6 +704,10 @@ fun DetailScreen(
                 showLoadingBanner = false
                 showSheet = true
             }
+            // The whole source search is over. The player (which opened the
+            // moment Play was tapped) uses this to fail fast when nothing was
+            // found, instead of waiting out its safety timeout.
+            StreamsLive.markDone(sessionId)
         }
     }
 

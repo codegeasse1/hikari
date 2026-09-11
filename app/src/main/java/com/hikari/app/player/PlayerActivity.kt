@@ -62,6 +62,7 @@ import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.HistoryEntry
+import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
@@ -107,6 +108,10 @@ class PlayerActivity : ComponentActivity() {
      *  (playback starts with the first server found; this keeps appending the
      *  rest as slower providers answer). */
     private var liveStreamsJob: Job? = null
+
+    /** Subscription to the episode the detail screen settled on when a Play tap
+     *  happened before the episode list had finished loading. */
+    private var liveEpisodeJob: Job? = null
 
     /** Converts a detail-screen source (data layer) into a player source —
      *  mirrors the JSON payload parser so live-appended servers land in the
@@ -580,6 +585,19 @@ class PlayerActivity : ComponentActivity() {
                     delay(LIVE_WAIT_TIMEOUT_MS)
                     if (sources.isEmpty()) showError("No playable sources received.", false)
                 } else null
+                // The detail screen signals when its whole search is finished;
+                // if it ended with nothing, fail fast instead of waiting out
+                // the safety timeout above.
+                if (awaitLive) launch {
+                    StreamsLive.doneFlow(liveId).collect { done ->
+                        // Only fail when the session really ended up with no
+                        // servers (append happens before markDone, so a
+                        // non-empty live flow means servers are on the way).
+                        if (done && sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                            showError("No playable sources received.", false)
+                        }
+                    }
+                }
                 StreamsLive.flow(liveId).collect { incoming ->
                     if (incoming.isEmpty()) return@collect
                     val have = sources.map { it.infoHash ?: it.url }.toHashSet()
@@ -598,6 +616,15 @@ class PlayerActivity : ComponentActivity() {
                         waitTimeout?.cancel()
                         playSource(preferredStartIndex())
                     }
+                }
+            }
+            // A Play tap made before the origin addon finished listing episodes:
+            // adopt the episode the detail screen settles on, so the title card,
+            // resume key and watch history are per-episode rather than the
+            // movie-level entry.
+            liveEpisodeJob = lifecycleScope.launch {
+                StreamsLive.episodeFlow(liveId).collect { ep ->
+                    if (ep != null) applyLiveEpisode(ep)
                 }
             }
         }
@@ -2141,6 +2168,33 @@ class PlayerActivity : ComponentActivity() {
         bannerAnimators = emptyList()
     }
 
+    /** Adopts an episode that arrived AFTER launch — the user tapped Play while
+     *  the origin addon was still listing episodes, so the player opened with
+     *  no episode. Updates the top-bar episode line, the loading card's episode
+     *  text, and the watch-history key so progress is stored against this
+     *  episode instead of the movie-level entry. */
+    private fun applyLiveEpisode(ep: Episode) {
+        val label = when {
+            ep.season > 1 && ep.number > 0 ->
+                "S${ep.season} E${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+            ep.number > 0 ->
+                "Episode ${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+            else -> ep.name.orEmpty()
+        }
+        findViewById<TextView>(R.id.subtitle_text)?.apply {
+            text = label
+            visibility = if (label.isBlank()) View.GONE else View.VISIBLE
+        }
+        loadingEpisode?.apply {
+            text = label
+            visibility = if (label.isBlank()) View.GONE else View.VISIBLE
+        }
+        if (historyEntry != null) {
+            historyEntry = historyEntry?.copy(episodeId = ep.id, episodeName = ep.name.orEmpty())
+            historyEntry?.let { historyKey = it.uniqueKey }
+        }
+    }
+
     private fun showError(message: String, hasNext: Boolean) {
         hideLoadingBanner(immediate = true)
         var text = message
@@ -2323,6 +2377,8 @@ class PlayerActivity : ComponentActivity() {
         recordProgress()
         liveStreamsJob?.cancel()
         liveStreamsJob = null
+        liveEpisodeJob?.cancel()
+        liveEpisodeJob = null
         intent.getStringExtra("streamsLiveId")?.let { StreamsLive.remove(it) }
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
@@ -2344,9 +2400,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     companion object {
-        /** How long an instantly-opened player waits for the first server from
-         *  the detail screen's live search before reporting that none arrived. */
-        private const val LIVE_WAIT_TIMEOUT_MS = 30_000L
+        /** Safety ceiling on how long an instantly-opened player waits for the
+         *  first server from the detail screen's live search. The detail screen
+         *  normally signals completion ([StreamsLive.markDone]) long before
+         *  this; the timeout only covers the search never reporting back. */
+        private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
