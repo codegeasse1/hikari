@@ -341,12 +341,6 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
 
-/** How long the "finding server" overlay may stay up before the source sheet is
- *  revealed as a safety net. Auto-play still wins if a playable server appears
- *  first; this only guarantees the tap is never a dead end when the search is
- *  slow, hangs, or the player can't be opened. */
-private const val SHEET_FALLBACK_MS = 4_500L
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(
@@ -387,11 +381,6 @@ fun DetailScreen(
     var resumeHint by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
-    // True while a tap is resolving servers. A full-screen "finding server"
-    // overlay covers the detail page and playback then starts on its own — the
-    // source list is no longer shown up-front. It only appears if the search
-    // genuinely finds nothing playable.
-    var preparingSources by remember { mutableStateOf(false) }
     /** Live-update session handed to the player: while playback runs, the
      *  ongoing multi-provider search keeps appending servers to it. */
     var sessionId by remember { mutableStateOf("") }
@@ -514,15 +503,15 @@ fun DetailScreen(
     }
 
     val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
-        // Show the "finding server" overlay IMMEDIATELY, then resolve sources in
-        // the background and play the first playable server automatically. The
-        // source list is deliberately NOT shown up-front.
+        // Show the source sheet + spinner IMMEDIATELY — instant feedback that the
+        // tap registered (this is what the old build did) — then keep resolving
+        // sources in the background and play the first playable server
+        // automatically, which closes the sheet again.
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
         loadingStreams = true
-        showSheet = false
-        preparingSources = true
+        showSheet = true
         // A fresh tap must always be allowed to open the player. If an earlier
         // launch never reported back (activity result lost, process reshuffle),
         // the once-only guard could stay stuck ON and silently swallow every
@@ -573,13 +562,11 @@ fun DetailScreen(
                 if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
                     launched = true
                     showSheet = false
-                    preparingSources = false
                     loadingStreams = false
                 } else {
                     // Player could not be opened (bad payload / launch failure)
-                    // — surface the source sheet instead of leaving the user on
-                    // a dimmed, dead screen.
-                    preparingSources = false
+                    // — leave the source sheet up with its per-extension
+                    // diagnostics so the user can still pick a server.
                     loadingStreams = false
                     showSheet = true
                 }
@@ -608,43 +595,29 @@ fun DetailScreen(
                 delay(PREFERRED_GRACE_MS)
                 startNow()
             }
-            // Safety net: if the search is slow or hung and nothing has launched
-            // within [SHEET_FALLBACK_MS], reveal the source sheet so a tap can
-            // never dead-end on a dimmed spinner. Auto-play still wins whenever
-            // a playable server shows up first (the sheet then just closes).
-            val watchdog = launch {
-                delay(SHEET_FALLBACK_MS)
-                if (!launched && !playerLaunched) {
-                    preparingSources = false
-                    showSheet = true
-                }
-            }
             val final = vm.getStreams(ep)
             feed.cancel()
             grace.cancel()
-            watchdog.cancel()
             loadingStreams = false
             streams = final
             val playable = playableEvery(final)
             StreamProbe.warmAsync(playable)
             if (launched || playerLaunched) {
-                // Search finished — hand the player the complete list.
-                preparingSources = false
+                // Player is up (or already was) — close the sheet and hand it the
+                // complete list.
+                showSheet = false
                 StreamsLive.append(sessionId, playable)
             } else if (playable.isNotEmpty()) {
                 // Cached/instant result arrived before the feed attached.
                 if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
                     launched = true
-                    preparingSources = false
                     showSheet = false
                 } else {
-                    preparingSources = false
                     showSheet = true
                 }
             } else {
-                // Nothing playable anywhere — surface the source sheet, with the
+                // Nothing playable anywhere — keep the source sheet up, with the
                 // per-extension diagnostics explaining what failed.
-                preparingSources = false
                 showSheet = true
             }
         }
@@ -692,7 +665,6 @@ fun DetailScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         // Header renders immediately from the poster we already have, so the hero
         // image shows at once instead of waiting for the slow meta fetch.
@@ -897,43 +869,6 @@ fun DetailScreen(
                     }
                 }
                 item { Spacer(Modifier.height(24.dp)) }
-            }
-        }
-    }
-        if (preparingSources) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.62f))
-                    // Tapping the dim layer reveals the source list, so a server
-                    // search that gets stuck can never trap the user on a spinner.
-                    .clickable { preparingSources = false; showSheet = true },
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(14.dp))
-                    Text(
-                        selectedEp?.let { if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}" }
-                            ?: (m?.title ?: title),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Finding the best server…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.8f)
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "Tap to show all sources",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.55f)
-                    )
-                }
             }
         }
     }
