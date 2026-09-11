@@ -34,6 +34,13 @@ object TmdbResolver {
 
     private val memory = ConcurrentHashMap<String, Resolved>()
 
+    /** Single-flight guard: several Nuvio providers resolve the SAME item at
+     *  once when a source search fans out, and without this each one fired its
+     *  own TMDB lookup — duplicate network round-trips (and TMDB rate-limit
+     *  pressure) that delayed the first server by seconds. Now the first
+     *  caller does the lookup and the rest await it. */
+    private val inflight = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Resolved?>>()
+
     /** Cheap pre-filter: can we plausibly resolve this item to a TMDB id? */
     fun isLikelyResolvable(item: MediaItem): Boolean {
         val id = item.id.trim()
@@ -49,12 +56,26 @@ object TmdbResolver {
             memory[key] = it
             return it
         }
-        val r = resolveNetwork(item)
-        if (r != null) {
-            memory[key] = r
-            saveCache(key, r)
+        // Single-flight: a fan-out source search resolves the same title from
+        // every Nuvio provider at once — only the first caller pays for the
+        // TMDB round-trip; the others await the same result.
+        val deferred = kotlinx.coroutines.CompletableDeferred<Resolved?>()
+        val prev = inflight.putIfAbsent(key, deferred)
+        if (prev != null) return prev.await()
+        try {
+            val r = resolveNetwork(item)
+            if (r != null) {
+                memory[key] = r
+                saveCache(key, r)
+            }
+            deferred.complete(r)
+            return r
+        } catch (t: Throwable) {
+            deferred.complete(null)
+            throw t
+        } finally {
+            inflight.remove(key)
         }
-        return r
     }
 
     private fun cacheKey(item: MediaItem): String {

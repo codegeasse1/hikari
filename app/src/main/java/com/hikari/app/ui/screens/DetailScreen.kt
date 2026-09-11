@@ -197,6 +197,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             )
             _meta.value = base
             _loading.value = false
+            // Movies: start the multi-provider source search NOW — before the
+            // origin's /meta and episode fetches — so the first server is
+            // already resolving while the page renders. Previously the search
+            // only began after meta+episodes landed, which is why tapping Play
+            // sat on a spinner while the (slow) providers were still warming up.
+            if (type != MediaType.SERIES) {
+                launch { prefetchFirstStreams(base) }
+            }
             withContext(Dispatchers.IO) {
                 // Fetch meta FIRST — CS3 plugins can label a series/actor page
                 // as a movie on their search results (LeakPorner actors are
@@ -345,7 +353,6 @@ fun DetailScreen(
     val episodesLoading by vm.episodesLoading.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
-    val streamsReady by vm.streamsReady.collectAsState()
     val searchedProviders by vm.searchedProviders.collectAsState()
     val streamError by vm.streamError.collectAsState()
     val providers by vm.providers.collectAsState()
@@ -599,17 +606,11 @@ fun DetailScreen(
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            if (streamsReady) {
-                                Text("Play")
-                            } else {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text("Preparing…")
-                            }
+                            // Always "Play": the source search keeps running in
+                            // the background (prefetch + live feed) and the
+                            // sheet shows its own loader, so the button must
+                            // never sit on a "Preparing…" spinner of its own.
+                            Text("Play")
                         }
                     }
                 }

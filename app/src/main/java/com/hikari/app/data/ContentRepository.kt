@@ -360,7 +360,12 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 emptyList()
             }
-            val targets = primaryTargets + nuvioTargets
+            // A Nuvio origin appears in BOTH lists above, which used to launch
+            // two identical engines for the same provider — doubling its CPU
+            // and network work and stealing a concurrency slot from the other
+            // providers, which measurably delayed the first server. Query each
+            // provider exactly once.
+            val targets = (primaryTargets + nuvioTargets).distinctBy { it.config.id }
             if (targets.isEmpty()) return@withContext emptyList()
 
             // Fresh diagnostic state for this lookup.

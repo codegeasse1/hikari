@@ -185,10 +185,19 @@ class PlayerActivity : ComponentActivity() {
     /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
     private var resizeIndex = 0
 
-    /** Subtitle preferences (size scale + sync offset), persisted per device. */
+    /** Subtitle preferences (size scale + sync offset + vertical position),
+     *  persisted per device. */
     private val subsPrefs by lazy { getSharedPreferences("player_subs", MODE_PRIVATE) }
     private var subtitleScale = 1f
     private var subtitleOffsetMs = 0L
+
+    /** How far up the subtitles sit, as a fraction of the player height that is
+     *  kept clear below them (SubtitleView's bottom padding fraction). Bigger =
+     *  higher up the screen. The stock value sits the captions right on the
+     *  bottom edge (inside the letterbox bar), which is why fullscreen subs
+     *  looked like they were "falling off" the video — this default lifts them
+     *  a little, and the Subtitles panel's Position row raises/lowers them. */
+    private var subtitlePosition = 0.14f
 
     /** url -> raw subtitle text, cached so a sync offset can re-time existing
      *  subtitles without re-fetching them over the network. */
@@ -205,6 +214,21 @@ class PlayerActivity : ComponentActivity() {
     private val probeCache = java.util.concurrent.ConcurrentHashMap<String, ProbeResult>()
 
     private lateinit var client: OkHttpClient
+
+    /** Dedicated probe HTTP client: plain OkHttp — the SAME stack playback
+     *  itself uses (OkHttpDataSource), so a probe never waits on Cloudflare's
+     *  hidden verify WebView (which could park it for ~20s on a challenged
+     *  wrapper page, and whose clearance playback can't use anyway) — with
+     *  tight timeouts so one unreachable hop fails over to the next candidate
+     *  in a couple of seconds instead of stalling the whole probe. */
+    private val probeClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
 
     /** Watch-history context passed by the detail screen. When non-null the
      *  player records resume positions into the app store. */
@@ -271,7 +295,9 @@ class PlayerActivity : ComponentActivity() {
         playerView = findViewById(R.id.player_view)
         subtitleScale = subsPrefs.getFloat("sub_scale", 1f)
         subtitleOffsetMs = subsPrefs.getLong("sub_offset", 0L)
+        subtitlePosition = subsPrefs.getFloat("sub_pos", subtitlePosition)
         applySubtitleSize(subtitleScale)
+        applySubtitlePosition(subtitlePosition)
         // YouTube-style: fade the controls out after 3s instead of media3's 5s.
         playerView?.controllerShowTimeoutMs = 3000
         // Keep our own mirror of the controller visibility (media3's
@@ -855,10 +881,12 @@ class PlayerActivity : ComponentActivity() {
      * Subtitle control. Lists every available text track (HLS/DASH subtitle
      * groups AND the provider-supplied .srt/.vtt), plus Off and Auto — so a
      * stream that forces subtitles on can finally be muted, and a stream with
-     * several languages gets a real picker. Below the track list sit two
-     * settings rows: text size (A−/A+, applied live to the SubtitleView) and
-     * sync (slow/fast, re-times the provider subtitle data so it lines up
-     * with the audio when a source's subs are off by a fraction of a second).
+     * several languages gets a real picker. Below the track list sit three
+     * settings rows: text size (A−/A+, applied live to the SubtitleView), sync
+     * (slow/fast, re-times the provider subtitle data so it lines up with the
+     * audio when a source's subs are off by a fraction of a second), and
+     * position (Lower/Higher, lifts the captions off the bottom edge so
+     * fullscreen subtitles no longer sit in the letterbox bar).
      */
     private fun showSubsDialog() {
         val p = player ?: return
@@ -978,6 +1006,14 @@ class PlayerActivity : ComponentActivity() {
             subsPrefs.edit().putLong("sub_offset", subtitleOffsetMs).apply()
             attachExternalSubtitles()
         }
+        val posValue = valueLabel("${(subtitlePosition * 100).toInt()}%")
+        fun applyPos() {
+            posValue.text = "${(subtitlePosition * 100).toInt()}%"
+            subsPrefs.edit().putFloat("sub_pos", subtitlePosition).apply()
+            applySubtitlePosition(subtitlePosition)
+        }
+        // Tapping the value restores the lifted default position.
+        posValue.setOnClickListener { subtitlePosition = 0.14f; applyPos() }
 
         // Tapping the value resets it — cheaper than a whole extra "0" pill,
         // which was what pushed the −/+ buttons off the dialog's edge.
@@ -1012,6 +1048,15 @@ class PlayerActivity : ComponentActivity() {
                 syncValue,
                 pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
             ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
+            // Vertical position: "Higher" keeps more of the player's height
+            // clear below the captions, lifting them off the bottom edge (and
+            // out of the letterbox bar on a fitted/letterboxed video).
+            addView(controlRow(
+                "Position",
+                pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+                posValue,
+                pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
         }
 
         // The whole panel scrolls (see presentGlass), so the Track rows plus the
@@ -1025,6 +1070,13 @@ class PlayerActivity : ComponentActivity() {
     /** Applies the saved text-size scale to the player's subtitle view. */
     private fun applySubtitleSize(scale: Float) {
         runCatching { playerView?.getSubtitleView()?.setFractionalTextSize(0.0533f * scale) }
+    }
+
+    /** Applies the saved vertical position to the player's subtitle view:
+     *  [fraction] of the player height is kept clear below the captions, so a
+     *  larger value lifts the subtitles further up off the bottom edge. */
+    private fun applySubtitlePosition(fraction: Float) {
+        runCatching { playerView?.getSubtitleView()?.setBottomPaddingFraction(fraction) }
     }
 
     /**
@@ -1281,11 +1333,7 @@ class PlayerActivity : ComponentActivity() {
      *  nothing resolvable was found. Never throws. */
     private fun probeStreamUrl(url: String, headers: Map<String, String>, depth: Int): ProbeResult? {
         if (depth > 3) return null
-        val response = try {
-            Http.get(url, headers)
-        } catch (t: Throwable) {
-            null
-        } ?: return null
+        val response = probeGet(url, headers) ?: return null
         response.use { r ->
             if (!r.isSuccessful) return null
             val ct = r.headers["Content-Type"]?.lowercase() ?: ""
@@ -1320,13 +1368,52 @@ class PlayerActivity : ComponentActivity() {
                 return ProbeResult(url, null)
             }
             // Wrapper page — JSON API / HTML player. Pull out the embedded
-            // media URLs and follow the best candidate.
-            for (c in extractMediaCandidates(head, url)) {
+            // media URLs and follow the best candidates. At the TOP level the
+            // candidates are raced in parallel, so one dead/slow candidate no
+            // longer serializes the probe behind its timeout (the old
+            // depth-first walk could stack a 10s wait on the first dud); deeper
+            // hops stay sequential so the thread fan-out can't explode.
+            val candidates = extractMediaCandidates(head, url)
+            if (candidates.isEmpty()) return null
+            if (depth == 0 && candidates.size > 1) {
+                val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(candidates.size, 4)) { runnable ->
+                    Thread(runnable, "hikari-probe").apply { isDaemon = true }
+                }
+                try {
+                    val done = java.util.concurrent.ExecutorCompletionService<ProbeResult?>(pool)
+                    candidates.forEach { c ->
+                        done.submit(java.util.concurrent.Callable { probeStreamUrl(c, headers, depth + 1) })
+                    }
+                    repeat(candidates.size) {
+                        val res = runCatching { done.take().get() }.getOrNull()
+                        if (res != null) return res
+                    }
+                } finally {
+                    pool.shutdownNow()
+                }
+                return null
+            }
+            for (c in candidates) {
                 val res = probeStreamUrl(c, headers, depth + 1)
                 if (res != null) return res
             }
             return null
         }
+    }
+
+    /** Fetches [url] for probing. Sends a Range header so hosts stream just the
+     *  opening bytes instead of holding the connection for the whole file, and
+     *  never takes the Cloudflare verify-WebView path (playback can't use that
+     *  clearance either, so a probe that needed it would be a false positive).
+     *  Returns null — never throws — on any failure. */
+    private fun probeGet(url: String, headers: Map<String, String>): okhttp3.Response? = try {
+        val b = okhttp3.Request.Builder().url(url)
+            .header("User-Agent", Http.UA)
+            .header("Range", "bytes=0-262143")
+        headers.forEach { (k, v) -> if (!k.equals("Range", ignoreCase = true)) b.header(k, v) }
+        probeClient.newCall(b.build()).execute()
+    } catch (t: Throwable) {
+        null
     }
 
     private val URL_TOKEN_RE = Regex("""https?://[^\s"'<>\\]+""")
