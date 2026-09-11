@@ -294,6 +294,20 @@ class PlayerActivity : ComponentActivity() {
         seekText = findViewById(R.id.seek_text)
         findViewById<TextView>(R.id.title_text).text = intent.getStringExtra("title").orEmpty()
 
+        // Top-bar episode line (e.g. "S1E2 · Freedom Day"), matching the
+        // reference player's two-line title block. Hidden for movies.
+        val epSeason = intent.getIntExtra("histEpisodeSeason", 0)
+        val epNumber = intent.getIntExtra("histEpisodeNumber", 0)
+        val epName = intent.getStringExtra("histEpisodeName").orEmpty()
+        val subtitle = findViewById<TextView>(R.id.subtitle_text)
+        subtitle.text = when {
+            epSeason > 1 && epNumber > 0 ->
+                "S$epSeason E$epNumber" + if (epName.isNotBlank()) " · $epName" else ""
+            epNumber > 0 -> "Episode $epNumber" + if (epName.isNotBlank()) " · $epName" else ""
+            else -> epName
+        }
+        subtitle.visibility = if (subtitle.text.isBlank()) View.GONE else View.VISIBLE
+
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
 
         speedChip?.setOnClickListener { cycleSpeed() }
@@ -609,12 +623,13 @@ class PlayerActivity : ComponentActivity() {
         if (controllerVisible) pv.hideController() else pv.showController()
     }
 
-    /** Double-tap seek: left half rewinds 10s, right half forwards 10s. */
+    /** Double-tap seek: left half rewinds 5s, right half forwards 5s (matching
+     *  the 5s shown on the centre rewind/forward buttons). */
     private fun seekByTap(x: Float) {
         val p = player ?: return
         val mid = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
         val forward = x >= mid
-        val delta = if (forward) 10_000L else -10_000L
+        val delta = if (forward) 5_000L else -5_000L
         val target = (p.currentPosition + delta)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
         p.seekTo(target)
@@ -622,7 +637,7 @@ class PlayerActivity : ComponentActivity() {
         showSeekFeedback(delta)
     }
 
-    /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
+    /** Flash the double-tap seek indicator (arrow + +5s/−5s) like YouTube. */
     private fun showSeekFeedback(deltaMs: Long) {
         val v = seekFeedback ?: return
         seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
@@ -741,20 +756,25 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        // Pill-shaped translucent +/- buttons, matching the app's glass theme.
+        // Compact pill-shaped translucent +/- buttons, matching the app's glass
+        // theme. They MUST stay narrow: the dialog's content area is only a few
+        // hundred dp wide, and wider pills used to push the −/+ buttons past the
+        // dialog's edge where they got clipped (looked like the Sync row was
+        // "collapsing").
         fun pill(text: String, onClick: () -> Unit): TextView {
             val bg = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = (14 * density).toFloat()
+                cornerRadius = (15 * density).toFloat()
                 setColor(0x1AFFFFFF.toInt())
             }
             return TextView(this).apply {
                 this.text = text
-                textSize = 14f
+                textSize = 13f
                 setTextColor(0xFFF5C569.toInt())
                 gravity = Gravity.CENTER
                 background = bg
-                setPadding((16 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+                includeFontPadding = false
+                setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
                 setOnClickListener { onClick() }
             }
         }
@@ -768,7 +788,7 @@ class PlayerActivity : ComponentActivity() {
             textSize = 13f
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
-            minWidth = (56 * density).toInt()
+            minWidth = (48 * density).toInt()
         }
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
@@ -829,39 +849,52 @@ class PlayerActivity : ComponentActivity() {
             attachExternalSubtitles()
         }
 
+        // Tapping the value resets it — cheaper than a whole extra "0" pill,
+        // which was what pushed the −/+ buttons off the dialog's edge.
+        syncValue.setOnClickListener { subtitleOffsetMs = 0L; applySync() }
+
+        fun controlRow(label: String, vararg controls: View): LinearLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                clipToPadding = false
+                addView(rowLabel(label))
+                addView(weightSpacer())
+                controls.forEach { addView(it) }
+            }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((20 * density).toInt(), (4 * density).toInt(), (20 * density).toInt(), (4 * density).toInt())
+            setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), (4 * density).toInt())
             addView(trackList, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                (Math.min(items.size, 6) * 46 * density).toInt()
+                (Math.min(items.size, 5) * 46 * density).toInt()
             ))
-            addView(LinearLayout(this@PlayerActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, (14 * density).toInt(), 0, 0)
-                addView(rowLabel("Text size"))
-                addView(weightSpacer())
-                addView(pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() })
-                addView(sizeValue)
-                addView(pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() })
-            })
-            addView(LinearLayout(this@PlayerActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, (10 * density).toInt(), 0, 0)
-                addView(rowLabel("Sync"))
-                addView(weightSpacer())
-                addView(pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() })
-                addView(syncValue)
-                addView(pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() })
-                addView(pill("0") { subtitleOffsetMs = 0L; applySync() })
-            })
+            addView(controlRow(
+                "Text size",
+                pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+                sizeValue,
+                pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+            ).also { it.setPadding(0, (14 * density).toInt(), 0, 0) })
+            addView(controlRow(
+                "Sync",
+                pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
+                syncValue,
+                pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
+            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
+        }
+
+        // The whole dialog scrolls, so on a short/small screen the Track rows
+        // (already capped at 5) plus the size/sync controls can never be cut
+        // off the bottom or squeezed sideways.
+        val scroller = ScrollView(this).apply {
+            addView(root)
+            setPadding(0, 0, 0, 0)
         }
 
         AlertDialog.Builder(this)
             .setTitle("Subtitles")
-            .setView(root)
+            .setView(scroller)
             .setNegativeButton("Close", null)
             .show()
     }

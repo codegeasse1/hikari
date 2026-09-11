@@ -388,14 +388,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 val eps = resp.episodes.values.flatten()
                 if (eps.isEmpty()) null
                 else eps
-                    .sortedBy { it.episode ?: Int.MAX_VALUE }
-                    .distinctBy { it.data ?: it.episode ?: 0 }
+                    .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: Int.MAX_VALUE }))
+                    .distinctBy { it.data ?: "${it.season ?: 1}:${it.episode ?: 0}" }
                     .map { it.toHikari(resp.posterHeaders) }
             }
             is TvSeriesLoadResponse -> {
                 if (resp.episodes.isEmpty()) null
                 else resp.episodes
-                    .distinctBy { it.data ?: it.episode ?: 0 }
+                    .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: Int.MAX_VALUE }))
+                    .distinctBy { it.data ?: "${it.season ?: 1}:${it.episode ?: 0}" }
                     .map { it.toHikari(resp.posterHeaders) }
             }
             else -> null
@@ -869,6 +870,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             id = data ?: num.toString(),
             name = name ?: "Episode $num",
             image = posterUrl,
+            season = season?.takeIf { it > 0 } ?: 1,
         ).also { recordPosterHeaders(posterUrl, respHeaders) }
     }
 }

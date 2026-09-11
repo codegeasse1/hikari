@@ -44,9 +44,13 @@ class ContentRepository(private val manager: ProviderManager) {
     // count matches the website. The budgets keep a dead/hung provider from
     // stalling the whole search forever.
     private val MAX_SEARCH_PAGES = 30
-    private val SEARCH_PAGE_TIMEOUT_MS = 90_000L
-    private val SEARCH_PROVIDER_BUDGET_MS = 240_000L
-    private val SEARCH_TOTAL_BUDGET_MS = 260_000L
+    // Search streams page 1 to the UI immediately and keeps scanning in the
+    // background, so these budgets only cap how long we wait for SLOW extra
+    // pages. Trimmed hard (was 90s/240s/260s) so a single dead provider can't
+    // make a search feel like it never finishes.
+    private val SEARCH_PAGE_TIMEOUT_MS = 25_000L
+    private val SEARCH_PROVIDER_BUDGET_MS = 90_000L
+    private val SEARCH_TOTAL_BUDGET_MS = 100_000L
 
     /** Like runCatching but re-throws CancellationException — a coroutine that
      *  gets cancelled (e.g. the user switches tabs while Home is loading every
@@ -79,14 +83,19 @@ class ContentRepository(private val manager: ProviderManager) {
         // of concurrent network requests which saturated the IO pool and froze
         // the UI (ANR). 3 providers run their catalogs in parallel, and at most
         // 8 catalog fetches exist across the whole app at once.
-        val providerGate = Semaphore(3)
-        val catalogGate = Semaphore(8)
+        val providerGate = Semaphore(5)
+        val catalogGate = Semaphore(12)
         val rows = coroutineScope {
             active.map { p ->
                 async {
                     cancellableCatching {
                         providerGate.withPermit {
-                            withTimeoutOrNull(120_000) {
+                            // Tight budgets: a healthy catalog answers in a few
+                            // seconds, so a 40s provider / 15s catalog ceiling
+                            // keeps one dead host from stalling the whole home
+                            // feed for two minutes while still tolerating slow
+                            // provider manifest loads.
+                            withTimeoutOrNull(40_000) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(14)
@@ -94,7 +103,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     catalogs.map { c ->
                                         async {
                                             catalogGate.withPermit {
-                                                val items = withTimeoutOrNull(60_000) {
+                                                val items = withTimeoutOrNull(15_000) {
                                                     cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                                 }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                 if (items.isEmpty()) null
@@ -431,15 +440,31 @@ class ContentRepository(private val manager: ProviderManager) {
         if (message == null) map.remove(id) else map[id] = message
     }
 
+    /** Bounded LRU caches so revisiting a detail page (back from the player,
+     *  re-opening from history/search) is instant instead of re-hitting every
+     *  provider. Keyed by uniqueId; guarded because several coroutines can
+     *  touch them concurrently. */
+    private val metaCache = object : LinkedHashMap<String, MediaItem>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MediaItem>?) = size > 64
+    }
+    private val episodeCache = object : LinkedHashMap<String, List<Episode>>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Episode>>?) = size > 64
+    }
+
     /** Enriches an item with the origin addon's full meta (backdrop, overview,
      *  genres, year). If that addon's meta is thin, the next addon that knows
      *  the title fills in the gaps — so a banner/detail never stay blank just
      *  because one catalog addon serves minimal metadata. */
     suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
+        synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
         var result = manager.byId(item.providerId)
             ?.let { withTimeoutOrNull(15_000) { cancellableCatching { it.getMeta(item) }.getOrDefault(item) } }
             ?: item
-        if (result.backdropUrl != null && result.overview != null) return@withContext translateItem(result)
+        if (result.backdropUrl != null && result.overview != null) {
+            val t = translateItem(result)
+            synchronized(metaCache) { metaCache[item.uniqueId] = t }
+            return@withContext t
+        }
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
@@ -454,24 +479,37 @@ class ContentRepository(private val manager: ProviderManager) {
             if (result.year == null && r.year != null) result = result.copy(year = r.year)
             if (result.backdropUrl != null && result.overview != null) break
         }
-        translateItem(result)
+        val translated = translateItem(result)
+        synchronized(metaCache) { metaCache[item.uniqueId] = translated }
+        translated
     }
 
     /** Episodes from the origin addon, falling back to the first other addon
      *  that can list them (some catalog addons serve videos for series via a
-     *  different addon, e.g. Cinemeta-backed ids). */
+     *  different addon, e.g. Cinemeta-backed ids). Non-empty results are cached
+     *  so re-opening a detail page doesn't repeat the whole lookup. */
     suspend fun episodesFor(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
-        if (item.type != MediaType.SERIES && item.type != MediaType.MOVIE) return@withContext null
+        if (item.type == MediaType.UNKNOWN) return@withContext null
+        synchronized(episodeCache) { episodeCache[item.uniqueId] }?.let { return@withContext it }
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
+        // Probe the origin first for both movies and series (it owns the item's
+        // ids), then the other addons when this is a series — the origin's own
+        // Stremio meta can still reclassify a mislabelled row, so the origin is
+        // always asked and its non-empty result wins.
         val ordered = listOfNotNull(manager.byId(item.providerId)) +
             (if (item.type == MediaType.SERIES) others else emptyList())
         for (p in ordered) {
             val eps = (withTimeoutOrNull(12_000) {
                 cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
             }) ?: emptyList()
-            if (eps.isNotEmpty()) return@withContext translateEpisodes(item.providerId, eps)
+            if (eps.isNotEmpty()) {
+                val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
+                val translated = translateEpisodes(item.providerId, sorted)
+                synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
+                return@withContext translated
+            }
         }
         null
     }

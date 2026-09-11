@@ -83,6 +83,19 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     private var manifest: JSONObject? = null
 
+    /** `/meta/{type}/{id}` responses keyed by request URL. The detail screen
+     *  asks for meta (backdrop/overview/type correction) and then for episodes,
+     *  which hit the SAME document — caching it halves the network calls on
+     *  every detail open. Cleared entries simply refetch. */
+    private val metaCache = ConcurrentHashMap<String, JSONObject>()
+
+    private suspend fun getMetaJson(url: String): JSONObject? {
+        metaCache[url]?.let { return it }
+        val json = getJson(url) ?: return null
+        metaCache[url] = json
+        return json
+    }
+
     /** Fetches JSON with a browser-like fingerprint. The https→http fallback
      *  matters for addons served from IPFS/NAT boxes and for hosts whose
      *  http:// mirror behaves differently. Never throws. */
@@ -248,9 +261,17 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
         val url = resUrl("meta", typeSegment(item.rawType, item.type), item.id)
-        val json = getJson(url) ?: return item
+        val json = getMetaJson(url) ?: return item
         val m = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: return item
+        // A series' /meta document frequently declares a different type than
+        // the catalog row that produced the item (e.g. an addon exposed it via
+        // a "movie"-typed catalog). Trust any explicit "type" the meta carries
+        // so the detail screen stops showing only Play for a real series.
+        val correctedRaw = m.optString("type").ifBlank { item.rawType }
+        val correctedType = if (correctedRaw.isBlank()) item.type else typeOf(correctedRaw)
         return item.copy(
+            type = correctedType,
+            rawType = correctedRaw,
             overview = m.optString("description").ifBlank { item.overview },
             genres = stringArray(m, "genres").ifEmpty { item.genres },
             year = yearFromRelease(m.optString("releaseInfo")) ?: item.year,
@@ -260,28 +281,46 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
-        if (item.type != MediaType.SERIES) return null
-        val json = getJson(resUrl("meta", typeSegment(item.rawType, item.type), item.id)) ?: return null
-        val meta = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: return null
-        val videos = meta.optJSONArray("videos") ?: return null
-        val out = mutableListOf<Episode>()
-        val seen = HashSet<String>()
-        for (i in 0 until videos.length()) {
-            val v = videos.optJSONObject(i) ?: continue
-            val ep = v.optInt("episode", -1)
-            val season = v.optInt("season", 1)
-            if (ep < 0) continue
-            val key = "$season:$ep"
-            if (!seen.add(key)) continue // never drop later-season episodes
-            out += Episode(
-                number = ep,
-                id = v.optString("id").ifBlank { "${item.id}:$season:$ep" },
-                name = (v.optString("title").ifBlank { "Episode $ep" })
-                    .let { if (season > 1) "S$season E$ep · $it" else it },
-                image = v.optString("thumbnail").ifBlank { null },
-            )
+        // No hard type gate: a series is often served from a catalog the addon
+        // typed as "movie" (or an unknown custom type), and the meta document
+        // is the ground truth. getMetaJson shares the cache with getMeta, so
+        // for a genuine movie this costs no extra request and simply finds no
+        // videos array. A non-empty result also lets the UI reclassify the item
+        // as a series.
+        val candidates = buildList {
+            add(typeSegment(item.rawType, item.type))
+            // If the addon mislabelled the row, the videos usually live under
+            // the canonical "series"/"tv" segment — try those too.
+            if (item.type != MediaType.SERIES) {
+                add("series")
+                add("tv")
+            }
+        }.distinct()
+        for (seg in candidates) {
+            val json = getMetaJson(resUrl("meta", seg, item.id)) ?: continue
+            val meta = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: continue
+            val videos = meta.optJSONArray("videos") ?: continue
+            val out = mutableListOf<Episode>()
+            val seen = HashSet<String>()
+            for (i in 0 until videos.length()) {
+                val v = videos.optJSONObject(i) ?: continue
+                val ep = v.optInt("episode", -1)
+                val season = v.optInt("season", 1)
+                if (ep < 0) continue
+                val key = "$season:$ep"
+                if (!seen.add(key)) continue // never drop later-season episodes
+                out += Episode(
+                    number = ep,
+                    id = v.optString("id").ifBlank { "${item.id}:$season:$ep" },
+                    name = (v.optString("title").ifBlank { "Episode $ep" })
+                        .let { if (season > 1) "S$season E$ep · $it" else it },
+                    image = v.optString("thumbnail").ifBlank { null },
+                    season = season,
+                )
+            }
+            if (out.isNotEmpty()) return out.sortedWith(compareBy({ it.season }, { it.number }))
         }
-        return out.sortedBy { it.number }
+        return null
     }
 
     /** True if this addon claims to know this video id (via manifest

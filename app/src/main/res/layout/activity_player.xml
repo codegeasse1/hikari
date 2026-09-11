@@ -10,7 +10,10 @@
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:controller_layout_id="@layout/player_controller" />
+        app:controller_layout_id="@layout/player_controller"
+        app:show_buffering="when_playing"
+        app:rewind_increment="5000"
+        app:fast_forward_increment="5000" />
 
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
          rewind/forward arrow + the amount next to it. -->

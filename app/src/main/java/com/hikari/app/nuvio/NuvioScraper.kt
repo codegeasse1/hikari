@@ -258,7 +258,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             if (n > 0 && s.optInt("episode_count") > 0) n else null
         }.take(MAX_SEASONS)
         val out = mutableListOf<Episode>()
-        var global = 0
         for (sn in nums) {
             val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap()) ?: continue
             val eps = sd.optJSONArray("episodes") ?: continue
@@ -266,12 +265,12 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val e = eps.optJSONObject(i) ?: continue
                 val en = e.optInt("episode_number")
                 if (en <= 0) continue
-                global++
                 out += Episode(
-                    number = global,
+                    number = en,
                     id = "S${sn}E$en",
                     name = e.optString("name").takeIf { it.isNotBlank() },
                     image = e.optString("still_path").takeIf { it.isNotBlank() }?.let { IMG + it },
+                    season = sn,
                 )
             }
         }

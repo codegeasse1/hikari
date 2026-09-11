@@ -89,6 +89,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private var loadJob: kotlinx.coroutines.Job? = null
 
+    // Last successful home feed per selected-provider key ("all" when the user
+    // is on the combined feed). Returning to Home, or re-picking the same
+    // provider, paints this INSTANTLY and refreshes in the background instead
+    // of blanking the screen to a spinner and re-fetching every catalog.
+    private val homeCache = HashMap<String, List<CatalogRow>>()
+
     init {
         viewModelScope.launch {
             // Restore the user's last pick ("All" when never picked).
@@ -116,18 +122,38 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadInternal() {
         loadJob?.cancel()
-        loadJob = viewModelScope.launch {
+        val key = _selectedProvider.value ?: "all"
+        val cached = homeCache[key]
+        if (cached != null) {
+            // Stale-while-revalidate: show the previous feed immediately (no
+            // spinner) and refresh underneath.
+            _rows.value = cached
+            _loading.value = false
+        } else {
             _loading.value = true
             _rows.value = emptyList()
+        }
+        loadJob = viewModelScope.launch {
             val rows = repo.homeRows(_selectedProvider.value)
             // MRDS/51CG catalogs carry full-size base64 data: posters; the Home
             // feed keeps hundreds of them alive at once and OOMs on a stock
             // heap. Collapse each into a tiny disk-cache token (same as the
             // catalog/search screens) — [PosterLoader.model] resolves the token
             // back to the bytes, so the grid still shows the images.
-            _rows.value = withContext(Dispatchers.IO) {
+            val tokenized = withContext(Dispatchers.IO) {
                 rows.map { row -> row.copy(items = row.items.map { it.tokenizePoster() }) }
             }
+            if (tokenized.isEmpty()) {
+                // Refresh returned nothing (all providers slow / offline): keep
+                // the cached feed rather than wiping the screen.
+                if (cached == null) {
+                    _rows.value = emptyList()
+                    _loading.value = false
+                }
+                return@launch
+            }
+            homeCache[key] = tokenized
+            _rows.value = tokenized
             _loading.value = false
         }
         loadJob?.join()

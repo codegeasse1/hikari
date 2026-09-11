@@ -1,0 +1,27 @@
+<resources>
+    <!-- Player bottom-row pill chips (Fit / 1x / Server / Skip / Quality /
+         Audio / Sub). One shared style keeps every chip the same height and
+         corner radius so the row reads as a single, modern toolbar instead of
+         a row of mismatched labels. -->
+    <style name="HikariPlayerChip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:gravity">center</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:background">@drawable/chip_bg</item>
+        <item name="android:layout_marginStart">3dp</item>
+        <item name="android:layout_marginEnd">3dp</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+        <item name="android:paddingTop">7dp</item>
+        <item name="android:paddingBottom">7dp</item>
+    </style>
+
+    <!-- Accent chip: the toggled/active state (playback speed, Skip). -->
+    <style name="HikariPlayerChip.Accent">
+        <item name="android:textColor">#F5C569</item>
+    </style>
+</resources>

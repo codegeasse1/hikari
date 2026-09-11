@@ -270,7 +270,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         val target = if (_episodes.value.isNullOrEmpty()) {
             base to null
         } else {
-            val first = _episodes.value!!.sortedBy { it.number }.firstOrNull()
+            val first = _episodes.value!!.sortedWith(compareBy({ it.season }, { it.number })).firstOrNull()
             if (first == null) return
             base to first
         }
@@ -361,17 +361,21 @@ fun DetailScreen(
     /** Live-update session handed to the player: while playback runs, the
      *  ongoing multi-provider search keeps appending servers to it. */
     var sessionId by remember { mutableStateOf("") }
-    var rangeStart by rememberSaveable { mutableStateOf<Int?>(null) }
-    var rangeExpanded by remember { mutableStateOf(false) }
+    var selectedSeason by rememberSaveable { mutableStateOf<Int?>(null) }
+    var seasonExpanded by remember { mutableStateOf(false) }
 
-    val sortedEps = remember(episodes) { episodes.orEmpty().sortedBy { it.number } }
-    val ranges = remember(sortedEps) {
-        if (sortedEps.isEmpty()) emptyList()
-        else {
-            val lo = sortedEps.minOf { it.number }
-            val hi = sortedEps.maxOf { it.number }
-            (lo..hi step 30).map { s -> s to minOf(s + 29, hi) }
-        }
+    val sortedEps = remember(episodes) {
+        episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
+    }
+    val seasons = remember(sortedEps) { sortedEps.map { it.season }.distinct().sorted() }
+    // The season the list is currently showing. Defaults to the first season —
+    // a multi-season show must never dump every episode of every season into
+    // one flat list. When the show has a single season the picker is hidden.
+    val activeSeason = selectedSeason?.takeIf { it in seasons } ?: seasons.firstOrNull() ?: 1
+    // Only one season → show everything; more than one → show just the picked
+    // season, so a 5-season show no longer floods the list with 100+ rows.
+    val shownEps = remember(sortedEps, seasons, activeSeason) {
+        if (seasons.size <= 1) sortedEps else sortedEps.filter { it.season == activeSeason }
     }
 
     LaunchedEffect(providerId, mediaId) {
@@ -408,6 +412,8 @@ fun DetailScreen(
                 putExtra("histPoster", (m?.posterUrl ?: posterUrl).orEmpty())
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
+                putExtra("histEpisodeSeason", ep?.season ?: 0)
+                putExtra("histEpisodeNumber", ep?.number ?: 0)
                 putExtra("startPosition", if (isResumeTarget) startPositionMs else 0L)
             }
         )
@@ -562,7 +568,11 @@ fun DetailScreen(
                 // give mislabeled/unknown items a Play button so nothing is
                 // ever unplayable.
                 val isSeries = m?.type == MediaType.SERIES || (episodes?.isNotEmpty() == true)
-                val canPlay = m?.type != MediaType.SERIES || episodes.isNullOrEmpty()
+                // Show the Play button whenever there's no episode list to pick
+                // from (a genuine movie, or a series whose provider exposes no
+                // episode list) — and ONLY the episode list once episodes exist,
+                // even if the provider mislabelled the item as a movie.
+                val canPlay = !isSeries || episodes.isNullOrEmpty()
                 if (canPlay) {
                     item {
                         Button(
@@ -596,33 +606,26 @@ fun DetailScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "Episodes (${sortedEps.size})",
+                                "Episodes (${shownEps.size})",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
-                            if (ranges.size > 1) {
+                            if (seasons.size > 1) {
                                 Box {
-                                    OutlinedButton(onClick = { rangeExpanded = true }) {
-                                        Text(
-                                            rangeStart?.let { s -> "$s - ${s + 29}" }
-                                                ?: "All episodes"
-                                        )
+                                    OutlinedButton(onClick = { seasonExpanded = true }) {
+                                        Text("Season $activeSeason")
                                     }
                                     DropdownMenu(
-                                        expanded = rangeExpanded,
-                                        onDismissRequest = { rangeExpanded = false }
+                                        expanded = seasonExpanded,
+                                        onDismissRequest = { seasonExpanded = false }
                                     ) {
-                                        DropdownMenuItem(
-                                            text = { Text("All episodes") },
-                                            onClick = { rangeStart = null; rangeExpanded = false }
-                                        )
-                                        ranges.forEach { (start, end) ->
+                                        seasons.forEach { s ->
                                             DropdownMenuItem(
-                                                text = { Text("$start - $end") },
+                                                text = { Text("Season $s") },
                                                 onClick = {
-                                                    rangeStart = start
-                                                    rangeExpanded = false
+                                                    selectedSeason = s
+                                                    seasonExpanded = false
                                                 }
                                             )
                                         }
@@ -659,10 +662,6 @@ fun DetailScreen(
                             }
                         }
                     } else {
-                        val shownEps = if (rangeStart == null) sortedEps
-                        else sortedEps.filter {
-                            it.number >= rangeStart!! && it.number <= rangeStart!! + 29
-                        }
                         // key MUST be unique — plugins (MoviesMod, …) emit
                         // duplicate ids/numbers per quality group, and a
                         // duplicate Compose key crashes the whole screen.
@@ -681,7 +680,8 @@ fun DetailScreen(
     if (showSheet) {
         ModalBottomSheet(onDismissRequest = { showSheet = false }) {
             Text(
-                selectedEp?.let { "Episode ${it.number}" } ?: "Playback sources",
+                selectedEp?.let { if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}" }
+                    ?: "Playback sources",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 16.dp)

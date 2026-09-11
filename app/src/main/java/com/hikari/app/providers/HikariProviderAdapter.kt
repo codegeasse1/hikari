@@ -79,6 +79,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
                 id = ep.id,
                 name = if (ep.season > 1) "S${ep.season} E${ep.number} · $base" else base,
                 image = ep.image,
+                season = ep.season,
             )
         }
     }

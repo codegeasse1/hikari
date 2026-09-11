@@ -80,6 +80,10 @@ data class Episode(
     val id: String,
     val name: String? = null,
     val image: String? = null,
+    /** Season this episode belongs to (1 when a provider has no season info).
+     *  Lets the detail screen group a multi-season show into a season picker
+     *  instead of dumping every episode of every season into one flat list. */
+    val season: Int = 1,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */

@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Custom media3 PlayerControlView layout: our top bar (Back/Title/Server/Speed)
-     and bottom chips (Quality/Sub/Rotate) live INSIDE the controller, so they
-     show and hide together with the playback controls instead of stacking in a
-     second row above them. Modeled on media3 1.3.1's exo_player_control_view.xml
-     (same @id/exo_* ids so the library wires everything up). -->
+<!-- Custom media3 PlayerControlView layout. Modeled on media3's
+     exo_player_control_view.xml (same @id/exo_* ids so the library wires
+     everything up) but with the modern two-scrim layout seen in the reference
+     player: a top bar (Back / Title+Episode / Quality / PiP), a big centre
+     play cluster and a single bottom row that holds the time, the lock, the
+     settings gear and the pill chips (Fit / 1x / Server / Skip / Quality /
+     Audio / Sub / Rotate) so every control fades together with the player. -->
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
 
   <View android:id="@id/exo_controls_background"
       android:layout_width="0dp"
       android:layout_height="0dp"
-      android:background="@color/exo_black_opacity_60"/>
+      android:background="#99000000"/>
 
   <!-- Top bar -->
   <LinearLayout
@@ -18,8 +20,8 @@
       android:layout_gravity="top"
       android:orientation="vertical"
       android:background="@drawable/top_bar_bg"
-      android:paddingTop="8dp"
-      android:paddingBottom="8dp">
+      android:paddingTop="10dp"
+      android:paddingBottom="12dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -37,16 +39,44 @@
           android:background="?android:attr/selectableItemBackgroundBorderless"
           android:scaleType="centerInside" />
 
-      <TextView
-          android:id="@+id/title_text"
+      <LinearLayout
           android:layout_width="0dp"
           android:layout_height="wrap_content"
           android:layout_weight="1"
-          android:textSize="15sp"
-          android:textColor="#FFFFFF"
-          android:maxLines="1"
-          android:ellipsize="end"
-          android:gravity="center_vertical" />
+          android:orientation="vertical"
+          android:gravity="center_vertical"
+          android:paddingStart="4dp"
+          android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/title_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/subtitle_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textColor="#B3FFFFFF"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:visibility="gone" />
+      </LinearLayout>
+
+      <TextView
+          android:id="@+id/player_quality_text"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:textSize="12sp"
+          android:textColor="#B3FFFFFF"
+          android:paddingStart="6dp"
+          android:paddingEnd="6dp" />
 
       <ImageButton
           android:id="@+id/pip_btn"
@@ -58,17 +88,10 @@
           android:background="?android:attr/selectableItemBackgroundBorderless"
           android:scaleType="centerInside"
           android:layout_marginEnd="4dp" />
-
-      <TextView
-          android:id="@+id/player_quality_text"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:textSize="12sp"
-          android:textColor="#AAFFFFFF"
-          android:layout_marginEnd="10dp" />
     </LinearLayout>
   </LinearLayout>
 
+  <!-- Bottom bar -->
   <FrameLayout android:id="@id/exo_bottom_bar"
       android:layout_width="match_parent"
       android:layout_height="@dimen/exo_styled_bottom_bar_height"
@@ -77,12 +100,12 @@
       android:background="@drawable/bottom_bar_bg"
       android:layoutDirection="ltr">
 
-    <!-- Time + toolbar chips live in ONE horizontal row (not media3's two
-         gravity-aligned siblings) so they can never collide on narrow /
-         landscape screens; the chip cluster scrolls if it outgrows the row. -->
+    <!-- Time + toolbar chips live in ONE horizontal row so they can never
+         collide on narrow screens; the chip cluster scrolls if it outgrows
+         the row. -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="match_parent"
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
@@ -117,7 +140,7 @@
 
         <LinearLayout android:id="@id/exo_basic_controls"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
             android:gravity="center_vertical"
             android:layoutDirection="ltr">
 
@@ -133,11 +156,7 @@
           style="@style/ExoStyledControls.Button.Bottom.RepeatToggle"
           android:visibility="gone"/>
 
-      <!-- Player toolbar (bottom row): Lock / Settings / Resize / Speed / Server
-           / Skip OP then the stream chips, with Rotate at the end (user asked
-           for the rotate icon where the settings gear used to be, and the gear
-           up front) — all in the same row as media3's own buttons, nothing
-           floats above the player controls. -->
+      <!-- Lock / Settings / chips, in the reference player's order. -->
       <ImageButton
           android:id="@+id/lock_btn"
           android:layout_width="40dp"
@@ -153,108 +172,38 @@
 
       <TextView
           android:id="@+id/resize_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Fit"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#FFFFFF"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip"
+          android:text="Fit" />
 
       <TextView
           android:id="@+id/speed_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="1x"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#F5C569"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip.Accent"
+          android:text="1x" />
 
       <TextView
           android:id="@+id/sources_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Server"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#FFFFFF"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip"
+          android:text="Server" />
 
       <TextView
           android:id="@+id/skip_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Skip"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#F5C569"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip.Accent"
+          android:text="Skip" />
 
       <TextView
           android:id="@+id/quality_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Quality"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#FFFFFF"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip"
+          android:text="Quality" />
 
       <TextView
           android:id="@+id/audio_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Audio"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#FFFFFF"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip"
+          android:text="Audio" />
 
       <TextView
           android:id="@+id/subs_btn"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="Sub"
-          android:textSize="12sp"
-          android:textStyle="bold"
-          android:textColor="#FFFFFF"
-          android:background="@drawable/chip_bg"
-          android:layout_marginEnd="6dp"
-          android:paddingLeft="12dp"
-          android:paddingRight="12dp"
-          android:paddingTop="6dp"
-          android:paddingBottom="6dp" />
+          style="@style/HikariPlayerChip"
+          android:text="Sub" />
 
       <ImageButton
           android:id="@+id/rotate_btn"
@@ -347,6 +296,8 @@
     </FrameLayout>
 
     <ImageButton android:id="@id/exo_play_pause"
+        android:layout_width="68dp"
+        android:layout_height="68dp"
         style="@style/ExoStyledControls.Button.Center.PlayPause"/>
 
     <FrameLayout

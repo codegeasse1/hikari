@@ -260,6 +260,11 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val maxPages = api?.optInt("episodesMaxPages", 30) ?: 30
         val numField = api?.optString("episodeNumber")?.ifBlank { "number" } ?: "number"
         val nameField = api?.optString("episodeName")?.ifBlank { "title" } ?: "title"
+        // Optional: some API scrapers expose the season per episode. When the
+        // config doesn't name a field, every episode is season 1 (the detail
+        // screen then shows a single flat list, as before).
+        val seasonField = api?.optString("episodeSeason")?.ifBlank { null }
+        val fixedSeason = api?.optInt("season", 0) ?: 0
         val out = mutableListOf<Episode>()
         var page = 1
         while (page <= maxPages) {
@@ -270,12 +275,16 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
                 val o = arr.optJSONObject(i) ?: continue
                 val num = o.optInt(numField, 0)
                 if (num <= 0) continue
-                out += Episode(num, "${item.id}|$num", o.optString(nameField).trim().ifBlank { null })
+                val season = (seasonField?.let { o.optInt(it, 0) }?.takeIf { it > 0 }
+                    ?: fixedSeason.takeIf { it > 0 } ?: 1)
+                out += Episode(num, "${item.id}|$num", o.optString(nameField).trim().ifBlank { null }, null, season)
             }
             if (!json.optBoolean(hasNextKey, false)) break
             page++
         }
-        return out.distinctBy { it.number }.sortedBy { it.number }.ifEmpty { null }
+        return out.distinctBy { it.season to it.number }
+            .sortedWith(compareBy({ it.season }, { it.number }))
+            .ifEmpty { null }
     }
 
     private suspend fun getApiStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
@@ -434,6 +443,8 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val hrefSel = e.optString("href").ifBlank { "a" }
         val numSel = e.optString("number").ifBlank { null }
         val nameSel = e.optString("name").ifBlank { null }
+        val seasonSel = e.optString("season").ifBlank { null }
+        val seasonDefault = e.optInt("seasonDefault", 0)
         val out = mutableListOf<Episode>()
         for (el in doc.select(itemSel)) {
             val href = el.select(hrefSel).first()?.attr("abs:href") ?: continue
@@ -441,9 +452,12 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
                 ?.let { s -> s.filter { c -> c.isDigit() }.toIntOrNull() }
                 ?: (out.size + 1)
             val name = nameSel?.let { pick(el, it, null) }
-            out += Episode(number, href, name?.ifBlank { null })
+            val season = seasonSel?.let { pick(el, it, null) }?.filter { c -> c.isDigit() }?.toIntOrNull()
+                ?.takeIf { it > 0 } ?: seasonDefault.takeIf { it > 0 } ?: 1
+            out += Episode(number, href, name?.ifBlank { null }, null, season)
         }
-        return out.sortedBy { it.number }.distinctBy { it.number }
+        return out.sortedWith(compareBy({ it.season }, { it.number }))
+            .distinctBy { it.season to it.number }
     }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
