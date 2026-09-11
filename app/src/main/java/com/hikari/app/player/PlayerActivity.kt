@@ -1359,6 +1359,11 @@ class PlayerActivity : ComponentActivity() {
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            // 5s steps on the centre rewind/forward buttons (and media3's own
+            // seek handling), matching the reference player. Set here rather
+            // than via PlayerView XML attrs, which this media3 version lacks.
+            .setSeekBackIncrementMs(5_000)
+            .setSeekForwardIncrementMs(5_000)
             .build()
         this.player = player
         if (noSubsRetry) {
