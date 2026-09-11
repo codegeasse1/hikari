@@ -341,6 +341,12 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
 
+/** How long the "finding server" overlay may stay up before the source sheet is
+ *  revealed as a safety net. Auto-play still wins if a playable server appears
+ *  first; this only guarantees the tap is never a dead end when the search is
+ *  slow, hangs, or the player can't be opened. */
+private const val SHEET_FALLBACK_MS = 4_500L
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(
@@ -463,16 +469,19 @@ fun DetailScreen(
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { playerLaunched = false }
-    val launchPlayer: (List<StreamSource>, Episode?, String, Long) -> Unit = launchPlayer@{ playable, ep, liveId, startPos ->
-        if (playerLaunched) return@launchPlayer
-        playerLaunched = true
+    val launchPlayer: (List<StreamSource>, Episode?, String, Long) -> Boolean = launchPlayer@{ playable, ep, liveId, startPos ->
+        if (playerLaunched) return@launchPlayer false
+        // Build the payload BEFORE flipping the once-only guard. It used to be
+        // the other way round: one malformed source list set `playerLaunched`
+        // and then bailed out, so the player never opened AND every later tap
+        // was swallowed by the guard — the Play button looked completely dead.
         val payload = playerPayload(playable)
-        if (payload == null) return@launchPlayer
+        if (payload == null) return@launchPlayer false
+        playerLaunched = true
         // History context rides along so the player can record resume position
         // and remember which server this video was last played with (so a
         // replay continues on that server and starts instantly).
-        playerLauncher.launch(
-            Intent(context, PlayerActivity::class.java).apply {
+        val intent = Intent(context, PlayerActivity::class.java).apply {
                 putExtra("title", m?.title ?: title)
                 putExtra("sources", payload)
                 // Live server feed: playback starts with the first server found
@@ -496,8 +505,12 @@ fun DetailScreen(
                 putExtra("histResumePosition", resumeHint?.first ?: 0L)
                 putExtra("histResumeDuration", resumeHint?.second ?: 0L)
                 putExtra("histAskResume", true)
-            }
-        )
+        }
+        // Never leave the guard stuck ON if the launch itself fails (e.g. the
+        // player activity can't be resolved): report failure so the caller can
+        // fall back to the source sheet instead of a dead tap.
+        return@launchPlayer runCatching { playerLauncher.launch(intent) }
+            .fold(onSuccess = { true }, onFailure = { playerLaunched = false; false })
     }
 
     val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
@@ -510,6 +523,11 @@ fun DetailScreen(
         loadingStreams = true
         showSheet = false
         preparingSources = true
+        // A fresh tap must always be allowed to open the player. If an earlier
+        // launch never reported back (activity result lost, process reshuffle),
+        // the once-only guard could stay stuck ON and silently swallow every
+        // later play — the Play button then looked completely dead.
+        playerLaunched = false
         // One live-update session per play tap: the player subscribes to it and
         // keeps receiving servers as slower providers answer, so its "Select
         // server" dialog shows every source from every installed provider.
@@ -552,11 +570,19 @@ fun DetailScreen(
                 if (launched || playerLaunched) return@startNow
                 val playable = playableEvery(streams)
                 if (playable.isEmpty()) return@startNow
-                launched = true
-                showSheet = false
-                preparingSources = false
-                loadingStreams = false
-                launchPlayer(ordered(playable), ep, sessionId, startPos)
+                if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
+                    launched = true
+                    showSheet = false
+                    preparingSources = false
+                    loadingStreams = false
+                } else {
+                    // Player could not be opened (bad payload / launch failure)
+                    // — surface the source sheet instead of leaving the user on
+                    // a dimmed, dead screen.
+                    preparingSources = false
+                    loadingStreams = false
+                    showSheet = true
+                }
             }
             // Live feed: start the instant a playable server appears — unless a
             // preferred server is remembered, in which case keep waiting for it.
@@ -582,9 +608,21 @@ fun DetailScreen(
                 delay(PREFERRED_GRACE_MS)
                 startNow()
             }
+            // Safety net: if the search is slow or hung and nothing has launched
+            // within [SHEET_FALLBACK_MS], reveal the source sheet so a tap can
+            // never dead-end on a dimmed spinner. Auto-play still wins whenever
+            // a playable server shows up first (the sheet then just closes).
+            val watchdog = launch {
+                delay(SHEET_FALLBACK_MS)
+                if (!launched && !playerLaunched) {
+                    preparingSources = false
+                    showSheet = true
+                }
+            }
             val final = vm.getStreams(ep)
             feed.cancel()
             grace.cancel()
+            watchdog.cancel()
             loadingStreams = false
             streams = final
             val playable = playableEvery(final)
@@ -595,13 +633,17 @@ fun DetailScreen(
                 StreamsLive.append(sessionId, playable)
             } else if (playable.isNotEmpty()) {
                 // Cached/instant result arrived before the feed attached.
-                launched = true
-                preparingSources = false
-                showSheet = false
-                launchPlayer(ordered(playable), ep, sessionId, startPos)
+                if (launchPlayer(ordered(playable), ep, sessionId, startPos)) {
+                    launched = true
+                    preparingSources = false
+                    showSheet = false
+                } else {
+                    preparingSources = false
+                    showSheet = true
+                }
             } else {
-                // Nothing playable anywhere — only NOW surface the source sheet,
-                // with the per-extension diagnostics explaining what failed.
+                // Nothing playable anywhere — surface the source sheet, with the
+                // per-extension diagnostics explaining what failed.
                 preparingSources = false
                 showSheet = true
             }
