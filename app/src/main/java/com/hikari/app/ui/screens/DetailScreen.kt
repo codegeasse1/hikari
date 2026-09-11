@@ -381,6 +381,9 @@ fun DetailScreen(
 
     var showSheet by remember { mutableStateOf(false) }
     var selectedEp by remember { mutableStateOf<Episode?>(null) }
+    // Resume position for the current play session — applied when the user
+    // picks a server from the sheet too, not just on the auto-launched one.
+    var pendingStartPos by remember { mutableStateOf(0L) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
     /** Live-update session handed to the player: while playback runs, the
@@ -479,6 +482,7 @@ fun DetailScreen(
         // Show the sheet + spinner IMMEDIATELY, then resolve sources in the
         // background. Otherwise a slow provider looks like a dead click.
         selectedEp = ep
+        pendingStartPos = startPos
         streams = emptyList()
         loadingStreams = true
         showSheet = true
@@ -983,7 +987,7 @@ fun DetailScreen(
                                                     o.ytId == null && !o.externalUrl &&
                                                     (o.url.isNotBlank() || o.isTorrent)
                                             }
-                                            launchPlayer(listOf(s) + others, selectedEp, sessionId)
+                                            launchPlayer(listOf(s) + others, selectedEp, sessionId, pendingStartPos)
                                         }
                                     }
                                 }
