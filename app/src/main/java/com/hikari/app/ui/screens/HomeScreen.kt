@@ -242,10 +242,18 @@ fun HomeScreen(nav: NavHostController) {
     // Settings → "Continue Watching": lets the user hide the shelf entirely.
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
     val continueEntries = remember(history) {
-        history.filter {
-            it.positionMs > 5_000L &&
-                (it.durationMs <= 0L || it.positionMs < it.durationMs - 30_000L)
-        }.take(12)
+        history.asSequence()
+            .filter {
+                it.positionMs > 1_000L &&
+                    (it.durationMs <= 0L || it.positionMs < it.durationMs - 10_000L)
+            }
+            // Newest first, one card per video/episode. The store dedupes, but a
+            // legacy/racing write could leave a duplicate — and a duplicate
+            // Compose key in the row would crash the whole Home screen.
+            .sortedByDescending { it.watchedAt }
+            .distinctBy { it.uniqueKey }
+            .take(12)
+            .toList()
     }
     // History only stores a poster; backdrops live on the catalog items, so map
     // them by provider + id to give the Continue cards landscape art.
@@ -265,11 +273,7 @@ fun HomeScreen(nav: NavHostController) {
         (first.filter { !it.backdropUrl.isNullOrBlank() }.ifEmpty { first }).take(8)
     }
     val openGlobalSearch: () -> Unit = {
-        nav.navigate(Routes.SEARCH) {
-            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-            launchSingleTop = true
-            restoreState = true
-        }
+        Routes.navigateTab(nav, Routes.SEARCH)
     }
     // Tapping the header search icon asks HOW to search when a specific
     // extension's catalog is being browsed: globally across every provider, or
@@ -447,7 +451,7 @@ fun HomeScreen(nav: NavHostController) {
                             title = "No content yet",
                             subtitle = "Add a Stremio addon or a universal scraper to start watching.",
                             actionLabel = "Add extensions",
-                            action = { nav.navigate(Routes.EXTENSIONS) }
+                            action = { Routes.navigateTab(nav, Routes.EXTENSIONS) }
                         )
                     }
                 }

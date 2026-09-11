@@ -66,12 +66,23 @@ object Routes {
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
     const val HISTORY = "history"
-    // Same Search screen, but pre-filled with a query (genre tags, "show all",
-    // search suggestions…) and/or scoped to one provider (Home's "Search this
-    // extension" entry point). A separate route (not "search?q=" on the tab
-    // route) so the query string carries through nav without clobbering the
-    // tab's own remembered state; the tab bar matches it by stripping the query.
-    const val SEARCH_QUERY = "search?q={q}&provider={provider}"
+    /**
+     * Same Search screen, but pre-filled with a query (genre tags, "show all",
+     * search suggestions…) and/or scoped to one provider (Home's "Search this
+     * extension" entry point).
+     *
+     * It deliberately uses a DIFFERENT base path ("provider-search", not
+     * "search?q="). With the shared "search" base the NavController treated the
+     * scoped destination as the same route family as the Search tab, and the
+     * bottom bar's save/restore-tab navigation stopped working after landing
+     * here — tapping Home did nothing. The tab bar maps this base back to the
+     * Search tab via [tabBaseOf] so the bar stays visible and highlights
+     * correctly.
+     */
+    const val SEARCH_QUERY = "provider-search?q={q}&provider={provider}"
+    /** Base path of [SEARCH_QUERY] — used to map the scoped route onto the
+     *  Search tab for the bottom bar. */
+    const val SEARCH_QUERY_BASE = "provider-search"
     // All args live in the query string: mediaIds are URLs (slashes would break
     // a path segment) and posters can be megabytes of base64 (see detail()).
     const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
@@ -120,12 +131,38 @@ object Routes {
     }
 
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
-    fun searchQuery(q: String): String = "search?q=${Uri.encode(q)}&provider="
+    fun searchQuery(q: String): String = "$SEARCH_QUERY_BASE?q=${Uri.encode(q)}&provider="
 
     /** Opens the Search tab with the query scoped to one provider — Home's
      *  "Search this extension" entry point. */
     fun searchInProvider(providerId: String, q: String = ""): String =
-        "search?q=${Uri.encode(q)}&provider=${Uri.encode(providerId)}"
+        "$SEARCH_QUERY_BASE?q=${Uri.encode(q)}&provider=${Uri.encode(providerId)}"
+
+    /** Maps a full Compose-Navigation route onto the bottom-bar tab it belongs
+     *  to (strips the query string; folds the scoped search route back onto the
+     *  Search tab). Returns null when the route isn't a tab. */
+    fun tabBaseOf(route: String?): String? {
+        val base = route?.substringBefore('?') ?: return null
+        return if (base == SEARCH_QUERY_BASE) SEARCH else base
+    }
+
+    /** Navigate the bottom bar reliably. A real back-stack pop is tried first,
+     *  so tapping a tab from a scoped/query route always lands on that tab
+     *  (the save/restore-tab navigate used to silently no-op after arrival at
+     *  the scoped search destination). Falls back to a normal tab switch. */
+    fun navigateTab(nav: NavHostController, route: String) {
+        val popped = runCatching {
+            nav.popBackStack(route, /* inclusive = */ false, /* saveState = */ true)
+        }.getOrDefault(false)
+        if (popped) return
+        runCatching {
+            nav.navigate(route) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     /** navigate() that can never crash the app on a malformed route — some
      *  extensions return titles/ids that trip up the route parser, and one
@@ -215,8 +252,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    // SEARCH_QUERY is "search?q=…" — strip the query so the tab still matches.
-    val tabRoute = currentRoute?.substringBefore('?')
+    // Scoped search lives on "provider-search?q=…" but belongs to the Search
+    // tab (so the bar shows and Search highlights); everything else matches on
+    // its base path.
+    val tabRoute = Routes.tabBaseOf(currentRoute)
     val showBar = tabRoute in Tabs.map { it.route }
 
     // The WebView's "Go to app home" menu item bumps this — landing on the
@@ -224,13 +263,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val context = LocalContext.current
     val homeRequest by (context.applicationContext as HikariApp).homeTabRequest.collectAsState()
     LaunchedEffect(homeRequest) {
-        if (homeRequest > 0) {
-            nav.navigate(Routes.HOME) {
-                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                launchSingleTop = true
-                restoreState = true
-            }
-        }
+        if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -260,13 +293,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             if (showBar) {
                 AppBottomBar(
                     currentRoute = tabRoute,
-                    onNavigate = { route ->
-                        nav.navigate(route) {
-                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
+                    onNavigate = { route -> Routes.navigateTab(nav, route) }
                 )
             }
         }

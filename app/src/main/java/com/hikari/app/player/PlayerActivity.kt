@@ -2096,7 +2096,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun resumable(pos: Long, dur: Long): Boolean =
-        pos >= 10_000L && (dur <= 0L || pos < dur - 30_000L)
+        pos >= 5_000L && (dur <= 0L || pos < dur - 10_000L)
 
     private fun showResumeDialog(positionMs: Long) {
         if (isFinishing || isDestroyed) return

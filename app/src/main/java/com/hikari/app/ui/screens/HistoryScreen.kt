@@ -58,6 +58,9 @@ fun HistoryScreen(nav: NavHostController) {
     val historyFlow = remember { app.store.historyFlow() }
     val pausedFlow = remember { app.store.historyPausedFlow() }
     val entries by historyFlow.collectAsState(initial = emptyList())
+    // Defensive dedupe — a legacy/racing write could leave a duplicate
+    // uniqueKey, which would crash this LazyColumn on a duplicate Compose key.
+    val shownEntries = remember(entries) { entries.distinctBy { it.uniqueKey } }
     val paused by pausedFlow.collectAsState(initial = false)
 
     LazyColumn(
@@ -98,14 +101,14 @@ fun HistoryScreen(nav: NavHostController) {
             }
             Spacer(Modifier.height(8.dp))
         }
-        if (entries.isEmpty()) {
+        if (shownEntries.isEmpty()) {
             item {
                 EmptyState(
                     title = "No watch history yet",
                     subtitle = "Videos you play will show up here so you can pick up where you left off. " +
                         (if (paused) "History is currently paused — flip the switch above to start tracking." else "Tap any entry to resume it."),
                     actionLabel = "Browse",
-                    action = { nav.navigate(Routes.HOME) }
+                    action = { Routes.navigateTab(nav, Routes.HOME) }
                 )
             }
         } else {
@@ -117,7 +120,7 @@ fun HistoryScreen(nav: NavHostController) {
                     Text("Clear history", color = MaterialTheme.colorScheme.error)
                 }
             }
-            items(entries, key = { it.uniqueKey }) { h ->
+            items(shownEntries, key = { it.uniqueKey }) { h ->
                 HistoryRow(h) {
                     Routes.safeNavigate(
                         nav,

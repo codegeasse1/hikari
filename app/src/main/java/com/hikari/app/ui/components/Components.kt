@@ -419,6 +419,8 @@ fun ContinueWatchingRow(
     onClick: (HistoryEntry) -> Unit,
 ) {
     if (entries.isEmpty()) return
+    // Defensive dedupe: a duplicate Compose key would crash the whole row.
+    val unique = remember(entries) { entries.distinctBy { it.uniqueKey } }
     Column(Modifier.padding(top = 16.dp)) {
         Text(
             "Continue Watching",
@@ -431,7 +433,7 @@ fun ContinueWatchingRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(entries, key = { it.uniqueKey }) { h ->
+            items(unique, key = { it.uniqueKey }) { h ->
                 ContinueWatchingCard(h, backdropOf(h)) { onClick(h) }
             }
         }

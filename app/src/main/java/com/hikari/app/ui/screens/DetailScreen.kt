@@ -381,6 +381,11 @@ fun DetailScreen(
     var resumeHint by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
+    // True while a tap is resolving servers. A full-screen "finding server"
+    // overlay covers the detail page and playback then starts on its own — the
+    // source list is no longer shown up-front. It only appears if the search
+    // genuinely finds nothing playable.
+    var preparingSources by remember { mutableStateOf(false) }
     /** Live-update session handed to the player: while playback runs, the
      *  ongoing multi-provider search keeps appending servers to it. */
     var sessionId by remember { mutableStateOf("") }
@@ -496,13 +501,15 @@ fun DetailScreen(
     }
 
     val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
-        // Show the sheet + spinner IMMEDIATELY, then resolve sources in the
-        // background. Otherwise a slow provider looks like a dead click.
+        // Show the "finding server" overlay IMMEDIATELY, then resolve sources in
+        // the background and play the first playable server automatically. The
+        // source list is deliberately NOT shown up-front.
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
         loadingStreams = true
-        showSheet = true
+        showSheet = false
+        preparingSources = true
         // One live-update session per play tap: the player subscribes to it and
         // keeps receiving servers as slower providers answer, so its "Select
         // server" dialog shows every source from every installed provider.
@@ -547,6 +554,7 @@ fun DetailScreen(
                 if (playable.isEmpty()) return@startNow
                 launched = true
                 showSheet = false
+                preparingSources = false
                 loadingStreams = false
                 launchPlayer(ordered(playable), ep, sessionId, startPos)
             }
@@ -583,12 +591,19 @@ fun DetailScreen(
             StreamProbe.warmAsync(playable)
             if (launched || playerLaunched) {
                 // Search finished — hand the player the complete list.
+                preparingSources = false
                 StreamsLive.append(sessionId, playable)
             } else if (playable.isNotEmpty()) {
                 // Cached/instant result arrived before the feed attached.
                 launched = true
+                preparingSources = false
                 showSheet = false
                 launchPlayer(ordered(playable), ep, sessionId, startPos)
+            } else {
+                // Nothing playable anywhere — only NOW surface the source sheet,
+                // with the per-extension diagnostics explaining what failed.
+                preparingSources = false
+                showSheet = true
             }
         }
     }
@@ -602,8 +617,8 @@ fun DetailScreen(
         var dur = h?.durationMs ?: 0L
         // Fallback: arrived from History with the position in the nav arg.
         if (h == null && eid == episodeId && startPositionMs > 0L) pos = startPositionMs
-        if (pos < 5_000L) null
-        else if (dur > 0L && pos > dur - 30_000L) null
+        if (pos <= 1_000L) null
+        else if (dur > 0L && pos > dur - 10_000L) null
         else pos to dur
     }
 
@@ -635,6 +650,7 @@ fun DetailScreen(
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         // Header renders immediately from the poster we already have, so the hero
         // image shows at once instead of waiting for the slow meta fetch.
@@ -674,7 +690,7 @@ fun DetailScreen(
                                             .clip(RoundedCornerShape(20.dp))
                                             .background(MaterialTheme.colorScheme.surfaceVariant)
                                             .padding(horizontal = 10.dp, vertical = 4.dp)
-                                            .clickable { nav.navigate(Routes.searchQuery(g)) }
+                                            .clickable { Routes.safeNavigate(nav, Routes.searchQuery(g)) }
                                     ) {
                                         Text(
                                             g,
@@ -839,6 +855,43 @@ fun DetailScreen(
                     }
                 }
                 item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
+    }
+        if (preparingSources) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f))
+                    // Tapping the dim layer reveals the source list, so a server
+                    // search that gets stuck can never trap the user on a spinner.
+                    .clickable { preparingSources = false; showSheet = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        selectedEp?.let { if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}" }
+                            ?: (m?.title ?: title),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Finding the best server…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Tap to show all sources",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
+                }
             }
         }
     }

@@ -401,10 +401,15 @@ class AppStore(private val ctx: Context) {
     suspend fun history(): List<HistoryEntry> = historyFlow().first()
 
     /** Insert/update one entry (deduped by [HistoryEntry.uniqueKey], newest
-     *  first, capped at 200 entries). */
+     *  first, capped at 200 entries). The read-modify-write happens INSIDE a
+     *  single DataStore edit so the 5-second save tick and the onStop/onDestroy
+     *  write can't race and drop one of two different entries. */
     suspend fun addHistory(e: HistoryEntry) {
-        val next = (listOf(e) + history().filter { it.uniqueKey != e.uniqueKey }).take(200)
-        store.edit { it[K.HISTORY] = encodeHistory(next) }
+        store.edit { prefs ->
+            val cur = parseHistory(prefs[K.HISTORY])
+            val next = (listOf(e) + cur.filter { it.uniqueKey != e.uniqueKey }).take(200)
+            prefs[K.HISTORY] = encodeHistory(next)
+        }
     }
 
     suspend fun clearHistory() {

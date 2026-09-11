@@ -44,6 +44,9 @@ object Translator {
     private val PUNCT_ONLY =
         Regex("""^[\d\s.,!?%$#@&*()/\-+='"<>\[\]{}|\\:;_~^`\u00A0]+$""")
     private val ASCII = Regex("""^[\x00-\x7F]+$""")
+    /** Pure ASCII letters/digits/spaces/punctuation — i.e. romanized input that
+     *  the gtx auto-detector may mislabel as zh-Latn and refuse to translate. */
+    private val ASCII_ONLY = Regex("""^[\x20-\x7E]+$""")
     private val EN_STOP = Regex(
         """^(the|and|of|to|in|is|are|was|were|for|with|on|at|by|this|that|these|those|you|your|we|our|they|their|them|it|its|a|an|or|but|as|from|not|be|have|has|had|i|me|my|do|does|did|what|which|who|when|where|why|there|here|can|will|would|should|could|then|than|so|if|up|out|about|just|more|most|all|any|some|also|only|into|over|under|no|yes)$""",
         RegexOption.IGNORE_CASE
@@ -178,8 +181,23 @@ object Translator {
      *  source language. Returns the input unchanged when the request fails. */
     suspend fun translateTo(text: String, targetLang: String): String {
         if (text.isBlank() || targetLang.isBlank()) return text
-        return withContext(Dispatchers.IO) { runCatching { fetchTo(text, targetLang) }.getOrDefault("") }
-            .ifBlank { text }
+        return withContext(Dispatchers.IO) {
+            val src = text.trim()
+            val first = runCatching { fetchTo(src, targetLang) }.getOrDefault("")
+            if (first.isNotBlank() && first.trim() != src) return@withContext first
+            // Google's auto-detector tags romanized Chinese (pinyin) as
+            // "zh-Latn", so asking for zh-CN is treated as a same-language
+            // no-op and echoes the text back — which is why "mengyao" didn't
+            // translate while "meng" did ("meng" is short enough to be read as
+            // English). Retry forcing English as the source: that reads it as a
+            // phonetic name and yields the hanzi ("梦瑶"). Only ASCII input is
+            // retried, so normal sentences are unaffected.
+            if (ASCII_ONLY.matches(src)) {
+                val forced = runCatching { fetchTo(src, targetLang, "en") }.getOrDefault("")
+                if (forced.isNotBlank() && forced.trim() != src) return@withContext forced
+            }
+            text
+        }
     }
 
     /** Detects [text]'s language code (e.g. "en", "zh-CN"), or "" when unknown. */
@@ -195,9 +213,10 @@ object Translator {
 
     /** The gtx endpoint splits a long input into several sentence chunks; every
      *  chunk's translated text is concatenated so nothing is dropped. */
-    private fun fetchTo(text: String, targetLang: String): String {
+    private fun fetchTo(text: String, targetLang: String, sourceLang: String = "auto"): String {
         val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
-            "&sl=auto&tl=" + java.net.URLEncoder.encode(targetLang, "UTF-8") +
+            "&sl=" + java.net.URLEncoder.encode(sourceLang, "UTF-8") +
+            "&tl=" + java.net.URLEncoder.encode(targetLang, "UTF-8") +
             "&dt=t&q=" + java.net.URLEncoder.encode(text, "UTF-8")
         val body = Http.get(url).use { it.body?.string() } ?: return ""
         val arr = JSONArray(body).optJSONArray(0) ?: return ""
