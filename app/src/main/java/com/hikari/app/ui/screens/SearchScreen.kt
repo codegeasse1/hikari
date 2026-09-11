@@ -55,13 +55,11 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
-import com.hikari.app.data.SearchResultsCache
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.Routes
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -72,7 +70,6 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(FlowPreview::class)
 class SearchViewModel(
@@ -98,62 +95,28 @@ class SearchViewModel(
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
 
-    private val _results = MutableStateFlow<List<MediaItem>>(emptyList())
-    val results: StateFlow<List<MediaItem>> = _results.asStateFlow()
-
-    private val _searching = MutableStateFlow(false)
-    val searching: StateFlow<Boolean> = _searching.asStateFlow()
-
-    /** 51CG/MRDS/Porna91 can return posters as huge inline data: URIs. Dropping
-     *  them (the old 24k cap) left every search-result cell blank for those
-     *  extensions — same trap as the catalog screens. Collapse each oversized
-     *  poster into a tiny disk-cache token instead ([PosterLoader.tokenize]
-     *  decodes + persists the bytes once, off the main thread): the grid still
-     *  shows the image, and memory stays bounded. The detail page re-fetches
-     *  the poster via /meta anyway, so the token never needs to resolve there. */
-    private fun MediaItem.tokenizePoster(): MediaItem {
-        val p = PosterLoader.tokenize(posterUrl)
-        val b = PosterLoader.tokenize(backdropUrl)
-        return if (p == posterUrl && b == backdropUrl) this
-        else copy(posterUrl = p, backdropUrl = b)
-    }
+    /**
+     * Results + status live in the process-wide [SearchSession], NOT here, so
+     * the multi-page scan survives this ViewModel being recreated (it is, every
+     * time the user watches something and comes back). Returning to Search then
+     * shows the results already collected and resumes the same scan — instead
+     * of restarting from page 1.
+     */
+    val results: StateFlow<List<MediaItem>> = SearchSession.results
+    val searching: StateFlow<Boolean> = SearchSession.searching
 
     init {
         viewModelScope.launch {
             combine(_query.debounce(400).distinctUntilChanged(), _selectedProviders) { q, _ -> q }
                 .collectLatest { q ->
                     if (q.isBlank()) {
-                        _results.value = emptyList()
-                        _searching.value = false
+                        SearchSession.clear()
                         return@collectLatest
                     }
-                    val providers = _selectedProviders.value
-                    val key = cacheKey(q, providers)
-                    // Returning from the player re-creates this ViewModel. The
-                    // last finished results for this query are cached (already
-                    // tokenized, so they're small) — restore them instantly
-                    // instead of re-running the whole multi-page search.
-                    SearchResultsCache.get(key)?.let { cached ->
-                        _results.value = cached
-                        _searching.value = false
-                        return@collectLatest
-                    }
-                    _searching.value = true
-                    try {
-                        repo.searchStreaming(q, providerIds = providers)
-                            .collect { raw ->
-                                _results.value = withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
-                            }
-                        SearchResultsCache.put(key, _results.value)
-                    } finally {
-                        _searching.value = false
-                    }
+                    SearchSession.search(repo, q, _selectedProviders.value)
                 }
         }
     }
-
-    private fun cacheKey(query: String, providers: Set<String>): String =
-        query.trim() + "\u0000" + providers.sorted().joinToString(",")
 
     fun setQuery(q: String) {
         _query.value = q
