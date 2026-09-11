@@ -18,11 +18,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class ContentRepository(private val manager: ProviderManager) {
 
@@ -129,6 +132,100 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         translateRows(rows)
     }
+
+    /**
+     * Streaming Home feed: same work as [homeRows], but rows are handed to the
+     * UI the moment EACH catalog lands instead of after every provider has
+     * finished. With several installs, waiting for all of them used to leave
+     * Home on a bare spinner for 20-25s; now the first fast provider paints in
+     * a few seconds and the rest fill in underneath.
+     *
+     * Rows are keyed by (providerIndex, catalogIndex) and emitted in that
+     * curated order, so late arrivals slot into place instead of jumping to the
+     * end of the list. The concurrency gates/timeouts match [homeRows] so a
+     * weak device still can't be flooded with requests.
+     */
+    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> = flow {
+        val active = manager.providers.value.filter {
+            it.config.enabled && (providerId == null || it.config.id == providerId)
+        }
+        if (active.isEmpty()) {
+            emit(emptyList())
+            return@flow
+        }
+        val providerGate = Semaphore(5)
+        val catalogGate = Semaphore(12)
+        val placed = ConcurrentHashMap<Int, CatalogRow>()
+        val version = AtomicInteger(0)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val jobs = active.mapIndexed { pi, p ->
+                scope.async {
+                    try {
+                        providerGate.withPermit {
+                            withTimeoutOrNull(40_000) {
+                                val catalogs = p.catalogs()
+                                    .distinctBy { it.type to it.id }
+                                    .take(14)
+                                coroutineScope {
+                                    catalogs.mapIndexed { ci, c ->
+                                        async {
+                                            try {
+                                                catalogGate.withPermit {
+                                                    val items = withTimeoutOrNull(15_000) {
+                                                        cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
+                                                    }.orEmpty().distinctBy { it.uniqueId }.take(40)
+                                                    if (items.isNotEmpty()) {
+                                                        var row = CatalogRow(
+                                                            providerId = p.config.id,
+                                                            providerName = p.config.name,
+                                                            title = c.name,
+                                                            items = items,
+                                                            key = "${p.config.id}|${c.type}|${c.id}",
+                                                            catalogId = c.id,
+                                                            type = c.type,
+                                                            rawType = c.rawType,
+                                                        )
+                                                        row = translateRows(listOf(row)).firstOrNull() ?: row
+                                                        placed[pi * 100 + ci] = row
+                                                        version.incrementAndGet()
+                                                    }
+                                                }
+                                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                                throw e
+                                            } catch (_: Throwable) {
+                                            }
+                                        }
+                                    }
+                                }.awaitAll()
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            val started = System.currentTimeMillis()
+            var lastVersion = -1
+            var lastSnapshot: List<CatalogRow>? = null
+            while (true) {
+                if (version.get() != lastVersion) {
+                    lastVersion = version.get()
+                    val snapshot = placed.entries.sortedBy { it.key }.map { it.value }
+                    lastSnapshot = snapshot
+                    emit(snapshot)
+                }
+                if (jobs.all { it.isCompleted }) break
+                if (System.currentTimeMillis() - started > 70_000L) break
+                delay(100)
+            }
+            val finalSnapshot = placed.entries.sortedBy { it.key }.map { it.value }
+            if (finalSnapshot != lastSnapshot) emit(finalSnapshot)
+        } finally {
+            scope.cancel()
+        }
+    }.flowOn(Dispatchers.IO)
 
     /** Searches across every enabled provider, or only the given subset.
      *  `null`/empty = all providers.

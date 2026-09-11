@@ -1,6 +1,7 @@
 package com.hikari.app.player
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.app.PictureInPictureParams
 import android.app.ProgressDialog
 import android.content.pm.ActivityInfo
@@ -9,18 +10,22 @@ import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Base64
 import android.util.Rational
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -654,20 +659,154 @@ class PlayerActivity : ComponentActivity() {
         }.start()
     }
 
+    /** Thin translucent divider used inside the glass panels. */
+    private fun hairline(density: Float): View = View(this).apply {
+        setBackgroundColor(0x1FFFFFFF)
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, (1 * density).toInt()
+        )
+    }
+
+    /**
+     * One tappable radio row for the glass menus (server / quality / audio).
+     * The "paper" look the user complained about was the platform AlertDialog's
+     * flat list; here every row is a rounded pill that highlights gold when it's
+     * the active choice, so the selected server/quality is obvious at a glance.
+     */
+    private fun glassOptionRow(label: String, selected: Boolean, onClick: () -> Unit): View {
+        val density = resources.displayMetrics.density
+        val accent = 0xFFF5C569.toInt()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+            setPadding((12 * density).toInt(), (11 * density).toInt(), (12 * density).toInt(), (11 * density).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12 * density
+                if (selected) {
+                    setColor(0x33F5C569.toInt())
+                    setStroke((1 * density).toInt(), 0x66F5C569.toInt())
+                } else {
+                    setColor(0x14FFFFFF.toInt())
+                }
+            }
+        }
+        row.addView(TextView(this).apply {
+            text = if (selected) "\u25CF" else "\u25CB"
+            textSize = 15f
+            includeFontPadding = false
+            setTextColor(if (selected) accent else 0x99FFFFFF.toInt())
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            marginEnd = (12 * density).toInt()
+        })
+        row.addView(TextView(this).apply {
+            text = label
+            textSize = 15f
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
+    /**
+     * Presents a rounded, dark, gold-accented panel — the shared shell for
+     * every player menu. `content` goes inside a scrollable body (capped to the
+     * screen so long server/quality lists scroll within the panel), with a
+     * pinned CLOSE footer. Replaces the platform's flat "paper" AlertDialog.
+     */
+    private fun presentGlass(dialog: Dialog, title: String, content: View, preferredHeightDp: Float) {
+        val density = resources.displayMetrics.density
+        val accent = 0xFFF5C569.toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 18 * density
+                setColor(0xF0121723.toInt())
+                setStroke((1 * density).toInt(), 0x33FFFFFF)
+            }
+            clipToOutline = true
+        }
+        root.addView(TextView(this).apply {
+            text = title
+            textSize = 17f
+            setTextColor(accent)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            letterSpacing = 0.02f
+            setPadding((18 * density).toInt(), (15 * density).toInt(), (18 * density).toInt(), (12 * density).toInt())
+        })
+        root.addView(hairline(density))
+        root.addView(ScrollView(this).apply {
+            addView(content)
+            isFillViewport = true
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(hairline(density))
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+            addView(TextView(this@PlayerActivity).apply {
+                text = "CLOSE"
+                textSize = 13f
+                setTextColor(accent)
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                letterSpacing = 0.06f
+                setPadding((16 * density).toInt(), (9 * density).toInt(), (16 * density).toInt(), (9 * density).toInt())
+                isClickable = true
+                setOnClickListener { dialog.dismiss() }
+            })
+        })
+        dialog.setContentView(
+            root,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.show()
+        val dm = resources.displayMetrics
+        val w = (dm.widthPixels * 0.9f).coerceAtMost(460 * density).toInt()
+        val h = (preferredHeightDp * density).coerceAtMost(dm.heightPixels * 0.86f).toInt()
+        dialog.window?.apply {
+            setLayout(w, h)
+            setDimAmount(0.65f)
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+    }
+
+    /** Builds + shows a radio list panel. Each tap dismisses and reports the index. */
+    private fun showGlassOptionMenu(title: String, items: List<String>, checked: Int, onPick: (Int) -> Unit) {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+        }
+        items.forEachIndexed { i, label ->
+            content.addView(
+                glassOptionRow(label, i == checked) {
+                    dialog.dismiss()
+                    onPick(i)
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = (4 * density).toInt() }
+            )
+        }
+        presentGlass(dialog, title, content, 48f + 44f + items.size * 47f + 20f)
+    }
+
     private fun showSourcesDialog() {
         if (sources.isEmpty()) return
-        val names = sources.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Select server")
-            .setSingleChoiceItems(names, currentIndex) { d, which ->
-                if (which != currentIndex) {
-                    noSubsRetry = false
-                    playSource(which)
-                }
-                d.dismiss()
+        showGlassOptionMenu("Select server", sources.map { it.name }, currentIndex) { which ->
+            if (which != currentIndex) {
+                noSubsRetry = false
+                playSource(which)
             }
-            .setNegativeButton("Close", null)
-            .show()
+        }
     }
 
     private fun showQualityDialog() {
@@ -696,25 +835,20 @@ class PlayerActivity : ComponentActivity() {
             }
             base += mediaGroup.length
         }
-        AlertDialog.Builder(this)
-            .setTitle("Video quality")
-            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
-                if (which == 0) {
-                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                        .build()
-                } else {
-                    val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
-                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setOverrideForType(
-                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                        )
-                        .build()
-                }
-                d.dismiss()
+        showGlassOptionMenu("Video quality", items, checked) { which ->
+            if (which == 0) {
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    .build()
+            } else {
+                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(
+                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                    )
+                    .build()
             }
-            .setNegativeButton("Close", null)
-            .show()
+        }
     }
 
     /**
@@ -832,10 +966,6 @@ class PlayerActivity : ComponentActivity() {
         }
         initializing = false
 
-        val trackList = ScrollView(this).apply {
-            addView(radioGroup)
-        }
-
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
         fun applySize() {
             sizeValue.text = "${(subtitleScale * 100).toInt()}%"
@@ -866,10 +996,10 @@ class PlayerActivity : ComponentActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), (4 * density).toInt())
-            addView(trackList, LinearLayout.LayoutParams(
+            addView(radioGroup, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                (Math.min(items.size, 5) * 46 * density).toInt()
-            ))
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (4 * density).toInt() })
             addView(controlRow(
                 "Text size",
                 pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
@@ -884,19 +1014,10 @@ class PlayerActivity : ComponentActivity() {
             ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
         }
 
-        // The whole dialog scrolls, so on a short/small screen the Track rows
-        // (already capped at 5) plus the size/sync controls can never be cut
-        // off the bottom or squeezed sideways.
-        val scroller = ScrollView(this).apply {
-            addView(root)
-            setPadding(0, 0, 0, 0)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Subtitles")
-            .setView(scroller)
-            .setNegativeButton("Close", null)
-            .show()
+        // The whole panel scrolls (see presentGlass), so the Track rows plus the
+        // size/sync controls can never be cut off the bottom on a short screen.
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        presentGlass(dialog, "Subtitles", root, 1000f)
     }
 
     private fun syncLabel(offsetMs: Long): String = if (offsetMs == 0L) "0.0s" else String.format("%+.1fs", offsetMs / 1000.0)
@@ -944,25 +1065,20 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        AlertDialog.Builder(this)
-            .setTitle("Audio")
-            .setSingleChoiceItems(items.toTypedArray(), checked) { d, which ->
-                if (which == 0) {
-                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-                        .build()
-                } else {
-                    val (group, ti) = indexMap[which] ?: return@setSingleChoiceItems
-                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setOverrideForType(
-                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                        )
-                        .build()
-                }
-                d.dismiss()
+        showGlassOptionMenu("Audio", items, checked) { which ->
+            if (which == 0) {
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                    .build()
+            } else {
+                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(
+                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                    )
+                    .build()
             }
-            .setNegativeButton("Close", null)
-            .show()
+        }
     }
 
     private fun playSource(index: Int) {

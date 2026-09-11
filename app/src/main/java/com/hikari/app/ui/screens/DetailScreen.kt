@@ -363,6 +363,7 @@ fun DetailScreen(
     var sessionId by remember { mutableStateOf("") }
     var selectedSeason by rememberSaveable { mutableStateOf<Int?>(null) }
     var seasonExpanded by remember { mutableStateOf(false) }
+    var rangeExpanded by remember { mutableStateOf(false) }
 
     val sortedEps = remember(episodes) {
         episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
@@ -376,6 +377,21 @@ fun DetailScreen(
     // season, so a 5-season show no longer floods the list with 100+ rows.
     val shownEps = remember(sortedEps, seasons, activeSeason) {
         if (seasons.size <= 1) sortedEps else sortedEps.filter { it.season == activeSeason }
+    }
+    // Episode pagination: a long-running donghua can have 600+ episodes in a
+    // single season, which used to force one enormous scroll. Split the current
+    // season into 30-episode pages and expose a page picker (just like the
+    // season picker) right next to the episode count. `remember(activeSeason)`
+    // snaps back to page 1 whenever the user switches season.
+    val epPageSize = 30
+    var rangeStart by remember(activeSeason) { mutableStateOf(0) }
+    val ranges = remember(shownEps) {
+        if (shownEps.size <= epPageSize) emptyList()
+        else (0 until shownEps.size step epPageSize).toList()
+    }
+    val safeStart = if (ranges.isEmpty()) 0 else rangeStart.coerceIn(0, ranges.last())
+    val pageEps = remember(shownEps, safeStart) {
+        shownEps.drop(safeStart).take(epPageSize)
     }
 
     LaunchedEffect(providerId, mediaId) {
@@ -611,23 +627,56 @@ fun DetailScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
-                            if (seasons.size > 1) {
-                                Box {
-                                    OutlinedButton(onClick = { seasonExpanded = true }) {
-                                        Text("Season $activeSeason")
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (seasons.size > 1) {
+                                    Box {
+                                        OutlinedButton(
+                                            onClick = { seasonExpanded = true },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Season $activeSeason", maxLines = 1)
+                                        }
+                                        DropdownMenu(
+                                            expanded = seasonExpanded,
+                                            onDismissRequest = { seasonExpanded = false }
+                                        ) {
+                                            seasons.forEach { s ->
+                                                DropdownMenuItem(
+                                                    text = { Text("Season $s") },
+                                                    onClick = {
+                                                        selectedSeason = s
+                                                        seasonExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
                                     }
-                                    DropdownMenu(
-                                        expanded = seasonExpanded,
-                                        onDismissRequest = { seasonExpanded = false }
-                                    ) {
-                                        seasons.forEach { s ->
-                                            DropdownMenuItem(
-                                                text = { Text("Season $s") },
-                                                onClick = {
-                                                    selectedSeason = s
-                                                    seasonExpanded = false
-                                                }
-                                            )
+                                }
+                                // Episode page picker — only needed once a single
+                                // season exceeds 30 episodes (e.g. 600-ep donghua).
+                                if (ranges.isNotEmpty()) {
+                                    Box {
+                                        OutlinedButton(
+                                            onClick = { rangeExpanded = true },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
+                                            Text("${safeStart + 1}–$end", maxLines = 1)
+                                        }
+                                        DropdownMenu(
+                                            expanded = rangeExpanded,
+                                            onDismissRequest = { rangeExpanded = false }
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                DropdownMenuItem(
+                                                    text = { Text("$start–$end") },
+                                                    onClick = {
+                                                        rangeStart = start
+                                                        rangeExpanded = false
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -665,7 +714,7 @@ fun DetailScreen(
                         // key MUST be unique — plugins (MoviesMod, …) emit
                         // duplicate ids/numbers per quality group, and a
                         // duplicate Compose key crashes the whole screen.
-                        shownEps.forEachIndexed { index, ep ->
+                        pageEps.forEachIndexed { index, ep ->
                             item(key = "ep-$index") {
                                 EpisodeRow(ep) { openStreams(ep) }
                             }

@@ -134,27 +134,44 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             _rows.value = emptyList()
         }
         loadJob = viewModelScope.launch {
-            val rows = repo.homeRows(_selectedProvider.value)
-            // MRDS/51CG catalogs carry full-size base64 data: posters; the Home
-            // feed keeps hundreds of them alive at once and OOMs on a stock
-            // heap. Collapse each into a tiny disk-cache token (same as the
-            // catalog/search screens) — [PosterLoader.model] resolves the token
-            // back to the bytes, so the grid still shows the images.
-            val tokenized = withContext(Dispatchers.IO) {
-                rows.map { row -> row.copy(items = row.items.map { it.tokenizePoster() }) }
-            }
-            if (tokenized.isEmpty()) {
-                // Refresh returned nothing (all providers slow / offline): keep
-                // the cached feed rather than wiping the screen.
+            // Row key -> poster-tokenized copy, so a partial update only
+            // tokenizes the rows that just arrived. MRDS/51CG catalogs carry
+            // full-size base64 data: posters; the Home feed keeps hundreds alive
+            // at once and OOMs on a stock heap, so each is collapsed into a tiny
+            // disk-cache token ([PosterLoader.model] resolves it back to bytes).
+            val tokenCache = HashMap<String, CatalogRow>()
+            var latest: List<CatalogRow> = emptyList()
+            repo.homeRowsStreaming(_selectedProvider.value).collect { rows ->
+                val tokenized = withContext(Dispatchers.IO) {
+                    rows.map { row ->
+                        val ck = row.key.ifBlank { "${row.providerId}|${row.catalogId}|${row.title}" }
+                        tokenCache.getOrPut(ck) {
+                            row.copy(items = row.items.map { it.tokenizePoster() })
+                        }
+                    }
+                }
+                latest = tokenized
+                if (tokenized.isEmpty()) return@collect
+                // First load (nothing cached yet): paint each catalog the moment
+                // it lands, so the first rows show in seconds instead of after
+                // EVERY provider finished (the 20-25s wait). A refresh keeps the
+                // cached feed on screen and swaps it in one go at the end.
                 if (cached == null) {
-                    _rows.value = emptyList()
+                    _rows.value = tokenized
                     _loading.value = false
                 }
-                return@launch
             }
-            homeCache[key] = tokenized
-            _rows.value = tokenized
-            _loading.value = false
+            if (latest.isNotEmpty()) {
+                homeCache[key] = latest
+                _rows.value = latest
+                _loading.value = false
+            } else if (cached == null) {
+                // Stream returned nothing (all providers slow / offline): keep
+                // the cached feed if we had one, otherwise don't leave the
+                // spinner up forever.
+                _rows.value = emptyList()
+                _loading.value = false
+            }
         }
         loadJob?.join()
     }
