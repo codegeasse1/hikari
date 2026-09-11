@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -43,9 +45,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -276,7 +276,8 @@ fun GlassSearchField(
 /** A large auto-advancing featured banner for the top of Home — full-width
  *  backdrop art, the title/metadata and a "View Details" pill over a bottom
  *  scrim, with pagination dots while more than one featured title exists.
- *  Tapping anywhere on it opens the currently shown title. */
+ *  Swiping left/right moves between featured titles (the dots track it), and
+ *  tapping anywhere on a page opens the title that page shows. */
 @Composable
 fun HeroBanner(
     items: List<MediaItem>,
@@ -284,90 +285,104 @@ fun HeroBanner(
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) return
-    var index by remember(items) { mutableStateOf(0) }
-    LaunchedEffect(items) {
+    val pagerState = rememberPagerState { items.size }
+    // Auto-advance every 6s, but stand still while the user is dragging so a
+    // swipe never fights the timer (the clock restarts after the drag ends).
+    LaunchedEffect(pagerState, items) {
         if (items.size <= 1) return@LaunchedEffect
         while (true) {
             delay(6000)
-            index = (index + 1) % items.size
+            if (!pagerState.isScrollInProgress) {
+                pagerState.animateScrollToPage((pagerState.currentPage + 1) % items.size)
+            }
         }
     }
-    val safe = index.coerceIn(0, items.lastIndex)
-    val item = items[safe]
     Box(
         modifier
             .fillMaxWidth()
             .aspectRatio(0.72f)
-            .clickable { onClick(item) }
     ) {
-        AsyncImage(
-            model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
-            contentDescription = item.title,
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-        )
-        // Darkens the top (for the overlaid app bar) and the bottom (for the
-        // title/button) so the hero text always reads.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Black.copy(alpha = 0.40f),
-                        0.35f to Color.Transparent,
-                        0.60f to Color.Black.copy(alpha = 0.55f),
-                        1f to Color.Black.copy(alpha = 0.95f),
-                    )
-                )
-        )
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, bottom = 44.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                item.title,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Black,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val metaLine = buildList {
-                when (item.type) {
-                    MediaType.MOVIE -> add("Movie")
-                    MediaType.SERIES -> add("Series")
-                    else -> {}
-                }
-                item.genres.take(2).forEach { add(it) }
-                item.year?.let { add(it.toString()) }
-            }.joinToString("  ·  ")
-            if (metaLine.isNotBlank()) {
-                Text(
-                    metaLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.85f),
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = { onClick(item) },
-                shape = RoundedCornerShape(50),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = Color.Black,
-                ),
+            pageSpacing = 0.dp,
+        ) { page ->
+            val item = items[page]
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable { onClick(item) }
             ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("View Details", fontWeight = FontWeight.Bold)
+                AsyncImage(
+                    model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+                // Darkens the top (for the overlaid app bar) and the bottom (for
+                // the title/button) so the hero text always reads.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Black.copy(alpha = 0.40f),
+                                0.35f to Color.Transparent,
+                                0.60f to Color.Black.copy(alpha = 0.55f),
+                                1f to Color.Black.copy(alpha = 0.95f),
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(start = 24.dp, end = 24.dp, bottom = 44.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val metaLine = buildList {
+                        when (item.type) {
+                            MediaType.MOVIE -> add("Movie")
+                            MediaType.SERIES -> add("Series")
+                            else -> {}
+                        }
+                        item.genres.take(2).forEach { add(it) }
+                        item.year?.let { add(it.toString()) }
+                    }.joinToString("  ·  ")
+                    if (metaLine.isNotBlank()) {
+                        Text(
+                            metaLine,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.85f),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { onClick(item) },
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = Color.Black,
+                        ),
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("View Details", fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
         if (items.size > 1) {
@@ -377,12 +392,13 @@ fun HeroBanner(
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
+                val active = pagerState.currentPage.coerceIn(0, items.lastIndex)
                 items.indices.forEach { i ->
                     Box(
                         Modifier
-                            .size(width = if (i == safe) 16.dp else 6.dp, height = 6.dp)
+                            .size(width = if (i == active) 16.dp else 6.dp, height = 6.dp)
                             .clip(RoundedCornerShape(50))
-                            .background(if (i == safe) Color.White else Color.White.copy(alpha = 0.4f))
+                            .background(if (i == active) Color.White else Color.White.copy(alpha = 0.4f))
                     )
                 }
             }

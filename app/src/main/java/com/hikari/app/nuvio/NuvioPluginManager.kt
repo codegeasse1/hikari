@@ -171,10 +171,20 @@ object NuvioPluginManager {
      *              (which hikari's QuickJS runtime does not have) for TV; the
      *              patched build probes every server, drops dead ones and uses
      *              deterministic TV paths.
+     * 4khdhub.js — upstream's Chrome/91 desktop User-Agent is rejected by the
+     *              site's Cloudflare firewall ("Access denied"), so every title
+     *              came back with no sources. The patch sends a modern mobile
+     *              browser UA plus browser Accept/Accept-Language/Referer.
+     * zevran.js  — the VAplayer API only answers when the Referer/Origin is the
+     *              player EMBED page (nextgencloudfabric.com/embed/…), not the
+     *              bare site root upstream sent; the patch also falls back to
+     *              the tmdb id and attaches the play-headers.
      */
     private val PROVIDER_PATCHES = listOf(
         "vornix.js" to "nuvio/patches/vornix.js",
         "streamflix.js" to "nuvio/patches/streamflix.js",
+        "4khdhub.js" to "nuvio/patches/4khdhub.js",
+        "zevran.js" to "nuvio/patches/zevran.js",
     )
 
     private fun patchedBytes(sourceUrl: String?): ByteArray? {

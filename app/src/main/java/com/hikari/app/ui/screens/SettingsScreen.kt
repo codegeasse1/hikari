@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -99,6 +100,7 @@ fun SettingsScreen() {
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
 
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
+    val hideContinue by app.store.hideContinueFlow().collectAsState(initial = false)
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -279,6 +281,39 @@ fun SettingsScreen() {
             }
         }
         item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Continue Watching",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Show the Continue Watching shelf on Home. It collects " +
+                                    "progress from every extension you've watched, so an " +
+                                    "episode started on one extension still shows up after " +
+                                    "you switch to another.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = !hideContinue,
+                            onCheckedChange = { show ->
+                                scope.launch { app.store.setHideContinue(!show) }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        item {
             SettingsFolderRow(
                 icon = Icons.Filled.Block,
                 title = "Ad Blocking",
@@ -322,7 +357,8 @@ fun SettingsScreen() {
                             "✓ HLS/DASH player with headers + subtitles\n" +
                             "✓ CloudStream .cs3 plugin loader\n" +
                             "✓ Torrent engine for infoHash streams\n" +
-                            "• Downloads, continue-watching (next)\n" +
+                            "✓ Watch history + Continue Watching (all extensions)\n" +
+                            "• Downloads (next)\n" +
                             "• SkyStream extensions, scriptable scrapers (planned)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

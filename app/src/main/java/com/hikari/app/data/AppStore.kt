@@ -28,6 +28,7 @@ class AppStore(private val ctx: Context) {
         val THEME = stringPreferencesKey("theme")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
+        val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
         val LAST_SOURCE = stringPreferencesKey("lastSource")
         val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
@@ -408,6 +409,17 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHistoryPaused(paused: Boolean) {
         store.edit { it[K.HISTORY_PAUSED] = paused }
+    }
+
+    /** When true, the Home screen hides its "Continue Watching" row entirely
+     *  (history keeps being recorded — this only hides the shelf). */
+    fun hideContinueFlow(): Flow<Boolean> =
+        store.data.map { it[K.HIDE_CONTINUE] ?: false }
+
+    suspend fun hideContinue(): Boolean = hideContinueFlow().first()
+
+    suspend fun setHideContinue(hide: Boolean) {
+        store.edit { it[K.HIDE_CONTINUE] = hide }
     }
 
     // ---- Last-used server per video ----

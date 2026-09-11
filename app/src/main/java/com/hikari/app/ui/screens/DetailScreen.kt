@@ -430,11 +430,13 @@ fun DetailScreen(
     // "continue from where you left off?" no matter how the user got here
     // (History tab, Home, Continue Watching, or a catalog).
     val app = context.applicationContext as HikariApp
-    var historyForTitle by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
-    LaunchedEffect(providerId, mediaId) {
-        historyForTitle = runCatching {
-            app.store.history().filter { it.providerId == providerId && it.mediaId == mediaId }
-        }.getOrDefault(emptyList())
+    // Collected reactively (not a one-shot read) so that returning here after a
+    // play immediately sees the progress the player just wrote — otherwise the
+    // "Continue from where you left off?" prompt never appeared on the second
+    // open of a title, because this screen's keys hadn't changed.
+    val allHistory by app.store.historyFlow().collectAsState(initial = emptyList())
+    val historyForTitle = remember(allHistory, providerId, mediaId) {
+        allHistory.filter { it.providerId == providerId && it.mediaId == mediaId }
     }
 
     // Non-null while the "Continue from where you left off?" prompt is up.

@@ -231,6 +231,8 @@ fun HomeScreen(nav: NavHostController) {
     // Continue Watching: history entries that were meaningfully started and
     // aren't within a minute of the end (those read as finished), newest first.
     val history by app.store.historyFlow().collectAsState(initial = emptyList())
+    // Settings → "Continue Watching": lets the user hide the shelf entirely.
+    val hideContinue by app.store.hideContinueFlow().collectAsState(initial = false)
     val continueEntries = remember(history) {
         history.filter {
             it.positionMs > 10_000L &&
@@ -324,7 +326,7 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            if (continueEntries.isNotEmpty()) {
+            if (!hideContinue && continueEntries.isNotEmpty()) {
                 item(key = "continue-watching") {
                     ContinueWatchingRow(
                         entries = continueEntries,

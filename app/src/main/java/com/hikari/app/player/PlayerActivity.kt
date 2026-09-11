@@ -2004,7 +2004,10 @@ class PlayerActivity : ComponentActivity() {
         if (pos < 10_000) return
         if (kotlin.math.abs(pos - lastSavedPos) < 10_000) return
         lastSavedPos = pos
-        val dur = p.duration.takeIf { it > 0 } ?: pos
+        // 0 (not pos) when the duration isn't known yet — otherwise the entry
+        // looks "finished" (pos == dur) to the Continue Watching filter and is
+        // silently dropped from the Home shelf.
+        val dur = p.duration.takeIf { it > 0 } ?: 0L
         val h = entry.copy(positionMs = pos, durationMs = dur, watchedAt = System.currentTimeMillis())
         lifecycleScope.launch(Dispatchers.IO) {
             try {
