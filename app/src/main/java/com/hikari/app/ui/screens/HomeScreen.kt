@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -58,7 +59,9 @@ import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.components.ContinueWatchingRow
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.navigation.Routes
@@ -224,101 +227,119 @@ fun HomeScreen(nav: NavHostController) {
         vm.refresh()
     }
 
+    val app = context.applicationContext as HikariApp
+    // Continue Watching: history entries that were meaningfully started and
+    // aren't within a minute of the end (those read as finished), newest first.
+    val history by app.store.historyFlow().collectAsState(initial = emptyList())
+    val continueEntries = remember(history) {
+        history.filter {
+            it.positionMs > 10_000L &&
+                (it.durationMs <= 0L || it.positionMs < it.durationMs - 60_000L)
+        }.take(12)
+    }
+    // History only stores a poster; backdrops live on the catalog items, so map
+    // them by provider + id to give the Continue cards landscape art.
+    val backdropByKey = remember(rows) {
+        val m = HashMap<String, String?>()
+        rows.forEach { row ->
+            row.items.forEach { item ->
+                m["${item.providerId}|${item.type}|${item.id}"] = item.backdropUrl
+            }
+        }
+        m
+    }
+    // Featured hero: the first catalog's title-artful entries (falling back to
+    // its first entries when nothing carries a backdrop).
+    val featured = remember(rows) {
+        val first = rows.firstOrNull()?.items.orEmpty()
+        (first.filter { !it.backdropUrl.isNullOrBlank() }.ifEmpty { first }).take(8)
+    }
+    val openSearch: () -> Unit = {
+        nav.navigate(Routes.SEARCH) {
+            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+    val openVerify: () -> Unit = {
+        scope.launch {
+            val url = withContext(Dispatchers.IO) {
+                providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+            }
+            if (url != null) {
+                verifyLauncher.launch(
+                    Intent(context, WebViewActivity::class.java).apply {
+                        putExtra("url", url)
+                        putExtra("title", "Verify: ${selectedName ?: "site"}")
+                        putExtra("providerId", selected)
+                        putExtra("autoCloseWhenCloudflarePassed", true)
+                    }
+                )
+            } else {
+                Toast.makeText(
+                    context,
+                    "Couldn't determine this extension's site",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 72.dp)
         ) {
             item {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Hikari",
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 8.dp)
+                if (featured.isNotEmpty()) {
+                    Box(Modifier.fillMaxWidth()) {
+                        HeroBanner(
+                            items = featured,
+                            onClick = { item ->
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.detail(
+                                        item.providerId, item.type, item.id,
+                                        item.title, item.posterUrl, item.rawType
+                                    )
+                                )
+                            },
                         )
-                        Text(
-                            "Every stream, one place.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            nav.navigate(Routes.SEARCH) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        }
-                    ) {
-                        Icon(
-                            Icons.Filled.Search,
-                            contentDescription = "Search",
-                            tint = MaterialTheme.colorScheme.primary
+                        HomeHeader(
+                            selected = selected,
+                            onSearch = openSearch,
+                            onTranslate = { showTranslate = true },
+                            onVerify = openVerify,
+                            overlay = true,
+                            modifier = Modifier.align(Alignment.TopCenter),
                         )
                     }
-                    // Translate: per-extension toggle — turns this extension's
-                    // titles/text into English inside the app. Shown whenever a
-                    // provider is selected (content exists regardless of the
-                    // site URL).
-                    selected?.let { pid ->
-                        val translateOn = com.hikari.app.data.Translator.isOn(pid)
-                        IconButton(
-                            onClick = { showTranslate = true }
-                        ) {
-                            Text(
-                                "A\u3042",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (translateOn) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 4.dp)
+                } else {
+                    HomeHeader(
+                        selected = selected,
+                        onSearch = openSearch,
+                        onTranslate = { showTranslate = true },
+                        onVerify = openVerify,
+                        overlay = false,
+                    )
+                }
+            }
+            if (continueEntries.isNotEmpty()) {
+                item(key = "continue-watching") {
+                    ContinueWatchingRow(
+                        entries = continueEntries,
+                        backdropOf = { h -> backdropByKey["${h.providerId}|${h.type}|${h.mediaId}"] },
+                        onClick = { h ->
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.detail(
+                                    h.providerId, h.type, h.mediaId, h.title, h.posterUrl, "",
+                                    episodeId = h.episodeId,
+                                    startPositionMs = h.positionMs,
+                                )
                             )
-                        }
-                    }
-                    if (selected != null) {
-                        IconButton(
-                            onClick = {
-                                scope.launch {
-                                    val url = withContext(Dispatchers.IO) {
-                                        providers.firstOrNull { it.config.id == selected }
-                                            ?.let { webUrlFor(it) }
-                                    }
-                                    if (url != null) {
-                                        verifyLauncher.launch(
-                                            Intent(context, WebViewActivity::class.java).apply {
-                                                putExtra("url", url)
-                                                putExtra("title", "Verify: ${selectedName ?: "site"}")
-                                                putExtra("providerId", selected)
-                                                putExtra("autoCloseWhenCloudflarePassed", true)
-                                            }
-                                        )
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            "Couldn't determine this extension's site",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            }
-                        ) {
-                            Icon(
-                                Icons.Filled.Public,
-                                contentDescription = "Open site in web view (Cloudflare verification)",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
+                        },
+                    )
                 }
             }
             if (showCrash && HikariApp.lastCrash != null) {
@@ -610,4 +631,76 @@ private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
             ?.takeIf { it.startsWith("http") }
     }.getOrNull()
     else -> null
+}
+
+/** The Home top bar. In [overlay] mode it is drawn on top of the hero banner
+ *  (white text/icons so it reads over the backdrop art); otherwise it is a
+ *  normal, opaque header above the rows. */
+@Composable
+private fun HomeHeader(
+    selected: String?,
+    onSearch: () -> Unit,
+    onTranslate: () -> Unit,
+    onVerify: () -> Unit,
+    overlay: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val iconTint = if (overlay) Color.White else accent
+    val subtitleColor =
+        if (overlay) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Hikari",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+            Text(
+                "Every stream, one place.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = subtitleColor,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+        }
+        IconButton(onClick = onSearch) {
+            Icon(Icons.Filled.Search, contentDescription = "Search", tint = iconTint)
+        }
+        // Translate: per-extension toggle — turns this extension's titles/text
+        // into English inside the app. Shown whenever a provider is selected.
+        selected?.let { pid ->
+            val translateOn = com.hikari.app.data.Translator.isOn(pid)
+            IconButton(onClick = onTranslate) {
+                Text(
+                    "A\u3042",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when {
+                        translateOn -> accent
+                        overlay -> Color.White.copy(alpha = 0.7f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        }
+        // Cloudflare/verify: opens the extension's site in the WebView so the
+        // user can pass a WAF check once; the catalog reloads by itself after.
+        if (selected != null) {
+            IconButton(onClick = onVerify) {
+                Icon(
+                    Icons.Filled.Public,
+                    contentDescription = "Open site in web view (Cloudflare verification)",
+                    tint = iconTint
+                )
+            }
+        }
+    }
 }

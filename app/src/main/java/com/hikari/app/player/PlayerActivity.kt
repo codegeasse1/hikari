@@ -62,6 +62,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import com.hikari.app.net.StreamProbe
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -113,6 +114,22 @@ class PlayerActivity : ComponentActivity() {
         isMpd,
         isTorrent,
         infoHash,
+        fileIdx,
+        trackers,
+    )
+
+    /** The inverse of [toPlayerSource]: a player source as a data-layer source,
+     *  so it can go through the shared [StreamProbe] cache (which speaks
+     *  [StreamSource]). */
+    private fun PlayerSource.toStreamSource() = StreamSource(
+        name,
+        url,
+        headers,
+        subtitles,
+        isTorrent,
+        infoHash,
+        isM3u8,
+        isMpd,
         fileIdx,
         trackers,
     )
@@ -209,26 +226,15 @@ class PlayerActivity : ComponentActivity() {
      *  to discover its real mime/URL before ExoPlayer sees it. */
     private var probeDialog: android.app.ProgressDialog? = null
 
-    /** url -> probed (real url, mime). Probing an unknown-container URL is only
-     *  done once per session; retries/switches back reuse the result. */
-    private val probeCache = java.util.concurrent.ConcurrentHashMap<String, ProbeResult>()
-
     private lateinit var client: OkHttpClient
 
-    /** Dedicated probe HTTP client: plain OkHttp — the SAME stack playback
-     *  itself uses (OkHttpDataSource), so a probe never waits on Cloudflare's
-     *  hidden verify WebView (which could park it for ~20s on a challenged
-     *  wrapper page, and whose clearance playback can't use anyway) — with
-     *  tight timeouts so one unreachable hop fails over to the next candidate
-     *  in a couple of seconds instead of stalling the whole probe. */
-    private val probeClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
-    }
+    /** History key of the current video ("pid|type|mediaId|episodeId") — the
+     *  identity used to remember which server the user last played it on. */
+    private var historyKey: String = ""
+
+    /** Index whose "last used server" has already been persisted, so walking
+     *  servers (retries/failover) doesn't spam the store. */
+    private var lastSavedSourceIndex = -1
 
     /** Watch-history context passed by the detail screen. When non-null the
      *  player records resume positions into the app store. */
@@ -443,6 +449,7 @@ class PlayerActivity : ComponentActivity() {
                 episodeId = intent.getStringExtra("histEpisodeId").orEmpty(),
                 episodeName = intent.getStringExtra("histEpisodeName").orEmpty(),
             )
+            historyKey = historyEntry!!.uniqueKey
             startPositionMs = intent.getLongExtra("startPosition", 0L).coerceAtLeast(0L)
             saveTask = object : Runnable {
                 override fun run() {
@@ -514,6 +521,11 @@ class PlayerActivity : ComponentActivity() {
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
+                    // Resolve the new servers in the background too, so picking
+                    // one from "Select server" doesn't fall back to a probe wait.
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
+                    }
                 }
             }
         }
@@ -525,7 +537,36 @@ class PlayerActivity : ComponentActivity() {
             .followSslRedirects(true)
             .build()
 
-        playSource(0)
+        // Resolve every not-yet-known server while the first one starts: the
+        // probe cache then answers instantly for a "Select server" pick, a
+        // failover, a retry, or a later replay of the same video.
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { StreamProbe.warm(sources.map { it.toStreamSource() }) }
+        }
+
+        // Start on the server this video was last played with (matched by URL
+        // then by name), so a replay picks up on a known-good, already-resolved
+        // source instead of starting the search from scratch.
+        lifecycleScope.launch { playSource(preferredStartIndex()) }
+    }
+
+    /** Index of the server the user last played this video with — matched by
+     *  URL first (same link across runs), then by server name (signed/tokenized
+     *  URLs that differ per run) — or 0 when nothing is remembered. */
+    private suspend fun preferredStartIndex(): Int {
+        if (historyKey.isBlank() || sources.isEmpty()) return 0
+        val last = runCatching { (applicationContext as HikariApp).store.lastSource(historyKey) }
+            .getOrNull() ?: return 0
+        val (url, name) = last
+        if (url.isNotBlank()) {
+            val byUrl = sources.indexOfFirst { it.url == url }
+            if (byUrl >= 0) return byUrl
+        }
+        if (name.isNotBlank()) {
+            val byName = sources.indexOfFirst { it.name.equals(name, ignoreCase = true) }
+            if (byName >= 0) return byName
+        }
+        return 0
     }
 
     /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
@@ -1143,11 +1184,27 @@ class PlayerActivity : ComponentActivity() {
         userPickedSubs = false
         currentIndex = index
         val src = sources[index]
+        rememberPlayedSource(index, src)
         if (src.isTorrent && src.infoHash != null) {
             playTorrent(index)
             return
         }
         playDirect(index)
+    }
+
+    /** Remembers [src] as the server this video was last played with, so a
+     *  replay continues on the same server (see [preferredStartIndex]). */
+    private fun rememberPlayedSource(index: Int, src: PlayerSource) {
+        if (historyKey.isBlank() || index == lastSavedSourceIndex) return
+        lastSavedSourceIndex = index
+        val key = historyKey
+        val url = src.url
+        val name = src.name
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                (applicationContext as HikariApp).store.setLastSource(key, url, name)
+            }
+        }
     }
 
     /**
@@ -1286,11 +1343,8 @@ class PlayerActivity : ComponentActivity() {
             // ExoPlayer treats them as a progressive container and reports
             // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED on streams that are
             // perfectly playable (the "every yt-dlp source fails" symptom).
-            val needsProbe = !src.isTorrent && !src.torrentStream && !src.isM3u8 && !src.isMpd &&
-                !src.url.contains(".m3u8", true) && !src.url.contains("master.txt", true) &&
-                !src.url.contains(".mpd", true) &&
-                (src.url.startsWith("http://") || src.url.startsWith("https://")) &&
-                !hasMediaExtension(src.url)
+            val needsProbe = !src.torrentStream &&
+                StreamProbe.needsResolve(src.url, src.isTorrent, src.isM3u8, src.isMpd)
             if (needsProbe) {
                 probeAndPlay(index)
                 return
@@ -1307,152 +1361,22 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** A URL probed to its real media form: [url] is what to actually play and
-     *  [mime] is the container to force (HLS/DASH) or null to let ExoPlayer
-     *  sniff it. */
-    private data class ProbeResult(val url: String, val mime: String?)
-
-    /** Media file extensions ExoPlayer's progressive extractors sniff fine on
-     *  their own — URLs ending in these skip the probe entirely. */
-    private val PROBE_SKIP_EXTENSIONS = listOf(
-        ".mp4", ".webm", ".mkv", ".flv", ".avi", ".mov", ".m4v", ".m4s",
-        ".ts", ".mp3", ".aac", ".ogg", ".ogv", ".m4a", ".wav", ".flac",
-        ".3gp", ".mpg", ".mpeg", ".opus", ".wmv",
-    )
-
-    private fun hasMediaExtension(url: String): Boolean {
-        val clean = url.substringBefore('?').substringBefore('#')
-        return PROBE_SKIP_EXTENSIONS.any { clean.endsWith(it, ignoreCase = true) }
-    }
-
-    /** Probes a container-unknown stream URL before ExoPlayer sees it: fetches
-     *  the head of the response with the source's own headers and classifies it
-     *  (HLS `#EXTM3U` / DASH `<MPD` / direct video), or — when the URL is a JSON
-     *  API or HTML wrapper page — digs out the embedded media URLs and follows
-     *  the most promising one. Returns the real URL + forced mime, or null when
-     *  nothing resolvable was found. Never throws. */
-    private fun probeStreamUrl(url: String, headers: Map<String, String>, depth: Int): ProbeResult? {
-        if (depth > 3) return null
-        val response = probeGet(url, headers) ?: return null
-        response.use { r ->
-            if (!r.isSuccessful) return null
-            val ct = r.headers["Content-Type"]?.lowercase() ?: ""
-            val body = r.body ?: return null
-            val head: String = try {
-                val buf = ByteArray(131_072)
-                val input = body.byteStream()
-                var read = 0
-                while (read < buf.size) {
-                    val n = input.read(buf, read, buf.size - read)
-                    if (n < 0) break
-                    read += n
-                }
-                // ISO-8859-1 keeps the raw bytes, so the "#EXTM3U"/"ftyp"
-                // sniffs below are never thrown off by charset decoding.
-                String(buf, 0, read, Charsets.ISO_8859_1)
-            } catch (t: Throwable) {
-                return null
-            }
-            val trimmed = head.trimStart()
-            if (trimmed.startsWith("#EXTM3U") || ct.contains("mpegurl") || ct.contains("m3u8")) {
-                return ProbeResult(url, MimeTypes.APPLICATION_M3U8)
-            }
-            if ((trimmed.startsWith("<?xml") && head.contains("<MPD")) || ct.contains("dash+xml")) {
-                return ProbeResult(url, MimeTypes.APPLICATION_MPD)
-            }
-            // Direct binary container (mp4/fMP4 ftyp & friends) — ExoPlayer's
-            // extractors sniff it fine, no mime to force.
-            if (ct.startsWith("video/") || ct.startsWith("audio/") ||
-                trimmed.startsWith("ftyp") || trimmed.startsWith("\u0000\u0000\u0000\u0018ftyp")
-            ) {
-                return ProbeResult(url, null)
-            }
-            // Wrapper page — JSON API / HTML player. Pull out the embedded
-            // media URLs and follow the best candidates. At the TOP level the
-            // candidates are raced in parallel, so one dead/slow candidate no
-            // longer serializes the probe behind its timeout (the old
-            // depth-first walk could stack a 10s wait on the first dud); deeper
-            // hops stay sequential so the thread fan-out can't explode.
-            val candidates = extractMediaCandidates(head, url)
-            if (candidates.isEmpty()) return null
-            if (depth == 0 && candidates.size > 1) {
-                val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(candidates.size, 4)) { runnable ->
-                    Thread(runnable, "hikari-probe").apply { isDaemon = true }
-                }
-                try {
-                    val done = java.util.concurrent.ExecutorCompletionService<ProbeResult?>(pool)
-                    candidates.forEach { c ->
-                        done.submit(java.util.concurrent.Callable { probeStreamUrl(c, headers, depth + 1) })
-                    }
-                    repeat(candidates.size) {
-                        val res = runCatching { done.take().get() }.getOrNull()
-                        if (res != null) return res
-                    }
-                } finally {
-                    pool.shutdownNow()
-                }
-                return null
-            }
-            for (c in candidates) {
-                val res = probeStreamUrl(c, headers, depth + 1)
-                if (res != null) return res
-            }
-            return null
-        }
-    }
-
-    /** Fetches [url] for probing. Sends a Range header so hosts stream just the
-     *  opening bytes instead of holding the connection for the whole file, and
-     *  never takes the Cloudflare verify-WebView path (playback can't use that
-     *  clearance either, so a probe that needed it would be a false positive).
-     *  Returns null — never throws — on any failure. */
-    private fun probeGet(url: String, headers: Map<String, String>): okhttp3.Response? = try {
-        val b = okhttp3.Request.Builder().url(url)
-            .header("User-Agent", Http.UA)
-            .header("Range", "bytes=0-262143")
-        headers.forEach { (k, v) -> if (!k.equals("Range", ignoreCase = true)) b.header(k, v) }
-        probeClient.newCall(b.build()).execute()
-    } catch (t: Throwable) {
-        null
-    }
-
-    private val URL_TOKEN_RE = Regex("""https?://[^\s"'<>\\]+""")
-
-    /** Finds the media-looking URLs inside a wrapper page's head and ranks them
-     *  (m3u8 > mpd > direct video > player paths) so the probe follows the most
-     *  promising one first. */
-    private fun extractMediaCandidates(head: String, pageUrl: String): List<String> {
-        val scored = LinkedHashMap<String, Int>()
-        for (m in URL_TOKEN_RE.findAll(head)) {
-            val u = m.value.trimEnd(')', ']', '}', ',', ';', '.', '"', '\'')
-            if (!u.startsWith("http")) continue
-            if (u == pageUrl) continue
-            val lower = u.lowercase()
-            val score = when {
-                "m3u8" in lower -> 100
-                "mpd" in lower || "manifest" in lower -> 90
-                lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") ||
-                    lower.contains(".m4s") -> 80
-                "/get" in lower || "/stream" in lower || "/play" in lower || "/hls" in lower ||
-                    "master" in lower || "/video" in lower -> 60
-                "video" in lower || "media" in lower || "/embed" in lower -> 40
-                else -> 10
-            }
-            if (score >= 40) scored.putIfAbsent(u, score)
-        }
-        return scored.entries.sortedByDescending { it.value }.take(8).map { it.key }
-    }
-
-    /** Probes the source and, when it resolves to a real media URL, rewrites
-     *  the source before handing it to ExoPlayer. Always ends in playDirectInner
-     *  — a probe failure falls through to the original (current) behavior. */
+    /** Probes the source (via the app-wide [StreamProbe] cache, so any earlier
+     *  resolution — this source search, a previous play, a previous session —
+     *  makes this instant) and, when it resolves to a real media URL, rewrites
+     *  the source before handing it to ExoPlayer. On a cache miss it shows the
+     *  progress dialog while resolving. When the probe can't resolve the URL it
+     *  moves on to the NEXT server instead of handing ExoPlayer a wrapper page
+     *  it is guaranteed to choke on (that wasted a full probe plus a full
+     *  player error timeout before the failover, which is what made a broken
+     *  4KHDHub wrapper feel twice as slow). */
     private fun probeAndPlay(index: Int) {
         if (index < 0 || index >= sources.size) {
             playDirectInner(index)
             return
         }
         val src = sources[index]
-        val cached = probeCache[src.url]
+        val cached = StreamProbe.cached(src.url)
         if (cached != null) {
             applyProbe(index, src, cached)
             playDirectInner(index)
@@ -1466,35 +1390,37 @@ class PlayerActivity : ComponentActivity() {
             show()
         }
         lifecycleScope.launch {
-            val resolved = withTimeoutOrNull(12_000) {
-                withContext(Dispatchers.IO) {
-                    val clean = sanitizeHeaders(src.headers)
-                    val headers = when (headerVariant) {
-                        1 -> clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
-                        2 -> emptyMap()
-                        else -> clean
-                    }
-                    val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-                    runCatching {
-                        probeStreamUrl(src.url, headers + mapOf("User-Agent" to ua), 0)
-                    }.getOrNull()
-                }
+            val clean = sanitizeHeaders(src.headers)
+            val headers = when (headerVariant) {
+                1 -> clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
+                2 -> emptyMap()
+                else -> clean
             }
+            val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+            val resolved = StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua))
             probeDialog?.let { runCatching { it.dismiss() } }
             probeDialog = null
             if (currentIndex != index) return@launch
-            if (resolved != null) probeCache[src.url] = resolved
-            if (resolved != null) applyProbe(index, src, resolved)
-            playDirectInner(index)
+            if (resolved != null) {
+                applyProbe(index, src, resolved)
+                playDirectInner(index)
+            } else if (index + 1 < sources.size) {
+                // Unresolvable wrapper page: playing the raw URL would only
+                // fail again after the player's own error timeout — go straight
+                // to the next server.
+                noSubsRetry = false
+                playSource(index + 1)
+            } else {
+                // Last server — hand it over anyway (some hosts serve playable
+                // media at extension-less paths without any wrapper at all).
+                playDirectInner(index)
+            }
         }
     }
 
-    private fun applyProbe(index: Int, src: PlayerSource, resolved: ProbeResult) {
-        val newM3u8 = resolved.mime == MimeTypes.APPLICATION_M3U8
-        val newMpd = resolved.mime == MimeTypes.APPLICATION_MPD
-        if (resolved.url == src.url && src.isM3u8 == newM3u8 && src.isMpd == newMpd) return
+    private fun applyProbe(index: Int, src: PlayerSource, resolved: StreamProbe.Resolved) {
         val list = sources.toMutableList()
-        list[index] = src.copy(url = resolved.url, isM3u8 = newM3u8, isMpd = newMpd)
+        list[index] = StreamProbe.apply(src.toStreamSource(), resolved).toPlayerSource()
         sources = list
     }
 

@@ -362,7 +362,12 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             } else {
                 lastOutcome[config.id] = "✗ returned ${data.length()} rows but none playable"
             }
-            out.distinctBy { it.url }
+            val distinct = out.distinctBy { it.url }
+            // Warm the probe cache the moment the sources are found, so a
+            // wrapper server (4KHDHub/HubCloud) is already resolved by the time
+            // the user taps Play — no "Preparing stream…" wait.
+            com.hikari.app.net.StreamProbe.warmAsync(distinct)
+            distinct
         }
 
     private fun toStreamSource(s: JSONObject): StreamSource? {

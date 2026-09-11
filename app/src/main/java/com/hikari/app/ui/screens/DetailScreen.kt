@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -40,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -66,10 +68,12 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.Episode
+import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
+import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
@@ -315,6 +319,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+/** A tapped video with saved progress — drives the "Continue from where you
+ *  left off?" prompt. [episode] is null for a movie. */
+private data class ResumePrompt(val episode: Episode?, val positionMs: Long, val durationMs: Long)
+
+/** h:mm:ss (or m:ss under an hour) for the resume prompt. */
+private fun fmtClock(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0L)
+    return if (s >= 3600) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+    } else {
+        String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
+    }
+}
+
 /** One diagnostic line per extension for the sources sheet's empty state:
  *  what each searched addon actually reported ("✓ 3 sources", "✗ timeout",
  *  "✗ cut off after 110s", …). Null when the addon has no recorded outcome. */
@@ -405,6 +423,20 @@ fun DetailScreen(
         vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
+    // Watch-history for this title (every episode), so a tapped video can offer
+    // "continue from where you left off?" no matter how the user got here
+    // (History tab, Home, Continue Watching, or a catalog).
+    val app = context.applicationContext as HikariApp
+    var historyForTitle by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
+    LaunchedEffect(providerId, mediaId) {
+        historyForTitle = runCatching {
+            app.store.history().filter { it.providerId == providerId && it.mediaId == mediaId }
+        }.getOrDefault(emptyList())
+    }
+
+    // Non-null while the "Continue from where you left off?" prompt is up.
+    var resumePrompt by remember { mutableStateOf<ResumePrompt?>(null) }
+
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
     // to this screen — without this, the FIRST play set the flag and every
@@ -413,14 +445,14 @@ fun DetailScreen(
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { playerLaunched = false }
-    val launchPlayer: (List<StreamSource>, Episode?, String) -> Unit = launchPlayer@{ playable, ep, liveId ->
+    val launchPlayer: (List<StreamSource>, Episode?, String, Long) -> Unit = launchPlayer@{ playable, ep, liveId, startPos ->
         if (playerLaunched) return@launchPlayer
         playerLaunched = true
         val payload = playerPayload(playable)
         if (payload == null) return@launchPlayer
         // History context rides along so the player can record resume position
-        // (and seek back to it when this screen was opened from history).
-        val isResumeTarget = (ep?.id ?: "") == episodeId
+        // and remember which server this video was last played with (so a
+        // replay continues on that server and starts instantly).
         playerLauncher.launch(
             Intent(context, PlayerActivity::class.java).apply {
                 putExtra("title", m?.title ?: title)
@@ -429,6 +461,7 @@ fun DetailScreen(
                 // while the detail screen keeps searching every installed
                 // provider; the player appends them to its "Select server" list.
                 putExtra("streamsLiveId", liveId)
+                putExtra("histTitle", m?.title ?: title)
                 putExtra("histProviderId", providerId)
                 putExtra("histMediaId", mediaId)
                 putExtra("histType", (m?.type ?: type).name)
@@ -437,12 +470,12 @@ fun DetailScreen(
                 putExtra("histEpisodeName", ep?.name.orEmpty())
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
                 putExtra("histEpisodeNumber", ep?.number ?: 0)
-                putExtra("startPosition", if (isResumeTarget) startPositionMs else 0L)
+                putExtra("startPosition", startPos.coerceAtLeast(0L))
             }
         )
     }
 
-    val openStreams: (Episode?) -> Unit = { ep ->
+    val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
         // Show the sheet + spinner IMMEDIATELY, then resolve sources in the
         // background. Otherwise a slow provider looks like a dead click.
         selectedEp = ep
@@ -468,6 +501,11 @@ fun DetailScreen(
                 }
                 if (playable.isEmpty()) return@collect
                 streams = current
+                // Resolve wrapper URLs ahead of playback so "Select server" and
+                // any failover are instant (the source search outlives the play
+                // tap, so most servers are already resolved by the time the user
+                // needs them).
+                StreamProbe.warmAsync(playable)
                 if (launched || playerLaunched) {
                     // Player is already up — hand it the newly found servers.
                     StreamsLive.append(sessionId, playable)
@@ -475,7 +513,7 @@ fun DetailScreen(
                     launched = true
                     showSheet = false
                     loadingStreams = false
-                    launchPlayer(playable, ep, sessionId)
+                    launchPlayer(playable, ep, sessionId, startPos)
                 }
             }
         }
@@ -487,6 +525,7 @@ fun DetailScreen(
             val playable = final.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
+            StreamProbe.warmAsync(playable)
             if (launched || playerLaunched) {
                 // Search finished — hand the player the complete list.
                 StreamsLive.append(sessionId, playable)
@@ -494,28 +533,47 @@ fun DetailScreen(
                 // Cached/instant result arrived before the feed attached.
                 launched = true
                 showSheet = false
-                launchPlayer(playable, ep, sessionId)
+                launchPlayer(playable, ep, sessionId, startPos)
             }
         }
     }
 
-    // Resume from history: once metadata/episodes are loaded, auto-open the
-    // target episode (or the movie) so playback jumps straight to the saved
-    // position. One shot per screen instance.
+    // Saved progress for the given video (movie = null episode), or null when
+    // there is nothing worth resuming (never really started / basically done).
+    val savedProgressFor: (Episode?) -> Pair<Long, Long>? = { ep ->
+        val eid = ep?.id.orEmpty()
+        val h = historyForTitle.firstOrNull { it.episodeId == eid }
+        var pos = h?.positionMs ?: 0L
+        var dur = h?.durationMs ?: 0L
+        // Fallback: arrived from History with the position in the nav arg.
+        if (h == null && eid == episodeId && startPositionMs > 0L) pos = startPositionMs
+        if (pos < 10_000L) null
+        else if (dur > 0L && pos > dur - 30_000L) null
+        else pos to dur
+    }
+
+    // Tap handler: ask "continue?" when there is saved progress, else just play.
+    val tryPlay: (Episode?) -> Unit = { ep ->
+        val saved = savedProgressFor(ep)
+        if (saved != null) resumePrompt = ResumePrompt(ep, saved.first, saved.second)
+        else openStreams(ep, 0L)
+    }
+
+    // Arriving from watch history: once metadata/episodes are loaded, offer to
+    // resume the target episode (or the movie) instead of silently jumping in.
     var resumeHandled by remember { mutableStateOf(false) }
-    LaunchedEffect(meta, episodes, episodeId, startPositionMs) {
-        if (resumeHandled || startPositionMs <= 0L) return@LaunchedEffect
-        val mm = meta ?: return@LaunchedEffect
+    LaunchedEffect(meta, episodes, episodeId, startPositionMs, historyForTitle) {
+        if (resumeHandled) return@LaunchedEffect
+        if (episodeId.isBlank() && startPositionMs <= 0L) return@LaunchedEffect
+        if (meta == null) return@LaunchedEffect
         if (episodeId.isNotBlank()) {
             val eps = episodes ?: return@LaunchedEffect
-            val ep = eps.firstOrNull { it.id == episodeId }
-            if (ep != null) {
-                resumeHandled = true
-                openStreams(ep)
-            }
+            val ep = eps.firstOrNull { it.id == episodeId } ?: return@LaunchedEffect
+            resumeHandled = true
+            tryPlay(ep)
         } else if (episodes.isNullOrEmpty()) {
             resumeHandled = true
-            openStreams(null)
+            tryPlay(null)
         }
     }
 
@@ -599,7 +657,7 @@ fun DetailScreen(
                 if (canPlay) {
                     item {
                         Button(
-                            onClick = { openStreams(null) },
+                            onClick = { tryPlay(null) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -717,7 +775,7 @@ fun DetailScreen(
                         // duplicate Compose key crashes the whole screen.
                         pageEps.forEachIndexed { index, ep ->
                             item(key = "ep-$index") {
-                                EpisodeRow(ep) { openStreams(ep) }
+                                EpisodeRow(ep) { tryPlay(ep) }
                             }
                         }
                     }
@@ -725,6 +783,47 @@ fun DetailScreen(
                 item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    // "Continue from where you left off?" — asked whenever a video with saved
+    // progress is tapped. Yes resumes at the saved position (and the player
+    // starts on the server this video was last played with); No starts over.
+    resumePrompt?.let { rp ->
+        val label = rp.episode?.let {
+            if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}"
+        } ?: (m?.title ?: title)
+        AlertDialog(
+            onDismissRequest = { resumePrompt = null },
+            title = { Text("Continue from where you left off?") },
+            text = {
+                Text(
+                    buildString {
+                        append(label)
+                        append("\n\n")
+                        append("Resume from ${fmtClock(rp.positionMs)}")
+                        if (rp.durationMs > 0L) {
+                            val pct = (rp.positionMs * 100 / rp.durationMs).coerceIn(0, 100)
+                            append("  ·  $pct% watched")
+                        }
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ep = rp.episode
+                    val pos = rp.positionMs
+                    resumePrompt = null
+                    openStreams(ep, pos)
+                }) { Text("Resume") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    val ep = rp.episode
+                    resumePrompt = null
+                    openStreams(ep, 0L)
+                }) { Text("Start over") }
+            },
+        )
     }
 
     if (showSheet) {

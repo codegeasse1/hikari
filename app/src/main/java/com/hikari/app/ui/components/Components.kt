@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,19 +30,27 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
@@ -51,8 +60,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MediaType
 import com.hikari.app.ui.PosterLoader
+import kotlinx.coroutines.delay
 
 @Composable
 fun MediaRow(
@@ -261,9 +273,248 @@ fun GlassSearchField(
     }
 }
 
-/** A rounded, translucent glass card — the app's frosted look for lists and
- *  settings rows. Same idiom as AppBottomBar / GlassSearchField: translucent
- *  surface + large pill-ish radius + soft shadow. Drop-in for material3 Card. */
+/** A large auto-advancing featured banner for the top of Home — full-width
+ *  backdrop art, the title/metadata and a "View Details" pill over a bottom
+ *  scrim, with pagination dots while more than one featured title exists.
+ *  Tapping anywhere on it opens the currently shown title. */
+@Composable
+fun HeroBanner(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (items.isEmpty()) return
+    var index by remember(items) { mutableStateOf(0) }
+    LaunchedEffect(items) {
+        if (items.size <= 1) return@LaunchedEffect
+        while (true) {
+            delay(6000)
+            index = (index + 1) % items.size
+        }
+    }
+    val safe = index.coerceIn(0, items.lastIndex)
+    val item = items[safe]
+    Box(
+        modifier
+            .fillMaxWidth()
+            .aspectRatio(0.72f)
+            .clickable { onClick(item) }
+    ) {
+        AsyncImage(
+            model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
+            contentDescription = item.title,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+        // Darkens the top (for the overlaid app bar) and the bottom (for the
+        // title/button) so the hero text always reads.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.40f),
+                        0.35f to Color.Transparent,
+                        0.60f to Color.Black.copy(alpha = 0.55f),
+                        1f to Color.Black.copy(alpha = 0.95f),
+                    )
+                )
+        )
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(start = 24.dp, end = 24.dp, bottom = 44.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val metaLine = buildList {
+                when (item.type) {
+                    MediaType.MOVIE -> add("Movie")
+                    MediaType.SERIES -> add("Series")
+                    else -> {}
+                }
+                item.genres.take(2).forEach { add(it) }
+                item.year?.let { add(it.toString()) }
+            }.joinToString("  ·  ")
+            if (metaLine.isNotBlank()) {
+                Text(
+                    metaLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.85f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = { onClick(item) },
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                ),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("View Details", fontWeight = FontWeight.Bold)
+            }
+        }
+        if (items.size > 1) {
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                items.indices.forEach { i ->
+                    Box(
+                        Modifier
+                            .size(width = if (i == safe) 16.dp else 6.dp, height = 6.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(if (i == safe) Color.White else Color.White.copy(alpha = 0.4f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The "Continue Watching" row: landscape cards with the saved progress bar,
+ *  an "Xh Ym left" badge and the episode label — mirrors the History entries. */
+@Composable
+fun ContinueWatchingRow(
+    entries: List<HistoryEntry>,
+    backdropOf: (HistoryEntry) -> String?,
+    onClick: (HistoryEntry) -> Unit,
+) {
+    if (entries.isEmpty()) return
+    Column(Modifier.padding(top = 16.dp)) {
+        Text(
+            "Continue Watching",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(Modifier.height(8.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(entries, key = { it.uniqueKey }) { h ->
+                ContinueWatchingCard(h, backdropOf(h)) { onClick(h) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: () -> Unit) {
+    val fraction = if (h.durationMs > 0L) {
+        (h.positionMs.toFloat() / h.durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+    val remaining = (h.durationMs - h.positionMs).coerceAtLeast(0L)
+    Column(
+        Modifier
+            .width(230.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            AsyncImage(
+                model = PosterLoader.model(backdrop ?: h.posterUrl),
+                contentDescription = h.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.5f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.85f),
+                        )
+                    )
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
+            ) {
+                if (h.episodeName.isNotBlank() || h.episodeId.isNotBlank()) {
+                    Text(
+                        h.episodeName.ifBlank { "Episode" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    h.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (remaining > 0L) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = Color.Black.copy(alpha = 0.65f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
+                ) {
+                    Text(
+                        "${fmtRemaining(remaining)} left",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(Color.White.copy(alpha = 0.25f))
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(fraction)
+                        .height(3.dp)
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
+        }
+    }
+}
+
+private fun fmtRemaining(ms: Long): String {
+    val m = ms / 60_000L
+    return if (m >= 60L) "${m / 60}h ${m % 60}m" else "${m}m"
+}
+
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,

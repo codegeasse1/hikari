@@ -28,6 +28,7 @@ class AppStore(private val ctx: Context) {
         val THEME = stringPreferencesKey("theme")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
+        val LAST_SOURCE = stringPreferencesKey("lastSource")
         val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
         val AD_LISTS = stringPreferencesKey("adLists")
@@ -407,6 +408,51 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHistoryPaused(paused: Boolean) {
         store.edit { it[K.HISTORY_PAUSED] = paused }
+    }
+
+    // ---- Last-used server per video ----
+    // Remembers which stream server a video was last played with (keyed exactly
+    // like HistoryEntry.uniqueKey), so replaying it continues on the same
+    // server — and, because that server's URL is already probe-resolved, starts
+    // instantly instead of re-running the source search from scratch.
+
+    fun lastSourcesFlow(): Flow<Map<String, Pair<String, String>>> =
+        store.data.map { parseLastSources(it[K.LAST_SOURCE]) }
+
+    /** (url, name) of the server this video was last played with, or null. */
+    suspend fun lastSource(key: String): Pair<String, String>? =
+        lastSourcesFlow().first()[key]
+
+    suspend fun setLastSource(key: String, url: String, name: String) {
+        if (key.isBlank()) return
+        val cur = lastSourcesFlow().first().toMutableMap()
+        cur[key] = url to name
+        store.edit { it[K.LAST_SOURCE] = encodeLastSources(cur) }
+    }
+
+    private fun encodeLastSources(map: Map<String, Pair<String, String>>): String {
+        val obj = JSONObject()
+        map.entries.toList().takeLast(300).forEach { (k, v) ->
+            obj.put(k, JSONObject().put("u", v.first).put("n", v.second))
+        }
+        return obj.toString()
+    }
+
+    private fun parseLastSources(s: String?): Map<String, Pair<String, String>> {
+        if (s.isNullOrBlank()) return emptyMap()
+        return try {
+            val obj = JSONObject(s)
+            val out = LinkedHashMap<String, Pair<String, String>>()
+            obj.keys().forEach { k ->
+                val o = obj.optJSONObject(k) ?: return@forEach
+                val u = o.optString("u")
+                val n = o.optString("n")
+                if (u.isNotBlank() || n.isNotBlank()) out[k] = u to n
+            }
+            out
+        } catch (e: Exception) {
+            emptyMap()
+        }
     }
 
     // ---- WebView element blocker (persistent CSS selectors) ----
