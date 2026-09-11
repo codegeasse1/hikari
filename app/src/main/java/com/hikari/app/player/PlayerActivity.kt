@@ -236,12 +236,25 @@ class PlayerActivity : ComponentActivity() {
      *  servers (retries/failover) doesn't spam the store. */
     private var lastSavedSourceIndex = -1
 
+    /** Header variant that accompanied [lastSavedSourceIndex] when it was
+     *  persisted — a later successful variant re-saves once. */
+    private var lastSavedVariant = -1
+
     /** Watch-history context passed by the detail screen. When non-null the
      *  player records resume positions into the app store. */
     private var historyEntry: HistoryEntry? = null
 
     /** Resume position (ms) from a history tap — seeked to on first ready. */
     private var startPositionMs = 0L
+
+    /** The in-video "continue from where you left off?" prompt already fired
+     *  (or is firing) — so switching servers never re-asks. */
+    private var resumeOffered = false
+
+    /** Saved progress offered by the detail screen as a cross-provider fallback
+     *  (history was recorded under another extension's id). */
+    private var resumeHintMs = 0L
+    private var resumeHintDurMs = 0L
 
     /** Whether the startPosition seek has been applied yet. */
     private var seekPending = true
@@ -451,6 +464,8 @@ class PlayerActivity : ComponentActivity() {
             )
             historyKey = historyEntry!!.uniqueKey
             startPositionMs = intent.getLongExtra("startPosition", 0L).coerceAtLeast(0L)
+            resumeHintMs = intent.getLongExtra("histResumePosition", 0L).coerceAtLeast(0L)
+            resumeHintDurMs = intent.getLongExtra("histResumeDuration", 0L).coerceAtLeast(0L)
             saveTask = object : Runnable {
                 override fun run() {
                     recordProgress()
@@ -557,16 +572,22 @@ class PlayerActivity : ComponentActivity() {
         if (historyKey.isBlank() || sources.isEmpty()) return 0
         val last = runCatching { (applicationContext as HikariApp).store.lastSource(historyKey) }
             .getOrNull() ?: return 0
-        val (url, name) = last
-        if (url.isNotBlank()) {
-            val byUrl = sources.indexOfFirst { it.url == url }
-            if (byUrl >= 0) return byUrl
+        val byUrl = if (last.url.isNotBlank()) {
+            sources.indexOfFirst { it.url == last.url }
+        } else -1
+        val byName = if (byUrl < 0 && last.name.isNotBlank()) {
+            sources.indexOfFirst { it.name.equals(last.name, ignoreCase = true) }
+        } else -1
+        val found = byUrl >= 0 || byName >= 0
+        // Restore the header variant that actually played last time, so a
+        // replay starts instantly on the server AND headers that are known to
+        // work instead of re-walking full → no-Referer → none from scratch.
+        if (found) headerVariant = last.headerVariant.coerceIn(0, 2)
+        return when {
+            byUrl >= 0 -> byUrl
+            byName >= 0 -> byName
+            else -> 0
         }
-        if (name.isNotBlank()) {
-            val byName = sources.indexOfFirst { it.name.equals(name, ignoreCase = true) }
-            if (byName >= 0) return byName
-        }
-        return 0
     }
 
     /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
@@ -1195,15 +1216,18 @@ class PlayerActivity : ComponentActivity() {
     /** Remembers [src] as the server this video was last played with, so a
      *  replay continues on the same server (see [preferredStartIndex]). */
     private fun rememberPlayedSource(index: Int, src: PlayerSource) {
-        if (historyKey.isBlank() || index == lastSavedSourceIndex) return
+        if (historyKey.isBlank()) return
+        if (index == lastSavedSourceIndex && headerVariant == lastSavedVariant) return
         lastSavedSourceIndex = index
+        lastSavedVariant = headerVariant
         val key = historyKey
         val url = src.url
         val name = src.name
-        lifecycleScope.launch(Dispatchers.IO) {
-            runCatching {
-                (applicationContext as HikariApp).store.setLastSource(key, url, name)
-            }
+        val variant = headerVariant
+        // Process-wide scope: this must survive Activity destruction (the
+        // record fired from onStop/onDestroy otherwise dies with lifecycleScope).
+        (applicationContext as HikariApp).appScope.launch {
+            runCatching { (applicationContext as HikariApp).store.setLastSource(key, url, name, variant) }
         }
     }
 
@@ -1404,6 +1428,13 @@ class PlayerActivity : ComponentActivity() {
             if (resolved != null) {
                 applyProbe(index, src, resolved)
                 playDirectInner(index)
+            } else if (headerVariant < 2 && src.headers.isNotEmpty()) {
+                // The probe couldn't resolve this URL. The usual cause is a CDN
+                // that 403s any request carrying a Referer (4KHDHub's workers.dev
+                // links are referer-only), so walk the headers down — full → no
+                // Referer → none — and retry the SAME server before skipping it.
+                headerVariant++
+                probeAndPlay(index)
             } else if (index + 1 < sources.size) {
                 // Unresolvable wrapper page: playing the raw URL would only
                 // fail again after the player's own error timeout — go straight
@@ -1845,6 +1876,11 @@ class PlayerActivity : ComponentActivity() {
             renderedFirstFrame = true
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
+            // Playback actually started — persist this server + the header
+            // variant that got us here, so the next replay of this video jumps
+            // straight onto it (no re-probe, no header trial-and-error).
+            sources.getOrNull(currentIndex)?.let { rememberPlayedSource(currentIndex, it) }
+            maybeOfferResume()
         }
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
@@ -1862,6 +1898,9 @@ class PlayerActivity : ComponentActivity() {
                     } else startPositionMs
                     if (target > 0L) p.seekTo(target)
                 }
+                // Also offer the in-video resume prompt here (audio-only streams
+                // never fire onRenderedFirstFrame).
+                maybeOfferResume()
             }
         }
 
@@ -2001,21 +2040,88 @@ class PlayerActivity : ComponentActivity() {
         val entry = historyEntry ?: return
         val p = player ?: return
         val pos = p.currentPosition
-        if (pos < 10_000) return
-        if (kotlin.math.abs(pos - lastSavedPos) < 10_000) return
+        // 5s (not 10s) is "meaningfully started" — the earlier threshold meant a
+        // short-but-real watch left NO history at all, which is exactly how the
+        // Continue Watching shelf and the resume prompt stayed empty.
+        if (pos < 5_000) return
+        if (kotlin.math.abs(pos - lastSavedPos) < 5_000) return
         lastSavedPos = pos
         // 0 (not pos) when the duration isn't known yet — otherwise the entry
         // looks "finished" (pos == dur) to the Continue Watching filter and is
         // silently dropped from the Home shelf.
         val dur = p.duration.takeIf { it > 0 } ?: 0L
         val h = entry.copy(positionMs = pos, durationMs = dur, watchedAt = System.currentTimeMillis())
-        lifecycleScope.launch(Dispatchers.IO) {
+        // Process-wide scope: the final write fired from onStop/onDestroy must
+        // not be cancelled with the Activity (it used to be, silently).
+        val app = applicationContext as HikariApp
+        app.appScope.launch {
             try {
-                val app = applicationContext as HikariApp
                 if (!app.store.historyPaused()) app.store.addHistory(h)
             } catch (_: Throwable) {
                 // history is best-effort — never let it break playback
             }
+        }
+    }
+
+    /**
+     * The in-video "Continue from where you left off?" prompt. Fires once per
+     * play session, after the first frame is on screen, whenever this video has
+     * saved progress that is worth resuming — the saved position is read from
+     * the store (same identity the detail screen uses), falling back to the
+     * cross-provider hint the detail screen passed. Suppressed when the launch
+     * already decided (an explicit resume seek) or opted out.
+     */
+    private fun maybeOfferResume() {
+        if (resumeOffered || historyKey.isBlank()) return
+        if (startPositionMs > 0L || !intent.getBooleanExtra("histAskResume", true)) return
+        resumeOffered = true
+        val key = historyKey
+        val hintPos = resumeHintMs
+        val hintDur = resumeHintDurMs
+        (applicationContext as HikariApp).appScope.launch {
+            val h = runCatching {
+                (applicationContext as HikariApp).store.history().firstOrNull { it.uniqueKey == key }
+            }.getOrNull()
+            var pos = h?.positionMs ?: 0L
+            var dur = h?.durationMs ?: 0L
+            if (pos <= 0L && hintPos > 0L) {
+                pos = hintPos
+                dur = hintDur
+            }
+            if (!resumable(pos, dur)) return@launch
+            if (isFinishing || isDestroyed) return@launch
+            runOnUiThread { showResumeDialog(pos) }
+        }
+    }
+
+    private fun resumable(pos: Long, dur: Long): Boolean =
+        pos >= 10_000L && (dur <= 0L || pos < dur - 30_000L)
+
+    private fun showResumeDialog(positionMs: Long) {
+        if (isFinishing || isDestroyed) return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Continue from where you left off?")
+            .setMessage("Resume from ${fmtResumeClock(positionMs)}?")
+            .setPositiveButton("Resume") { _, _ -> applyResume(positionMs) }
+            .setNegativeButton("Start over", null)
+            .show()
+    }
+
+    private fun applyResume(positionMs: Long) {
+        val p = player ?: return
+        val dur = p.duration
+        val target = if (dur > 0L) {
+            positionMs.coerceAtMost(dur - 1000L).coerceAtLeast(0L)
+        } else positionMs.coerceAtLeast(0L)
+        p.seekTo(target)
+    }
+
+    private fun fmtResumeClock(ms: Long): String {
+        val s = (ms / 1000).coerceAtLeast(0L)
+        return if (s >= 3600) {
+            String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+        } else {
+            String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
         }
     }
 

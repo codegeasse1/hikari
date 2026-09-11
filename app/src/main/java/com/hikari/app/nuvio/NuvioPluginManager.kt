@@ -90,8 +90,10 @@ object NuvioPluginManager {
             return@withContext Result.failure(Exception("File too large (max 5MB)"))
         }
         // Vendored fix: replace known-broken upstream providers with the
-        // patched JS shipped in assets (see PROVIDER_PATCHES).
-        val effective = patchedBytes(sourceUrl) ?: bytes
+        // patched JS shipped in assets (see PROVIDER_PATCHES). The original
+        // bytes are passed so the patch is content-gated (a same-named but
+        // different build is never clobbered).
+        val effective = patchedBytes(sourceUrl, bytes) ?: bytes
         val clean = rawName.substringAfterLast('/').ifBlank { "provider.js" }
             .let { if (it.endsWith(".js", true)) it else "$it.js" }
         val file = File(scrapersDir(context), clean)
@@ -175,54 +177,120 @@ object NuvioPluginManager {
      *              site's Cloudflare firewall ("Access denied"), so every title
      *              came back with no sources. The patch sends a modern mobile
      *              browser UA plus browser Accept/Accept-Language/Referer.
+     *              CAREFUL: `4khdhub.js` also exists in All-in-One-Nuvio, but
+     *              that repo ships a completely different (newer, obfuscated)
+     *              provider that already returns the required Referer via
+     *              `behaviorHints.proxyHeaders.request`. The old patch matched
+     *              by filename alone and CLOBBERED that working provider with
+     *              the Yoru build, whose streams carry no headers — which is
+     *              exactly why 4KHDHub "just skipped" without playing. So this
+     *              patch is content-gated to the Yoru/TVVVV upstream (it must
+     *              contain "4khdhub.click") and source-gated to Yoru's repo;
+     *              a provider from any other repo is left untouched, and an
+     *              already-clobbered one is RESTORED from its source URL.
      * zevran.js  — the VAplayer API only answers when the Referer/Origin is the
      *              player EMBED page (nextgencloudfabric.com/embed/…), not the
      *              bare site root upstream sent; the patch also falls back to
      *              the tmdb id and attaches the play-headers.
      */
-    private val PROVIDER_PATCHES = listOf(
-        "vornix.js" to "nuvio/patches/vornix.js",
-        "streamflix.js" to "nuvio/patches/streamflix.js",
-        "4khdhub.js" to "nuvio/patches/4khdhub.js",
-        "zevran.js" to "nuvio/patches/zevran.js",
+    private data class ProviderPatch(
+        val fragment: String,
+        val asset: String,
+        /** Substring the SOURCE URL must contain for the patch to be allowed. */
+        val sourceMustContain: String? = null,
+        /** Substring the ORIGINAL upstream bytes must contain for the patch to
+         *  apply — a fingerprint of the exact build the patch was written for. */
+        val contentMustContain: String? = null,
     )
 
-    private fun patchedBytes(sourceUrl: String?): ByteArray? {
+    private val PROVIDER_PATCHES = listOf(
+        ProviderPatch("vornix.js", "nuvio/patches/vornix.js"),
+        ProviderPatch("streamflix.js", "nuvio/patches/streamflix.js"),
+        ProviderPatch(
+            fragment = "4khdhub.js",
+            asset = "nuvio/patches/4khdhub.js",
+            sourceMustContain = "tapframe/nuvio-providers",
+            contentMustContain = "4khdhub.click",
+        ),
+        ProviderPatch("zevran.js", "nuvio/patches/zevran.js"),
+    )
+
+    private fun patchFor(sourceUrl: String?): ProviderPatch? {
         val url = sourceUrl ?: return null
-        for ((fragment, asset) in PROVIDER_PATCHES) {
-            if (url.endsWith(fragment, ignoreCase = true) || url.contains("/$fragment", ignoreCase = true)) {
-                return runCatching {
-                    HikariApp.instance.assets.open(asset).use { it.readBytes() }
-                }.getOrNull()
-            }
+        return PROVIDER_PATCHES.firstOrNull {
+            url.endsWith(it.fragment, ignoreCase = true) ||
+                url.contains("/${it.fragment}", ignoreCase = true)
         }
-        return null
+    }
+
+    private fun assetBytes(asset: String): ByteArray? = runCatching {
+        HikariApp.instance.assets.open(asset).use { it.readBytes() }
+    }.getOrNull()
+
+    private fun patchedBytes(sourceUrl: String?, original: ByteArray? = null): ByteArray? {
+        val patch = patchFor(sourceUrl) ?: return null
+        // Content guard: never replace a DIFFERENT build that merely shares the
+        // filename (see the 4khdhub note above).
+        val marker = patch.contentMustContain
+        if (marker != null) {
+            val text = original?.let { runCatching { String(it, Charsets.UTF_8) }.getOrNull() }
+            if (text == null || !text.contains(marker)) return null
+        }
+        return assetBytes(patch.asset)
     }
 
     /** Applies the vendored patches to ALREADY-INSTALLED providers whose file
      *  on disk still matches the (broken) upstream bytes — i.e. providers the
-     *  user installed before the patch shipped. Rewrites the file in place and
-     *  re-validates so the fix takes effect without a reinstall. */
+     *  user installed before the patch shipped — AND restores providers whose
+     *  file was clobbered by a patch that never should have matched them (the
+     *  4KHDHub filename collision). Rewrites the file in place and re-validates
+     *  so the fix takes effect without a reinstall. */
     suspend fun applyPatchesToInstalled(context: Context) {
         val store = HikariApp.instance.store
         val targets = store.providers().filter { it.type == ProviderType.NUVIO }
         for (cfg in targets) {
-            val patched = patchedBytes(cfg.extra) ?: continue
+            val patch = patchFor(cfg.extra) ?: continue
+            val patched = assetBytes(patch.asset) ?: continue
             val file = File(cfg.url)
             if (!file.exists()) continue
             val current = runCatching { file.readBytes() }.getOrNull() ?: continue
-            if (current.contentEquals(patched)) continue
-            // Only replace when the on-disk file is actually the upstream
-            // version (not something the user already modified themselves).
             val sourceText = runCatching { String(current, Charsets.UTF_8) }.getOrNull()
-            val isUpstream = sourceText != null && !sourceText.contains("Hikari patched build")
-            if (!isUpstream) continue
+            val isPatched = sourceText != null && sourceText.contains("Hikari patched build")
+            if (isPatched) {
+                if (current.contentEquals(patched)) {
+                    // File is already the vendored build — but is this provider
+                    // even supposed to have it? If its source repo isn't the one
+                    // the patch targets, put the correct upstream back.
+                    val expectedSource = patch.sourceMustContain
+                    if (expectedSource != null && cfg.extra?.contains(expectedSource) != true) {
+                        val restored = withContext(Dispatchers.IO) {
+                            cfg.extra?.let { url -> runCatching { Http.fetchBytesRobust(url) }.getOrNull() }
+                        }
+                        if (restored != null && restored.isNotEmpty() &&
+                            !String(restored, Charsets.UTF_8).contains("Hikari patched build") &&
+                            NuvioRuntime.validate(context, String(restored, Charsets.UTF_8)).startsWith("OK")
+                        ) {
+                            runCatching {
+                                file.setWritable(true)
+                                file.writeBytes(restored)
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+            // Upstream on disk — patch only when it's the build this patch is
+            // for (content guard), then re-validate before keeping it.
+            val guarded = patchedBytes(
+                cfg.extra,
+                current,
+            ) ?: continue
             if (!runCatching {
                     file.setWritable(true)
-                    file.writeBytes(patched)
+                    file.writeBytes(guarded)
                     true
                 }.getOrDefault(false)) continue
-            val verdict = NuvioRuntime.validate(context, String(patched, Charsets.UTF_8))
+            val verdict = NuvioRuntime.validate(context, String(guarded, Charsets.UTF_8))
             if (!verdict.startsWith("OK")) {
                 // Revert on validation failure — never ship a broken file.
                 runCatching { file.writeBytes(current) }

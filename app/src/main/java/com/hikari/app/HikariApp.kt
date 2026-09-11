@@ -16,6 +16,7 @@ import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.ignoreAllSSLErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import okhttp3.Cache
@@ -50,6 +51,15 @@ class HikariApp : Application() {
         private set
     lateinit var providers: ProviderManager
         private set
+
+    /**
+     * Process-wide IO scope for work that must OUTLIVE an Activity. The player
+     * records resume position / last-used server on its way out (onStop,
+     * onDestroy) — an Activity-scoped `lifecycleScope` job is cancelled at
+     * DESTROYED before it can commit, which is exactly how watch progress used
+     * to vanish and why Continue Watching stayed empty.
+     */
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * Live copy of the persisted element-block selectors (WebView element

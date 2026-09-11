@@ -62,6 +62,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1238,6 +1239,11 @@ fun ExtensionsScreen() {
                 vm.clearStatus()
                 vm.refreshRepo(repo)
             },
+            installedUrls = installed,
+            onInstallPlugin = { p, kind -> installPlugin(p, kind) },
+            onUninstallPlugin = { p, kind -> uninstallPlugin(p, kind) },
+            onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
+            onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
         )
     }
 
@@ -1680,6 +1686,7 @@ private fun RepoBrowserView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    installedUrls: Set<String>,
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
     onOpenFolder: (SourceFolder) -> Unit,
@@ -1695,7 +1702,16 @@ private fun RepoBrowserView(
     onOpenSite: (Site) -> Unit,
     onRemoveSite: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
+    onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onDeleteProvider: (String) -> Unit,
+    onToggleProvider: (String, Boolean) -> Unit,
 ) {
+    // Search across EVERYTHING on this screen: installed extensions (with
+    // uninstall/toggle) and every loaded repo's plugin list (with instant
+    // install/uninstall) — so a user with hundreds of extensions can find and
+    // act on one by typing its name instead of scrolling.
+    var query by rememberSaveable { mutableStateOf("") }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
@@ -1713,6 +1729,63 @@ private fun RepoBrowserView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+        item {
+            GlassSearchField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = "Search extensions & sources…",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+        }
+        if (busy) {
+            item {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        }
+        successMsg?.let { msg ->
+            item {
+                Text(
+                    msg,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+        }
+        errorMsg?.let { msg ->
+            item {
+                Text(
+                    msg,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+        }
+        if (query.isNotBlank()) {
+            extensionsSearchItems(
+                query = query,
+                repos = repos,
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                providers = providers,
+                installedUrls = installedUrls,
+                busy = busy,
+                onOpenRepo = onOpenRepo,
+                onInstallPlugin = onInstallPlugin,
+                onUninstallPlugin = onUninstallPlugin,
+                onDeleteProvider = onDeleteProvider,
+                onToggleProvider = onToggleProvider,
+            )
+            return@LazyColumn
         }
         item {
             val enabledCount = providers.count { it.config.enabled }
@@ -1849,37 +1922,6 @@ private fun RepoBrowserView(
             }
         }
 
-        if (busy) {
-            item {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(
-                    busyMsg,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-        }
-        successMsg?.let { msg ->
-            item {
-                Text(
-                    msg,
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-        }
-        errorMsg?.let { msg ->
-            item {
-                Text(
-                    msg,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-        }
-
         item { SectionHeader("Webview sites") }
         item {
             SitesFolder(
@@ -1889,6 +1931,95 @@ private fun RepoBrowserView(
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+/**
+ * Search results for the Extensions hub: filters BOTH the installed
+ * extensions and every plugin listed by every loaded repo, so a user with
+ * hundreds of sources can type a name and act on the match immediately
+ * (install / uninstall / toggle / delete) without navigating into each repo.
+ */
+private fun LazyListScope.extensionsSearchItems(
+    query: String,
+    repos: List<Cs3Repo>,
+    pluginsByRepo: Map<String, List<Cs3RepoPlugin>>,
+    repoState: Map<String, RepoLoadState>,
+    providers: List<ContentProvider>,
+    installedUrls: Set<String>,
+    busy: Boolean,
+    onOpenRepo: (Cs3Repo) -> Unit,
+    onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onDeleteProvider: (String) -> Unit,
+    onToggleProvider: (String, Boolean) -> Unit,
+) {
+    val q = query.trim()
+    val installedMatches = providers.filter { it.config.name.contains(q, ignoreCase = true) }
+    val pluginMatches = repos.flatMap { repo ->
+        (pluginsByRepo[repo.url] ?: emptyList())
+            .filter { it.name.contains(q, ignoreCase = true) }
+            .map { repo to it }
+    }
+    val stillLoading = repos.any { repoState[it.url]?.loading == true }
+
+    if (installedMatches.isEmpty() && pluginMatches.isEmpty()) {
+        item {
+            EmptyState(
+                title = if (stillLoading) "Searching…" else "No matches",
+                subtitle = if (stillLoading)
+                    "Repos are still loading — results will appear as they arrive."
+                else
+                    "Nothing matches \"$q\". Try a different name.",
+                actionLabel = null,
+                action = null
+            )
+        }
+        return
+    }
+
+    if (installedMatches.isNotEmpty()) {
+        item { SectionHeader("Installed · ${installedMatches.size}") }
+        items(installedMatches, key = { "inst-" + it.config.id }) { p ->
+            ProviderCard(
+                p = p,
+                status = pluginStatus(p),
+                onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
+                onDelete = { onDeleteProvider(p.config.id) },
+            )
+        }
+    }
+
+    if (pluginMatches.isNotEmpty()) {
+        item { SectionHeader("Repos · ${pluginMatches.size}") }
+        items(pluginMatches, key = { "plug-" + it.first.url + "|" + it.second.url }) { match ->
+            val repo = match.first
+            val p = match.second
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                TextButton(
+                    onClick = { onOpenRepo(repo) },
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        repo.name.ifBlank { repo.url },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                PluginRow(
+                    p = p,
+                    installed = p.url in installedUrls,
+                    onInstall = { onInstallPlugin(p, repo.kind) },
+                    onUninstall = { onUninstallPlugin(p, repo.kind) },
+                )
+            }
+        }
     }
 }
 

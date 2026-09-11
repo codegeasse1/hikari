@@ -28,7 +28,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -41,7 +40,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -319,20 +317,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-/** A tapped video with saved progress — drives the "Continue from where you
- *  left off?" prompt. [episode] is null for a movie. */
-private data class ResumePrompt(val episode: Episode?, val positionMs: Long, val durationMs: Long)
-
-/** h:mm:ss (or m:ss under an hour) for the resume prompt. */
-private fun fmtClock(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0L)
-    return if (s >= 3600) {
-        String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
-    } else {
-        String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
-    }
-}
-
 /** One diagnostic line per extension for the sources sheet's empty state:
  *  what each searched addon actually reported ("✓ 3 sources", "✗ timeout",
  *  "✗ cut off after 110s", …). Null when the addon has no recorded outcome. */
@@ -384,6 +368,10 @@ fun DetailScreen(
     // Resume position for the current play session — applied when the user
     // picks a server from the sheet too, not just on the auto-launched one.
     var pendingStartPos by remember { mutableStateOf(0L) }
+    // Saved progress (position, duration) for the video being launched, handed
+    // to the player so it can show ITS OWN "continue from where you left off?"
+    // prompt in-video. [pendingStartPos] stays for explicit, no-ask seeks.
+    var resumeHint by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
     /** Live-update session handed to the player: while playback runs, the
@@ -435,12 +423,20 @@ fun DetailScreen(
     // "Continue from where you left off?" prompt never appeared on the second
     // open of a title, because this screen's keys hadn't changed.
     val allHistory by app.store.historyFlow().collectAsState(initial = emptyList())
-    val historyForTitle = remember(allHistory, providerId, mediaId) {
-        allHistory.filter { it.providerId == providerId && it.mediaId == mediaId }
+    // Match by provider+id first; if the same title/episode was watched on a
+    // DIFFERENT provider (the user's stated pattern — started on one extension,
+    // reopened from another), fall back to id (then title) so the saved
+    // position is still found and the in-player resume prompt appears.
+    val historyForTitle = remember(allHistory, providerId, mediaId, title, type) {
+        val sameProvider = allHistory.filter { it.providerId == providerId && it.mediaId == mediaId }
+        if (sameProvider.isNotEmpty()) return@remember sameProvider
+        val sameId = allHistory.filter { it.mediaId == mediaId }
+        if (sameId.isNotEmpty()) return@remember sameId
+        allHistory.filter {
+            it.mediaId == mediaId ||
+                (it.title.equals(title, ignoreCase = true) && it.type == type)
+        }
     }
-
-    // Non-null while the "Continue from where you left off?" prompt is up.
-    var resumePrompt by remember { mutableStateOf<ResumePrompt?>(null) }
 
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
@@ -476,6 +472,13 @@ fun DetailScreen(
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
                 putExtra("histEpisodeNumber", ep?.number ?: 0)
                 putExtra("startPosition", startPos.coerceAtLeast(0L))
+                // Saved progress offered to the player's own resume prompt. It
+                // reads the store itself first; this is the cross-provider
+                // fallback (watched on another extension) so the prompt still
+                // appears instead of silently starting from 0.
+                putExtra("histResumePosition", resumeHint?.first ?: 0L)
+                putExtra("histResumeDuration", resumeHint?.second ?: 0L)
+                putExtra("histAskResume", true)
             }
         )
     }
@@ -553,16 +556,19 @@ fun DetailScreen(
         var dur = h?.durationMs ?: 0L
         // Fallback: arrived from History with the position in the nav arg.
         if (h == null && eid == episodeId && startPositionMs > 0L) pos = startPositionMs
-        if (pos < 10_000L) null
+        if (pos < 5_000L) null
         else if (dur > 0L && pos > dur - 30_000L) null
         else pos to dur
     }
 
-    // Tap handler: ask "continue?" when there is saved progress, else just play.
+    // Tap handler: play immediately; the PLAYER owns the "continue from where
+    // you left off?" prompt now (it holds the same history and asks in-video),
+    // so a tap never silently resumes and never asks twice. The saved position
+    // rides along as a hint for the player's prompt.
     val tryPlay: (Episode?) -> Unit = { ep ->
         val saved = savedProgressFor(ep)
-        if (saved != null) resumePrompt = ResumePrompt(ep, saved.first, saved.second)
-        else openStreams(ep, 0L)
+        resumeHint = saved
+        openStreams(ep, 0L)
     }
 
     // Arriving from watch history: once metadata/episodes are loaded, offer to
@@ -789,47 +795,6 @@ fun DetailScreen(
                 item { Spacer(Modifier.height(24.dp)) }
             }
         }
-    }
-
-    // "Continue from where you left off?" — asked whenever a video with saved
-    // progress is tapped. Yes resumes at the saved position (and the player
-    // starts on the server this video was last played with); No starts over.
-    resumePrompt?.let { rp ->
-        val label = rp.episode?.let {
-            if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}"
-        } ?: (m?.title ?: title)
-        AlertDialog(
-            onDismissRequest = { resumePrompt = null },
-            title = { Text("Continue from where you left off?") },
-            text = {
-                Text(
-                    buildString {
-                        append(label)
-                        append("\n\n")
-                        append("Resume from ${fmtClock(rp.positionMs)}")
-                        if (rp.durationMs > 0L) {
-                            val pct = (rp.positionMs * 100 / rp.durationMs).coerceIn(0, 100)
-                            append("  ·  $pct% watched")
-                        }
-                    }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val ep = rp.episode
-                    val pos = rp.positionMs
-                    resumePrompt = null
-                    openStreams(ep, pos)
-                }) { Text("Resume") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    val ep = rp.episode
-                    resumePrompt = null
-                    openStreams(ep, 0L)
-                }) { Text("Start over") }
-            },
-        )
     }
 
     if (showSheet) {

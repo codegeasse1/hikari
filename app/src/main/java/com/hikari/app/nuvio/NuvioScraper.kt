@@ -394,12 +394,23 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         val displayName = if (quality.isNotBlank() && !name.contains(quality, true)) "$name $quality" else name
 
         val h = LinkedHashMap<String, String>()
-        if (headers != null) {
-            headers.keys().forEach { k ->
-                val v = headers.optString(k).filter { it.code < 128 }
+        fun putHeaders(obj: JSONObject?) {
+            if (obj == null) return
+            obj.keys().forEach { k ->
+                val v = obj.optString(k).filter { it.code < 128 }
                 if (v.isNotBlank()) h[k] = v
             }
         }
+        // Stremio-style `behaviorHints.proxyHeaders.request` is where nuvio
+        // providers put the headers their CDN demands (4KHDHub's workers.dev /
+        // r2 links are Referer-locked: without it the CDN answers 403, the
+        // probe can't resolve the wrapper page, and the server gets skipped).
+        // Some providers use `behaviorHints.headers` instead — accept both.
+        val hints = s.optJSONObject("behaviorHints")
+        putHeaders(hints?.optJSONObject("proxyHeaders")?.optJSONObject("request"))
+        putHeaders(hints?.optJSONObject("headers"))
+        // Explicit headers win over the hint block when both are present.
+        putHeaders(headers)
         // Always send a browser UA unless the provider explicitly set one.
         h.putIfAbsent("User-Agent", Http.UA)
 

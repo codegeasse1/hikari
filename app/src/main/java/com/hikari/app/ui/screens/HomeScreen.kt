@@ -235,8 +235,8 @@ fun HomeScreen(nav: NavHostController) {
     val hideContinue by app.store.hideContinueFlow().collectAsState(initial = false)
     val continueEntries = remember(history) {
         history.filter {
-            it.positionMs > 10_000L &&
-                (it.durationMs <= 0L || it.positionMs < it.durationMs - 60_000L)
+            it.positionMs > 5_000L &&
+                (it.durationMs <= 0L || it.positionMs < it.durationMs - 30_000L)
         }.take(12)
     }
     // History only stores a poster; backdrops live on the catalog items, so map

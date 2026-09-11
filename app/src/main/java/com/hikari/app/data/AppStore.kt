@@ -15,6 +15,15 @@ import org.json.JSONObject
 
 private val Context.hkDataStore by preferencesDataStore(name = "hikari")
 
+/** The stream server a video was last played with, remembered so a replay
+ *  starts on the same server — instantly, with the same header variant that
+ *  worked last time (0 = full headers, 1 = no Referer, 2 = none). */
+data class LastSource(
+    val url: String,
+    val name: String,
+    val headerVariant: Int = 0,
+)
+
 class AppStore(private val ctx: Context) {
 
     private val store get() = ctx.hkDataStore
@@ -428,38 +437,46 @@ class AppStore(private val ctx: Context) {
     // server — and, because that server's URL is already probe-resolved, starts
     // instantly instead of re-running the source search from scratch.
 
-    fun lastSourcesFlow(): Flow<Map<String, Pair<String, String>>> =
+    fun lastSourcesFlow(): Flow<Map<String, LastSource>> =
         store.data.map { parseLastSources(it[K.LAST_SOURCE]) }
 
-    /** (url, name) of the server this video was last played with, or null. */
-    suspend fun lastSource(key: String): Pair<String, String>? =
+    /** The server this video was last played with (URL + name + the header
+     *  variant that actually worked), or null. */
+    suspend fun lastSource(key: String): LastSource? =
         lastSourcesFlow().first()[key]
 
-    suspend fun setLastSource(key: String, url: String, name: String) {
+    suspend fun setLastSource(key: String, url: String, name: String, headerVariant: Int = 0) {
         if (key.isBlank()) return
         val cur = lastSourcesFlow().first().toMutableMap()
-        cur[key] = url to name
+        cur[key] = LastSource(url, name, headerVariant)
         store.edit { it[K.LAST_SOURCE] = encodeLastSources(cur) }
     }
 
-    private fun encodeLastSources(map: Map<String, Pair<String, String>>): String {
+    private fun encodeLastSources(map: Map<String, LastSource>): String {
         val obj = JSONObject()
         map.entries.toList().takeLast(300).forEach { (k, v) ->
-            obj.put(k, JSONObject().put("u", v.first).put("n", v.second))
+            obj.put(
+                k,
+                JSONObject()
+                    .put("u", v.url)
+                    .put("n", v.name)
+                    .put("h", v.headerVariant)
+            )
         }
         return obj.toString()
     }
 
-    private fun parseLastSources(s: String?): Map<String, Pair<String, String>> {
+    private fun parseLastSources(s: String?): Map<String, LastSource> {
         if (s.isNullOrBlank()) return emptyMap()
         return try {
             val obj = JSONObject(s)
-            val out = LinkedHashMap<String, Pair<String, String>>()
+            val out = LinkedHashMap<String, LastSource>()
             obj.keys().forEach { k ->
                 val o = obj.optJSONObject(k) ?: return@forEach
                 val u = o.optString("u")
                 val n = o.optString("n")
-                if (u.isNotBlank() || n.isNotBlank()) out[k] = u to n
+                val h = o.optInt("h", 0)
+                if (u.isNotBlank() || n.isNotBlank()) out[k] = LastSource(u, n, h)
             }
             out
         } catch (e: Exception) {
