@@ -1046,6 +1046,14 @@ fun ExtensionsScreen() {
     var siteUrl by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
 
+    fun openProviderSettings(p: ContentProvider) {
+        if (p is Cs3MainApiProvider) {
+            p.openSettings(HikariApp.mainActivity)
+        } else {
+            settingsProvider = p
+        }
+    }
+
     LaunchedEffect(Unit) {
         vm.loadReposIfNeeded()
     }
@@ -1141,7 +1149,7 @@ fun ExtensionsScreen() {
                 if (openRepoUrl == url) openRepoUrl = null
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
-            onOpenSettings = { settingsProvider = it },
+            onOpenSettings = { openProviderSettings(it) },
         )
         allReposOpen -> AllReposView(
             repos = repos,
@@ -1200,16 +1208,7 @@ fun ExtensionsScreen() {
                 if (openRepoUrl == url) openRepoUrl = null
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
-            onOpenSettings = { p ->
-                if (p is Cs3MainApiProvider) {
-                    // CloudStream plugins own their settings UI (they build an
-                    // AlertDialog/Fragment). Hand it the current activity so any
-                    // fragment it shows attaches to a real AppCompatActivity.
-                    p.openSettings(HikariApp.mainActivity)
-                } else {
-                    settingsProvider = p
-                }
-            },
+            onOpenSettings = { openProviderSettings(it) },
         )
         else -> RepoBrowserView(
             repos = repos,
@@ -1267,6 +1266,7 @@ fun ExtensionsScreen() {
             onUninstallPlugin = { p, kind -> uninstallPlugin(p, kind) },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
+            onOpenSettings = { openProviderSettings(it) },
         )
     }
 
@@ -1730,6 +1730,7 @@ private fun RepoBrowserView(
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
+    onOpenSettings: (ContentProvider) -> Unit,
 ) {
     // Search across EVERYTHING on this screen: installed extensions (with
     // uninstall/toggle) and every added repo's plugin list (with instant
@@ -1738,6 +1739,7 @@ private fun RepoBrowserView(
     // repos that haven't loaded yet, so a fresh install still finds the
     // not-yet-installed entries instead of only the installed ones.
     var query by rememberSaveable { mutableStateOf("") }
+    val cs3SettingsIds = rememberCs3SettingsIds(providers)
     LaunchedEffect(query) {
         if (query.isNotBlank()) onEnsureReposLoaded()
     }
@@ -1814,6 +1816,8 @@ private fun RepoBrowserView(
                 onUninstallPlugin = onUninstallPlugin,
                 onDeleteProvider = onDeleteProvider,
                 onToggleProvider = onToggleProvider,
+                cs3SettingsIds = cs3SettingsIds,
+                onOpenSettings = onOpenSettings,
             )
             return@LazyColumn
         }
@@ -1984,6 +1988,8 @@ private fun LazyListScope.extensionsSearchItems(
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
+    cs3SettingsIds: Set<String>,
+    onOpenSettings: (ContentProvider) -> Unit,
 ) {
     val q = query.trim()
     val installedMatches = providers.filter { it.config.name.contains(q, ignoreCase = true) }
@@ -2025,6 +2031,11 @@ private fun LazyListScope.extensionsSearchItems(
                 status = pluginStatus(p),
                 onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                 onDelete = { onDeleteProvider(p.config.id) },
+                onSettings = when {
+                    p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
+                    p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
+                    else -> null
+                },
             )
         }
     }
