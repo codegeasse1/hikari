@@ -251,8 +251,17 @@ class MainActivity : AppCompatActivity() {
             val close = android.widget.ImageButton(context).apply {
                 id = settingsCloseButtonId
                 contentDescription = "Close settings"
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 scaleType = android.widget.ImageView.ScaleType.CENTER
+                // Same touch feedback a Material icon button uses; falls back to
+                // a plain transparent background if the sheet's theme has none.
+                val bg = android.util.TypedValue()
+                val hasRipple = runCatching {
+                    context.theme.resolveAttribute(
+                        android.R.attr.selectableItemBackgroundBorderless, bg, true
+                    ) && bg.resourceId != 0
+                }.getOrDefault(false)
+                if (hasRipple) setBackgroundResource(bg.resourceId)
+                else setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 val drawable = androidx.core.content.ContextCompat
                     .getDrawable(context, R.drawable.ic_close)?.mutate()
                 drawable?.setTint(title.currentTextColor)
