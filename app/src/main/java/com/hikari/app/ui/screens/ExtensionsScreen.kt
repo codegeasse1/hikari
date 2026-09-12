@@ -3,6 +3,7 @@ package com.hikari.app.ui.screens
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -1048,7 +1049,19 @@ fun ExtensionsScreen() {
 
     fun openProviderSettings(p: ContentProvider) {
         if (p is Cs3MainApiProvider) {
-            p.openSettings(HikariApp.mainActivity)
+            // A plugin's settings screen is arbitrary third-party code (an
+            // Activity, a BottomSheetDialogFragment, …). Surface a failure
+            // instead of letting the tap look like a dead no-op.
+            val opened = p.openSettings(HikariApp.mainActivity)
+            if (!opened) {
+                val detail = com.hikari.app.cs3.Cs3PluginManager.lastError?.take(240)
+                Toast.makeText(
+                    context,
+                    if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
+                    else "Couldn't open ${p.config.name} settings: $detail",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         } else {
             settingsProvider = p
         }
@@ -1099,6 +1112,7 @@ fun ExtensionsScreen() {
             repo = openRepo,
             plugins = pluginsByRepo[openRepo.url] ?: emptyList(),
             state = repoState[openRepo.url] ?: RepoLoadState(loading = true),
+            providers = providers,
             installedUrls = installed,
             busy = busy,
             busyMsg = busyMsg,
@@ -1108,6 +1122,7 @@ fun ExtensionsScreen() {
             onRefresh = { vm.refreshRepo(openRepo) },
             onInstall = { installPlugin(it, openRepo.kind) },
             onUninstall = { uninstallPlugin(it, openRepo.kind) },
+            onOpenSettings = { openProviderSettings(it) },
             onInstallAll = {
                 vm.installAllPlugins(
                     pluginsByRepo[openRepo.url] ?: emptyList(),
@@ -2067,6 +2082,8 @@ private fun LazyListScope.extensionsSearchItems(
                     installed = p.url in installedUrls,
                     onInstall = { onInstallPlugin(p, repo.kind) },
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
+                    onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
+                        ?.let { target -> { onOpenSettings(target) } },
                 )
             }
         }
@@ -2130,6 +2147,7 @@ private fun RepoPluginsView(
     repo: Cs3Repo,
     plugins: List<Cs3RepoPlugin>,
     state: RepoLoadState,
+    providers: List<ContentProvider>,
     installedUrls: Set<String>,
     busy: Boolean,
     busyMsg: String,
@@ -2139,8 +2157,10 @@ private fun RepoPluginsView(
     onRefresh: () -> Unit,
     onInstall: (Cs3RepoPlugin) -> Unit,
     onUninstall: (Cs3RepoPlugin) -> Unit,
+    onOpenSettings: (ContentProvider) -> Unit,
     onInstallAll: () -> Unit,
 ) {
+    val cs3SettingsIds = rememberCs3SettingsIds(providers)
     Column(Modifier.fillMaxSize()) {
         val unit = when (repo.kind) {
             RepoKind.HIKARI -> "extension"
@@ -2272,7 +2292,9 @@ private fun RepoPluginsView(
                         p = p,
                         installed = p.url in installedUrls,
                         onInstall = { onInstall(p) },
-                        onUninstall = { onUninstall(p) }
+                        onUninstall = { onUninstall(p) },
+                        onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
+                            ?.let { target -> { onOpenSettings(target) } }
                     )
                 }
             }
@@ -2769,6 +2791,7 @@ private fun PluginRow(
     installed: Boolean,
     onInstall: () -> Unit,
     onUninstall: () -> Unit,
+    onSettings: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -2810,6 +2833,15 @@ private fun PluginRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        if (installed && onSettings != null) {
+            IconButton(onClick = onSettings) {
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = "Plugin settings",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         Spacer(Modifier.width(8.dp))
         if (installed) {
             TextButton(onClick = onUninstall) {
@@ -2823,6 +2855,25 @@ private fun PluginRow(
             }
         }
     }
+}
+
+/**
+ * The installed provider behind a repo listing, when it exposes its own
+ * settings screen (CloudStream's tune button). CS3 plugins are matched by the
+ * source URL stored in [ProviderConfig.extra] — the same key uninstall uses —
+ * and gated on [cs3SettingsIds]; Nuvio providers always offer their
+ * permissions/settings screen; Hikari extensions append a "|index" suffix to
+ * their source URL.
+ */
+private fun repoPluginSettingsTarget(
+    plugin: Cs3RepoPlugin,
+    providers: List<ContentProvider>,
+    cs3SettingsIds: Set<String>,
+): ContentProvider? = providers.firstOrNull { p ->
+    val extra = p.config.extra ?: return@firstOrNull false
+    val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+    if (source != plugin.url) return@firstOrNull false
+    p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
 }
 
 private fun pluginStatus(p: ContentProvider): String? {
@@ -3500,6 +3551,18 @@ private fun InstalledExtensionsView(
     var extFilter by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    val context = LocalContext.current
+    fun openCs3Settings(p: ContentProvider) {
+        if (!p.openSettings(HikariApp.mainActivity)) {
+            val detail = com.hikari.app.cs3.Cs3PluginManager.lastError?.take(240)
+            Toast.makeText(
+                context,
+                if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
+                else "Couldn't open ${p.config.name} settings: $detail",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3585,7 +3648,7 @@ private fun InstalledExtensionsView(
                     onDelete = { onDeleteProvider(p.config.id) },
                     onSettings = when {
                         p.config.type == ProviderType.NUVIO -> { { settingsProvider = p } }
-                        p.config.id in cs3SettingsIds -> { { p.openSettings(HikariApp.mainActivity) } }
+                        p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
                         else -> null
                     },
                 )

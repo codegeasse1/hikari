@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 81
-        versionName = "0.3.65"
+        versionCode = 82
+        versionName = "0.3.66"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -115,6 +115,14 @@ dependencies {
     // AppCompat classes AND MainActivity must be an AppCompatActivity for that
     // cast to succeed.
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // CloudStream plugins ship their own settings UI and many (SKTech's
+    // `com.cncverse.Settings`, …) implement it as a
+    // com.google.android.material.bottomsheet.BottomSheetDialogFragment. Without
+    // the real Material Components library the plugin's `openSettings` callback
+    // dies with NoClassDefFoundError the instant the gear is tapped — the click
+    // looks like a no-op. cloudstream3.jar only carries Material's R classes
+    // (stripped by cloudstreamJarClean), so this is the sole Material runtime.
+    implementation("com.google.android.material:material:1.12.0")
     // Phisher/Kotlin plugins (Anikoto, …) are compiled against Gson and call it
     // at runtime (e.g. AnikotoExtractors.extractMegaPlayUrl) — without it they
     // die with NoClassDefFoundError: com.google.gson.JsonObject.
