@@ -4,17 +4,39 @@
          below now forces windowNoTitle + windowActionBar=false explicitly,
          so no activity can ever draw a title bar again. -->
     <!-- MainActivity is an AppCompatActivity (CloudStream plugins cast `app` to
-         it), so its theme must be Theme.AppCompat-based. The splash attributes
-         are declared here directly so installSplashScreen() still works. -->
-    <style name="Theme.Hikari" parent="Theme.AppCompat.NoActionBar">
+         it). Both themes descend from MaterialComponents (itself an AppCompat
+         descendant) because CloudStream plugins ship their own settings UI —
+         usually a BottomSheetDialogFragment whose layout uses Material widgets
+         (MaterialButton, TextInputLayout, SwitchMaterial…). Those widgets throw
+         "The style on this component requires your app theme to be
+         Theme.MaterialComponents" unless the activity theme is a Material one,
+         and a Material theme also defines `bottomSheetDialogTheme` so the sheet
+         comes up dark to match Hikari instead of Material's light fallback. -->
+    <style name="Theme.Hikari" parent="Theme.MaterialComponents.NoActionBar">
         <item name="windowSplashScreenBackground">@color/hikari_bg</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.Hikari.App</item>
+        <item name="android:windowBackground">@color/hikari_bg</item>
+        <item name="android:colorBackground">@color/hikari_bg</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
     </style>
 
-    <style name="Theme.Hikari.App" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.Hikari.App" parent="Theme.MaterialComponents.NoActionBar">
+        <!-- Brand palette: the accents native widgets (plugin settings sheets,
+             switches, buttons, dialogs) pick up, so they match the app's gold
+             Compose theme instead of Material's default purple. -->
+        <item name="colorPrimary">#F5C569</item>
+        <item name="colorPrimaryVariant">#C99E45</item>
+        <item name="colorOnPrimary">#1A1408</item>
+        <item name="colorSecondary">#F5C569</item>
+        <item name="colorSecondaryVariant">#C99E45</item>
+        <item name="colorOnSecondary">#1A1408</item>
+        <item name="colorSurface">#11162B</item>
+        <item name="colorOnSurface">#E6E8F0</item>
+        <item name="colorOnBackground">#E6E8F0</item>
+        <item name="android:colorAccent">#F5C569</item>
+        <item name="android:colorBackground">@color/hikari_bg</item>
         <item name="android:windowBackground">@color/hikari_bg</item>
         <item name="android:statusBarColor">@color/hikari_bg</item>
         <item name="android:navigationBarColor">@color/hikari_bg</item>
