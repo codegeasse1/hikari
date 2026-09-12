@@ -332,18 +332,59 @@ object Cs3PluginManager {
     }
 
     /**
+     * Makes sure [file]'s plugin is instantiated AND exposes `openSettings`
+     * before its settings screen is invoked.
+     *
+     * The Extensions UI shows its settings gear from the stored provider list,
+     * which outlives the in-memory plugin instance: the gear can be tapped
+     * before this session ever loaded the plugin, or while a re-load is still
+     * running (the instance is published to [plugins] *before* `load()` runs,
+     * and plugins assign `openSettings` inside `load()`) — and both cases used
+     * to be reported as "this plugin has no settings screen". A tap then just
+     * looked broken until a second attempt happened to land after the load.
+     *
+     * Blocking: [apisFor] waits out any load already in flight and performs the
+     * load itself when none is running, so always call this from IO. Returns
+     * true when the settings callback is available now.
+     */
+    fun ensureSettingsLoaded(context: Context, file: File): Boolean {
+        if (hasSettings(file)) return true
+        apisFor(context, file)
+        if (hasSettings(file)) return true
+        // Nothing after a real load attempt: the cached instance is the product
+        // of a failed/partial load (so `openSettings` never got assigned), and
+        // apisFor negative-caches a failed file for a minute. Rebuild it once —
+        // that is what clears the combination.
+        reload(context, file)
+        return hasSettings(file)
+    }
+
+    /**
      * Opens the plugin's own settings screen, exactly like CloudStream's tune
      * button. [activity] is the preferred host (may be null — the current
      * activity is resolved instead). Returns false when the plugin has no
-     * settings entry point or the callback threw.
+     * settings entry point or the callback threw, and sets [lastError] to the
+     * specific reason so the UI never reports the misleading catch-all
+     * "has no settings screen" for a missing/partial plugin instance.
      */
     fun openSettings(file: File, activity: android.app.Activity?): Boolean {
-        val plugin = plugins[file.absolutePath] as? Plugin ?: return false
-        val callback = plugin.openSettings ?: return false
+        val plugin = plugins[file.absolutePath] as? Plugin
+        if (plugin == null) {
+            lastError = "the plugin hasn't finished loading — try again"
+            return false
+        }
+        val callback = plugin.openSettings
+        if (callback == null) {
+            lastError = "this plugin exposes no settings screen"
+            return false
+        }
         val host = activity
             ?: HikariApp.mainActivity
             ?: runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
-            ?: return false
+        if (host == null) {
+            lastError = "no activity is available to show its settings screen"
+            return false
+        }
         errorDetails.setLength(0)
         lastError = null
         return try {

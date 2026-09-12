@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -104,6 +105,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.web.WebViewActivity
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -1048,23 +1050,7 @@ fun ExtensionsScreen() {
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
 
     fun openProviderSettings(p: ContentProvider) {
-        if (p is Cs3MainApiProvider) {
-            // A plugin's settings screen is arbitrary third-party code (an
-            // Activity, a BottomSheetDialogFragment, …). Surface a failure
-            // instead of letting the tap look like a dead no-op.
-            val opened = p.openSettings(HikariApp.mainActivity)
-            if (!opened) {
-                val detail = com.hikari.app.cs3.Cs3PluginManager.lastError?.take(240)
-                Toast.makeText(
-                    context,
-                    if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
-                    else "Couldn't open ${p.config.name} settings: $detail",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        } else {
-            settingsProvider = p
-        }
+        openProviderSettingsSafely(p, context, scope) { settingsProvider = p }
     }
 
     LaunchedEffect(Unit) {
@@ -2375,6 +2361,50 @@ private fun rememberCs3SettingsIds(providers: List<ContentProvider>): Set<String
     return ids
 }
 
+/**
+ * Opens a provider's own settings screen (the gear on an extension card).
+ *
+ * A plugin's settings screen is arbitrary third-party code (an Activity, a
+ * BottomSheetDialogFragment, …) and it only exists once the plugin has been
+ * loaded — but the gear is drawn from the stored provider list, which outlives
+ * the in-memory plugin instance. A tap could therefore land before the plugin
+ * was loaded (or while a reload was still running) and be reported as "has no
+ * settings screen", then work on a second try. Load the plugin first (off the
+ * main thread), then invoke the plugin's own screen on the main thread — and
+ * surface the real reason when it still cannot open, instead of letting the tap
+ * look like a dead no-op.
+ */
+private fun openProviderSettingsSafely(
+    p: ContentProvider,
+    context: Context,
+    scope: CoroutineScope,
+    nonCs3: () -> Unit,
+) {
+    if (p !is Cs3MainApiProvider) {
+        nonCs3()
+        return
+    }
+    if (!p.settingsReady) {
+        Toast.makeText(context, "Loading ${p.config.name}…", Toast.LENGTH_SHORT).show()
+    }
+    scope.launch {
+        val ready = withContext(Dispatchers.IO) {
+            runCatching { p.prepareSettings() }.getOrDefault(false)
+        }
+        val opened = ready && withContext(Dispatchers.Main) {
+            runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
+        }
+        if (opened) return@launch
+        val detail = Cs3PluginManager.lastError?.take(240)
+        Toast.makeText(
+            context,
+            if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
+            else "Couldn't open ${p.config.name} settings: $detail",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+}
+
 @Composable
 private fun ProviderCard(
     p: ContentProvider,
@@ -3552,16 +3582,9 @@ private fun InstalledExtensionsView(
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     fun openCs3Settings(p: ContentProvider) {
-        if (!p.openSettings(HikariApp.mainActivity)) {
-            val detail = com.hikari.app.cs3.Cs3PluginManager.lastError?.take(240)
-            Toast.makeText(
-                context,
-                if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
-                else "Couldn't open ${p.config.name} settings: $detail",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        openProviderSettingsSafely(p, context, scope) {}
     }
     Column(Modifier.fillMaxSize()) {
         Row(

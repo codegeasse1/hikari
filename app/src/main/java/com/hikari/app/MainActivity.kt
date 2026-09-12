@@ -49,7 +49,8 @@ class MainActivity : AppCompatActivity() {
         // partly BELOW the bottom of the screen, so the last rows of the list
         // can never be scrolled into view. Expand the sheet to its content and
         // make it non-draggable so the inner list scrolls end-to-end; tapping
-        // outside or pressing Back still closes it.
+        // outside or pressing Back still closes it, and a Close button is added
+        // next to the plugin's own Save button (see addSettingsCloseButton).
         supportFragmentManager.registerFragmentLifecycleCallbacks(
             object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
                 override fun onFragmentStarted(
@@ -195,13 +196,23 @@ class MainActivity : AppCompatActivity() {
         val dialog = (fragment as? androidx.fragment.app.DialogFragment)?.dialog ?: return
         if (fragment.javaClass.classLoader === javaClass.classLoader) return
         val decor = dialog.window?.decorView ?: return
-        val scrollView = findPlainScrollView(decor) ?: return
+        // Plugin settings sheets are dismissed how the plugin's own header says
+        // — and SK Tech's has ONLY a Save button. Expanding the sheet to full
+        // height (below) then leaves no outside area to tap, so Save was the
+        // only visible way out. Mirror it with a Close button.
         if (dialog is com.google.android.material.bottomsheet.BottomSheetDialog) {
+            addSettingsCloseButton(dialog, decor)
             expandSheet(dialog)
             // Re-apply once the sheet has actually been laid out: a
             // BottomSheetDialog settles into its collapsed state during the
             // first layout pass, which can undo a state change made before it.
-            decor.post { expandSheet(dialog) }
+            decor.post {
+                addSettingsCloseButton(dialog, decor)
+                expandSheet(dialog)
+            }
+        }
+        val scrollView = findPlainScrollView(decor) ?: return
+        if (dialog is com.google.android.material.bottomsheet.BottomSheetDialog) {
             boundScrollView(scrollView)
             // Safety net: once the expansion animation has settled, if the
             // list's viewport still reaches below the bottom of the screen,
@@ -210,6 +221,98 @@ class MainActivity : AppCompatActivity() {
             decor.postDelayed({ clampScrollViewToScreen(dialog, decor, scrollView) }, 1600L)
         }
     }
+
+    /**
+     * Adds a Close (✕) button beside the plugin settings header's own Save
+     * button, so the screen can be dismissed without changing anything.
+     *
+     * Plugins normally ship only a Save control in that header (SK Tech's
+     * res/layout/settings.xml has a title and one save ImageButton), and since
+     * Hikari opens the sheet fully expanded and non-draggable there is no
+     * outside area left to tap — Save was literally the only way out. The
+     * button is tinted like the header's title so it matches whatever theme the
+     * plugin's sheet uses. Best-effort: a header shaped differently just gets
+     * no extra button (Back still dismisses the sheet).
+     */
+    private fun addSettingsCloseButton(
+        dialog: com.google.android.material.bottomsheet.BottomSheetDialog,
+        decor: android.view.View,
+    ) {
+        runCatching {
+            if (decor.findViewById<android.view.View>(settingsCloseButtonId) != null) return@runCatching
+            val save = findSettingsHeaderAction(decor) ?: return@runCatching
+            val header = save.parent as? android.widget.RelativeLayout ?: return@runCatching
+            // Only titled header bars (title + action inside one row) get the
+            // extra button — that shape is the settings header, and the title
+            // also tells us which color the sheet expects its icons to be.
+            val title = settingsHeaderTitle(header) ?: return@runCatching
+            val context = header.context
+            val size = dpToPx(context, 44)
+            val close = android.widget.ImageButton(context).apply {
+                id = settingsCloseButtonId
+                contentDescription = "Close settings"
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                scaleType = android.widget.ImageView.ScaleType.CENTER
+                val drawable = androidx.core.content.ContextCompat
+                    .getDrawable(context, R.drawable.ic_close)?.mutate()
+                drawable?.setTint(title.currentTextColor)
+                setImageDrawable(drawable)
+                setOnClickListener { runCatching { dialog.dismiss() } }
+            }
+            val lp = android.widget.RelativeLayout.LayoutParams(size, size)
+            if (save.id != android.view.View.NO_ID) {
+                lp.addRule(android.widget.RelativeLayout.LEFT_OF, save.id)
+            } else {
+                lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_END)
+                lp.rightMargin = dpToPx(context, 56)
+            }
+            lp.addRule(android.widget.RelativeLayout.CENTER_VERTICAL)
+            header.addView(close, lp)
+            // Safety net: with the sheet non-draggable, Back/outside-tap are the
+            // only other exits. Allow both — this is a settings sheet, so
+            // dismissing it never destroys anything.
+            runCatching {
+                dialog.setCancelable(true)
+                dialog.setCanceledOnTouchOutside(true)
+            }
+        }
+    }
+
+    /** The header action in a plugin settings sheet: the ImageButton whose
+     *  contentDescription mentions "save" (SK Tech's is "Save settings"), else
+     *  the last ImageButton of the tree — where plugin headers keep it. */
+    private fun findSettingsHeaderAction(root: android.view.View): android.view.View? {
+        var byDescription: android.view.View? = null
+        var lastImageButton: android.widget.ImageButton? = null
+        val stack = ArrayDeque<android.view.View>()
+        stack.addLast(root)
+        while (stack.isNotEmpty()) {
+            val v = stack.removeLast()
+            if (v is android.widget.ImageButton) {
+                lastImageButton = v
+                val desc = v.contentDescription?.toString().orEmpty()
+                if (byDescription == null && desc.contains("save", ignoreCase = true)) {
+                    byDescription = v
+                }
+            }
+            if (v is android.view.ViewGroup) {
+                for (i in 0 until v.childCount) stack.addLast(v.getChildAt(i))
+            }
+        }
+        return byDescription ?: lastImageButton
+    }
+
+    /** The settings header's own title (its first TextView), or null when the
+     *  row is not a titled header bar. Its text color is the color the sheet's
+     *  icons are drawn in, so the Close button matches whatever theme the
+     *  plugin's sheet uses. */
+    private fun settingsHeaderTitle(header: android.view.ViewGroup): android.widget.TextView? =
+        (0 until header.childCount)
+            .map { header.getChildAt(it) }
+            .firstOrNull { it is android.widget.TextView } as? android.widget.TextView
+
+    private fun dpToPx(context: android.content.Context, dp: Int): Int =
+        (dp * context.resources.displayMetrics.density).toInt()
 
     /**
      * Shortens [scrollView] if, with the sheet fully open, its bottom edge still
@@ -287,5 +390,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return null
+    }
+
+    companion object {
+        /** A stable id for the injected Close button: the sheet is visited twice
+         *  (once immediately, once after its first layout pass), and this is how
+         *  the second visit knows the button is already there. */
+        private val settingsCloseButtonId = android.view.View.generateViewId()
     }
 }

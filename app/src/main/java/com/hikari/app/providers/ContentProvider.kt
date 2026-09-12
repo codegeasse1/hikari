@@ -18,6 +18,21 @@ interface ContentProvider {
     val settingsAvailable: Boolean get() = false
 
     /**
+     * True when [openSettings] can be honoured immediately. Must be cheap and
+     * safe to read from the main thread (cache lookups only) — the Extensions
+     * UI uses it to decide whether a tap needs a "loading…" indicator first.
+     */
+    val settingsReady: Boolean get() = settingsAvailable
+
+    /**
+     * Loads whatever [openSettings] needs (the Extensions UI shows the settings
+     * gear from stored data, which can outlive the in-memory provider runtime).
+     * Blocking — always call from IO. Returns false when this provider has no
+     * settings screen at all.
+     */
+    fun prepareSettings(): Boolean = settingsAvailable
+
+    /**
      * Opens the provider's own settings UI. [activity] is the host activity the
      * settings screen should attach its dialogs/fragments to (null = let the
      * provider resolve the current one). Returns false when unsupported or when

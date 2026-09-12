@@ -247,6 +247,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return Cs3PluginManager.openSettings(file, activity)
     }
 
+    /** Cache-only check (safe on the main thread): true when the plugin is
+     *  already loaded and exposes its settings callback, so a tap on the gear
+     *  can open the screen straight away. */
+    override val settingsReady: Boolean
+        get() = runCatching {
+            val file = File(config.url)
+            file.exists() && Cs3PluginManager.hasSettings(file)
+        }.getOrDefault(false)
+
+    /** Loads the plugin if this session hasn't yet (the gear is rendered from
+     *  the stored provider list, which outlives the in-memory plugin instance),
+     *  so tapping it can never fail merely because the plugin wasn't warmed.
+     *  Blocking — call from IO. */
+    override fun prepareSettings(): Boolean {
+        val file = File(config.url)
+        if (!file.exists()) return false
+        return Cs3PluginManager.ensureSettingsLoaded(HikariApp.instance, file)
+    }
+
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
     /**
