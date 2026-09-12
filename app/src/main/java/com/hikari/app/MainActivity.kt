@@ -39,6 +39,25 @@ class MainActivity : AppCompatActivity() {
         )
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // CloudStream plugin settings screens are often
+        // BottomSheetDialogFragments whose layout wraps a plain
+        // android.widget.ScrollView. Unlike NestedScrollView that is NOT a
+        // NestedScrollingChild, so the sheet's BottomSheetBehavior finds no
+        // scrolling child and dragging the list instead drags the whole sheet
+        // down (which looks like "scrolling closes the settings page").
+        // Make those sheets non-draggable so the inner list scrolls; tapping
+        // outside or pressing Back still closes them.
+        supportFragmentManager.registerFragmentLifecycleCallbacks(
+            object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
+                override fun onFragmentStarted(
+                    fm: androidx.fragment.app.FragmentManager,
+                    f: androidx.fragment.app.Fragment,
+                ) {
+                    fixPluginSheetScrolling(f)
+                }
+            },
+            true,
+        )
         // True fullscreen: hide the system status + navigation bars everywhere
         // (swipe from any edge to briefly reveal them). Content fills the whole
         // screen instead of stopping below a status bar.
@@ -150,5 +169,32 @@ class MainActivity : AppCompatActivity() {
                 holder.javaClass.getField("app").set(holder, activity)
             }
         }
+    }
+
+    /**
+     * Stops a plugin's BottomSheetDialogFragment from being drag-dismissed when
+     * its content is a plain scroll view, so the content scrolls instead. Only
+     * plugin-supplied sheets are touched — their classes are loaded by the
+     * plugin's own PathClassLoader, never this activity's.
+     */
+    private fun fixPluginSheetScrolling(fragment: androidx.fragment.app.Fragment) {
+        val dialog = (fragment as? androidx.fragment.app.DialogFragment)?.dialog ?: return
+        if (dialog !is com.google.android.material.bottomsheet.BottomSheetDialog) return
+        if (fragment.javaClass.classLoader === javaClass.classLoader) return
+        val decor = dialog.window?.decorView ?: return
+        if (!containsPlainScrollView(decor)) return
+        runCatching { dialog.behavior.isDraggable = false }
+    }
+
+    /** True when [view]'s subtree contains an android.widget.ScrollView (the
+     *  non-nested-scrolling kind that confuses BottomSheetBehavior). */
+    private fun containsPlainScrollView(view: android.view.View): Boolean {
+        if (view is android.widget.ScrollView) return true
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) {
+                if (containsPlainScrollView(view.getChildAt(i))) return true
+            }
+        }
+        return false
     }
 }

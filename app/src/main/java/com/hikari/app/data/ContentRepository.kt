@@ -101,7 +101,7 @@ class ContentRepository(private val manager: ProviderManager) {
                             withTimeoutOrNull(40_000) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
-                                    .take(14)
+                                    .take(24)
                                 coroutineScope {
                                     catalogs.map { c ->
                                         async {
@@ -166,7 +166,7 @@ class ContentRepository(private val manager: ProviderManager) {
                             withTimeoutOrNull(40_000) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
-                                    .take(14)
+                                    .take(24)
                                 coroutineScope {
                                     catalogs.mapIndexed { ci, c ->
                                         async {

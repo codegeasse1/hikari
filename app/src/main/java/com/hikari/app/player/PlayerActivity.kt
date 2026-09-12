@@ -54,6 +54,11 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
+import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
+import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
+import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
@@ -62,6 +67,7 @@ import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.HistoryEntry
+import com.hikari.app.data.DrmSpec
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
@@ -96,6 +102,8 @@ class PlayerActivity : ComponentActivity() {
         val trackers: List<String> = emptyList(),
         /** True once the source is a TorrServer URL (raw file streaming). */
         val torrentStream: Boolean = false,
+        /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
+        val drm: DrmSpec? = null,
     )
 
     private var player: ExoPlayer? = null
@@ -127,6 +135,7 @@ class PlayerActivity : ComponentActivity() {
         infoHash,
         fileIdx,
         trackers,
+        drm = drm,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -143,6 +152,7 @@ class PlayerActivity : ComponentActivity() {
         isMpd,
         fileIdx,
         trackers,
+        drm = drm,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -549,6 +559,7 @@ class PlayerActivity : ComponentActivity() {
                     o.optString("infoHash").ifBlank { null },
                     o.optInt("fileIdx", -1).takeIf { it >= 0 },
                     trackers,
+                    drm = parseDrmSpec(o.optJSONObject("drm")),
                 )
             }
         }.getOrDefault(emptyList())
@@ -1442,6 +1453,83 @@ class PlayerActivity : ComponentActivity() {
         return sb.toString().ifBlank { e.javaClass.simpleName }
     }
 
+    /** Parses the "drm" object of the sources payload (see `playerPayload`). */
+    private fun parseDrmSpec(o: JSONObject?): DrmSpec? {
+        o ?: return null
+        val paramsObj = o.optJSONObject("keyRequestParameters") ?: JSONObject()
+        val params = HashMap<String, String>()
+        val keys = paramsObj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            params[k] = paramsObj.optString(k)
+        }
+        val spec = DrmSpec(
+            kid = o.optString("kid").ifBlank { null },
+            key = o.optString("key").ifBlank { null },
+            uuid = o.optString("uuid").ifBlank { null },
+            kty = o.optString("kty").ifBlank { null },
+            licenseUrl = o.optString("licenseUrl").ifBlank { null },
+            keyRequestParameters = params,
+        )
+        if (spec.kid == null && spec.key == null && spec.uuid == null &&
+            spec.licenseUrl == null && spec.keyRequestParameters.isEmpty()
+        ) return null
+        return spec
+    }
+
+    /** Maps a DRM scheme UUID (any case, optional "urn:uuid:" prefix) to one of
+     *  the three schemes media3/Android can open, or null when unknown. */
+    private fun drmSchemeUuid(uuid: String?): java.util.UUID? {
+        val u = uuid?.trim()?.lowercase()?.removePrefix("urn:uuid:") ?: return null
+        return when (u) {
+            C.CLEARKEY_UUID.toString().lowercase() -> C.CLEARKEY_UUID
+            C.WIDEVINE_UUID.toString().lowercase() -> C.WIDEVINE_UUID
+            C.PLAYREADY_UUID.toString().lowercase() -> C.PLAYREADY_UUID
+            else -> null
+        }
+    }
+
+    /**
+     * Builds a media3 DRM session manager for a DRM-protected source, mirroring
+     * CloudStream's own player: ClearKey streams are unlocked from the local
+     * key (no network round-trip), everything else asks the license server.
+     * Returns null for ordinary sources (or when no usable key material exists),
+     * so the player then behaves exactly as before.
+     */
+    private fun buildDrmSessionManager(
+        drm: DrmSpec?,
+        dataSourceFactory: OkHttpDataSource.Factory,
+    ): DefaultDrmSessionManager? {
+        drm ?: return null
+        val declared = drmSchemeUuid(drm.uuid)
+        val hasKey = !drm.key.isNullOrBlank()
+        val hasLicense = !drm.licenseUrl.isNullOrBlank()
+        if (!hasKey && !hasLicense) return null
+        // Scheme: an explicit UUID wins; otherwise a local key means ClearKey
+        // and a license URL means Widevine (the common case).
+        val uuid = declared ?: if (hasKey) C.CLEARKEY_UUID else C.WIDEVINE_UUID
+        val callback: MediaDrmCallback = if (uuid == C.CLEARKEY_UUID && hasKey) {
+            // Exact ClearKey response format CloudStream feeds media3.
+            val kty = drm.kty?.takeIf { it.isNotBlank() } ?: "oct"
+            val json = "{\"keys\":[{\"kty\":\"$kty\",\"k\":\"${drm.key}\",\"kid\":\"${drm.kid.orEmpty()}\"}]," +
+                "\"type\":\"temporary\"}"
+            LocalMediaDrmCallback(json.toByteArray(Charsets.UTF_8))
+        } else if (hasLicense) {
+            HttpMediaDrmCallback(drm.licenseUrl!!, dataSourceFactory)
+        } else {
+            return null
+        }
+        return runCatching {
+            DefaultDrmSessionManager.Builder()
+                .setMultiSession(true)
+                .setKeyRequestParameters(drm.keyRequestParameters)
+                .setUuidAndExoMediaDrmProvider(uuid, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                .build(callback)
+        }.onFailure {
+            android.util.Log.e("HikariPlayer", "DRM session setup failed (uuid=$uuid)", it)
+        }.getOrNull()
+    }
+
     /** Safe entry point: any unexpected exception during player setup (a bad
      *  source URL, a plugin-supplied header, an ExoPlayer hiccup) must surface
      *  as "try the next server" or an error panel — never an uncaught crash
@@ -1584,6 +1672,16 @@ class PlayerActivity : ComponentActivity() {
             .setUserAgent(ua)
             .setDefaultRequestProperties(sourceHeaders)
 
+        // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
+        // session manager; without it ExoPlayer opens the encrypted manifest
+        // with no keys and renders a black screen while the timeline still runs.
+        val drmManager = buildDrmSessionManager(src.drm, dataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        if (drmManager != null) {
+            val manager: DefaultDrmSessionManager = drmManager
+            mediaSourceFactory.setDrmSessionManagerProvider { manager }
+        }
+
         val player = ExoPlayer.Builder(this)
             .setRenderersFactory(
                 // nextlib's NextRenderersFactory is a drop-in for
@@ -1601,7 +1699,7 @@ class PlayerActivity : ComponentActivity() {
                     .setEnableDecoderFallback(true)
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(mediaSourceFactory)
             // 5s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
@@ -1641,8 +1739,9 @@ class PlayerActivity : ComponentActivity() {
         // silently-hanging decoder (black screen) — the buffering watchdog
         // can't catch it because playbackState is already READY. Give it 20s
         // to render its first frame, then recover (next server, or restart)
-        // instead of stranding the user on a dead black screen.
-        if (mime != null) {
+        // instead of stranding the user on a dead black screen. A DRM source is
+        // armed too: a missing/unsupported key fails exactly this way.
+        if (mime != null || drmManager != null) {
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             val task = Runnable {
                 firstFrameTask = null

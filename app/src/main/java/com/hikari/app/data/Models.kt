@@ -105,6 +105,24 @@ data class HistoryEntry(
 
 data class SubtitleSource(val lang: String, val url: String)
 
+/** DRM info for a protected stream, carried from the extracting extension so
+ *  the player can open a matching media3 DRM session instead of showing a black
+ *  screen on a protected manifest. Mirrors CloudStream's `DrmExtractorLink`.
+ *
+ *  ClearKey streams carry [kid]+[key] (played from a local key, no network);
+ *  Widevine/PlayReady streams carry [licenseUrl] (the player asks the license
+ *  server for keys, attaching [keyRequestParameters]). */
+data class DrmSpec(
+    val kid: String? = null,
+    val key: String? = null,
+    /** DRM scheme UUID (string form); null = infer from key/licenseUrl. */
+    val uuid: String? = null,
+    /** ClearKey key type — defaults to "oct" (symmetric key). */
+    val kty: String? = null,
+    val licenseUrl: String? = null,
+    val keyRequestParameters: Map<String, String> = emptyMap()
+)
+
 data class StreamSource(
     val name: String,
     val url: String,
@@ -123,6 +141,8 @@ data class StreamSource(
     val ytId: String? = null,
     /** True when the URL should be opened in a browser (externalUrl), not the player. */
     val externalUrl: Boolean = false,
+    /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
+    val drm: DrmSpec? = null,
 )
 
 data class CatalogRef(

@@ -1303,6 +1303,21 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
                             }
                         }
                     )
+                    // DRM protection (ClearKey/Widevine) — required for the
+                    // player to open a DRM session; without it a protected
+                    // stream renders as a black screen.
+                    .put(
+                        "drm",
+                        s.drm?.let { d ->
+                            JSONObject()
+                                .put("kid", d.kid ?: "")
+                                .put("key", d.key ?: "")
+                                .put("uuid", d.uuid ?: "")
+                                .put("kty", d.kty ?: "")
+                                .put("licenseUrl", d.licenseUrl ?: "")
+                                .put("keyRequestParameters", JSONObject(d.keyRequestParameters))
+                        } ?: JSONObject.NULL
+                    )
             )
         }
     }.toString()

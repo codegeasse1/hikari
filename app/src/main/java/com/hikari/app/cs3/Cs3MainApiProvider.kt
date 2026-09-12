@@ -2,6 +2,7 @@ package com.hikari.app.cs3
 
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRef
+import com.hikari.app.data.DrmSpec
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
@@ -11,8 +12,10 @@ import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.lagradost.cloudstream3.AnimeLoadResponse
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.SearchResponse
@@ -52,6 +55,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
         /** Budget for the direct MovieBlast movie fallback. */
         private const val MOVIEBLAST_CAP_MS = 20_000L
+
+        /** How long a fetched CloudStream home page is reused — long enough that
+         *  the catalogs() → getCatalog() pair of a single Home load shares one
+         *  network call, short enough that a pull-to-refresh refetches it. */
+        private const val HOME_ROWS_TTL_MS = 60_000L
 
         /** Budget for the universal extraction engine (StreamHG sign-dance
          *  needs several requests, so it's deliberately roomy). */
@@ -241,13 +249,86 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
+    /**
+     * Last getMainPage response per (page data, page number) so the catalogs()
+     * call and the getCatalog() calls that immediately follow it share ONE
+     * network round-trip instead of re-fetching the same home page per row.
+     */
+    private val homePageCache = ConcurrentHashMap<String, Pair<Long, List<HomePageList>>>()
+
+    /**
+     * Hikari's Home renders one row per CatalogRef, so a plugin whose
+     * getMainPage() returns several HomePageLists (SKTech: Kids / Music /
+     * Entertainment / Sports / …) must expose one CatalogRef PER LIST.
+     * Previously every list was flattened into a single row — that's why
+     * Hikari showed only "one category" where CloudStream showed many.
+     *
+     * Rows produced here carry a synthetic `row:<pageIndex>:<rowIndex>` id;
+     * getCatalog() decodes it and returns just that one list's items.
+     */
     override suspend fun catalogs(): List<CatalogRef> = withContext(Dispatchers.IO) {
         // CloudStream's MainPageData field order is (name, data, horizontalImages),
         // so use the fields explicitly — destructuring (url, label) would swap them
         // and getMainPage would then try to fetch the catalog's *name* as the URL.
-        api?.mainPage?.map { page ->
-            CatalogRef(config.id, catalogType(), page.data, page.name.ifBlank { page.data })
-        } ?: emptyList()
+        val a = api ?: return@withContext emptyList()
+        val pages = a.mainPage
+        if (pages.isEmpty()) return@withContext emptyList()
+        val out = ArrayList<CatalogRef>()
+        pages.forEachIndexed { pageIndex, page ->
+            val rows = try {
+                fetchHomeRows(a, page, 1)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                emptyList()
+            }
+            if (rows.isEmpty()) {
+                // The plugin answers with a single flat page (or is offline):
+                // keep the old one-row-per-mainPage behaviour as a fallback.
+                out += CatalogRef(config.id, catalogType(), page.data, page.name.ifBlank { page.data })
+            } else {
+                rows.forEachIndexed { rowIndex, row ->
+                    val name = row.name.ifBlank { page.name.ifBlank { page.data } }
+                    out += CatalogRef(config.id, catalogType(), rowRefId(pageIndex, rowIndex), name)
+                }
+            }
+        }
+        out
+    }
+
+    private fun rowRefId(pageIndex: Int, rowIndex: Int): String = "row:$pageIndex:$rowIndex"
+
+    private fun decodeRowRef(id: String): Pair<Int, Int>? {
+        if (!id.startsWith("row:")) return null
+        val parts = id.split(':')
+        if (parts.size != 3) return null
+        val pageIndex = parts[1].toIntOrNull() ?: return null
+        val rowIndex = parts[2].toIntOrNull() ?: return null
+        return pageIndex to rowIndex
+    }
+
+    /** Fetches one mainPage's HomePageList rows (page 1 is briefly cached). */
+    private suspend fun fetchHomeRows(
+        a: MainAPI,
+        page: MainPageData,
+        pageNumber: Int,
+    ): List<HomePageList> {
+        val key = "${page.data}\u0000$pageNumber"
+        if (pageNumber == 1) {
+            homePageCache[key]?.let { (at, rows) ->
+                if (System.currentTimeMillis() - at < HOME_ROWS_TTL_MS) return rows
+            }
+        }
+        val resp = try {
+            a.getMainPage(pageNumber, MainPageRequest(page.name, page.data, false))
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // A brand-new plugin instance can fail its very first network call
+            // while the runtime/session initializes — retry once.
+            a.getMainPage(pageNumber, MainPageRequest(page.name, page.data, false))
+        }
+        val rows = resp?.items.orEmpty()
+        if (pageNumber == 1) homePageCache[key] = System.currentTimeMillis() to rows
+        return rows
     }
 
     private fun catalogType(): MediaType {
@@ -264,6 +345,32 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             if (a == null) {
                 catalogErrors[config.id] = apiFailureReason()
                 return@withContext emptyList()
+            }
+            // A Home row created by catalogs(): fetch the plugin's home page and
+            // return only the HomePageList that this row stands for.
+            val rowRef = decodeRowRef(ref.id)
+            if (rowRef != null) {
+                val (pageIndex, rowIndex) = rowRef
+                val mainPage = a.mainPage.getOrNull(pageIndex)
+                if (mainPage == null) {
+                    catalogErrors[config.id] = "Home page ${ref.name} is no longer available — refresh Home"
+                    return@withContext emptyList()
+                }
+                val rows = try {
+                    fetchHomeRows(a, mainPage, page)
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    catalogErrors[config.id] = fullCause(e)
+                    return@withContext emptyList()
+                }
+                val row = rows.getOrNull(rowIndex) ?: rows.firstOrNull()
+                val rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                if (rowItems.isEmpty()) {
+                    catalogErrors[config.id] = "No items in ${ref.name}"
+                } else {
+                    catalogErrors.remove(config.id)
+                }
+                return@withContext rowItems
             }
             val resp = try {
                 a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
@@ -769,9 +876,63 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     infoHash = if (isTorrent) infoHashOf(l.url) else null,
                     fileIdx = magnetIndex(l.url),
                     trackers = magnetTrackers(l.url),
+                    // DRM-protected links (only ever produced by a plugin's
+                    // `newDrmExtractorLink`) must carry their ClearKey/Widevine
+                    // info to the player, otherwise ExoPlayer opens the
+                    // encrypted manifest with no DRM session and renders a
+                    // black screen while the timeline still runs.
+                    drm = drmSpecOf(l),
                 )
             }
             .distinctBy { it.url }
+    }
+
+    /**
+     * Reads DRM metadata off an [ExtractorLink] when the extension produced a
+     * DRM-protected stream (CloudStream's `DrmExtractorLink`). Done entirely by
+     * reflection: CloudStream's `uuid` property uses the experimental
+     * `kotlin.uuid.Uuid` value class, so referencing the type from app code
+     * would need an opt-in and could break on a plugin built against a
+     * different CloudStream version — the stable getter names are read instead.
+     * Returns null for ordinary (unprotected) links.
+     */
+    private fun drmSpecOf(link: com.lagradost.cloudstream3.utils.ExtractorLink): DrmSpec? {
+        val cls = link.javaClass
+        // Walk up the hierarchy so a plugin's own DrmExtractorLink subclass is
+        // still detected.
+        var c: Class<*>? = cls
+        var isDrm = false
+        while (c != null) {
+            if (c.name == "com.lagradost.cloudstream3.utils.DrmExtractorLink") { isDrm = true; break }
+            c = c.superclass
+        }
+        if (!isDrm) return null
+        fun str(name: String): String? =
+            runCatching { cls.getMethod(name).invoke(link) as? String }
+                .getOrNull()?.ifBlank { null }
+        val kid = str("getKid")
+        val key = str("getKey")
+        val kty = str("getKty")
+        val licenseUrl = str("getLicenseUrl")
+        // `uuid` is an inline value class over java.util.UUID; Kotlin also emits
+        // a synthetic java.util.UUID bridge getter — prefer the bridge, and
+        // fall back to the value-class form's toString().
+        var uuid: String? = null
+        for (m in cls.methods) {
+            // parameterTypes (API 1) rather than parameterCount (API 26+).
+            if (m.name != "getUuid" || m.parameterTypes.isNotEmpty()) continue
+            val v = runCatching { m.invoke(link) }.getOrNull() ?: continue
+            val s = v.toString().ifBlank { null } ?: continue
+            if (v is java.util.UUID) { uuid = s; break } else if (uuid == null) uuid = s
+        }
+        val params: Map<String, String> = runCatching {
+            (cls.getMethod("getKeyRequestParameters").invoke(link) as? Map<*, *>)
+                ?.entries
+                ?.mapNotNull { (k, v) -> (k as? String)?.let { it to (v?.toString() ?: "") } }
+                ?.toMap()
+        }.getOrNull().orEmpty()
+        if (kid == null && key == null && licenseUrl == null && uuid == null && params.isEmpty()) return null
+        return DrmSpec(kid = kid, key = key, uuid = uuid, kty = kty, licenseUrl = licenseUrl, keyRequestParameters = params)
     }
 
     /** Non-streamable schemes an extractor can never meaningfully produce
