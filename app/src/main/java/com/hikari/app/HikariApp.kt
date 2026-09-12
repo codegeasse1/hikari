@@ -38,10 +38,12 @@ class HikariApp : Application() {
             private set
 
         /**
-         * The current MainActivity, set on create and cleared on stop. The real
-         * CloudStream host passes its AppCompatActivity to plugin load() (some
-         * plugins cast it — e.g. Moviebox's `as AppCompatActivity`), so a bare
-         * Application context makes those plugins throw ClassCastException.
+         * The current MainActivity, set on create and cleared on destroy. The
+         * real CloudStream host passes its AppCompatActivity to plugin load()
+         * (some plugins cast it — e.g. SKTech's `as AppCompatActivity`), so a
+         * bare Application context makes those plugins throw
+         * ClassCastException. Kept set while the app is merely backgrounded so a
+         * plugin load from a background coroutine still gets an Activity.
          */
         @Volatile
         var mainActivity: MainActivity? = null
@@ -136,6 +138,15 @@ class HikariApp : Application() {
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
+            // A plugin settings change (e.g. SKTech's sub-provider picker) can
+            // alter which providers a plugin registers. Warm first so the
+            // plugin instances are cached (reconcile then hits the cache), then
+            // rebuild the stored configs to match and refresh if anything moved.
+            runCatching {
+                if (com.hikari.app.cs3.Cs3ProviderSync.reconcile(this@HikariApp, store)) {
+                    providers.refresh()
+                }
+            }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
         }

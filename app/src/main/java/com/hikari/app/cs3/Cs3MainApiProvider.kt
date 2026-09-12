@@ -216,6 +216,29 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         runCatching { api }
     }
 
+    /**
+     * True when the loaded CloudStream plugin exposed `openSettings`. Reading
+     * this on the main thread only consults the cache (plugins never dex-load on
+     * UI); callers that need a definitive answer call it from IO, where the
+     * lookup blocks until the plugin has loaded.
+     */
+    override val settingsAvailable: Boolean
+        get() {
+            val file = File(config.url)
+            if (!file.exists()) return false
+            if (Cs3PluginManager.hasSettings(file)) return true
+            Cs3PluginManager.apisFor(HikariApp.instance, file)
+            return Cs3PluginManager.hasSettings(file)
+        }
+
+    /** Opens the plugin's own settings screen (SKTech's sub-provider picker,
+     *  etc.), the same thing CloudStream's tune button does. */
+    override fun openSettings(activity: android.app.Activity?): Boolean {
+        val file = File(config.url)
+        if (!file.exists()) return false
+        return Cs3PluginManager.openSettings(file, activity)
+    }
+
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
     override suspend fun catalogs(): List<CatalogRef> = withContext(Dispatchers.IO) {

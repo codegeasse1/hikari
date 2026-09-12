@@ -86,6 +86,7 @@ import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.hikari.app.HikariApp
+import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.cs3.Cs3PluginManager
 import com.hikari.app.hiki.HikariPluginManager
 import com.hikari.app.data.Cs3Repo
@@ -1199,7 +1200,16 @@ fun ExtensionsScreen() {
                 if (openRepoUrl == url) openRepoUrl = null
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
-            onOpenSettings = { settingsProvider = it },
+            onOpenSettings = { p ->
+                if (p is Cs3MainApiProvider) {
+                    // CloudStream plugins own their settings UI (they build an
+                    // AlertDialog/Fragment). Hand it the current activity so any
+                    // fragment it shows attaches to a real AppCompatActivity.
+                    p.openSettings(HikariApp.mainActivity)
+                } else {
+                    settingsProvider = p
+                }
+            },
         )
         else -> RepoBrowserView(
             repos = repos,
@@ -2312,6 +2322,26 @@ private fun ProviderIcon(p: ContentProvider, modifier: Modifier = Modifier) {
     ExtensionIcon(url = icon, modifier = modifier)
 }
 
+/**
+ * Provider ids whose CloudStream plugin exposes its own settings screen
+ * (`Plugin.openSettings`, e.g. SKTech's sub-provider picker). Resolved off the
+ * main thread because loading a plugin can block; until the answer arrives the
+ * card simply shows no settings button, which is exactly CloudStream's rule.
+ */
+@Composable
+private fun rememberCs3SettingsIds(providers: List<ContentProvider>): Set<String> {
+    var ids by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(providers) {
+        ids = withContext(Dispatchers.IO) {
+            providers.mapNotNull { p ->
+                if (p.config.type != ProviderType.CS3) return@mapNotNull null
+                if (runCatching { p.settingsAvailable }.getOrDefault(false)) p.config.id else null
+            }.toSet()
+        }
+    }
+    return ids
+}
+
 @Composable
 private fun ProviderCard(
     p: ContentProvider,
@@ -2319,8 +2349,7 @@ private fun ProviderCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
-) {
-    GlassCard(Modifier
+) {    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3118,6 +3147,7 @@ private fun SourcesOverviewView(
     onOpenSettings: (ContentProvider) -> Unit,
 ) {
     var extFilter by remember { mutableStateOf("") }
+    val cs3SettingsIds = rememberCs3SettingsIds(providers)
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3274,8 +3304,11 @@ private fun SourcesOverviewView(
                     status = pluginStatus(p),
                     onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                     onDelete = { onDeleteProvider(p.config.id) },
-                    onSettings = if (p.config.type == ProviderType.NUVIO)
-                        { { onOpenSettings(p) } } else null,
+                    onSettings = when {
+                        p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
+                        p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
+                        else -> null
+                    },
                 )
             }
         }
@@ -3455,6 +3488,7 @@ private fun InstalledExtensionsView(
 ) {
     var extFilter by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
+    val cs3SettingsIds = rememberCs3SettingsIds(providers)
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3538,8 +3572,11 @@ private fun InstalledExtensionsView(
                     status = pluginStatus(p),
                     onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                     onDelete = { onDeleteProvider(p.config.id) },
-                    onSettings = if (p.config.type == ProviderType.NUVIO)
-                        { { settingsProvider = p } } else null,
+                    onSettings = when {
+                        p.config.type == ProviderType.NUVIO -> { { settingsProvider = p } }
+                        p.config.id in cs3SettingsIds -> { { p.openSettings(HikariApp.mainActivity) } }
+                        else -> null
+                    },
                 )
             }
         }

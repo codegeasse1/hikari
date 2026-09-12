@@ -39,6 +39,24 @@ object Cs3PluginManager {
 
     private val cache = ConcurrentHashMap<String, List<MainAPI>>()
 
+    /**
+     * The instantiated plugin object per file path. CloudStream keeps the whole
+     * plugin instance around (it owns `openSettings`, resources, etc.); Hikari
+     * used to drop it after load(). Keeping it is what lets the Extensions UI
+     * show a settings button and open the plugin's own settings screen.
+     */
+    private val plugins = ConcurrentHashMap<String, BasePlugin>()
+
+    /**
+     * Set when a plugin's settings screen has been opened. The host clears it on
+     * the next window-focus regain (i.e. when that screen is dismissed) and
+     * re-loads the plugin, so settings that don't force an app restart still
+     * take effect. Plugins that DO ask for a restart (SKTech) rebuild on launch
+     * via [Cs3ProviderSync.reconcile].
+     */
+    @Volatile
+    var pendingSettingsReload: String? = null
+
     // Files whose load() is currently running (re-entrancy guard). Loading
     // itself is serialized under loadLock; the set just lets a re-entrant call
     // from inside load() detect that it is mid-load.
@@ -193,6 +211,10 @@ object Cs3PluginManager {
             return fail()
         }
 
+        // Remember the instance so the settings button can reach its
+        // `openSettings` callback later. Replaced on every reload/reinstall.
+        plugins[path] = instance
+
         // Drop any earlier registrations from this exact file (reinstall).
         try {
             APIHolder.allProviders.removeAll { it.sourcePlugin == path }
@@ -202,6 +224,14 @@ object Cs3PluginManager {
         }
 
         // 5) CloudStream sets filename + optional resources, then load().
+        //
+        //    `load()` receives a real Activity whenever one exists: plugins
+        //    commonly do `context as AppCompatActivity` (SKTech builds its
+        //    settings dialog that way) or read `CommonActivity`, and a bare
+        //    Application context throws
+        //    `HikariApp cannot be cast to AppCompatActivity`. At startup this
+        //    can run before MainActivity exists, so wait briefly for one.
+        val host: Context = resolveHostActivity(context)
         try {
             instance.filename = path
             if (manifest.requiresResources) {
@@ -225,7 +255,7 @@ object Cs3PluginManager {
             // the install spinner stuck forever.
             val task = java.util.concurrent.Callable<Any?> {
                 if (instance is Plugin) {
-                    instance.load(HikariApp.mainActivity ?: context)
+                    instance.load(host)
                 } else {
                     instance.load()
                 }
@@ -261,7 +291,8 @@ object Cs3PluginManager {
         // after load. The real CloudStream host sets it to the activity —
         // mirror that, locating the field wherever the jar puts it (instance
         // member, companion, or a provider subclass override).
-        HikariApp.mainActivity?.let { activity ->
+        if (host is android.app.Activity) {
+            val activity = host
             apis.forEach { api ->
                 runCatching {
                     var done = false
@@ -292,6 +323,82 @@ object Cs3PluginManager {
             }
         }
         return apis
+    }
+
+    /** True when the cached plugin instance exposes a settings screen. */
+    fun hasSettings(file: File): Boolean {
+        val plugin = plugins[file.absolutePath] ?: return false
+        return plugin is Plugin && plugin.openSettings != null
+    }
+
+    /**
+     * Opens the plugin's own settings screen, exactly like CloudStream's tune
+     * button. [activity] is the preferred host (may be null — the current
+     * activity is resolved instead). Returns false when the plugin has no
+     * settings entry point or the callback threw.
+     */
+    fun openSettings(file: File, activity: android.app.Activity?): Boolean {
+        val plugin = plugins[file.absolutePath] as? Plugin ?: return false
+        val callback = plugin.openSettings ?: return false
+        val host = activity
+            ?: HikariApp.mainActivity
+            ?: runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
+            ?: return false
+        errorDetails.setLength(0)
+        lastError = null
+        return try {
+            callback.invoke(host)
+            pendingSettingsReload = file.absolutePath
+            true
+        } catch (e: Throwable) {
+            record("openSettings threw", e)
+            lastError = errorDetails.toString().trim().ifBlank { e.message ?: "settings failed" }
+            false
+        }
+    }
+
+    private const val ACTIVITY_WAIT_MS = 12_000L
+
+    /**
+     * Picks the context a plugin's `load()` should receive. Plugins routinely
+     * cast it to `AppCompatActivity` or read `CommonActivity`, so an Application
+     * context crashes them; prefer the current activity, and if none exists yet
+     * (startup warms plugins before MainActivity is up) wait briefly for one.
+     * Never called on the main thread — the caller is always loadFile's IO path.
+     */
+    private fun resolveHostActivity(context: Context): Context {
+        fun usable(c: Context?): Boolean {
+            val a = c as? android.app.Activity ?: return false
+            return !a.isFinishing && !a.isDestroyed
+        }
+        fun current(): Context? {
+            HikariApp.mainActivity?.let { if (usable(it)) return it }
+            val common = runCatching { com.lagradost.cloudstream3.CommonActivity.activity }
+                .getOrNull()
+            if (usable(common)) return common
+            if (usable(context)) return context
+            return null
+        }
+        current()?.let { return it }
+        // Never block the UI thread (defensive — loadFile only runs on IO).
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return context
+        // The task runs on a background thread (loadExecutor), so a bounded
+        // sleep here can never freeze the UI.
+        val deadline = System.currentTimeMillis() + ACTIVITY_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(120)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+            current()?.let { return it }
+        }
+        record(
+            "no host activity",
+            RuntimeException("waited ${ACTIVITY_WAIT_MS}ms; falling back to app context")
+        )
+        return context
     }
 
     private fun fail(): List<MainAPI> {

@@ -17,10 +17,16 @@ import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.AppRoot
 import com.hikari.app.ui.theme.HikariTheme
 import com.hikari.app.ui.theme.HikariThemeMode
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         HikariApp.mainActivity = this
+        // Expose the activity to the CloudStream runtime as early as possible:
+        // plugins are warmed from HikariApp.onCreate's background coroutine,
+        // which can run before onStart, and plugins cast this context to an
+        // Activity/AppCompatActivity.
+        com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
         // No window title bar, ever — every screen is header-free by design.
         window.requestFeature(android.view.Window.FEATURE_NO_TITLE)
         // Edge-to-edge: the app draws behind the status + navigation bars so
@@ -93,10 +99,43 @@ class MainActivity : AppCompatActivity() {
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
         }
+        // NOTE: HikariApp.mainActivity is intentionally NOT cleared here. A
+        // plugin load can happen while the app is backgrounded (a catalog
+        // refresh, a settings reload), and plugins cast this context to an
+        // Activity — clearing it on stop was exactly what made SKTech throw
+        // "HikariApp cannot be cast to AppCompatActivity". It is cleared in
+        // onDestroy instead.
+        super.onStop()
+    }
+
+    override fun onDestroy() {
         if (HikariApp.mainActivity === this) {
             HikariApp.mainActivity = null
         }
-        super.onStop()
+        super.onDestroy()
+    }
+
+    /**
+     * When a plugin's own settings screen (a DialogFragment the plugin shows,
+     * like SKTech's sub-provider picker) is dismissed, this window regains
+     * focus. Re-load the plugin it belongs to and refresh the provider list so
+     * the change is reflected immediately (home catalogs, provider names) —
+     * without needing the app restart some plugins ask for.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        val path = com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload ?: return
+        com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload = null
+        val app = application as HikariApp
+        app.appScope.launch {
+            runCatching {
+                val file = java.io.File(path)
+                if (file.exists()) com.hikari.app.cs3.Cs3PluginManager.reload(app, file)
+                com.hikari.app.cs3.Cs3ProviderSync.reconcile(app, app.store)
+                app.providers.refresh()
+            }
+        }
     }
 
     /** Set MainAPI.app to this activity, whichever form the jar compiles it
