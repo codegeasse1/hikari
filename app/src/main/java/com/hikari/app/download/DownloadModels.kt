@@ -66,6 +66,13 @@ data class DownloadTask(
     val playableOffline: Boolean
         get() = status == DownloadStatus.DONE && !localPath.isNullOrBlank()
 
+    /** True when an EXPORTED copy exists that Hikari can open itself. Worth a
+     *  Play button even for an export-only task: the app's player ships FFmpeg
+     *  software decoders, so it can play tracks (AC-3/EAC-3, DTS…) that many
+     *  phones' built-in gallery players render as silence. */
+    val playableSaved: Boolean
+        get() = status == DownloadStatus.DONE && !savedUri.isNullOrBlank()
+
     /** File name stem for an exported copy (no extension). */
     fun fileBaseName(): String {
         val stem = buildString {

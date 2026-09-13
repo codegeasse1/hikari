@@ -1,12 +1,17 @@
 package com.hikari.app.download
 
 import android.content.Context
+import com.hikari.app.HikariApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -25,12 +30,23 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object DownloadsRepository {
 
+    private const val DEFAULT_CONCURRENCY = 3
+    private const val MIN_CONCURRENCY = 1
+    private const val MAX_CONCURRENCY = 10
+
     private val _tasks = MutableStateFlow<List<DownloadTask>>(emptyList())
     val tasks: StateFlow<List<DownloadTask>> = _tasks.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val loadMutex = Mutex()
-    private val claimLock = Any()
+
+    /** How many downloads run at once — the user setting, clamped to 1–10. */
+    @Volatile
+    private var maxConcurrent: Int = DEFAULT_CONCURRENCY
+
+    fun setMaxConcurrent(n: Int) {
+        maxConcurrent = n.coerceIn(1, 10)
+    }
 
     @Volatile
     private var loaded = false
@@ -46,6 +62,12 @@ object DownloadsRepository {
                 // A task that was mid-download when the process died is not
                 // running any more — surface it as paused so the user can resume.
                 if (it.status == DownloadStatus.RUNNING) it.copy(status = DownloadStatus.PAUSED) else it
+            }
+            val app = ctx.applicationContext as? HikariApp
+            if (app != null) {
+                maxConcurrent = runCatching { app.store.downloadConcurrency() }
+                    .getOrDefault(DEFAULT_CONCURRENCY)
+                    .coerceIn(MIN_CONCURRENCY, MAX_CONCURRENCY)
             }
             loaded = true
         }
@@ -72,7 +94,7 @@ object DownloadsRepository {
         force: Boolean,
         transform: (DownloadTask) -> DownloadTask,
     ) {
-        _tasks.value = _tasks.value.map { if (it.id == id) transform(it) else it }
+        _tasks.update { list -> list.map { if (it.id == id) transform(it) else it } }
         flush(ctx, force)
     }
 
@@ -84,7 +106,7 @@ object DownloadsRepository {
             // before the Downloads tab was ever opened would replace the stored
             // task list with just this one task.
             ensureLoaded(ctx)
-            _tasks.value = _tasks.value.filterNot { it.id == task.id } + task
+            _tasks.update { list -> list.filterNot { it.id == task.id } + task }
             flush(ctx, true)
             DownloadService.start(ctx)
         }
@@ -130,29 +152,57 @@ object DownloadsRepository {
     }
 
     /** Atomically takes the next QUEUED task, marking it RUNNING so no other
-     *  pump can claim it too. Null when the queue is drained. */
-    private fun claimNextQueued(): DownloadTask? = synchronized(claimLock) {
-        val list = _tasks.value
-        val idx = list.indexOfFirst { it.status == DownloadStatus.QUEUED }
-        if (idx < 0) return null
-        val claimed = list[idx].copy(status = DownloadStatus.RUNNING, error = null)
-        _tasks.value = list.toMutableList().also { it[idx] = claimed }
-        claimed
+     *  pump can claim it too — but only while fewer than [maxConcurrent] tasks
+     *  are already running. Null when the queue is drained or at capacity. */
+    private fun claimNextQueued(): DownloadTask? {
+        var claimed: DownloadTask? = null
+        _tasks.update { list ->
+            val limit = maxConcurrent.coerceIn(MIN_CONCURRENCY, MAX_CONCURRENCY)
+            val running = list.count { it.status == DownloadStatus.RUNNING }
+            val idx = if (running < limit) list.indexOfFirst { it.status == DownloadStatus.QUEUED } else -1
+            if (idx < 0) {
+                claimed = null
+                list
+            } else {
+                val taken = list[idx].copy(status = DownloadStatus.RUNNING, error = null)
+                claimed = taken
+                list.toMutableList().also { it[idx] = taken }
+            }
+        }
+        return claimed
     }
 
     fun workDirFor(ctx: Context, id: String): File =
         File(File(ctx.filesDir, "downloads"), id.replace(Regex("[^A-Za-z0-9_.-]"), "_"))
 
-    /** Downloads every QUEUED task, in order, until the queue is drained. */
+    /** Runs the queue until it is drained, keeping up to [maxConcurrent] tasks
+     *  in flight. Re-reads the limit each pass, so changing it in Settings takes
+     *  effect on the next queued task without restarting the service. */
     suspend fun pump(ctx: Context) {
         ensureLoaded(ctx)
-        while (true) {
-            val task = claimNextQueued() ?: break
-            flush(ctx, true)
-            val flag = cancelFlag(task.id)
-            val workDir = workDirFor(ctx, task.id)
-            try {
-                val result = DownloadEngine.run(
+        coroutineScope {
+            val jobs = ArrayList<Job>()
+            while (true) {
+                jobs.removeAll { it.isCompleted }
+                val task = claimNextQueued()
+                if (task != null) {
+                    jobs += launch { runTask(ctx, task) }
+                    continue
+                }
+                if (jobs.isEmpty()) break
+                // Queue drained or concurrency limit reached — wait for a slot.
+                delay(200)
+            }
+            jobs.forEach { it.join() }
+        }
+    }
+
+    private suspend fun runTask(ctx: Context, task: DownloadTask) {
+        flush(ctx, true)
+        val flag = cancelFlag(task.id)
+        val workDir = workDirFor(ctx, task.id)
+        try {
+            val result = DownloadEngine.run(
                     ctx = ctx,
                     task = task,
                     workDir = workDir,

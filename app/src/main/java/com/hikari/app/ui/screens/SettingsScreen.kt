@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Public
@@ -45,6 +46,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -66,12 +70,16 @@ import androidx.compose.ui.unit.dp
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Userscript
+import com.hikari.app.download.DownloadService
+import com.hikari.app.download.DownloadStatus
+import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.web.UserscriptManager
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -315,6 +323,15 @@ fun SettingsScreen() {
             }
         }
         item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                DownloadSettingsCard(app)
+            }
+        }
+        item {
             SettingsFolderRow(
                 icon = Icons.Filled.Block,
                 title = "Ad Blocking",
@@ -359,7 +376,7 @@ fun SettingsScreen() {
                             "✓ CloudStream .cs3 plugin loader\n" +
                             "✓ Torrent engine for infoHash streams\n" +
                             "✓ Watch history + Continue Watching (all extensions)\n" +
-                            "• Downloads (next)\n" +
+                            "✓ Downloads — offline copies, export to phone storage, concurrent limit\n" +
                             "• SkyStream extensions, scriptable scrapers (planned)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -482,6 +499,91 @@ private fun SettingsFolderRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun DownloadSettingsCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val stored by app.store.downloadConcurrencyFlow().collectAsState(initial = 3)
+    var value by remember { mutableStateOf(stored.toFloat()) }
+
+    LaunchedEffect(stored) {
+        value = stored.toFloat()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Simultaneous downloads",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "How many videos may save at the same time",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                value.roundToInt().toString(),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            onValueChangeFinished = {
+                val n = value.roundToInt().coerceIn(1, 10)
+                value = n.toFloat()
+                scope.launch {
+                    app.store.setDownloadConcurrency(n)
+                    DownloadsRepository.setMaxConcurrent(n)
+                    // Wake the queue so raising the limit immediately starts
+                    // the extra downloads, instead of waiting for the next
+                    // enqueue/resume to restart the service.
+                    if (DownloadsRepository.snapshot().any { it.status == DownloadStatus.QUEUED }) {
+                        DownloadService.start(context)
+                    }
+                }
+            },
+            valueRange = 1f..10f,
+            steps = 8,
+            colors = SliderDefaults.colors(
+                thumbColor = MaterialTheme.colorScheme.primary,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
+                inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f),
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent,
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            "Slide to 3 to run three downloads at once, 4 for four, and so on (max 10). " +
+                "Videos beyond the limit stay queued and start automatically as slots free up.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

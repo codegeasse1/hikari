@@ -3,6 +3,7 @@ package com.hikari.app.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
@@ -54,6 +55,17 @@ class AppStore(private val ctx: Context) {
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
+        val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
+    }
+
+    /** How many downloads may run simultaneously (1–10). */
+    fun downloadConcurrencyFlow(): Flow<Int> =
+        store.data.map { (it[K.DOWNLOAD_CONCURRENCY] ?: 3).coerceIn(1, 10) }
+
+    suspend fun downloadConcurrency(): Int = downloadConcurrencyFlow().first()
+
+    suspend fun setDownloadConcurrency(n: Int) {
+        store.edit { it[K.DOWNLOAD_CONCURRENCY] = n.coerceIn(1, 10) }
     }
 
     /** Which provider the Home screen is currently showing (empty = All). */

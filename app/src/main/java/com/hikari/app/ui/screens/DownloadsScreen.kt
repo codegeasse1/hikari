@@ -230,6 +230,14 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
+                    } else if (t.playableSaved) {
+                        IconButton(onClick = { playSaved(context, t) }) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = "Play",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     } else {
                         Icon(
                             Icons.Filled.DownloadDone,
@@ -267,7 +275,8 @@ private fun statusLine(t: DownloadTask): String {
         DownloadStatus.FAILED -> "Failed" + (t.error?.let { " · $it" } ?: "")
         DownloadStatus.DONE -> when {
             t.kind == DownloadKind.EXPORT && t.playableOffline -> "Saved to Downloads · also available offline"
-            t.kind == DownloadKind.EXPORT -> "Saved to phone storage (Downloads/Hikari)"
+            t.kind == DownloadKind.EXPORT ->
+                "Saved to phone storage (Downloads/Hikari) — tap ▶ to play"
             else -> "Available offline"
         }
     }
@@ -313,6 +322,34 @@ private fun playOffline(context: Context, t: DownloadTask) {
             putExtra("histEpisodeId", t.episodeId)
             putExtra("histEpisodeName", t.episodeLabel)
         }
+    }
+    runCatching { context.startActivity(intent) }
+}
+
+/** Plays an EXPORTED file (a MediaStore content:// URI, or a plain path on
+ *  pre-Q) through Hikari's own player, which ships software audio decoders. */
+private fun playSaved(context: Context, t: DownloadTask) {
+    val saved = t.savedUri ?: return
+    if (saved.isBlank()) return
+    val uri = when {
+        saved.startsWith("content:") || saved.startsWith("file:") -> Uri.parse(saved)
+        else -> Uri.fromFile(java.io.File(saved))
+    }
+    val src = JSONObject()
+        .put("name", t.sourceName.ifBlank { "Download" })
+        .put("url", uri.toString())
+        .put("headers", JSONObject())
+        .put("isM3u8", false)
+        .put("isMpd", false)
+        .put("isTorrent", false)
+        .put("local", true)
+        .put("subtitles", JSONArray())
+    val payload = JSONArray().put(src).toString()
+    val intent = Intent(context, PlayerActivity::class.java).apply {
+        putExtra("title", t.title)
+        putExtra("sources", payload)
+        putExtra("showLoadingBanner", false)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching { context.startActivity(intent) }
 }

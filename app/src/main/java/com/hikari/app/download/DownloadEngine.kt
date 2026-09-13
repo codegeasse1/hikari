@@ -539,10 +539,17 @@ object DownloadEngine {
                 ?: throw IOException("No audio track in the downloaded stream")
 
             val vFormat = vEx.getTrackFormat(vSrc)
+            val aFormat = aEx.getTrackFormat(aSrc)
+            // MediaMuxer builds the `esds`/`avcC` box from the format's codec
+            // data; if the extractor didn't expose it as `csd-0`, harvest it
+            // from the first codec-config sample so the muxed audio is actually
+            // decodable (a config-less AAC track plays as silence).
+            ensureCodecConfig(vEx, vSrc, vFormat)
+            ensureCodecConfig(aEx, aSrc, aFormat)
+
             val m = MediaMuxer(out.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             muxer = m
             val vDst = m.addTrack(vFormat)
-            val aFormat = aEx.getTrackFormat(aSrc)
             val aDst = m.addTrack(aFormat)
             m.start()
 
@@ -551,14 +558,26 @@ object DownloadEngine {
             val bufV = ByteBuffer.allocate(maxOf(vFormat.maxInputOr(0), 8 shl 20))
             val bufA = ByteBuffer.allocate(maxOf(aFormat.maxInputOr(0), 1 shl 20))
 
-            var vTime = vEx.sampleTime
-            var aTime = aEx.sampleTime
-            while (vTime >= 0 || aTime >= 0) {
-                val takeVideo = vTime >= 0 && (aTime < 0 || vTime <= aTime)
+            // Interleave the two tracks by presentation time. The PTS/flags
+            // MUST be read AFTER `readSampleData` filled the buffer for that
+            // sample: on a freshly-positioned extractor `sampleTime` is -1
+            // until the first read, and the previous merge loop was seeded with
+            // that -1 — so the audio track was never copied and every exported
+            // MP4 played silent. Read first, then write.
+            var v = readNextSample(vEx, bufV)
+            var a = readNextSample(aEx, bufA)
+            while (v != null || a != null) {
+                val takeVideo = when {
+                    v == null -> false
+                    a == null -> true
+                    else -> v.timeUs <= a.timeUs
+                }
                 if (takeVideo) {
-                    vTime = copySample(vEx, bufV, m, vDst)
+                    writePending(m, vDst, bufV, v!!)
+                    v = readNextSample(vEx, bufV)
                 } else {
-                    aTime = copySample(aEx, bufA, m, aDst)
+                    writePending(m, aDst, bufA, a!!)
+                    a = readNextSample(aEx, bufA)
                 }
             }
             m.stop()
@@ -569,25 +588,58 @@ object DownloadEngine {
         }
     }
 
-    /** Copies the extractor's current sample into the muxer and advances it,
-     *  returning the next sample time (-1 at end of stream). Codec-config
-     *  buffers are skipped — the track format already carries the codec setup. */
-    private fun copySample(
-        ex: MediaExtractor,
-        buf: ByteBuffer,
-        muxer: MediaMuxer,
-        dstTrack: Int,
-    ): Long {
-        val size = ex.readSampleData(buf, 0)
-        if (size < 0) return -1L
-        val flags = ex.sampleFlags
-        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-            val info = MediaCodec.BufferInfo()
-            info.set(0, size, ex.sampleTime, flags)
-            muxer.writeSampleData(dstTrack, buf, info)
+    /** Makes sure [format] carries its codec setup (`csd-0`) before it goes to
+     *  MediaMuxer, harvesting it from the stream's first codec-config sample
+     *  when the extractor didn't put it in the format. Leaves the extractor
+     *  rewound to the start. */
+    private fun ensureCodecConfig(ex: MediaExtractor, track: Int, format: MediaFormat) {
+        if (format.containsKey("csd-0")) return
+        ex.selectTrack(track)
+        val buf = ByteBuffer.allocate(maxOf(format.maxInputOr(0), 1 shl 20))
+        while (true) {
+            val size = ex.readSampleData(buf, 0)
+            if (size < 0) break
+            if (ex.sampleFlags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                buf.position(0)
+                buf.limit(size)
+                val bytes = ByteArray(size)
+                buf.get(bytes)
+                format.setByteBuffer("csd-0", ByteBuffer.wrap(bytes))
+                break
+            }
+            ex.advance()
         }
-        ex.advance()
-        return ex.sampleTime
+        runCatching { ex.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
+    }
+
+    /** One sample already sitting in the caller's [ByteBuffer], plus the
+     *  metadata needed to write it — the extractor has already been advanced
+     *  past it, so the metadata can't be queried later. */
+    private class Pending(val size: Int, val timeUs: Long, val flags: Int)
+
+    /** Reads the next sample into [buf] and returns it (or null at end of
+     *  stream), skipping codec-config buffers — MediaMuxer takes the codec
+     *  setup from the track format, not from a sample. [buf] is left holding
+     *  exactly this sample, so [writePending] can hand it straight to the
+     *  muxer after the other track has had its turn. */
+    private fun readNextSample(ex: MediaExtractor, buf: ByteBuffer): Pending? {
+        while (true) {
+            val size = ex.readSampleData(buf, 0)
+            if (size < 0) return null
+            val timeUs = ex.sampleTime
+            val flags = ex.sampleFlags
+            ex.advance()
+            if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) continue
+            return Pending(size, timeUs, flags)
+        }
+    }
+
+    private fun writePending(muxer: MediaMuxer, dstTrack: Int, buf: ByteBuffer, p: Pending) {
+        buf.position(0)
+        buf.limit(p.size)
+        val info = MediaCodec.BufferInfo()
+        info.set(0, p.size, p.timeUs, p.flags)
+        muxer.writeSampleData(dstTrack, buf, info)
     }
 
     private fun firstTrackOfType(ex: MediaExtractor, mimePrefix: String): Int? {
