@@ -188,6 +188,20 @@ object StreamProbe {
         ".3gp", ".mpg", ".mpeg", ".opus", ".wmv",
     )
 
+    private val ARCHIVE_EXTENSIONS = listOf(".zip", ".rar", ".7z", ".tar", ".gz", ".001")
+
+    /** True when a URL points at an ARCHIVE of a video rather than a video:
+     *  hubcloud hands out `.mkv.zip` links in quality mode, and no player can
+     *  play one directly. Such a source is kept (it is real content, just
+     *  wrapped) but must never be the server playback STARTS on — ExoPlayer can
+     *  only fail on it, which used to burn a whole prepare+error cycle before
+     *  the failover got to a real video. */
+    fun isArchive(url: String): Boolean {
+        if (url.isBlank()) return false
+        val path = url.substringBefore('?').substringBefore('#').lowercase()
+        return ARCHIVE_EXTENSIONS.any { path.endsWith(it) }
+    }
+
     private fun hasMediaExtension(url: String): Boolean {
         val clean = url.substringBefore('?').substringBefore('#')
         return MEDIA_EXTENSIONS.any { clean.endsWith(it, ignoreCase = true) }

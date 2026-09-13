@@ -112,6 +112,21 @@ class PlayerActivity : ComponentActivity() {
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
 
+    /** The detail screen's live-search session id, when the player was opened
+     *  through it. Lets a player whose every server has died ask the still-
+     *  attached detail screen to re-run the providers with fresh, freshly-
+     *  signed links (see [refreshSources]) instead of replaying a dead one. */
+    private var liveSessionId: String? = null
+
+    /** Every URL this player has already tried this session. A re-extraction
+     *  usually returns the same links (same mirror) plus a few new ones, so
+     *  [freshIndex] uses this to avoid handing back a URL we know is dead. */
+    private val triedUrls = HashSet<String>()
+
+    /** How many times [refreshSources] has already asked for fresh sources —
+     *  bounded so a genuinely dead video fails instead of looping forever. */
+    private var refreshAttempts = 0
+
     /** Live-update subscription to the detail screen's ongoing server search
      *  (playback starts with the first server found; this keeps appending the
      *  rest as slower providers answer). */
@@ -458,8 +473,12 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex + 1)
             } else {
                 // Last server failed — retry the whole list (transient CDN
-                // hiccups / DNS glitches often clear on a second pass).
+                // hiccups / DNS glitches often clear on a second pass). Reset
+                // the header walk first: with a single-server list the retry
+                // targets the SAME index, so playSource would keep the max
+                // variant (2 = no headers) and 403 again immediately.
                 noSubsRetry = false
+                resetHeaderWalk()
                 playSource(0)
             }
         }
@@ -570,6 +589,7 @@ class PlayerActivity : ComponentActivity() {
             .distinctBy { it.infoHash ?: it.url }
 
         val liveId = intent.getStringExtra("streamsLiveId")
+        liveSessionId = liveId
         // The detail screen now opens the player the instant Play is tapped,
         // BEFORE any server is found, and streams servers to us over
         // [StreamsLive]. An empty list plus a live session id therefore means
@@ -676,11 +696,12 @@ class PlayerActivity : ComponentActivity() {
         val byName = if (byUrl < 0 && last.name.isNotBlank()) {
             sources.indexOfFirst { it.name.equals(last.name, ignoreCase = true) }
         } else -1
-        val found = byUrl >= 0 || byName >= 0
-        // Restore the header variant that actually played last time, so a
-        // replay starts instantly on the server AND headers that are known to
-        // work instead of re-walking full → no-Referer → none from scratch.
-        if (found) headerVariant = last.headerVariant.coerceIn(0, 2)
+        // Restore the header variant that actually played last time — but ONLY
+        // on an identical URL. A name-only match is a freshly signed link (or a
+        // different mirror) that may need a completely different header set, so
+        // restoring the remembered variant there could pin the player to the
+        // wrong variant and skip the full → no-Referer → none walk entirely.
+        if (byUrl >= 0) headerVariant = last.headerVariant.coerceIn(0, 2)
         return when {
             byUrl >= 0 -> byUrl
             byName >= 0 -> byName
@@ -1294,6 +1315,16 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Resets the per-server header walk, so the next attempt starts from the
+     *  full header set instead of resuming at the variant that just failed on a
+     *  different (and now dead) server. Also clears the persisted-source marker
+     *  since the source about to be tried is a new one. */
+    private fun resetHeaderWalk() {
+        headerVariant = 0
+        lastSavedSourceIndex = -1
+        lastSavedVariant = -1
+    }
+
     private fun playSource(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
@@ -1304,7 +1335,11 @@ class PlayerActivity : ComponentActivity() {
         userPickedSubs = false
         currentIndex = index
         val src = sources[index]
-        rememberPlayedSource(index, src)
+        // Persisting here would remember a source that has NOT proven itself —
+        // a signed link that turns out to be expired, or a URL/host whose right
+        // header set we haven't found yet, would then be "the last working
+        // server" and get restored on the next play. Only a source that
+        // actually rendered (see onRenderedFirstFrame) is remembered.
         if (src.isTorrent && src.infoHash != null) {
             playTorrent(index)
             return
@@ -1537,6 +1572,24 @@ class PlayerActivity : ComponentActivity() {
     private fun playDirect(index: Int) {
         try {
             val src = sources[index]
+            // Archive links (.mkv.zip / .rar etc.) are not videos at all —
+            // providers occasionally leak them through (4KHDHub's isDirectVideo
+            // filters on hostname only, so its hubcloud ".mkv.zip" links pass).
+            // Trying one costs a full prepare+error cycle before the failover,
+            // so skip to a real server instead.
+            if (!src.torrentStream && !src.isM3u8 && !src.isMpd &&
+                StreamProbe.isArchive(src.url)
+            ) {
+                triedUrls.add(src.url)
+                if (index + 1 < sources.size) {
+                    Toast.makeText(this, "Archive link (not a video) — trying next server", Toast.LENGTH_SHORT).show()
+                    noSubsRetry = false
+                    playSource(index + 1)
+                } else if (!refreshSources(index)) {
+                    showError("Only archive links (.zip) were found for this title — no playable video.", false)
+                }
+                return
+            }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
             // once before playback so the real mime/URL is known. Otherwise
@@ -1633,6 +1686,10 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         currentIndex = index
         val src = sources[index]
+        // Remember what we've actually handed to ExoPlayer this session — a
+        // later re-extraction usually repeats most of these URLs, and freshIndex
+        // must not pick one we already know dies.
+        triedUrls.add(src.url)
 
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
@@ -2154,7 +2211,21 @@ class PlayerActivity : ComponentActivity() {
                 Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
-                showError(details, false)
+                // No server left. If this looks like the servers simply died —
+                // expired signed links (HTTP 403) or a DNS/connect failure at
+                // the CDN — rather than a genuinely unplayable file, ask the
+                // detail screen for a fresh extraction before giving up:
+                // replaying a signed 4KHDHub/hubcloud URL after a few minutes
+                // can only 403, but a re-run hands out live links.
+                val ioLike = code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+                    headerIssue
+                if (!(ioLike && refreshSources(currentIndex))) {
+                    showError(details, false)
+                }
             }
         }
     }
@@ -2292,6 +2363,59 @@ class PlayerActivity : ComponentActivity() {
             historyEntry = historyEntry?.copy(episodeId = ep.id, episodeName = ep.name.orEmpty())
             historyEntry?.let { historyKey = it.uniqueKey }
         }
+    }
+
+    /** Every server the player was handed has died — typically because the
+     *  provider's signed links expired, or the mirror serving them went away.
+     *  Ask the still-attached detail screen to re-run the providers, wait for
+     *  fresh servers to arrive on the live session, then continue on one we
+     *  haven't tried yet. Returns true when a re-fetch was kicked off (the
+     *  caller must then do nothing else), false when refreshing isn't possible
+     *  or has already been exhausted. */
+    private fun refreshSources(failedIndex: Int): Boolean {
+        val session = liveSessionId ?: return false
+        if (refreshAttempts >= MAX_REFRESH_ATTEMPTS) return false
+        refreshAttempts++
+        resetHeaderWalk()
+        noSubsRetry = false
+        val failedName = sources.getOrNull(failedIndex)?.name.orEmpty()
+        // Hide the error panel and put the title card back up: from the user's
+        // point of view this is another "finding your server" moment, not a
+        // failure — and the providers may take a few seconds to answer.
+        errorPanel?.visibility = View.GONE
+        if (bannerMode) showLoadingBanner()
+        Toast.makeText(this, "Servers have expired — re-fetching fresh sources…", Toast.LENGTH_SHORT).show()
+        StreamsLive.requestRefresh(session)
+        lifecycleScope.launch {
+            val deadline = System.currentTimeMillis() + REFRESH_WAIT_MS
+            while (System.currentTimeMillis() < deadline) {
+                delay(300)
+                val idx = freshIndex(failedName)
+                if (idx >= 0) {
+                    playSource(idx)
+                    return@launch
+                }
+            }
+            // Nothing new arrived — report the failure we were already holding.
+            showError("Servers expired and no fresh sources were found.\nTry again in a moment.", false)
+        }
+        return true
+    }
+
+    /** Index of a not-yet-tried source on the CURRENT list, preferring one with
+     *  the same server name as [preferredName] (the same provider/mirror is the
+     *  likeliest to still work), else the first untried one. -1 when every
+     *  server has already been tried. */
+    private fun freshIndex(preferredName: String): Int {
+        var fallback = -1
+        for (i in sources.indices) {
+            val s = sources[i]
+            if (!s.isTorrent && s.url.isBlank()) continue
+            if (s.url.isNotEmpty() && s.url in triedUrls) continue
+            if (preferredName.isNotBlank() && s.name.equals(preferredName, ignoreCase = true)) return i
+            if (fallback < 0) fallback = i
+        }
+        return fallback
     }
 
     private fun showError(message: String, hasNext: Boolean) {
@@ -2504,6 +2628,15 @@ class PlayerActivity : ComponentActivity() {
          *  normally signals completion ([StreamsLive.markDone]) long before
          *  this; the timeout only covers the search never reporting back. */
         private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
+
+        /** How many times a player whose every server died may ask the detail
+         *  screen for a fresh extraction before finally reporting failure.
+         *  Bounded so a genuinely dead video can't loop forever. */
+        private const val MAX_REFRESH_ATTEMPTS = 2
+
+        /** How long to wait for re-extracted servers to arrive on the live
+         *  session before giving up and showing the error panel. */
+        private const val REFRESH_WAIT_MS = 25_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 

@@ -15,6 +15,7 @@ object StreamsLive {
     private val sessions = ConcurrentHashMap<String, MutableStateFlow<List<StreamSource>>>()
     private val episodes = ConcurrentHashMap<String, MutableStateFlow<Episode?>>()
     private val dones = ConcurrentHashMap<String, MutableStateFlow<Boolean>>()
+    private val refreshes = ConcurrentHashMap<String, MutableStateFlow<Int>>()
 
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
         sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
@@ -51,9 +52,25 @@ object StreamsLive {
         doneFlow(id).value = true
     }
 
+    /** Monotonic "please run the providers again" counter for a session. The
+     *  detail screen is still attached to the session while the player is up, so
+     *  a player whose every server has died can ask for a fresh extraction
+     *  instead of replaying a dead link forever. Hubcloud/4KHDHub hand out
+     *  signed, time-limited workers.dev URLs, and a remembered source from an
+     *  earlier play is stale by definition — replaying it can only 403. Each
+     *  increment is one request. */
+    fun refreshFlow(id: String): MutableStateFlow<Int> =
+        refreshes.computeIfAbsent(id) { MutableStateFlow(0) }
+
+    fun requestRefresh(id: String) {
+        val flow = refreshFlow(id)
+        flow.value = flow.value + 1
+    }
+
     fun remove(id: String) {
         sessions.remove(id)
         episodes.remove(id)
         dones.remove(id)
+        refreshes.remove(id)
     }
 }
