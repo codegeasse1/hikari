@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- The player holds a partial + Wi-Fi wakelock while streaming
+         (ExoPlayer WAKE_MODE_NETWORK) so the radio can't drop into power-save
+         mid-stream and stall playback. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".HikariApp"

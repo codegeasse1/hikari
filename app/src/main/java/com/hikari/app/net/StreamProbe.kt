@@ -68,18 +68,24 @@ object StreamProbe {
      *  previous session — makes this play start instantly). */
     private val cache = ConcurrentHashMap<String, Resolved>()
 
-    /** One client for every probe: the connection pool + TLS sessions stay warm
-     *  across sources, activities and calls, which is what makes the second and
-     *  later probes noticeably faster than a per-Activity client could be.
-     *  NO callTimeout: a slow-but-working wrapper hop must be allowed to finish
-     *  (the walk self-limits via a clock deadline instead), and a total-call cap
-     *  here was cutting off resolvable 4KHDHub/HubCloud chains mid-walk. */
+    /** Derived from the process-wide playback client ([PlayerHttp]) so probes
+     *  and playback SHARE one connection pool: the connection this probe opened
+     *  to the CDN can still be warm when ExoPlayer asks for the first segment of
+     *  the stream the probe just resolved (no second DNS + TLS handshake), and
+     *  the pool/TLS sessions stay warm across sources, activities and calls,
+     *  which is what makes the second and later probes noticeably faster than a
+     *  per-Activity client could be.
+     *
+     *  Timeouts are overridden to be much shorter than playback's: a probe is a
+     *  quick classification and a dead wrapper page must never hold up a source
+     *  search. NO callTimeout: a slow-but-working wrapper hop must be allowed to
+     *  finish (the walk self-limits via a clock deadline instead), and a
+     *  total-call cap here was cutting off resolvable 4KHDHub/HubCloud chains
+     *  mid-walk. */
     private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        PlayerHttp.client.newBuilder()
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
             .build()
     }
 
@@ -187,6 +193,20 @@ object StreamProbe {
         ".ts", ".mp3", ".aac", ".ogg", ".ogv", ".m4a", ".wav", ".flac",
         ".3gp", ".mpg", ".mpeg", ".opus", ".wmv",
     )
+
+    private val ARCHIVE_EXTENSIONS = listOf(".zip", ".rar", ".7z", ".tar", ".gz", ".001")
+
+    /** True when a URL points at an ARCHIVE of a video rather than a video:
+     *  hubcloud hands out `.mkv.zip` links in quality mode, and no player can
+     *  play one directly. Such a source is kept (it is real content, just
+     *  wrapped) but must never be the server playback STARTS on — ExoPlayer can
+     *  only fail on it, which used to burn a whole prepare+error cycle before
+     *  the failover got to a real video. */
+    fun isArchive(url: String): Boolean {
+        if (url.isBlank()) return false
+        val path = url.substringBefore('?').substringBefore('#').lowercase()
+        return ARCHIVE_EXTENSIONS.any { path.endsWith(it) }
+    }
 
     private fun hasMediaExtension(url: String): Boolean {
         val clean = url.substringBefore('?').substringBefore('#')

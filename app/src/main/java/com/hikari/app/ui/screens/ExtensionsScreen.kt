@@ -300,6 +300,20 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             reloadInstalled()
             loadReposIfNeeded()
         }
+        viewModelScope.launch {
+            // Keep the repo list LIVE instead of a one-shot read: the app seeds
+            // its bundled Hikari + CloudStream repos on first run from a
+            // background coroutine, which can land AFTER this screen has read
+            // the store — so the screen kept showing "No repos yet" even though
+            // the repos existed. Observing the store also means a repo added by
+            // any other path (bundled seeding, Mega-import) shows up at once.
+            store.reposFlow().collect { list ->
+                repos.value = list
+                // And load the plugin lists for any repo that arrived this way
+                // (idempotent — already-loaded/loading repos are skipped).
+                loadReposIfNeeded()
+            }
+        }
     }
 
     suspend fun addSite(name: String, url: String) {

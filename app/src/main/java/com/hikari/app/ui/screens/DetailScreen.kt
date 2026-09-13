@@ -136,8 +136,16 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Streams resolved ahead of time (first episode / movie) so tapping Play
      *  or the first episode starts instantly instead of waiting 20-30s for
-     *  extraction. Keyed by the target id. */
-    private val streamCache = ConcurrentHashMap<String, List<StreamSource>>()
+     *  extraction. Keyed by the target id. The list is TIMESTAMPED because the
+     *  links providers hand out expire — 4KHDHub/hubcloud's direct links are
+     *  signed workers.dev URLs whose `<token>::<sig>` part rotates per mirror.
+     *  Reusing a list extracted minutes ago (or during a previous play) handed
+     *  the player dead links, so every server 403'd and the app reported
+     *  "Playback failed" / "No playable sources found" for a title that plays
+     *  fine — the classic "it worked the first time, now it errors" report. */
+    private data class CachedStreams(val at: Long, val list: List<StreamSource>)
+
+    private val streamCache = ConcurrentHashMap<String, CachedStreams>()
 
     private val _streamsReady = MutableStateFlow(false)
     val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
@@ -261,11 +269,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         item: MediaItem,
         ep: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+        /** Ignore the prefetch cache and run the providers again. Set by the
+         *  player when every server it was given turned out to be dead. */
+        force: Boolean = false,
     ): List<StreamSource> {
         val key = cacheKey(item, ep)
-        streamCache[key]?.let { cached ->
-            _liveStreams.value = cached
-            return cached
+        val cached = streamCache[key]
+        if (cached != null) {
+            _liveStreams.value = cached.list
+            // Fresh enough to trust: serve it with no network at all (this is
+            // what makes a Play tap instant right after the detail page opened).
+            val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
+            if (!force && (cached.list.isEmpty() || fresh)) return cached.list
+            // Stale (or forced): the signed links in there are very likely
+            // dead, but keeping them on the live feed costs nothing — an
+            // already-open player can still try them while the fresh extraction
+            // below runs, and the new servers get appended as they arrive.
+            if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
         }
         val existing = inflight[key]
         if (existing != null) return existing.await()
@@ -283,7 +303,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val result = withContext(Dispatchers.IO) {
                 runCatching { repo.streamsFor(item, ep, feed) }.getOrDefault(emptyList())
             }
-            streamCache[key] = result
+            if (result.isEmpty() && cached != null && cached.list.isNotEmpty()) {
+                // A re-extraction that finds nothing must not downgrade a list
+                // we already have into "No playable sources found" — leave the
+                // cache (and its old timestamp, so the next attempt tries
+                // again) and hand the caller what we have.
+                deferred.complete(cached.list)
+                return cached.list
+            }
+            streamCache[key] = CachedStreams(System.currentTimeMillis(), result)
             _liveStreams.value = result
             recordOutcome(result, item)
             deferred.complete(result)
@@ -308,16 +336,22 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
         val (item, ep) = target
         val key = cacheKey(item, ep)
-        if (streamCache.containsKey(key)) {
+        val cached = streamCache[key]
+        // Reuse a NON-EMPTY, still-fresh cache; anything else (empty result from
+        // a minute ago, or a stale list whose signed links have since expired)
+        // falls through to a real extraction so the tap that follows has live
+        // links ready.
+        if (cached != null && cached.list.isNotEmpty() &&
+            System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS) {
             _streamsReady.value = true
             return
         }
         // Set "ready" as soon as the FIRST source arrives (not only after every
         // provider has been searched), so the Play button lights up early while
         // the slower providers keep adding servers in the background.
-        resolveStreams(item, ep) { partial ->
+        resolveStreams(item, ep, onProgress = { partial ->
             if (partial.isNotEmpty()) _streamsReady.value = true
-        }
+        })
         _streamsReady.value = true
     }
 
@@ -327,9 +361,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun getStreams(
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+        /** Re-run the providers even if a cached list exists — used when the
+         *  player reports that every server it was given is dead. */
+        force: Boolean = false,
     ): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
-        return resolveStreams(m, episode, onProgress)
+        return resolveStreams(m, episode, onProgress, force)
     }
 
     /** New play session (a fresh tap of Play / a new episode): clear the live
@@ -361,6 +398,14 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  found. Long enough for a slower provider to answer, short enough that a tap
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
+
+/** How long a prefetched source list may be reused before it must be resolved
+ *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
+ *  a detail page left open for a few minutes used to replay those dead links on
+ *  a Play tap (every server 403s → "No playable sources found"). Five minutes
+ *  is comfortably under the rotation window while still making an immediate
+ *  Play tap instant. */
+private const val STREAM_CACHE_TTL_MS = 300_000L
 
 /** How long a Play tap made while episodes are still loading waits for the
  *  episode list before falling back to a movie-style search. The player is
@@ -598,6 +643,13 @@ fun DetailScreen(
         var launched = false
         val playableEvery = { list: List<StreamSource> ->
             list.filter { s -> s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) }
+                // Archive links (.zip/.rar/.7z …) are not videos: providers
+                // (4KHDHub's isDirectVideo only checks the hostname, so its
+                // ".mkv.zip" hubcloud links leak through) sometimes hand them
+                // out, and they cost a full prepare+error cycle before the
+                // player falls through. A stable sort keeps arrival order but
+                // pushes archives to the back, so they are never server #1.
+                .sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
         scope.launch {
             // Which episode the search runs for: the tapped one, or episode 1
@@ -635,6 +687,27 @@ fun DetailScreen(
             val ordered = { list: List<StreamSource> ->
                 val i = preferredIndex(list)
                 if (i <= 0) list else listOf(list[i]) + list.filterIndexed { idx, _ -> idx != i }
+            }
+            // Live re-extraction. A play session can have all of its servers
+            // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
+            // and the mirror that served them can go away. The player (still
+            // attached via [sessionId]) then requests fresh sources by bumping
+            // the session's refresh counter instead of replaying a dead link
+            // forever — we re-run the providers ignoring the cache and stream
+            // the new servers straight to the player, which retries with them.
+            var lastRefresh = StreamsLive.refreshFlow(sessionId).value
+            launch {
+                StreamsLive.refreshFlow(sessionId).collect { n ->
+                    if (n == lastRefresh) return@collect
+                    lastRefresh = n
+                    val fresh = vm.getStreams(epForSearch, force = true)
+                    if (fresh.isNotEmpty()) {
+                        streams = fresh
+                        val freshPlayable = playableEvery(fresh)
+                        StreamProbe.warmAsync(freshPlayable)
+                        StreamsLive.append(sessionId, freshPlayable)
+                    }
+                }
             }
             val startNow = startNow@{
                 if (launched || playerLaunched) return@startNow

@@ -5,8 +5,10 @@ import android.content.Context
 import coil.Coil
 import coil.ImageLoader
 import com.hikari.app.data.AppStore
+import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RepoKind
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
@@ -47,6 +49,27 @@ class HikariApp : Application() {
          */
         @Volatile
         var mainActivity: MainActivity? = null
+
+        /**
+         * Extension repositories added on the very first run, so a fresh install
+         * can install extensions without pasting a URL: the Hikari (.hiki) repo
+         * and the CloudStream repo. Seeded once — see [AppStore.seededRepos] —
+         * so removing one afterwards sticks.
+         */
+        private val DEFAULT_EXTENSION_REPOS = listOf(
+            Cs3Repo(
+                url = "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json",
+                name = "Hikari Extensions",
+                description = "Official .hiki extensions for Hikari.",
+                kind = RepoKind.HIKARI,
+            ),
+            Cs3Repo(
+                url = "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json",
+                name = "Codegeasse Repo",
+                description = "Anime4i CloudStream extensions",
+                kind = RepoKind.CS3,
+            ),
+        )
     }
 
     lateinit var store: AppStore
@@ -127,6 +150,17 @@ class HikariApp : Application() {
             // pre-installed providers so nuvio sources work out of the box.
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
+            }
+            // First run only: add the bundled Hikari (.hiki) and CloudStream
+            // extension repos, so the Extensions screen ("Sources, repos &
+            // providers") is never empty on a fresh install and the built-in
+            // extensions are installable immediately. Guarded by a one-time flag
+            // so a user who removes one doesn't get it re-added every launch.
+            runCatching {
+                if (!store.seededRepos()) {
+                    for (r in DEFAULT_EXTENSION_REPOS) store.addCs3Repo(r)
+                    store.markReposSeeded()
+                }
             }
             // Apply vendored nuvio provider patches (see NuvioPluginManager's
             // PROVIDER_PATCHES) so already-installed broken providers get the

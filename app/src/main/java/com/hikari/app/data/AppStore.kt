@@ -53,6 +53,7 @@ class AppStore(private val ctx: Context) {
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
+        val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
     }
 
     /** Which provider the Home screen is currently showing (empty = All). */
@@ -337,6 +338,18 @@ class AppStore(private val ctx: Context) {
 
     private suspend fun saveRepos(list: List<Cs3Repo>) {
         store.edit { it[K.CS3_REPOS] = encodeRepos(list) }
+    }
+
+    // ---- First-run extension-repo seeding ----
+
+    /** True once the bundled default extension repos have been added. Kept so a
+     *  user who deliberately removes a default repo doesn't have it pushed back
+     *  on the next launch. */
+    suspend fun seededRepos(): Boolean =
+        store.data.map { it[K.SEEDED_REPOS] ?: false }.first()
+
+    suspend fun markReposSeeded() {
+        store.edit { it[K.SEEDED_REPOS] = true }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =

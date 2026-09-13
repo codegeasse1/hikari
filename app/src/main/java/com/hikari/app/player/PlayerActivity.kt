@@ -46,12 +46,16 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.datasource.DataSourceException
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -60,6 +64,8 @@ import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
@@ -73,6 +79,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.ui.PosterLoader
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
@@ -85,7 +92,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
+import java.io.FileNotFoundException
+import java.util.concurrent.ConcurrentHashMap
 
 class PlayerActivity : ComponentActivity() {
 
@@ -111,6 +119,21 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** The detail screen's live-search session id, when the player was opened
+     *  through it. Lets a player whose every server has died ask the still-
+     *  attached detail screen to re-run the providers with fresh, freshly-
+     *  signed links (see [refreshSources]) instead of replaying a dead one. */
+    private var liveSessionId: String? = null
+
+    /** Every URL this player has already tried this session. A re-extraction
+     *  usually returns the same links (same mirror) plus a few new ones, so
+     *  [freshIndex] uses this to avoid handing back a URL we know is dead. */
+    private val triedUrls = HashSet<String>()
+
+    /** How many times [refreshSources] has already asked for fresh sources —
+     *  bounded so a genuinely dead video fails instead of looping forever. */
+    private var refreshAttempts = 0
 
     /** Live-update subscription to the detail screen's ongoing server search
      *  (playback starts with the first server found; this keeps appending the
@@ -458,8 +481,12 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex + 1)
             } else {
                 // Last server failed — retry the whole list (transient CDN
-                // hiccups / DNS glitches often clear on a second pass).
+                // hiccups / DNS glitches often clear on a second pass). Reset
+                // the header walk first: with a single-server list the retry
+                // targets the SAME index, so playSource would keep the max
+                // variant (2 = no headers) and 403 again immediately.
                 noSubsRetry = false
+                resetHeaderWalk()
                 playSource(0)
             }
         }
@@ -570,6 +597,7 @@ class PlayerActivity : ComponentActivity() {
             .distinctBy { it.infoHash ?: it.url }
 
         val liveId = intent.getStringExtra("streamsLiveId")
+        liveSessionId = liveId
         // The detail screen now opens the player the instant Play is tapped,
         // BEFORE any server is found, and streams servers to us over
         // [StreamsLive]. An empty list plus a live session id therefore means
@@ -640,12 +668,12 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        client = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
+        // The process-wide playback client (see [PlayerHttp]): its connection
+        // pool + dispatcher are shared with [StreamProbe], so the CDN
+        // connection the probe already opened and the TLS session it already
+        // negotiated are reused for the first media request instead of being
+        // paid again when ExoPlayer starts pulling.
+        client = PlayerHttp.client
 
         // Resolve every not-yet-known server while the first one starts: the
         // probe cache then answers instantly for a "Select server" pick, a
@@ -676,11 +704,12 @@ class PlayerActivity : ComponentActivity() {
         val byName = if (byUrl < 0 && last.name.isNotBlank()) {
             sources.indexOfFirst { it.name.equals(last.name, ignoreCase = true) }
         } else -1
-        val found = byUrl >= 0 || byName >= 0
-        // Restore the header variant that actually played last time, so a
-        // replay starts instantly on the server AND headers that are known to
-        // work instead of re-walking full → no-Referer → none from scratch.
-        if (found) headerVariant = last.headerVariant.coerceIn(0, 2)
+        // Restore the header variant that actually played last time — but ONLY
+        // on an identical URL. A name-only match is a freshly signed link (or a
+        // different mirror) that may need a completely different header set, so
+        // restoring the remembered variant there could pin the player to the
+        // wrong variant and skip the full → no-Referer → none walk entirely.
+        if (byUrl >= 0) headerVariant = last.headerVariant.coerceIn(0, 2)
         return when {
             byUrl >= 0 -> byUrl
             byName >= 0 -> byName
@@ -1294,6 +1323,16 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Resets the per-server header walk, so the next attempt starts from the
+     *  full header set instead of resuming at the variant that just failed on a
+     *  different (and now dead) server. Also clears the persisted-source marker
+     *  since the source about to be tried is a new one. */
+    private fun resetHeaderWalk() {
+        headerVariant = 0
+        lastSavedSourceIndex = -1
+        lastSavedVariant = -1
+    }
+
     private fun playSource(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError("No more servers to try.", false)
@@ -1304,7 +1343,11 @@ class PlayerActivity : ComponentActivity() {
         userPickedSubs = false
         currentIndex = index
         val src = sources[index]
-        rememberPlayedSource(index, src)
+        // Persisting here would remember a source that has NOT proven itself —
+        // a signed link that turns out to be expired, or a URL/host whose right
+        // header set we haven't found yet, would then be "the last working
+        // server" and get restored on the next play. Only a source that
+        // actually rendered (see onRenderedFirstFrame) is remembered.
         if (src.isTorrent && src.infoHash != null) {
             playTorrent(index)
             return
@@ -1530,6 +1573,37 @@ class PlayerActivity : ComponentActivity() {
         }.getOrNull()
     }
 
+    /**
+     * Deep-buffer load control tuned for aggregator CDNs.
+     *
+     * media3's defaults cap the buffer at 50 s (`minBufferMs == maxBufferMs`)
+     * and stop loading there. That is fine for a CDN that always delivers
+     * faster than real time, but it leaves no reserve for the ones that only
+     * burst: the moment throughput dips below the stream's bitrate the 50 s
+     * drains away and the user sees the spinner. Raising the ceiling lets
+     * ExoPlayer keep downloading ahead whenever the source can outrun
+     * playback, banking minutes of runway on a link that has the headroom.
+     *
+     * This cannot grow memory without bound: media3's own allocator byte
+     * target (≈125 MB video + ≈12 MB audio, which `largeHeap="true"` comfortably
+     * covers) is still enforced, so a high-bitrate stream stops at the byte cap
+     * exactly as it did before — only low/medium-bitrate streams, which have
+     * the memory to spare, get the deeper time buffer.
+     *
+     * Start/resume thresholds keep media3's snappy defaults (1 s to start,
+     * 2 s to resume after a stall): a longer resume threshold would only make
+     * the spinner itself last longer.
+     */
+    private fun buildLoadControl(): DefaultLoadControl =
+        DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                60_000,   // minBufferMs — the steady-state bank to keep topped up
+                150_000,  // maxBufferMs — ceiling when the link can outrun playback
+                1_000,    // bufferForPlaybackMs — how little we need to start
+                2_000,    // bufferForPlaybackAfterRebufferMs — how little to resume
+            )
+            .build()
+
     /** Safe entry point: any unexpected exception during player setup (a bad
      *  source URL, a plugin-supplied header, an ExoPlayer hiccup) must surface
      *  as "try the next server" or an error panel — never an uncaught crash
@@ -1537,6 +1611,24 @@ class PlayerActivity : ComponentActivity() {
     private fun playDirect(index: Int) {
         try {
             val src = sources[index]
+            // Archive links (.mkv.zip / .rar etc.) are not videos at all —
+            // providers occasionally leak them through (4KHDHub's isDirectVideo
+            // filters on hostname only, so its hubcloud ".mkv.zip" links pass).
+            // Trying one costs a full prepare+error cycle before the failover,
+            // so skip to a real server instead.
+            if (!src.torrentStream && !src.isM3u8 && !src.isMpd &&
+                StreamProbe.isArchive(src.url)
+            ) {
+                triedUrls.add(src.url)
+                if (index + 1 < sources.size) {
+                    Toast.makeText(this, "Archive link (not a video) — trying next server", Toast.LENGTH_SHORT).show()
+                    noSubsRetry = false
+                    playSource(index + 1)
+                } else if (!refreshSources(index)) {
+                    showError("Only archive links (.zip) were found for this title — no playable video.", false)
+                }
+                return
+            }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
             // once before playback so the real mime/URL is known. Otherwise
@@ -1633,6 +1725,10 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         currentIndex = index
         val src = sources[index]
+        // Remember what we've actually handed to ExoPlayer this session — a
+        // later re-extraction usually repeats most of these URLs, and freshIndex
+        // must not pick one we already know dies.
+        triedUrls.add(src.url)
 
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
@@ -1677,6 +1773,12 @@ class PlayerActivity : ComponentActivity() {
         // with no keys and renders a black screen while the timeline still runs.
         val drmManager = buildDrmSessionManager(src.drm, dataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            // Ride out transient CDN hiccups quietly — a fresh connection and a
+            // Range-resumed read — instead of letting one dropped socket tear
+            // the whole player down, while still failing FAST on terminal ones
+            // (expired 403 links, malformed data) so the failover to the next
+            // server stays snappy (see RetryFriendlyLoadErrorPolicy).
+            .setLoadErrorHandlingPolicy(RetryFriendlyLoadErrorPolicy())
         if (drmManager != null) {
             val manager: DefaultDrmSessionManager = drmManager
             mediaSourceFactory.setDrmSessionManagerProvider { manager }
@@ -1700,6 +1802,13 @@ class PlayerActivity : ComponentActivity() {
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
             .setMediaSourceFactory(mediaSourceFactory)
+            // Deep-buffer, stall-resistant buffering policy — see buildLoadControl.
+            .setLoadControl(buildLoadControl())
+            // Hold the CPU + Wi-Fi radio awake for the whole session (including
+            // PiP/background audio). A radio that drops into power-save
+            // mid-stream is a classic "it randomly stops to buffer" cause on
+            // some devices, and media3's default wake mode is NONE.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             // 5s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
@@ -2154,7 +2263,21 @@ class PlayerActivity : ComponentActivity() {
                 Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
-                showError(details, false)
+                // No server left. If this looks like the servers simply died —
+                // expired signed links (HTTP 403) or a DNS/connect failure at
+                // the CDN — rather than a genuinely unplayable file, ask the
+                // detail screen for a fresh extraction before giving up:
+                // replaying a signed 4KHDHub/hubcloud URL after a few minutes
+                // can only 403, but a re-run hands out live links.
+                val ioLike = code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+                    headerIssue
+                if (!(ioLike && refreshSources(currentIndex))) {
+                    showError(details, false)
+                }
             }
         }
     }
@@ -2292,6 +2415,59 @@ class PlayerActivity : ComponentActivity() {
             historyEntry = historyEntry?.copy(episodeId = ep.id, episodeName = ep.name.orEmpty())
             historyEntry?.let { historyKey = it.uniqueKey }
         }
+    }
+
+    /** Every server the player was handed has died — typically because the
+     *  provider's signed links expired, or the mirror serving them went away.
+     *  Ask the still-attached detail screen to re-run the providers, wait for
+     *  fresh servers to arrive on the live session, then continue on one we
+     *  haven't tried yet. Returns true when a re-fetch was kicked off (the
+     *  caller must then do nothing else), false when refreshing isn't possible
+     *  or has already been exhausted. */
+    private fun refreshSources(failedIndex: Int): Boolean {
+        val session = liveSessionId ?: return false
+        if (refreshAttempts >= MAX_REFRESH_ATTEMPTS) return false
+        refreshAttempts++
+        resetHeaderWalk()
+        noSubsRetry = false
+        val failedName = sources.getOrNull(failedIndex)?.name.orEmpty()
+        // Hide the error panel and put the title card back up: from the user's
+        // point of view this is another "finding your server" moment, not a
+        // failure — and the providers may take a few seconds to answer.
+        errorPanel?.visibility = View.GONE
+        if (bannerMode) showLoadingBanner()
+        Toast.makeText(this, "Servers have expired — re-fetching fresh sources…", Toast.LENGTH_SHORT).show()
+        StreamsLive.requestRefresh(session)
+        lifecycleScope.launch {
+            val deadline = System.currentTimeMillis() + REFRESH_WAIT_MS
+            while (System.currentTimeMillis() < deadline) {
+                delay(300)
+                val idx = freshIndex(failedName)
+                if (idx >= 0) {
+                    playSource(idx)
+                    return@launch
+                }
+            }
+            // Nothing new arrived — report the failure we were already holding.
+            showError("Servers expired and no fresh sources were found.\nTry again in a moment.", false)
+        }
+        return true
+    }
+
+    /** Index of a not-yet-tried source on the CURRENT list, preferring one with
+     *  the same server name as [preferredName] (the same provider/mirror is the
+     *  likeliest to still work), else the first untried one. -1 when every
+     *  server has already been tried. */
+    private fun freshIndex(preferredName: String): Int {
+        var fallback = -1
+        for (i in sources.indices) {
+            val s = sources[i]
+            if (!s.isTorrent && s.url.isBlank()) continue
+            if (s.url.isNotEmpty() && s.url in triedUrls) continue
+            if (preferredName.isNotBlank() && s.name.equals(preferredName, ignoreCase = true)) return i
+            if (fallback < 0) fallback = i
+        }
+        return fallback
     }
 
     private fun showError(message: String, hasNext: Boolean) {
@@ -2505,6 +2681,15 @@ class PlayerActivity : ComponentActivity() {
          *  this; the timeout only covers the search never reporting back. */
         private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
 
+        /** How many times a player whose every server died may ask the detail
+         *  screen for a fresh extraction before finally reporting failure.
+         *  Bounded so a genuinely dead video can't loop forever. */
+        private const val MAX_REFRESH_ATTEMPTS = 2
+
+        /** How long to wait for re-extracted servers to arrive on the live
+         *  session before giving up and showing the error panel. */
+        private const val REFRESH_WAIT_MS = 25_000L
+
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
         /** Fallback public trackers for addons that don't ship their own. */
@@ -2518,3 +2703,75 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 }
+
+/**
+ * Load-error handling tuned for aggregator CDNs — the reason a stream stalls or
+ * dies mid-playback on these sources in the first place.
+ *
+ * media3's [DefaultLoadErrorHandlingPolicy] retries everything it doesn't
+ * explicitly exclude on a fixed 1 s → 5 s ladder and gives up after 3 tries.
+ * That shape is wrong for these sources in both directions:
+ *
+ *  - a transient drop (one hung socket, a 502 from an overloaded edge, a
+ *    connection reset mid-segment) gets only 3 retries — often not enough — so
+ *    it surfaces as a fatal playback error: the player tears the stream down
+ *    and fails over, even though re-requesting the same bytes on a fresh
+ *    connection would have been seamless;
+ *  - a genuinely dead link (expired signed URL answering 403/410, a 404)
+ *    *also* burns those retries first, delaying the failover by seconds.
+ *
+ * So: terminal errors fail immediately (no delay at all), and transient ones
+ * retry on a short 0.5 s → 2 s ladder for at most [MAX_RETRY_WINDOW_MS] of
+ * wall-clock time, then escalate. Bounding by TIME rather than by attempt count
+ * also fixes the worst case of an unreachable host: a 15 s connect timeout can
+ * only be paid once inside that window instead of once per attempt.
+ *
+ * media3's variant/location fallback for adaptive (HLS/DASH) streams is left
+ * intact — it is genuinely useful when one rendition of a master playlist is
+ * broken while the others are fine.
+ */
+private class RetryFriendlyLoadErrorPolicy :
+    DefaultLoadErrorHandlingPolicy(TRANSIENT_RETRIES) {
+
+    /** When each load task first reported an error, so its retry ladder can be
+     *  bounded by total wall-clock time rather than a raw attempt count. */
+    private val firstErrorAt = ConcurrentHashMap<Long, Long>()
+
+    override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        if (isTerminal(loadErrorInfo.exception)) return C.TIME_UNSET
+        val now = android.os.SystemClock.elapsedRealtime()
+        val startedAt = firstErrorAt.getOrPut(loadErrorInfo.loadEventInfo.loadTaskId) { now }
+        if (now - startedAt > MAX_RETRY_WINDOW_MS) {
+            firstErrorAt.remove(loadErrorInfo.loadEventInfo.loadTaskId)
+            return C.TIME_UNSET
+        }
+        return minOf(loadErrorInfo.errorCount * 500L, 2_000L)
+    }
+
+    override fun onLoadTaskConcluded(loadTaskId: Long) {
+        firstErrorAt.remove(loadTaskId)
+    }
+
+    /** Errors that re-requesting cannot fix: the URL is expired or rejected, the
+     *  bytes aren't media at all, or the server was asked for a range it cannot
+     *  satisfy. Escalate immediately so the failover is instant. */
+    private fun isTerminal(e: java.io.IOException): Boolean = when (e) {
+        is HttpDataSource.CleartextNotPermittedException -> true
+        is FileNotFoundException -> true
+        is ParserException -> true
+        // A 4xx is the server saying "no" (expired token, forbidden, gone);
+        // 408/429 mean "come back in a moment" and are worth retrying.
+        is HttpDataSource.InvalidResponseCodeException ->
+            e.responseCode in 400..499 && e.responseCode != 408 && e.responseCode != 429
+        else -> DataSourceException.isCausedByPositionOutOfRange(e)
+    }
+}
+
+/** Attempts allowed before a *transient* error is treated as fatal (also the
+ *  ceiling the Loader itself consults; the time window below usually stops the
+ *  ladder first). */
+private const val TRANSIENT_RETRIES = 8
+
+/** How long one load task may keep retrying a transient error before it is
+ *  escalated to the app's own failover / source-refresh logic. */
+private const val MAX_RETRY_WINDOW_MS = 15_000L
