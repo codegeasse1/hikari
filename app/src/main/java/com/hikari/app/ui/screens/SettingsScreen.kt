@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -272,6 +273,33 @@ fun SettingsScreen() {
                                 Intent(
                                     Intent.ACTION_VIEW,
                                     Uri.parse("https://github.com/codegeasse1/hikari")
+                                )
+                            )
+                        }
+                    )
+                    SettingsDivider()
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.Send,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text("Telegram") },
+                        supportingContent = { Text("t.me/CodegeasseHikari — help, bugs & feature requests") },
+                        trailingContent = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://t.me/CodegeasseHikari")
                                 )
                             )
                         }
