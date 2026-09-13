@@ -10,6 +10,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Typeface
@@ -38,6 +39,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -52,7 +55,9 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -78,6 +83,10 @@ import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.download.DownloadKind
+import com.hikari.app.download.DownloadStatus
+import com.hikari.app.download.DownloadTask
+import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.Http
 import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.StreamProbe
@@ -112,6 +121,10 @@ class PlayerActivity : ComponentActivity() {
         val torrentStream: Boolean = false,
         /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
         val drm: DrmSpec? = null,
+        /** True for a locally-downloaded copy (a file:// URL or a local
+         *  .m3u8 built by the downloader). Local playback skips the network
+         *  probe and reads straight off disk. */
+        val local: Boolean = false,
     )
 
     private var player: ExoPlayer? = null
@@ -143,6 +156,11 @@ class PlayerActivity : ComponentActivity() {
     /** Subscription to the episode the detail screen settled on when a Play tap
      *  happened before the episode list had finished loading. */
     private var liveEpisodeJob: Job? = null
+
+    /** API 33+ notification permission prompt for the download notification.
+     *  Registered in onCreate (the only place an Activity may register a
+     *  launcher). */
+    private var notificationPermLauncher: ActivityResultLauncher<String>? = null
 
     /** Converts a detail-screen source (data layer) into a player source —
      *  mirrors the JSON payload parser so live-appended servers land in the
@@ -440,6 +458,15 @@ class PlayerActivity : ComponentActivity() {
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
+        findViewById<TextView>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+
+        // The download notification needs POST_NOTIFICATIONS on API 33+; the
+        // launcher must be registered here, before the first download starts.
+        if (Build.VERSION.SDK_INT >= 33) {
+            notificationPermLauncher = registerForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { }
+        }
 
         lockBtn?.setOnClickListener { lockControls() }
         resizeBtn?.setOnClickListener { cycleResize() }
@@ -588,6 +615,7 @@ class PlayerActivity : ComponentActivity() {
                     o.optInt("fileIdx", -1).takeIf { it >= 0 },
                     trackers,
                     drm = parseDrmSpec(o.optJSONObject("drm")),
+                    local = o.optBoolean("local"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -1542,7 +1570,7 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun buildDrmSessionManager(
         drm: DrmSpec?,
-        dataSourceFactory: OkHttpDataSource.Factory,
+        dataSourceFactory: DataSource.Factory,
     ): DefaultDrmSessionManager? {
         drm ?: return null
         val declared = drmSchemeUuid(drm.uuid)
@@ -1612,6 +1640,13 @@ class PlayerActivity : ComponentActivity() {
     private fun playDirect(index: Int) {
         try {
             val src = sources[index]
+            // A downloaded copy lives on local storage — nothing to probe, no
+            // headers to negotiate, no CDN to fail over from. Straight to
+            // ExoPlayer.
+            if (src.local) {
+                playDirectInner(index)
+                return
+            }
             // Archive links (.mkv.zip / .rar etc.) are not videos at all —
             // providers occasionally leak them through (4KHDHub's isDirectVideo
             // filters on hostname only, so its hubcloud ".mkv.zip" links pass).
@@ -1765,9 +1800,16 @@ class PlayerActivity : ComponentActivity() {
             else -> cleanHeaders
         }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-        val dataSourceFactory = OkHttpDataSource.Factory(client)
-            .setUserAgent(ua)
-            .setDefaultRequestProperties(sourceHeaders)
+        // Local downloads read off the filesystem through DefaultDataSource
+        // (which handles file:// and any local .m3u8's relative segment paths);
+        // network sources keep the header-aware OkHttp factory.
+        val dataSourceFactory: DataSource.Factory = if (src.local) {
+            DefaultDataSource.Factory(this)
+        } else {
+            OkHttpDataSource.Factory(client)
+                .setUserAgent(ua)
+                .setDefaultRequestProperties(sourceHeaders)
+        }
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest
@@ -2481,6 +2523,88 @@ class PlayerActivity : ComponentActivity() {
             if (fallback < 0) fallback = i
         }
         return fallback
+    }
+
+    // ------------------------------------------------------------ Downloads --
+
+    /** Offers the two download destinations: an in-app copy kept for offline
+     *  viewing, or a copy dropped into the phone's Downloads folder. */
+    private fun showDownloadDialog() {
+        val src = sources.getOrNull(currentIndex)
+        if (src == null || src.url.isBlank() || src.isTorrent || src.torrentStream) {
+            Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val label = episodeLabel()
+        AlertDialog.Builder(this)
+            .setTitle("Download")
+            .setMessage(
+                (if (label.isBlank()) "" else "$label\n\n") +
+                    "Where do you want to save this video?"
+            )
+            .setPositiveButton("In Hikari (offline)") { _, _ -> startDownload(DownloadKind.OFFLINE) }
+            .setNeutralButton("Phone storage") { _, _ -> startDownload(DownloadKind.EXPORT) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** The top bar's second line (e.g. "S1 E2 · Freedom Day") — the episode
+     *  label a download is filed under. */
+    private fun episodeLabel(): String =
+        findViewById<TextView>(R.id.subtitle_text)?.text?.toString().orEmpty()
+
+    /** Queues a download of the CURRENT server. The task id is per episode +
+     *  destination, so re-downloading an episode replaces the old entry rather
+     *  than piling up duplicates. */
+    private fun startDownload(kind: DownloadKind) {
+        val src = sources.getOrNull(currentIndex) ?: return
+        if (src.url.isBlank() || src.isTorrent || src.torrentStream) {
+            Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val providerId = historyEntry?.providerId.orEmpty()
+        val mediaId = historyEntry?.mediaId ?: src.url
+        val episodeId = historyEntry?.episodeId.orEmpty()
+        val task = DownloadTask(
+            id = DownloadTask.idFor(providerId.ifBlank { "player" }, mediaId, episodeId, kind),
+            title = historyEntry?.title
+                ?: intent.getStringExtra("title").orEmpty().ifBlank { "Video" },
+            episodeLabel = episodeLabel(),
+            poster = historyEntry?.posterUrl,
+            providerId = providerId,
+            mediaId = mediaId,
+            episodeId = episodeId,
+            sourceName = src.name,
+            url = src.url,
+            headers = src.headers,
+            isM3u8 = src.isM3u8 ||
+                src.url.substringBefore('?').lowercase().contains(".m3u8"),
+            subtitles = src.subtitles,
+            kind = kind,
+            status = DownloadStatus.QUEUED,
+            createdAt = System.currentTimeMillis(),
+            resumePartial = false,
+        )
+        DownloadsRepository.enqueue(this, task)
+        requestNotificationPermission()
+        Toast.makeText(
+            this,
+            if (kind == DownloadKind.EXPORT) "Downloading to phone storage…"
+            else "Downloading for offline watch…",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            runCatching {
+                notificationPermLauncher?.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 
     private fun showError(message: String, hasNext: Boolean) {

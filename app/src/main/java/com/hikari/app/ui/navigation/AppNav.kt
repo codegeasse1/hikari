@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -52,6 +53,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.screens.CatalogScreen
 import com.hikari.app.ui.screens.DetailScreen
+import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
@@ -66,6 +68,7 @@ object Routes {
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
     const val HISTORY = "history"
+    const val DOWNLOADS = "downloads"
     /**
      * Same Search screen, but pre-filled with a query (genre tags, "show all",
      * search suggestions…) and/or scoped to one provider (Home's "Search this
@@ -243,6 +246,7 @@ private val Tabs = listOf(
     Tab(Routes.HOME, "Home", Icons.Filled.Home),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
     Tab(Routes.HISTORY, "History", Icons.Filled.History),
+    Tab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
     Tab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -317,6 +321,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 SearchScreen(nav, initialQuery = q, initialProvider = provider)
             }
             composable(Routes.HISTORY) { HistoryScreen(nav) }
+            composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
             composable(

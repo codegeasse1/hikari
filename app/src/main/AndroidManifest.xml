@@ -8,6 +8,17 @@
          (ExoPlayer WAKE_MODE_NETWORK) so the radio can't drop into power-save
          mid-stream and stall playback. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Downloads run in a foreground dataSync service so the queue keeps
+         going while the user is elsewhere or the screen is off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- API 33+: the download notification needs this to be visible. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Only for exporting into the public Downloads folder on API < 29;
+         API 29+ goes through MediaStore and needs no storage permission. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".HikariApp"
@@ -45,6 +56,11 @@ android:name=".player.PlayerActivity"
             android:hardwareAccelerated="true"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:theme="@style/Theme.Hikari.App" />
+
+        <service
+            android:name=".download.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
