@@ -2,6 +2,10 @@ package com.hikari.app.download
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -15,6 +19,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -51,11 +56,12 @@ data class DlResult(
  * append, so interrupting a big file and resuming never re-downloads the part
  * already on disk.
  *
- * EXPORT additionally concatenates the downloaded parts into one playable file
- * (`.ts` / `.mp4`) and copies it into the phone's Downloads/Hikari folder via
- * MediaStore; an fMP4 stream with a separate audio rendition (which cannot be
- * concatenated into a valid single file) is instead exported as its bundle
- * folder so the local playlist still resolves.
+ * EXPORT additionally produces ONE playable file in the phone's
+ * Downloads/Hikari folder via MediaStore. A single self-contained stream (TS,
+ * or fMP4 with muxed audio) just concatenates its parts; a stream whose audio
+ * arrives as a SEPARATE rendition is remuxed — the video-only parts and the
+ * audio-only parts are each assembled into a file, then both tracks are muxed
+ * with MediaMuxer into a single `.mp4`.
  */
 object DownloadEngine {
 
@@ -76,7 +82,16 @@ object DownloadEngine {
         val isHls = task.isM3u8 || task.url.substringBefore('?').lowercase().contains(".m3u8")
 
         if (isHls) {
-            val res = downloadHls(task.url, headers, ua, workDir, Reporter(onProgress), isCancelled)
+            val res = downloadHls(
+                masterUrl = task.url,
+                headers = headers,
+                ua = ua,
+                workDir = workDir,
+                reporter = Reporter(onProgress),
+                preferredHeight = task.preferredHeight,
+                preferredBandwidth = task.preferredBandwidth,
+                isCancelled = isCancelled,
+            )
             if (task.kind == DownloadKind.EXPORT) {
                 val saved = exportHls(ctx, task, workDir, res)
                 runCatching { workDir.deleteRecursively() }
@@ -160,6 +175,7 @@ object DownloadEngine {
         val videoParts: List<File>,
         val audioParts: List<File>,
         val initPart: File?,
+        val audioInitPart: File?,
         val fmp4: Boolean,
         val durationMs: Long,
     )
@@ -170,6 +186,8 @@ object DownloadEngine {
         ua: String,
         workDir: File,
         reporter: Reporter,
+        preferredHeight: Int,
+        preferredBandwidth: Long,
         isCancelled: () -> Boolean,
     ): HlsResult {
         val (text, finalUrl) = fetchText(masterUrl, headers, ua)
@@ -179,7 +197,7 @@ object DownloadEngine {
         var audioUrl: String? = null
         if (top.isMaster) {
             val variants = top.variants.ifEmpty { throw IOException("HLS master has no variants") }
-            val best = variants.maxByOrNull { it.bandwidth } ?: variants.first()
+            val best = pickVariant(variants, preferredHeight, preferredBandwidth)
             videoUrl = best.url
             best.audioGroup
                 ?.let { g -> top.audios.firstOrNull { it.group == g } }
@@ -214,14 +232,45 @@ object DownloadEngine {
         entry.writeText(sb.toString())
 
         val initPart = workDir.listFiles()?.firstOrNull { it.name == "init_v" + extFor(video.fmp4) }
+        val audioInitPart = audio?.let {
+            workDir.listFiles()?.firstOrNull { f -> f.name == "init_a" + extFor(it.fmp4) }
+        }
         return HlsResult(
             entry = entry,
             videoParts = video.parts,
             audioParts = audio?.parts.orEmpty(),
             initPart = initPart,
+            audioInitPart = audioInitPart,
             fmp4 = video.fmp4,
             durationMs = maxOf(video.durationMs, audio?.durationMs ?: 0L),
         )
+    }
+
+    /** Chooses the variant to download from a master playlist. No preference =
+     *  the highest bandwidth (best quality). A preferred height narrows to that
+     *  resolution; the preferred bandwidth breaks ties and covers playlists
+     *  that omit RESOLUTION entirely (ExoPlayer reports a variant's BANDWIDTH
+     *  as its track's average bitrate). */
+    private fun pickVariant(
+        variants: List<Variant>,
+        preferredHeight: Int,
+        preferredBandwidth: Long,
+    ): Variant {
+        if (preferredHeight <= 0 && preferredBandwidth <= 0L) {
+            return variants.maxByOrNull { it.bandwidth } ?: variants.first()
+        }
+        if (preferredHeight > 0) {
+            val withHeight = variants.filter { it.height > 0 }
+            withHeight.firstOrNull { it.height == preferredHeight }?.let { return it }
+            if (withHeight.isNotEmpty()) {
+                withHeight.minByOrNull { kotlin.math.abs(it.height - preferredHeight) }?.let { return it }
+            }
+        }
+        if (preferredBandwidth > 0L) {
+            variants.firstOrNull { it.bandwidth == preferredBandwidth }?.let { return it }
+            variants.minByOrNull { kotlin.math.abs(it.bandwidth - preferredBandwidth) }?.let { return it }
+        }
+        return variants.maxByOrNull { it.bandwidth } ?: variants.first()
     }
 
     private suspend fun downloadRendition(
@@ -409,31 +458,51 @@ object DownloadEngine {
 
     private fun exportHls(ctx: Context, task: DownloadTask, workDir: File, res: HlsResult): String {
         val base = task.fileBaseName()
+        val hasSeparateAudio = res.audioParts.isNotEmpty()
 
-        // MPEG-TS (plain HLS): video + audio segments concatenate into one
-        // valid transport stream that any player reads.
-        if (!res.fmp4) {
-            val out = File(workDir, "export.ts")
-            FileOutputStream(out).use { os ->
-                res.videoParts.forEach { p -> p.inputStream().use { it.copyTo(os, BUFFER) } }
-                res.audioParts.forEach { p -> p.inputStream().use { it.copyTo(os, BUFFER) } }
+        // Single self-contained stream: it is already a complete playable file
+        // once its parts are concatenated — TS into one .ts, fMP4 (init +
+        // fragments) into one .mp4.
+        if (!hasSeparateAudio) {
+            return if (!res.fmp4) {
+                val out = File(workDir, "export.ts")
+                concat(res.videoParts, out)
+                writeToDownloads(ctx, out, "$base.ts", "video/mp2t", "")
+            } else {
+                val out = File(workDir, "export.mp4")
+                concat(listOfNotNull(res.initPart) + res.videoParts, out)
+                writeToDownloads(ctx, out, "$base.mp4", "video/mp4", "")
             }
-            return writeToDownloads(ctx, out, "$base.ts", "video/mp2t", "")
         }
 
-        // fMP4 with muxed audio: init + fragments concatenate into one .mp4.
-        if (res.audioParts.isEmpty() && res.initPart != null) {
+        // Audio arrives as a SEPARATE rendition. Gluing video-then-audio would
+        // produce a file that plays one track only, so assemble a video-only
+        // file and an audio-only file, then mux both tracks into one .mp4.
+        try {
+            val vFile = File(workDir, "v_mux" + if (res.fmp4) ".mp4" else ".ts")
+            concat(listOfNotNull(res.initPart) + res.videoParts, vFile)
+            val aFile = File(workDir, "a_mux" + if (res.audioInitPart != null) ".mp4" else ".ts")
+            concat(listOfNotNull(res.audioInitPart) + res.audioParts, aFile)
             val out = File(workDir, "export.mp4")
-            FileOutputStream(out).use { os ->
-                res.initPart.inputStream().use { it.copyTo(os, BUFFER) }
-                res.videoParts.forEach { p -> p.inputStream().use { it.copyTo(os, BUFFER) } }
-            }
+            muxTracks(vFile, aFile, out)
+            vFile.delete()
+            aFile.delete()
             return writeToDownloads(ctx, out, "$base.mp4", "video/mp4", "")
+        } catch (t: Throwable) {
+            // Last resort: keep every byte on disk as the local bundle folder so
+            // nothing is lost, even though it won't be a single playable file.
+            listOf("v_mux", "a_mux").forEach { stem ->
+                runCatching { File(workDir, "$stem.mp4").delete() }
+                runCatching { File(workDir, "$stem.ts").delete() }
+            }
+            runCatching { File(workDir, "export.mp4").delete() }
+            return exportBundle(ctx, base, workDir)
         }
+    }
 
-        // fMP4 with a SEPARATE audio track can't be concatenated into one valid
-        // file — export the whole local bundle (playlists + parts) as a folder
-        // so the local index.m3u8 still resolves.
+    /** Fallback export: copy the whole local bundle (playlists + parts) into a
+     *  named folder inside Downloads/Hikari. */
+    private fun exportBundle(ctx: Context, base: String, workDir: File): String {
         val folder = sanitizeFile(base).ifBlank { "hikari-video" }
         var entryUri = ""
         workDir.listFiles().orEmpty().sortedBy { it.name }.forEach { f ->
@@ -444,6 +513,93 @@ object DownloadEngine {
         }
         return entryUri.ifBlank { "Downloads/Hikari/$folder/index.m3u8" }
     }
+
+    private fun concat(parts: List<File>, out: File) {
+        FileOutputStream(out).use { os ->
+            parts.forEach { p -> p.inputStream().use { it.copyTo(os, BUFFER) } }
+        }
+    }
+
+    /**
+     * Remuxes [videoFile]'s video track and [audioFile]'s audio track into a
+     * single MP4 at [out] using the platform's MediaExtractor/MediaMuxer — no
+     * re-encode, samples are copied verbatim. Both inputs may be plain MPEG-TS
+     * or fragmented MP4.
+     */
+    private fun muxTracks(videoFile: File, audioFile: File, out: File) {
+        val vEx = MediaExtractor()
+        val aEx = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        try {
+            vEx.setDataSource(videoFile.absolutePath)
+            val vSrc = firstTrackOfType(vEx, "video/")
+                ?: throw IOException("No video track in the downloaded stream")
+            aEx.setDataSource(audioFile.absolutePath)
+            val aSrc = firstTrackOfType(aEx, "audio/")
+                ?: throw IOException("No audio track in the downloaded stream")
+
+            val vFormat = vEx.getTrackFormat(vSrc)
+            val m = MediaMuxer(out.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxer = m
+            val vDst = m.addTrack(vFormat)
+            val aFormat = aEx.getTrackFormat(aSrc)
+            val aDst = m.addTrack(aFormat)
+            m.start()
+
+            vEx.selectTrack(vSrc)
+            aEx.selectTrack(aSrc)
+            val bufV = ByteBuffer.allocate(maxOf(vFormat.maxInputOr(0), 8 shl 20))
+            val bufA = ByteBuffer.allocate(maxOf(aFormat.maxInputOr(0), 1 shl 20))
+
+            var vTime = vEx.sampleTime
+            var aTime = aEx.sampleTime
+            while (vTime >= 0 || aTime >= 0) {
+                val takeVideo = vTime >= 0 && (aTime < 0 || vTime <= aTime)
+                if (takeVideo) {
+                    vTime = copySample(vEx, bufV, m, vDst)
+                } else {
+                    aTime = copySample(aEx, bufA, m, aDst)
+                }
+            }
+            m.stop()
+        } finally {
+            runCatching { muxer?.release() }
+            runCatching { vEx.release() }
+            runCatching { aEx.release() }
+        }
+    }
+
+    /** Copies the extractor's current sample into the muxer and advances it,
+     *  returning the next sample time (-1 at end of stream). Codec-config
+     *  buffers are skipped — the track format already carries the codec setup. */
+    private fun copySample(
+        ex: MediaExtractor,
+        buf: ByteBuffer,
+        muxer: MediaMuxer,
+        dstTrack: Int,
+    ): Long {
+        val size = ex.readSampleData(buf, 0)
+        if (size < 0) return -1L
+        val flags = ex.sampleFlags
+        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+            val info = MediaCodec.BufferInfo()
+            info.set(0, size, ex.sampleTime, flags)
+            muxer.writeSampleData(dstTrack, buf, info)
+        }
+        ex.advance()
+        return ex.sampleTime
+    }
+
+    private fun firstTrackOfType(ex: MediaExtractor, mimePrefix: String): Int? {
+        for (i in 0 until ex.trackCount) {
+            val mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith(mimePrefix)) return i
+        }
+        return null
+    }
+
+    private fun MediaFormat.maxInputOr(fallback: Int): Int =
+        if (containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else fallback
 
     private fun writeToDownloads(
         ctx: Context,
@@ -507,7 +663,7 @@ object DownloadEngine {
 
     // -------------------------------------------------------------- Playlist --
 
-    private class Variant(val url: String, val bandwidth: Long, val audioGroup: String?)
+    private class Variant(val url: String, val bandwidth: Long, val audioGroup: String?, val height: Int)
     private class AudioRendition(val group: String, val name: String, val url: String)
     private class KeyInfo(val method: String, val uri: String, val iv: ByteArray?)
     private class Segment(
@@ -603,7 +759,8 @@ object DownloadEngine {
                     if (si != null) {
                         val bw = si["BANDWIDTH"]?.toLongOrNull()
                             ?: si["AVERAGE-BANDWIDTH"]?.toLongOrNull() ?: 0L
-                        variants.add(Variant(resolve(baseUrl, line), bw, si["AUDIO"]))
+                        val height = si["RESOLUTION"]?.substringAfterLast('x')?.toIntOrNull() ?: 0
+                        variants.add(Variant(resolve(baseUrl, line), bw, si["AUDIO"], height))
                         pendingStreamInf = null
                     } else {
                         segments.add(Segment(resolve(baseUrl, line), pendingDur, pendingByteRange, pendingKey, pendingMap))

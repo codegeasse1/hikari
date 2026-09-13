@@ -32,6 +32,11 @@ data class DownloadTask(
     val headers: Map<String, String> = emptyMap(),
     val isM3u8: Boolean = false,
     val subtitles: List<SubtitleSource> = emptyList(),
+    /** Preferred HLS quality: the exact variant height to download (0 = the
+     *  highest available), plus that variant's declared bandwidth as a
+     *  tie-breaker for playlists that don't publish a RESOLUTION. */
+    val preferredHeight: Int = 0,
+    val preferredBandwidth: Long = 0L,
     val kind: DownloadKind = DownloadKind.OFFLINE,
     val status: DownloadStatus = DownloadStatus.QUEUED,
     val bytesDone: Long = 0L,
@@ -82,6 +87,8 @@ data class DownloadTask(
         put("url", url)
         put("headers", JSONObject(headers))
         put("isM3u8", isM3u8)
+        put("preferredHeight", preferredHeight)
+        put("preferredBandwidth", preferredBandwidth)
         put(
             "subtitles",
             JSONArray().apply {
@@ -138,6 +145,8 @@ data class DownloadTask(
                 headers = headers,
                 isM3u8 = o.optBoolean("isM3u8"),
                 subtitles = subs,
+                preferredHeight = o.optInt("preferredHeight"),
+                preferredBandwidth = o.optLong("preferredBandwidth"),
                 kind = runCatching { DownloadKind.valueOf(o.optString("kind")) }
                     .getOrDefault(DownloadKind.OFFLINE),
                 status = runCatching { DownloadStatus.valueOf(o.optString("status")) }

@@ -2542,8 +2542,62 @@ class PlayerActivity : ComponentActivity() {
                 (if (label.isBlank()) "" else "$label\n\n") +
                     "Where do you want to save this video?"
             )
-            .setPositiveButton("In Hikari (offline)") { _, _ -> startDownload(DownloadKind.OFFLINE) }
-            .setNeutralButton("Phone storage") { _, _ -> startDownload(DownloadKind.EXPORT) }
+            .setPositiveButton("In Hikari (offline)") { _, _ -> chooseQualityThenDownload(DownloadKind.OFFLINE) }
+            .setNeutralButton("Phone storage") { _, _ -> chooseQualityThenDownload(DownloadKind.EXPORT) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** A video quality the current stream offers: its height (0 when the
+     *  playlist doesn't declare one) and its bandwidth (HLS BANDWIDTH). */
+    private data class VideoQuality(val height: Int, val bandwidth: Long)
+
+    /** The video qualities the current stream exposes, highest first. Comes
+     *  from the tracks the player has already parsed, so it works for HLS
+     *  variants and for a single-file source alike. */
+    private fun availableVideoQualities(): List<VideoQuality> {
+        val p = player ?: return emptyList()
+        val byKey = LinkedHashMap<Int, VideoQuality>()
+        for (group in p.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val bw = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+                val key = if (f.height > 0) f.height else bw.toInt()
+                if (key != 0 && !byKey.containsKey(key)) byKey[key] = VideoQuality(f.height, bw)
+            }
+        }
+        return byKey.values.sortedByDescending { if (it.height > 0) it.height else it.bandwidth.toInt() }
+    }
+
+    private fun qualityLabel(q: VideoQuality): String {
+        val parts = mutableListOf<String>()
+        if (q.height > 0) parts.add("${q.height}p")
+        if (q.bandwidth > 0) parts.add("${q.bandwidth / 1000}kbps")
+        return parts.joinToString(" · ").ifBlank { "Default quality" }
+    }
+
+    /** After the destination is chosen, offer the stream's qualities when it
+     *  exposes more than one; a single-quality source goes straight to the
+     *  download. */
+    private fun chooseQualityThenDownload(kind: DownloadKind) {
+        val qualities = availableVideoQualities()
+        if (qualities.size <= 1) {
+            startDownload(kind, 0, 0L)
+            return
+        }
+        val items = arrayOf("Highest quality") + qualities.map { qualityLabel(it) }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Choose quality")
+            .setItems(items) { _, which ->
+                if (which == 0) {
+                    startDownload(kind, 0, 0L)
+                } else {
+                    val q = qualities[which - 1]
+                    startDownload(kind, q.height, q.bandwidth)
+                }
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -2556,7 +2610,7 @@ class PlayerActivity : ComponentActivity() {
     /** Queues a download of the CURRENT server. The task id is per episode +
      *  destination, so re-downloading an episode replaces the old entry rather
      *  than piling up duplicates. */
-    private fun startDownload(kind: DownloadKind) {
+    private fun startDownload(kind: DownloadKind, preferredHeight: Int, preferredBandwidth: Long) {
         val src = sources.getOrNull(currentIndex) ?: return
         if (src.url.isBlank() || src.isTorrent || src.torrentStream) {
             Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
@@ -2580,6 +2634,8 @@ class PlayerActivity : ComponentActivity() {
             isM3u8 = src.isM3u8 ||
                 src.url.substringBefore('?').lowercase().contains(".m3u8"),
             subtitles = src.subtitles,
+            preferredHeight = preferredHeight,
+            preferredBandwidth = preferredBandwidth,
             kind = kind,
             status = DownloadStatus.QUEUED,
             createdAt = System.currentTimeMillis(),
