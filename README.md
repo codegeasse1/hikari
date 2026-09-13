@@ -9,6 +9,14 @@
 
 Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, built in pure Kotlin + Compose.
 
+## Support & community
+
+Need help, found a bug, or want to request a feature? Join the **Hikari Telegram group** — the fastest way to reach me and get support:
+
+- **Telegram:** <https://t.me/CodegeasseHikari>
+
+Everyone is welcome — post your questions, bug reports, and feature requests there and I'll help you out.
+
 ## Screenshots
 
 | Home | Extensions | Extension repo |
