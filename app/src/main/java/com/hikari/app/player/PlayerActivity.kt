@@ -480,14 +480,15 @@ class PlayerActivity : ComponentActivity() {
                 noSubsRetry = false
                 playSource(currentIndex + 1)
             } else {
-                // Last server failed — retry the whole list (transient CDN
-                // hiccups / DNS glitches often clear on a second pass). Reset
-                // the header walk first: with a single-server list the retry
-                // targets the SAME index, so playSource would keep the max
-                // variant (2 = no headers) and 403 again immediately.
+                // Last server failed — start over, but on a server we haven't
+                // tried yet if there is one. Servers found by the
+                // cross-extension pass arrive LATE and are appended at the END
+                // of the list, so restarting at index 0 would just replay the
+                // dead link we started with instead of the repo that works.
                 noSubsRetry = false
                 resetHeaderWalk()
-                playSource(0)
+                val fresh = freshIndex("")
+                playSource(if (fresh >= 0) fresh else 0)
             }
         }
 
@@ -2275,7 +2276,15 @@ class PlayerActivity : ComponentActivity() {
                     code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
                     code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
                     headerIssue
-                if (!(ioLike && refreshSources(currentIndex))) {
+                // Expired signed links are the classic reason a whole list dies
+                // (ioLike), but a re-extraction is also the ONLY way another
+                // repo's servers can be brought in — and with the
+                // cross-extension pass those are exactly the ones that may
+                // actually play a title this repo can't. So whenever the detail
+                // screen is still attached, ask it for fresh sources before
+                // declaring failure.
+                val canRefresh = ioLike || liveSessionId != null
+                if (!(canRefresh && refreshSources(currentIndex, details))) {
                     showError(details, false)
                 }
             }
@@ -2424,7 +2433,7 @@ class PlayerActivity : ComponentActivity() {
      *  haven't tried yet. Returns true when a re-fetch was kicked off (the
      *  caller must then do nothing else), false when refreshing isn't possible
      *  or has already been exhausted. */
-    private fun refreshSources(failedIndex: Int): Boolean {
+    private fun refreshSources(failedIndex: Int, originalError: String? = null): Boolean {
         val session = liveSessionId ?: return false
         if (refreshAttempts >= MAX_REFRESH_ATTEMPTS) return false
         refreshAttempts++
@@ -2436,7 +2445,7 @@ class PlayerActivity : ComponentActivity() {
         // failure — and the providers may take a few seconds to answer.
         errorPanel?.visibility = View.GONE
         if (bannerMode) showLoadingBanner()
-        Toast.makeText(this, "Servers have expired — re-fetching fresh sources…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Looking for other servers…", Toast.LENGTH_SHORT).show()
         StreamsLive.requestRefresh(session)
         lifecycleScope.launch {
             val deadline = System.currentTimeMillis() + REFRESH_WAIT_MS
@@ -2449,7 +2458,11 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             // Nothing new arrived — report the failure we were already holding.
-            showError("Servers expired and no fresh sources were found.\nTry again in a moment.", false)
+            showError(
+                originalError
+                    ?: "Servers expired and no fresh sources were found.\nTry again in a moment.",
+                false
+            )
         }
         return true
     }
@@ -2687,8 +2700,11 @@ class PlayerActivity : ComponentActivity() {
         private const val MAX_REFRESH_ATTEMPTS = 2
 
         /** How long to wait for re-extracted servers to arrive on the live
-         *  session before giving up and showing the error panel. */
-        private const val REFRESH_WAIT_MS = 25_000L
+         *  session before giving up and showing the error panel. Generous
+         *  because the fresh extraction may include a title search across the
+         *  other installed extensions, which takes longer than re-running one
+         *  repo. */
+        private const val REFRESH_WAIT_MS = 40_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
