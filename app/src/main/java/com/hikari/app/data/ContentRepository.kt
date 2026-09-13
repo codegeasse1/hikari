@@ -3,6 +3,7 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.cs3.YtDlpResolver
+import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.providers.StremioAddon
@@ -54,6 +55,39 @@ class ContentRepository(private val manager: ProviderManager) {
     private val SEARCH_PAGE_TIMEOUT_MS = 25_000L
     private val SEARCH_PROVIDER_BUDGET_MS = 90_000L
     private val SEARCH_TOTAL_BUDGET_MS = 100_000L
+
+    // ---- Cross-extension fallback ----
+    // When the repo a title was opened from comes up empty, the SAME title is
+    // asked of the other installed extensions (search → best match → same
+    // episode → their servers) and whatever they find is merged into the same
+    // source list. CloudStream/.hiki/universal extensions each keep their own
+    // site-specific ids, so the title is the only thing two extensions share —
+    // this works by title, not by id.
+
+    /** How long an empty source search waits before it starts asking the other
+     *  extensions, so a working repo's servers still arrive exactly as fast as
+     *  they always did. */
+    private val CROSS_EXT_GRACE_MS = 6_000L
+
+    /** Total wall-clock budget for the whole cross-extension pass, measured
+     *  from when it starts. Comfortably under the player's live-wait timeout so
+     *  servers found here still reach a player that is already open and
+     *  waiting. */
+    private val CROSS_EXT_BUDGET_MS = 50_000L
+
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS = 12_000L
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS = 12_000L
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS = 40_000L
+
+    /** At most this many extensions are searched at once (a device with dozens
+     *  of installed extensions must not fire dozens of scrapes together). */
+    private val CROSS_EXT_CONCURRENCY = 6
+    private val CROSS_EXT_MAX_TARGETS = 12
+    private val CROSS_EXT_SEMAPHORE = Semaphore(CROSS_EXT_CONCURRENCY)
+
+    /** Minimum title-match score (see [titleScore]) before a search hit is
+     *  trusted as "the same title on that extension". */
+    private val CROSS_EXT_MIN_MATCH = 40
 
     /** Like runCatching but re-throws CancellationException — a coroutine that
      *  gets cancelled (e.g. the user switches tabs while Home is loading every
@@ -375,6 +409,11 @@ class ContentRepository(private val manager: ProviderManager) {
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
+            // The other installed extensions that get a turn when this origin
+            // comes up empty (see crossExtensionSources). Resolved up front so
+            // the safety-net sweep after the merge loop can reuse the list.
+            val crossTargets = crossExtensionTargets(item, origin)
+            var crossRan = false
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
@@ -429,17 +468,36 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 var lastEmitted = -1
+                var crossJobs: List<kotlinx.coroutines.Deferred<List<StreamSource>>> = emptyList()
+                var crossStartedAt = 0L
                 while (true) {
                     jobs.forEach { merge(it) }
+                    crossJobs.forEach { merge(it) }
                     // Progressive emission: hand over every newly-found server
                     // so the UI can show them while the rest keep searching.
                     if (onProgress != null && merged.size != lastEmitted) {
                         lastEmitted = merged.size
                         onProgress(merged.values.toList())
                     }
-                    val allDone = jobs.all { it.isCompleted }
-                    if (allDone) break
                     val now = System.currentTimeMillis()
+                    // Nothing found yet after the grace window → the repo this
+                    // title was opened from doesn't carry it. Ask EVERY other
+                    // installed extension for the same title and merge what
+                    // they find into this same list (progressive emission
+                    // above hands each new server to the UI/player as it
+                    // lands). This is what makes "play from any server from any
+                    // repo" true for extensions, not just Stremio/Nuvio.
+                    if (crossStartedAt == 0L && crossTargets.isNotEmpty() &&
+                        merged.isEmpty() && now - started >= CROSS_EXT_GRACE_MS
+                    ) {
+                        crossStartedAt = now
+                        crossRan = true
+                        crossJobs = crossTargets.map { p ->
+                            scope.async { crossExtensionSources(p, item, episode) }
+                        }
+                    }
+                    val allDone = jobs.all { it.isCompleted } && crossJobs.all { it.isCompleted }
+                    if (allDone) break
                     // Wait for EVERY provider (like Stremio aggregating every
                     // addon): each installed nuvio provider is independent
                     // (it resolves from the TMDB id alone), so each one that
@@ -447,10 +505,13 @@ class ContentRepository(private val manager: ProviderManager) {
                     // old first-non-empty early-close cancelled every provider
                     // that hadn't answered within ~1.5s, which is why only one
                     // provider's servers ever showed up in the player.
-                    if (now > deadline) break
+                    val hardDeadline = if (crossStartedAt == 0L) deadline
+                    else maxOf(deadline, crossStartedAt + CROSS_EXT_BUDGET_MS)
+                    if (now > hardDeadline) break
                     kotlinx.coroutines.delay(80)
                 }
                 jobs.forEach { it.cancel() }
+                crossJobs.forEach { it.cancel() }
                 result = merged.values.toList()
             } finally {
                 scope.cancel()
@@ -462,6 +523,16 @@ class ContentRepository(private val manager: ProviderManager) {
             // w3.org page in the web view instead of playing).
             var finalResult = result.filterNot { isGarbageUrl(it.url) }
                 .distinctBy { it.infoHash ?: it.url }
+            // Safety net: the main pass may have produced servers that the
+            // filters above rejected outright (e.g. only archive links), in
+            // which case the other extensions were never asked (the merge loop
+            // only starts them when NOTHING arrives). Ask them now — still
+            // before the universal extractor.
+            if (finalResult.isEmpty() && !crossRan) {
+                finalResult = crossExtensionSweep(crossTargets, item, episode)
+                    .filterNot { isGarbageUrl(it.url) }
+                    .distinctBy { it.infoHash ?: it.url }
+            }
             // App-wide universal last resort: every provider type funnels
             // through here, so when they ALL come up empty the bundled yt-dlp
             // extractor still gets one shot at the page (see the helper).
@@ -484,6 +555,156 @@ class ContentRepository(private val manager: ProviderManager) {
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
         return host == "w3.org" || host.endsWith(".w3.org")
     }
+
+    /** The other installed extensions worth asking by title: .cs3 / .hiki /
+     *  universal providers all expose search + load() + loadLinks(). Stremio
+     *  addons resolve by their own item ids (a plugin's page url means nothing
+     *  to them) and nuvio providers were already searched by TMDB id in the main
+     *  pass, so neither is included. A Stremio origin returns nothing here — its
+     *  main pass already asked every addon. */
+    private fun crossExtensionTargets(item: MediaItem, origin: ContentProvider?): List<ContentProvider> {
+        if (origin?.config?.type == ProviderType.STREMIO) return emptyList()
+        return manager.providers.value
+            .filter { p ->
+                p.config.enabled &&
+                    p.config.id != item.providerId &&
+                    (
+                        p.config.type == ProviderType.CS3 ||
+                            p.config.type == ProviderType.HIKARI ||
+                            p.config.type == ProviderType.UNIVERSAL
+                        )
+            }
+            .take(CROSS_EXT_MAX_TARGETS)
+    }
+
+    /** Asks ONE extension for the same title: search it, pick the best-matching
+     *  entry, map the played episode onto that extension's own episode list, and
+     *  extract. Empty when this extension doesn't carry the title or that
+     *  episode — with a line recorded for the "no sources" panel, so each repo's
+     *  verdict is visible instead of a bare "nothing found". */
+    private suspend fun crossExtensionSources(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+    ): List<StreamSource> = CROSS_EXT_SEMAPHORE.withPermit {
+        val title = item.title.trim()
+        if (title.isBlank()) return@withPermit emptyList()
+        val found = withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
+            cancellableCatching { p.search(title, 1) }.getOrDefault(emptyList())
+        }.orEmpty()
+        val best = found
+            .map { it to titleScore(title, item.year, it) }
+            .filter { it.second >= CROSS_EXT_MIN_MATCH }
+            .maxByOrNull { it.second }
+            ?.first
+        if (best == null) {
+            recordStreamMessage(p, "Searched \"$title\" — no matching title in this repo.")
+            return@withPermit emptyList()
+        }
+        // The provider's own load() also rewrites the id to its canonical form,
+        // which is what its loadLinks() expects.
+        val meta = withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
+            cancellableCatching { p.getMeta(best) }.getOrDefault(best)
+        } ?: best
+        var ep = episode
+        if (episode != null) {
+            val eps = withTimeoutOrNull(CROSS_EXT_EPISODES_TIMEOUT_MS) {
+                cancellableCatching { p.getEpisodes(best) }.getOrNull()
+            }.orEmpty()
+            val match = eps.firstOrNull { it.season == episode.season && it.number == episode.number }
+                ?: eps.firstOrNull { it.number == episode.number }
+            if (match == null) {
+                recordStreamMessage(p, "Has the title, but not S${episode.season}E${episode.number}.")
+                return@withPermit emptyList()
+            }
+            ep = match
+        }
+        val got = withTimeoutOrNull(CROSS_EXT_STREAMS_TIMEOUT_MS) {
+            cancellableCatching { p.getStreams(meta, ep) }.getOrDefault(emptyList())
+        }.orEmpty()
+        if (got.isEmpty()) {
+            recordStreamMessage(p, "Has the title and episode, but produced no playable links.")
+            return@withPermit emptyList()
+        }
+        // Found here: clear this repo's diagnostic, and tag each server with the
+        // repo it came from so the player's server list shows its origin.
+        recordStreamMessage(p, null)
+        got.map { s ->
+            if (p.config.name.isBlank() || s.name.startsWith(p.config.name)) s
+            else s.copy(name = "${p.config.name} · ${s.name}")
+        }
+    }
+
+    /** Runs the cross-extension pass on its own — the safety net for when the
+     *  main pass technically returned servers that the playable filters then
+     *  rejected (e.g. only archive links). Bounded by the same budget. */
+    private suspend fun crossExtensionSweep(
+        targets: List<ContentProvider>,
+        item: MediaItem,
+        episode: Episode?,
+    ): List<StreamSource> {
+        if (targets.isEmpty()) return emptyList()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val jobs = targets.map { p -> scope.async { crossExtensionSources(p, item, episode) } }
+            val merged = LinkedHashMap<String, StreamSource>()
+            val deadline = System.currentTimeMillis() + CROSS_EXT_BUDGET_MS
+            while (true) {
+                jobs.forEach { j ->
+                    if (j.isCompleted) {
+                        runCatching { j.getCompleted() }.getOrDefault(emptyList())
+                            .forEach { s -> merged.putIfAbsent(s.infoHash ?: s.url, s) }
+                    }
+                }
+                if (jobs.all { it.isCompleted } || System.currentTimeMillis() > deadline) break
+                kotlinx.coroutines.delay(80)
+            }
+            jobs.forEach { it.cancel() }
+            return merged.values.toList()
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** How well a search hit matches the title we're looking for, so the
+     *  cross-extension fallback picks the right entry off a fuzzy search page
+     *  instead of whatever happened to come first. */
+    private fun titleScore(wanted: String, wantedYear: Int?, candidate: MediaItem): Int {
+        val a = normalizeTitle(wanted)
+        val b = normalizeTitle(candidate.title)
+        if (a.isEmpty() || b.isEmpty()) return 0
+        val base = when {
+            a == b -> 100
+            b.startsWith(a) || a.startsWith(b) -> 70
+            b.contains(a) || a.contains(b) -> 55
+            else -> {
+                val ta = a.split(' ').filter { it.length > 2 }.toSet()
+                val tb = b.split(' ').filter { it.length > 2 }.toSet()
+                if (ta.isEmpty() || tb.isEmpty()) 0
+                else (ta.intersect(tb).size * 100) / maxOf(ta.size, tb.size)
+            }
+        }
+        if (base == 0) return 0
+        val yearInTitle = Regex("\\((19|20)(\\d{2})\\)").find(candidate.title)
+        val yb = candidate.year
+            ?: yearInTitle?.let { (it.groupValues[1] + it.groupValues[2]).toIntOrNull() }
+        return if (wantedYear != null && yb != null) {
+            base + when {
+                wantedYear == yb -> 20
+                kotlin.math.abs(wantedYear - yb) <= 1 -> 5
+                else -> -25
+            }
+        } else base
+    }
+
+    /** Lowercases and strips bracketed/parenthesised noise so
+     *  "India's Got Latent (2024) [S2]" and "indias got latent" compare equal. */
+    private fun normalizeTitle(s: String): String =
+        s.lowercase()
+            .replace(Regex("\\[[^\\]]*]"), " ")
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
 
     /**
      * App-wide universal last resort: native .hiki providers, the .cs3 bridge,
