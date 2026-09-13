@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -189,11 +190,14 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
             if (t.status == DownloadStatus.RUNNING ||
+                t.status == DownloadStatus.CONVERTING ||
                 t.status == DownloadStatus.QUEUED ||
                 t.status == DownloadStatus.PAUSED
             ) {
                 Spacer(Modifier.height(6.dp))
-                if (t.progress > 0f) {
+                if (t.status == DownloadStatus.CONVERTING) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else if (t.progress > 0f) {
                     LinearProgressIndicator(
                         progress = { t.progress },
                         modifier = Modifier.fillMaxWidth()
@@ -209,6 +213,17 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                 DownloadStatus.RUNNING, DownloadStatus.QUEUED -> {
                     IconButton(onClick = { DownloadsRepository.pause(context, t.id) }) {
                         Icon(Icons.Filled.Pause, contentDescription = "Pause")
+                    }
+                }
+                DownloadStatus.CONVERTING -> {
+                    Box(
+                        Modifier.size(40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp
+                        )
                     }
                 }
                 DownloadStatus.PAUSED -> {
@@ -269,6 +284,11 @@ private fun statusLine(t: DownloadTask): String {
             if (t.bytesDone > 0 && t.bytesTotal > 0) {
                 append(" · ").append(fmtBytes(t.bytesDone)).append(" / ").append(fmtBytes(t.bytesTotal))
             }
+            if (t.bytesPerSec > 0L) append(" · ").append(fmtSpeed(t.bytesPerSec))
+            if (t.kind == DownloadKind.EXPORT) append("  →  phone storage")
+        }
+        DownloadStatus.CONVERTING -> buildString {
+            append("Converting")
             if (t.kind == DownloadKind.EXPORT) append("  →  phone storage")
         }
         DownloadStatus.PAUSED -> "Paused" + if (t.progress > 0f) " · $pct%" else ""
@@ -294,6 +314,9 @@ private fun fmtBytes(b: Long): String {
     return if (i == 0) "${b} ${units[0]}"
     else String.format(java.util.Locale.US, "%.1f %s", v, units[i])
 }
+
+private fun fmtSpeed(bps: Long): String =
+    if (bps <= 0L) "" else fmtBytes(bps) + "/s"
 
 private fun playOffline(context: Context, t: DownloadTask) {
     val path = t.localPath ?: return

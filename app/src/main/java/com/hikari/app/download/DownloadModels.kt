@@ -8,7 +8,7 @@ import org.json.JSONObject
  *  or copied out into the phone's Downloads folder. */
 enum class DownloadKind { OFFLINE, EXPORT }
 
-enum class DownloadStatus { QUEUED, RUNNING, PAUSED, DONE, FAILED }
+enum class DownloadStatus { QUEUED, RUNNING, CONVERTING, PAUSED, DONE, FAILED }
 
 /**
  * One downloaded (or downloading) video. Persisted as JSON in its own DataStore
@@ -43,6 +43,8 @@ data class DownloadTask(
     val bytesTotal: Long = -1L,
     val durationMs: Long = 0L,
     val doneDurationMs: Long = 0L,
+    /** Smoothed transfer rate in bytes/second while RUNNING; 0 otherwise. */
+    val bytesPerSec: Long = 0L,
     val error: String? = null,
     /** Directory of the on-disk copy used for in-app offline playback. */
     val localPath: String? = null,
@@ -56,6 +58,7 @@ data class DownloadTask(
     val progress: Float
         get() = when {
             status == DownloadStatus.DONE -> 1f
+            status == DownloadStatus.CONVERTING -> 1f
             durationMs > 0L && doneDurationMs > 0L ->
                 (doneDurationMs.toFloat() / durationMs).coerceIn(0f, 1f)
             bytesTotal > 0L -> (bytesDone.toFloat() / bytesTotal).coerceIn(0f, 1f)
@@ -110,6 +113,7 @@ data class DownloadTask(
         put("bytesTotal", bytesTotal)
         put("durationMs", durationMs)
         put("doneDurationMs", doneDurationMs)
+        put("bytesPerSec", bytesPerSec)
         put("error", error ?: "")
         put("localPath", localPath ?: "")
         put("savedUri", savedUri ?: "")
@@ -162,6 +166,7 @@ data class DownloadTask(
                 bytesTotal = o.optLong("bytesTotal", -1L),
                 durationMs = o.optLong("durationMs"),
                 doneDurationMs = o.optLong("doneDurationMs"),
+                bytesPerSec = o.optLong("bytesPerSec"),
                 error = o.optString("error").ifBlank { null },
                 localPath = o.optString("localPath").ifBlank { null },
                 savedUri = o.optString("savedUri").ifBlank { null },

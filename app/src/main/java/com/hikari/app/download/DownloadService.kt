@@ -93,11 +93,18 @@ class DownloadService : Service() {
 
     private fun buildNotification(tasks: List<DownloadTask>): Notification {
         val active = tasks.firstOrNull { it.status == DownloadStatus.RUNNING }
+            ?: tasks.firstOrNull { it.status == DownloadStatus.CONVERTING }
             ?: tasks.firstOrNull { it.status == DownloadStatus.QUEUED }
         val pending = tasks.count {
-            it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.QUEUED
+            it.status == DownloadStatus.RUNNING ||
+                it.status == DownloadStatus.CONVERTING ||
+                it.status == DownloadStatus.QUEUED
         }
-        val title = if (active != null) "Downloading" else "Hikari downloads"
+        val title = when {
+            active == null -> "Hikari downloads"
+            active.status == DownloadStatus.CONVERTING -> "Converting"
+            else -> "Downloading"
+        }
         val text = if (active != null) {
             buildString {
                 append(active.title)
@@ -122,7 +129,8 @@ class DownloadService : Service() {
             .setContentIntent(open)
             .setPriority(NotificationCompat.PRIORITY_LOW)
         if (active != null) {
-            val indeterminate = active.durationMs <= 0L && active.bytesTotal <= 0L
+            val indeterminate = active.status == DownloadStatus.CONVERTING ||
+                (active.durationMs <= 0L && active.bytesTotal <= 0L)
             builder.setProgress(100, (active.progress * 100).toInt().coerceIn(0, 100), indeterminate)
         } else {
             builder.setProgress(0, 0, true)

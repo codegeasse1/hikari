@@ -61,7 +61,11 @@ object DownloadsRepository {
             _tasks.value = stored.map {
                 // A task that was mid-download when the process died is not
                 // running any more — surface it as paused so the user can resume.
-                if (it.status == DownloadStatus.RUNNING) it.copy(status = DownloadStatus.PAUSED) else it
+                if (it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.CONVERTING) {
+                    it.copy(status = DownloadStatus.PAUSED, bytesPerSec = 0L)
+                } else {
+                    it
+                }
             }
             val app = ctx.applicationContext as? HikariApp
             if (app != null) {
@@ -127,7 +131,12 @@ object DownloadsRepository {
         scope.launch {
             ensureLoaded(ctx)
             update(ctx, id, force = true) {
-                it.copy(status = DownloadStatus.QUEUED, error = null, resumePartial = true)
+                it.copy(
+                    status = DownloadStatus.QUEUED,
+                    error = null,
+                    resumePartial = true,
+                    bytesPerSec = 0L,
+                )
             }
             DownloadService.start(ctx)
         }
@@ -158,7 +167,11 @@ object DownloadsRepository {
         var claimed: DownloadTask? = null
         _tasks.update { list ->
             val limit = maxConcurrent.coerceIn(MIN_CONCURRENCY, MAX_CONCURRENCY)
-            val running = list.count { it.status == DownloadStatus.RUNNING }
+            // A task that is converting is still occupying its slot, so it
+            // counts against the concurrency limit.
+            val running = list.count {
+                it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.CONVERTING
+            }
             val idx = if (running < limit) list.indexOfFirst { it.status == DownloadStatus.QUEUED } else -1
             if (idx < 0) {
                 claimed = null
@@ -201,19 +214,41 @@ object DownloadsRepository {
         flush(ctx, true)
         val flag = cancelFlag(task.id)
         val workDir = workDirFor(ctx, task.id)
+        var lastBytes = 0L
+        var lastSample = System.currentTimeMillis()
+        var speedEma = 0.0
         try {
             val result = DownloadEngine.run(
                 ctx = ctx,
                 task = task,
                 workDir = workDir,
                 onProgress = { p ->
+                    // Smoothed (EMA) transfer rate from the byte deltas between
+                    // progress callbacks, so the row can show a live speed.
+                    val now = System.currentTimeMillis()
+                    val dt = now - lastSample
+                    if (dt >= 200L) {
+                        val delta = p.doneBytes - lastBytes
+                        if (delta > 0L) {
+                            val instant = delta.toDouble() * 1000.0 / dt.toDouble()
+                            speedEma = if (speedEma <= 0.0) instant else speedEma * 0.6 + instant * 0.4
+                        }
+                        lastBytes = p.doneBytes
+                        lastSample = now
+                    }
                     update(ctx, task.id, force = false) {
                         it.copy(
                             bytesDone = p.doneBytes,
                             bytesTotal = if (p.totalBytes > 0) p.totalBytes else it.bytesTotal,
                             durationMs = if (p.durationMs > 0) p.durationMs else it.durationMs,
                             doneDurationMs = if (p.doneDurationMs > 0) p.doneDurationMs else it.doneDurationMs,
+                            bytesPerSec = speedEma.toLong(),
                         )
+                    }
+                },
+                onConverting = {
+                    update(ctx, task.id, force = true) {
+                        it.copy(status = DownloadStatus.CONVERTING, bytesPerSec = 0L)
                     }
                 },
                 isCancelled = { flag.get() },
@@ -225,20 +260,26 @@ object DownloadsRepository {
                     savedUri = result.savedUri,
                     error = null,
                     resumePartial = false,
+                    bytesPerSec = 0L,
                     bytesDone = if (it.bytesTotal > 0) it.bytesTotal else it.bytesDone,
                     doneDurationMs = if (it.durationMs > 0) it.durationMs else it.doneDurationMs,
                 )
             }
         } catch (c: DownloadCancelledException) {
-            update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
+            update(ctx, task.id, force = true) {
+                it.copy(status = DownloadStatus.PAUSED, error = null, bytesPerSec = 0L)
+            }
         } catch (t: Throwable) {
             if (flag.get()) {
-                update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
+                update(ctx, task.id, force = true) {
+                    it.copy(status = DownloadStatus.PAUSED, error = null, bytesPerSec = 0L)
+                }
             } else {
                 update(ctx, task.id, force = true) {
                     it.copy(
                         status = DownloadStatus.FAILED,
                         error = t.message ?: t.javaClass.simpleName,
+                        bytesPerSec = 0L,
                     )
                 }
             }

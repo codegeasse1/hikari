@@ -73,6 +73,7 @@ object DownloadEngine {
         task: DownloadTask,
         workDir: File,
         onProgress: suspend (DlProgress) -> Unit,
+        onConverting: suspend () -> Unit = {},
         isCancelled: () -> Boolean,
     ): DlResult = withContext(Dispatchers.IO) {
         if (!task.resumePartial) runCatching { workDir.deleteRecursively() }
@@ -93,6 +94,7 @@ object DownloadEngine {
                 isCancelled = isCancelled,
             )
             if (task.kind == DownloadKind.EXPORT) {
+                onConverting()
                 val saved = exportHls(ctx, task, workDir, res)
                 runCatching { workDir.deleteRecursively() }
                 DlResult(null, saved)
@@ -102,6 +104,7 @@ object DownloadEngine {
         } else {
             val file = downloadDirect(task, headers, ua, workDir, Reporter(onProgress), isCancelled)
             if (task.kind == DownloadKind.EXPORT) {
+                onConverting()
                 val name = task.fileBaseName() + "." + file.extension.ifBlank { "mp4" }
                 val saved = writeToDownloads(ctx, file, name, mimeForName(name), "")
                 runCatching { workDir.deleteRecursively() }
@@ -124,6 +127,18 @@ object DownloadEngine {
         private var aDurMs = 0L
         private var aTotalDurMs = 0L
         private var hasAudio = false
+
+        /** Pre-seeds the audio rendition's total duration so a task-wide progress
+         *  reading is monotonic. Without it the video-only denominator fills to
+         *  100%, then the audio rendition (whose duration roughly equals the
+         *  video's) doubles the denominator and progress appears to restart at
+         *  50% — even though nothing was lost. */
+        fun expectAudioDuration(ms: Long) {
+            if (ms > 0L) {
+                hasAudio = true
+                aTotalDurMs = ms
+            }
+        }
 
         /** Byte callbacks fire every 64 KiB; without this the UI (and the
          *  DataStore-backed task list) would be rewritten hundreds of times per
@@ -206,6 +221,11 @@ object DownloadEngine {
             videoUrl = finalUrl
         }
 
+        // Learn the audio rendition's length up front (one tiny playlist fetch)
+        // so the two-rendition progress bar never jumps backwards mid-download.
+        val expectedAudioDurMs = if (audioUrl != null) peekDurationMs(audioUrl, headers, ua) else 0L
+        if (expectedAudioDurMs > 0L) reporter.expectAudioDuration(expectedAudioDurMs)
+
         val video = downloadRendition("v", videoUrl, headers, ua, workDir, reporter, true, isCancelled)
 
         var audio: Rendition? = null
@@ -271,6 +291,27 @@ object DownloadEngine {
             variants.minByOrNull { kotlin.math.abs(it.bandwidth - preferredBandwidth) }?.let { return it }
         }
         return variants.maxByOrNull { it.bandwidth } ?: variants.first()
+    }
+
+    /** Fetches a (possibly nested) media playlist and returns its total duration
+     *  in ms, or 0 if it can't be determined. Cheap: no segments are fetched. */
+    private suspend fun peekDurationMs(
+        playlistUrl: String,
+        headers: Map<String, String>,
+        ua: String,
+    ): Long = try {
+        val (text, finalUrl) = fetchText(playlistUrl, headers, ua)
+        var pl = parsePlaylist(text, finalUrl)
+        if (pl.isMaster) {
+            val best = pl.variants.maxByOrNull { it.bandwidth }
+            if (best != null) {
+                val (t2, u2) = fetchText(best.url, headers, ua)
+                pl = parsePlaylist(t2, u2)
+            }
+        }
+        (pl.segments.sumOf { it.duration } * 1000.0).toLong()
+    } catch (t: Throwable) {
+        0L
     }
 
     private suspend fun downloadRendition(
