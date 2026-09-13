@@ -349,9 +349,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // Set "ready" as soon as the FIRST source arrives (not only after every
         // provider has been searched), so the Play button lights up early while
         // the slower providers keep adding servers in the background.
-        resolveStreams(item, ep) { partial ->
+        resolveStreams(item, ep, onProgress = { partial ->
             if (partial.isNotEmpty()) _streamsReady.value = true
-        }
+        })
         _streamsReady.value = true
     }
 
