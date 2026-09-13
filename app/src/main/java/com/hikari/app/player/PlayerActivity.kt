@@ -46,12 +46,16 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.datasource.DataSourceException
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -60,6 +64,8 @@ import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
@@ -73,6 +79,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.ui.PosterLoader
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
@@ -85,7 +92,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
+import java.io.FileNotFoundException
+import java.util.concurrent.ConcurrentHashMap
 
 class PlayerActivity : ComponentActivity() {
 
@@ -660,12 +668,12 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        client = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
+        // The process-wide playback client (see [PlayerHttp]): its connection
+        // pool + dispatcher are shared with [StreamProbe], so the CDN
+        // connection the probe already opened and the TLS session it already
+        // negotiated are reused for the first media request instead of being
+        // paid again when ExoPlayer starts pulling.
+        client = PlayerHttp.client
 
         // Resolve every not-yet-known server while the first one starts: the
         // probe cache then answers instantly for a "Select server" pick, a
@@ -1565,6 +1573,37 @@ class PlayerActivity : ComponentActivity() {
         }.getOrNull()
     }
 
+    /**
+     * Deep-buffer load control tuned for aggregator CDNs.
+     *
+     * media3's defaults cap the buffer at 50 s (`minBufferMs == maxBufferMs`)
+     * and stop loading there. That is fine for a CDN that always delivers
+     * faster than real time, but it leaves no reserve for the ones that only
+     * burst: the moment throughput dips below the stream's bitrate the 50 s
+     * drains away and the user sees the spinner. Raising the ceiling lets
+     * ExoPlayer keep downloading ahead whenever the source can outrun
+     * playback, banking minutes of runway on a link that has the headroom.
+     *
+     * This cannot grow memory without bound: media3's own allocator byte
+     * target (≈125 MB video + ≈12 MB audio, which `largeHeap="true"` comfortably
+     * covers) is still enforced, so a high-bitrate stream stops at the byte cap
+     * exactly as it did before — only low/medium-bitrate streams, which have
+     * the memory to spare, get the deeper time buffer.
+     *
+     * Start/resume thresholds keep media3's snappy defaults (1 s to start,
+     * 2 s to resume after a stall): a longer resume threshold would only make
+     * the spinner itself last longer.
+     */
+    private fun buildLoadControl(): DefaultLoadControl =
+        DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                60_000,   // minBufferMs — the steady-state bank to keep topped up
+                150_000,  // maxBufferMs — ceiling when the link can outrun playback
+                1_000,    // bufferForPlaybackMs — how little we need to start
+                2_000,    // bufferForPlaybackAfterRebufferMs — how little to resume
+            )
+            .build()
+
     /** Safe entry point: any unexpected exception during player setup (a bad
      *  source URL, a plugin-supplied header, an ExoPlayer hiccup) must surface
      *  as "try the next server" or an error panel — never an uncaught crash
@@ -1734,6 +1773,12 @@ class PlayerActivity : ComponentActivity() {
         // with no keys and renders a black screen while the timeline still runs.
         val drmManager = buildDrmSessionManager(src.drm, dataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            // Ride out transient CDN hiccups quietly — a fresh connection and a
+            // Range-resumed read — instead of letting one dropped socket tear
+            // the whole player down, while still failing FAST on terminal ones
+            // (expired 403 links, malformed data) so the failover to the next
+            // server stays snappy (see RetryFriendlyLoadErrorPolicy).
+            .setLoadErrorHandlingPolicy(RetryFriendlyLoadErrorPolicy())
         if (drmManager != null) {
             val manager: DefaultDrmSessionManager = drmManager
             mediaSourceFactory.setDrmSessionManagerProvider { manager }
@@ -1757,6 +1802,13 @@ class PlayerActivity : ComponentActivity() {
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
             .setMediaSourceFactory(mediaSourceFactory)
+            // Deep-buffer, stall-resistant buffering policy — see buildLoadControl.
+            .setLoadControl(buildLoadControl())
+            // Hold the CPU + Wi-Fi radio awake for the whole session (including
+            // PiP/background audio). A radio that drops into power-save
+            // mid-stream is a classic "it randomly stops to buffer" cause on
+            // some devices, and media3's default wake mode is NONE.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             // 5s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
@@ -2651,3 +2703,75 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 }
+
+/**
+ * Load-error handling tuned for aggregator CDNs — the reason a stream stalls or
+ * dies mid-playback on these sources in the first place.
+ *
+ * media3's [DefaultLoadErrorHandlingPolicy] retries everything it doesn't
+ * explicitly exclude on a fixed 1 s → 5 s ladder and gives up after 3 tries.
+ * That shape is wrong for these sources in both directions:
+ *
+ *  - a transient drop (one hung socket, a 502 from an overloaded edge, a
+ *    connection reset mid-segment) gets only 3 retries — often not enough — so
+ *    it surfaces as a fatal playback error: the player tears the stream down
+ *    and fails over, even though re-requesting the same bytes on a fresh
+ *    connection would have been seamless;
+ *  - a genuinely dead link (expired signed URL answering 403/410, a 404)
+ *    *also* burns those retries first, delaying the failover by seconds.
+ *
+ * So: terminal errors fail immediately (no delay at all), and transient ones
+ * retry on a short 0.5 s → 2 s ladder for at most [MAX_RETRY_WINDOW_MS] of
+ * wall-clock time, then escalate. Bounding by TIME rather than by attempt count
+ * also fixes the worst case of an unreachable host: a 15 s connect timeout can
+ * only be paid once inside that window instead of once per attempt.
+ *
+ * media3's variant/location fallback for adaptive (HLS/DASH) streams is left
+ * intact — it is genuinely useful when one rendition of a master playlist is
+ * broken while the others are fine.
+ */
+private class RetryFriendlyLoadErrorPolicy :
+    DefaultLoadErrorHandlingPolicy(TRANSIENT_RETRIES) {
+
+    /** When each load task first reported an error, so its retry ladder can be
+     *  bounded by total wall-clock time rather than a raw attempt count. */
+    private val firstErrorAt = ConcurrentHashMap<Long, Long>()
+
+    override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        if (isTerminal(loadErrorInfo.exception)) return C.TIME_UNSET
+        val now = android.os.SystemClock.elapsedRealtime()
+        val startedAt = firstErrorAt.getOrPut(loadErrorInfo.loadEventInfo.loadTaskId) { now }
+        if (now - startedAt > MAX_RETRY_WINDOW_MS) {
+            firstErrorAt.remove(loadErrorInfo.loadEventInfo.loadTaskId)
+            return C.TIME_UNSET
+        }
+        return minOf(loadErrorInfo.errorCount * 500L, 2_000L)
+    }
+
+    override fun onLoadTaskConcluded(loadTaskId: Long) {
+        firstErrorAt.remove(loadTaskId)
+    }
+
+    /** Errors that re-requesting cannot fix: the URL is expired or rejected, the
+     *  bytes aren't media at all, or the server was asked for a range it cannot
+     *  satisfy. Escalate immediately so the failover is instant. */
+    private fun isTerminal(e: java.io.IOException): Boolean = when (e) {
+        is HttpDataSource.CleartextNotPermittedException -> true
+        is FileNotFoundException -> true
+        is ParserException -> true
+        // A 4xx is the server saying "no" (expired token, forbidden, gone);
+        // 408/429 mean "come back in a moment" and are worth retrying.
+        is HttpDataSource.InvalidResponseCodeException ->
+            e.responseCode in 400..499 && e.responseCode != 408 && e.responseCode != 429
+        else -> DataSourceException.isCausedByPositionOutOfRange(e)
+    }
+}
+
+/** Attempts allowed before a *transient* error is treated as fatal (also the
+ *  ceiling the Loader itself consults; the time window below usually stops the
+ *  ladder first). */
+private const val TRANSIENT_RETRIES = 8
+
+/** How long one load task may keep retrying a transient error before it is
+ *  escalated to the app's own failover / source-refresh logic. */
+private const val MAX_RETRY_WINDOW_MS = 15_000L
