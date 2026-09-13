@@ -570,7 +570,7 @@ object DownloadEngine {
                 val takeVideo = when {
                     v == null -> false
                     a == null -> true
-                    else -> v.timeUs <= a.timeUs
+                    else -> v!!.timeUs <= a!!.timeUs
                 }
                 if (takeVideo) {
                     writePending(m, vDst, bufV, v!!)

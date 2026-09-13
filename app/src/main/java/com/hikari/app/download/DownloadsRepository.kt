@@ -203,44 +203,43 @@ object DownloadsRepository {
         val workDir = workDirFor(ctx, task.id)
         try {
             val result = DownloadEngine.run(
-                    ctx = ctx,
-                    task = task,
-                    workDir = workDir,
-                    onProgress = { p ->
-                        update(ctx, task.id, force = false) {
-                            it.copy(
-                                bytesDone = p.doneBytes,
-                                bytesTotal = if (p.totalBytes > 0) p.totalBytes else it.bytesTotal,
-                                durationMs = if (p.durationMs > 0) p.durationMs else it.durationMs,
-                                doneDurationMs = if (p.doneDurationMs > 0) p.doneDurationMs else it.doneDurationMs,
-                            )
-                        }
-                    },
-                    isCancelled = { flag.get() },
-                )
-                update(ctx, task.id, force = true) {
-                    it.copy(
-                        status = DownloadStatus.DONE,
-                        localPath = result.localPath,
-                        savedUri = result.savedUri,
-                        error = null,
-                        resumePartial = false,
-                        bytesDone = if (it.bytesTotal > 0) it.bytesTotal else it.bytesDone,
-                        doneDurationMs = if (it.durationMs > 0) it.durationMs else it.doneDurationMs,
-                    )
-                }
-            } catch (c: DownloadCancelledException) {
-                update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
-            } catch (t: Throwable) {
-                if (flag.get()) {
-                    update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
-                } else {
-                    update(ctx, task.id, force = true) {
+                ctx = ctx,
+                task = task,
+                workDir = workDir,
+                onProgress = { p ->
+                    update(ctx, task.id, force = false) {
                         it.copy(
-                            status = DownloadStatus.FAILED,
-                            error = t.message ?: t.javaClass.simpleName,
+                            bytesDone = p.doneBytes,
+                            bytesTotal = if (p.totalBytes > 0) p.totalBytes else it.bytesTotal,
+                            durationMs = if (p.durationMs > 0) p.durationMs else it.durationMs,
+                            doneDurationMs = if (p.doneDurationMs > 0) p.doneDurationMs else it.doneDurationMs,
                         )
                     }
+                },
+                isCancelled = { flag.get() },
+            )
+            update(ctx, task.id, force = true) {
+                it.copy(
+                    status = DownloadStatus.DONE,
+                    localPath = result.localPath,
+                    savedUri = result.savedUri,
+                    error = null,
+                    resumePartial = false,
+                    bytesDone = if (it.bytesTotal > 0) it.bytesTotal else it.bytesDone,
+                    doneDurationMs = if (it.durationMs > 0) it.durationMs else it.doneDurationMs,
+                )
+            }
+        } catch (c: DownloadCancelledException) {
+            update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
+        } catch (t: Throwable) {
+            if (flag.get()) {
+                update(ctx, task.id, force = true) { it.copy(status = DownloadStatus.PAUSED, error = null) }
+            } else {
+                update(ctx, task.id, force = true) {
+                    it.copy(
+                        status = DownloadStatus.FAILED,
+                        error = t.message ?: t.javaClass.simpleName,
+                    )
                 }
             }
         }
