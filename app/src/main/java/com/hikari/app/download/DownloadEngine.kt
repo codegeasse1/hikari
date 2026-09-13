@@ -213,7 +213,7 @@ object DownloadEngine {
         val entry = File(workDir, "index.m3u8")
         entry.writeText(sb.toString())
 
-        val initPart = workDir.listFiles()?.firstOrNull { it.name == "init" + extFor(video.fmp4) }
+        val initPart = workDir.listFiles()?.firstOrNull { it.name == "init_v" + extFor(video.fmp4) }
         return HlsResult(
             entry = entry,
             videoParts = video.parts,
@@ -252,7 +252,7 @@ object DownloadEngine {
         // fMP4 init segment (#EXT-X-MAP) — required before any fragment.
         var initFile: File? = null
         segs.firstOrNull { it.mapUrl != null }?.mapUrl?.let { mapUrl ->
-            val f = File(workDir, "init$ext")
+            val f = File(workDir, "init_$prefix$ext")
             if (!(f.exists() && f.length() > 0)) {
                 downloadToFile(mapUrl, headers, ua, f, null, false, { _, _ -> }, isCancelled)
             }
