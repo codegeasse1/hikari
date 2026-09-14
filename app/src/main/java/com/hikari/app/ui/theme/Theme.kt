@@ -1,6 +1,6 @@
 package com.hikari.app.ui.theme
 
-import android.content.res.DisplayMetrics
+import android.util.DisplayMetrics
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
