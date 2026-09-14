@@ -664,7 +664,7 @@ class PlayerActivity : ComponentActivity() {
                     delay(LIVE_WAIT_TIMEOUT_MS)
                     if (sources.isEmpty()) showError("No playable sources received.", false)
                 } else null
-                val tryStart: () -> Unit = {
+                val tryStart: suspend () -> Unit = {
                     if (pendingStart && sources.isNotEmpty() &&
                         (searchDone || sources.size >= startAfter)
                     ) {
