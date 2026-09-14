@@ -75,6 +75,7 @@ import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.UpdateDialog
@@ -308,6 +309,15 @@ fun SettingsScreen() {
             }
         }
 
+        item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                SlowConnectionCard(app)
+            }
+        }
         item {
             GlassCard(
                 Modifier
@@ -612,6 +622,56 @@ private fun DownloadSettingsCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun SlowConnectionCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var enabled by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        enabled = app.store.slowConnection()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Mobile data / slow internet",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Gives every source search much more time and retries extensions " +
+                "that time out, so a weak connection doesn't end in " +
+                "\"No playable sources found\". Only turn it on if you need it — " +
+                "fast connections stay quick with it off.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Slow connection mode",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Enable this if your internet is slow.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    NetTuning.setSlowConnection(it)
+                    scope.launch { runCatching { app.store.setSlowConnection(it) } }
+                }
+            )
+        }
     }
 }
 

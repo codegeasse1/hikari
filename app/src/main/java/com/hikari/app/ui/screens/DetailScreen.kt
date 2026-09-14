@@ -1082,6 +1082,15 @@ fun DetailScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (!com.hikari.app.net.NetTuning.slowConnection) {
+                        Text(
+                            "On mobile data or a slow connection? Turn on " +
+                                "\"Slow connection mode\" in Settings, then search again.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                     if (searchedProviders > 0) {
                         Text(
                             "Searched $searchedProviders addon${if (searchedProviders == 1) "" else "s"} for sources.",

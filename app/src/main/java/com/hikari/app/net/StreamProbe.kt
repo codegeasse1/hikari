@@ -51,8 +51,11 @@ object StreamProbe {
 
     private const val MAX_DEPTH = 3
     private const val HEAD_BYTES = 131_072
-    private const val RESOLVE_TIMEOUT_MS = 12_000L
-    private const val SHARED_WAIT_MS = 14_000L
+
+    /** Probe budgets, scaled up while the Settings "Slow connection mode"
+     *  toggle is on (see [NetTuning]). */
+    private val RESOLVE_TIMEOUT_MS get() = NetTuning.timeout(12_000L)
+    private val SHARED_WAIT_MS get() = NetTuning.timeout(14_000L)
     private const val CACHE_FILE = "stream_probe_cache.json"
     private const val CACHE_MAX = 400
 
@@ -82,11 +85,24 @@ object StreamProbe {
      *  finish (the walk self-limits via a clock deadline instead), and a
      *  total-call cap here was cutting off resolvable 4KHDHub/HubCloud chains
      *  mid-walk. */
-    private val client: OkHttpClient by lazy {
-        PlayerHttp.client.newBuilder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .build()
+    /** OkHttp timeouts are fixed when the client is built, so the client is
+     *  rebuilt (from the shared playback pool) whenever the slow-connection
+     *  toggle flips — otherwise a client cached for a fast connection would
+     *  keep its short 6s/8s budgets after the user enabled slow mode. */
+    @Volatile
+    private var clientCache: OkHttpClient? = null
+
+    private val client: OkHttpClient
+        get() = clientCache ?: synchronized(this) {
+            clientCache ?: PlayerHttp.client.newBuilder()
+                .connectTimeout(NetTuning.timeout(6_000L), TimeUnit.MILLISECONDS)
+                .readTimeout(NetTuning.timeout(8_000L), TimeUnit.MILLISECONDS)
+                .build()
+                .also { clientCache = it }
+        }
+
+    init {
+        NetTuning.onChange { clientCache = null }
     }
 
     private val tokenRe = Regex("""https?://[^\s"'<>\\]+""")

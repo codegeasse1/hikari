@@ -56,6 +56,20 @@ class AppStore(private val ctx: Context) {
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
+        val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
+    }
+
+    /** Slow / mobile-data mode: raise the source-search and stream-probe
+     *  timeouts and retry providers that time out, so a weak connection doesn't
+     *  end in "No playable sources found". Off by default so fast connections
+     *  keep their snappy timeouts. */
+    fun slowConnectionFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_CONNECTION] ?: false }
+
+    suspend fun slowConnection(): Boolean = slowConnectionFlow().first()
+
+    suspend fun setSlowConnection(enabled: Boolean) {
+        store.edit { it[K.SLOW_CONNECTION] = enabled }
     }
 
     /** How many downloads may run simultaneously (1–10). */

@@ -3,6 +3,7 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.cs3.YtDlpResolver
+import com.hikari.app.net.NetTuning
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
@@ -52,9 +53,9 @@ class ContentRepository(private val manager: ProviderManager) {
     // background, so these budgets only cap how long we wait for SLOW extra
     // pages. Trimmed hard (was 90s/240s/260s) so a single dead provider can't
     // make a search feel like it never finishes.
-    private val SEARCH_PAGE_TIMEOUT_MS = 25_000L
-    private val SEARCH_PROVIDER_BUDGET_MS = 90_000L
-    private val SEARCH_TOTAL_BUDGET_MS = 100_000L
+    private val SEARCH_PAGE_TIMEOUT_MS get() = NetTuning.timeout(25_000L)
+    private val SEARCH_PROVIDER_BUDGET_MS get() = NetTuning.timeout(90_000L)
+    private val SEARCH_TOTAL_BUDGET_MS get() = NetTuning.timeout(100_000L)
 
     // ---- Cross-extension fallback ----
     // The SAME title is asked of the other installed extensions (search → best
@@ -82,11 +83,11 @@ class ContentRepository(private val manager: ProviderManager) {
      *  from when it starts. Comfortably under the player's live-wait timeout so
      *  servers found here still reach a player that is already open and
      *  waiting. */
-    private val CROSS_EXT_BUDGET_MS = 50_000L
+    private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(50_000L)
 
-    private val CROSS_EXT_SEARCH_TIMEOUT_MS = 10_000L
-    private val CROSS_EXT_EPISODES_TIMEOUT_MS = 10_000L
-    private val CROSS_EXT_STREAMS_TIMEOUT_MS = 40_000L
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(40_000L)
 
     /** Searching a title is cheap; extracting links is not, so they get their
      *  own caps. The wider one lets every installed extension be SEARCHED in
@@ -120,6 +121,27 @@ class ContentRepository(private val manager: ProviderManager) {
         } catch (t: Throwable) {
             Result.failure(t)
         }
+
+    /** One provider's stream lookup, with the slow-connection retry: while
+     *  [NetTuning] slow mode is on, a provider that times out or throws is
+     *  asked again (up to [NetTuning.attempts]) instead of being written off
+     *  for the rest of the search — the usual cause of "No playable sources
+     *  found" on mobile data, where a single late response used to end it. */
+    private suspend fun fetchStreams(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+    ): List<StreamSource> {
+        val timeoutMs = NetTuning.timeout(45_000L)
+        val maxAttempts = NetTuning.attempts()
+        var attempt = 0
+        while (true) {
+            val got = cancellableCatching {
+                withTimeoutOrNull(timeoutMs) { p.getStreams(item, episode) }.orEmpty()
+            }.getOrDefault(emptyList())
+            if (got.isNotEmpty() || ++attempt >= maxAttempts) return got
+        }
+    }
 
     /**
      * Loads Home rows. Catalogs inside a provider are fetched IN PARALLEL but
@@ -448,9 +470,9 @@ class ContentRepository(private val manager: ProviderManager) {
                                 // budget. Bound these jobs by the overall
                                 // deadline; the runtime's CALL budget bounds
                                 // real work.
-                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
+                                fetchStreams(p, item, episode)
                             } else {
-                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
+                                fetchStreams(p, item, episode)
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             if (isNuvio) {
@@ -474,7 +496,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 // through the concurrency cap plus a few fallbacks. Results are
                 // emitted progressively via onProgress, so the UI never sits on
                 // an empty spinner while this runs.
-                val deadline = started + 55_000L
+                val deadline = started + NetTuning.timeout(55_000L)
                 // With no main targets at all (e.g. a title opened from a repo
                 // that has since been uninstalled) there is nothing to wait
                 // for — start the other extensions immediately instead of
@@ -741,7 +763,7 @@ class ContentRepository(private val manager: ProviderManager) {
         recordStreamMessage(origin, "Standard extractors found nothing - trying yt-dlp...")
         var timedOut = false
         val got = runCatching {
-            withTimeoutOrNull(45_000) { YtDlpResolver.resolve(pageUrl) }
+            withTimeoutOrNull(NetTuning.timeout(45_000)) { YtDlpResolver.resolve(pageUrl) }
                 ?: run { timedOut = true; emptyList() }
         }.getOrDefault(emptyList())
         if (got.isEmpty()) {

@@ -10,6 +10,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.net.Http
+import com.hikari.app.net.NetTuning
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
 import com.lagradost.cloudstream3.MainAPI
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -109,6 +111,11 @@ class HikariApp : Application() {
         initCloudStream(this)
         store = AppStore(this)
         providers = ProviderManager(store)
+        // Mirror the persisted slow-connection toggle into NetTuning (read
+        // synchronously by the search/probe timeouts) and keep it in sync.
+        appScope.launch {
+            store.slowConnectionFlow().collect { NetTuning.setSlowConnection(it) }
+        }
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
