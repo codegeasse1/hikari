@@ -240,6 +240,14 @@
         android:gravity="center_vertical"
         android:layoutDirection="ltr">
 
+      <!-- Mirrors the footprint of @id/resize_btn (26dp + 3dp start margin +
+           2dp end margin). Without it the scroll view ends at the resize
+           button, so a centred pill row would still sit ~15dp left of the
+           screen's centre line; with it, the row's centre is the screen's. -->
+      <View
+          android:layout_width="31dp"
+          android:layout_height="1dp" />
+
       <!-- Our own pills. Deliberately a DIFFERENT parent from
            exo_basic_controls so media3's overflow logic can never move them,
            and scrollable so a narrow phone just scrolls the row. -->
@@ -259,6 +267,7 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
+            android:layout_gravity="center"
             android:layoutDirection="ltr">
 
           <TextView

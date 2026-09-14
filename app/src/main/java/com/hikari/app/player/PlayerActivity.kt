@@ -11,6 +11,7 @@ import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Point
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -1543,8 +1544,8 @@ class PlayerActivity : ComponentActivity() {
             isClickable = onClick != null
             isFocusable = onClick != null
             setPadding(
-                (13 * density).toInt(), (9 * density).toInt(),
-                (12 * density).toInt(), (9 * density).toInt()
+                (13 * density).toInt(), (10.5f * density).toInt(),
+                (12 * density).toInt(), (10.5f * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -1620,6 +1621,60 @@ class PlayerActivity : ComponentActivity() {
     /** Adds a plain labelled row to [list]. */
     private fun addOptionRow(list: LinearLayout, label: String, selected: Boolean, onClick: (() -> Unit)?) {
         addOptionRow(list, GlassOption(label, selected = selected), onClick)
+    }
+
+    /** The window's CURRENT size, in px.
+     *
+     *  [resources.displayMetrics] is not that: it reports the display's natural
+     *  (portrait) metrics, so in the landscape player it answers 1080x2460 even
+     *  though the window is 2460x1080. Every "shrink to fit the screen" cap
+     *  below was therefore measured against the wrong axis and never bit, which
+     *  is why the dialogs grew past the bottom of the video. WindowMetrics (API
+     *  30+) and getRealSize both follow the current rotation. */
+    private fun windowSize(): Point {
+        val size = Point()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+            size.set(bounds.width(), bounds.height())
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealSize(size)
+        }
+        return size
+    }
+
+    /**
+     * Wraps [panel] in the "halo stage": a frame with just enough room around
+     * the panel for [GlassArcView] to paint its glow. Every player dialog builds
+     * its panel through here, so all of them — the menus, the progress panels
+     * and the "continue from where you left off?" prompt — wear the same curved,
+     * glowing silhouette.
+     */
+    private fun haloStage(panel: View, panelHeight: Int): FrameLayout {
+        val density = resources.displayMetrics.density
+        val padH = (12 * density).toInt()
+        val padV = (16 * density).toInt()
+        return FrameLayout(this).apply {
+            addView(
+                GlassArcView(
+                    this@PlayerActivity, accentStartColor, accentMidColor, accentEndColor
+                ).apply { insetPx = padH },
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, panelHeight
+                ).apply {
+                    leftMargin = padH
+                    rightMargin = padH
+                    topMargin = padV
+                    bottomMargin = padV
+                }
+            )
+        }
     }
 
     /**
@@ -1713,22 +1768,23 @@ class PlayerActivity : ComponentActivity() {
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val dm = resources.displayMetrics
-        // The panel must FLOAT on the video with all four rounded corners
-        // visible: it is capped both against the hint row above it and against a
-        // fraction of the screen, so it never runs off the top/bottom edge (which
-        // used to clip its bottom curve and hide the last rows). Anything longer
-        // than the cap scrolls inside the panel.
-        val hintRoom = (56 * density).toInt()
-        val fitsScreen = (dm.heightPixels - hintRoom).coerceAtLeast((110 * density).toInt())
-        val maxFraction = (dm.heightPixels * 0.58f).toInt()
+        val win = windowSize()
+        val padH = (12 * density).toInt()
+        // The panel must FLOAT on the video with all four rounded corners (and
+        // the halo sweeping around them) visible: it is capped against the hint
+        // line plus the arc's own room above it, and against a fraction of the
+        // window, so it never runs off the top/bottom edge — which used to clip
+        // its bottom curve and hide the last rows. Anything longer scrolls.
+        val chrome = (64 * density).toInt()
+        val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
+        val maxFraction = (win.y * 0.58f).toInt()
         val minPanel = (110 * density).toInt()
         val panelH = (preferredHeightDp * density).toInt()
             .coerceAtMost(fitsScreen)
             .coerceAtMost(maxFraction)
             .coerceAtLeast(minPanel)
-        root.addView(panel, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, panelH
+        root.addView(haloStage(panel, panelH), LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
         dialog.setContentView(
@@ -1741,16 +1797,17 @@ class PlayerActivity : ComponentActivity() {
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
         dialog.show()
-        // Narrower than a stock dialog: the reference panel is ~3/4 of the screen
+        // Narrower than a stock dialog: the reference panel is ~3/4 of the window
         // height wide and never spans the full width, which is a large part of
         // why it reads as a lightweight overlay instead of a full-screen sheet.
-        val w = minOf(
-            (dm.widthPixels * 0.86f).toInt(),
-            (dm.heightPixels * 0.78f).toInt(),
+        // The halo paddings are added back on top so the PANEL keeps that width.
+        val panelW = minOf(
+            (win.x * 0.86f).toInt(),
+            (win.y * 0.74f).toInt(),
             (400 * density).toInt(),
         )
         dialog.window?.apply {
-            setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(panelW + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -1805,11 +1862,11 @@ class PlayerActivity : ComponentActivity() {
         content.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        // Capsule rows are ~35dp tall (48dp when they carry a second line), 4dp
+        // Capsule rows are ~38dp tall (51dp when they carry a second line), 4dp
         // apart inside the list's own padding — mirrored here so the panel opens
         // at its natural height instead of always filling the screen. presentGlass
         // still caps this against the screen, and anything longer scrolls.
-        val height = options.sumOf { if (it.sub.isNullOrBlank()) 35.0 else 48.0 }.toFloat() +
+        val height = options.sumOf { if (it.sub.isNullOrBlank()) 38.0 else 51.0 }.toFloat() +
             options.size * 4f + 14f +
             (if (!message.isNullOrBlank()) 42f else 0f)
         onDialog?.invoke(dialog)
@@ -1867,8 +1924,9 @@ class PlayerActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = (8 * density).toInt() })
+        val padH = (12 * density).toInt()
         dialog.setContentView(
-            panel,
+            haloStage(panel, ViewGroup.LayoutParams.WRAP_CONTENT),
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
@@ -1878,14 +1936,14 @@ class PlayerActivity : ComponentActivity() {
         dialog.setCancelable(cancelable)
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
         dialog.show()
-        val dm = resources.displayMetrics
+        val win = windowSize()
         val w = minOf(
-            (dm.widthPixels * 0.62f).toInt(),
-            (dm.heightPixels * 0.6f).toInt(),
+            (win.x * 0.62f).toInt(),
+            (win.y * 0.6f).toInt(),
             (300 * density).toInt(),
         )
         dialog.window?.apply {
-            setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(w + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.55f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
