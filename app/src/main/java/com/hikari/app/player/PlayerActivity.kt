@@ -26,6 +26,7 @@ import android.provider.Settings
 import android.text.TextUtils
 import android.util.Base64
 import android.util.Rational
+import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -1293,6 +1294,17 @@ class PlayerActivity : ComponentActivity() {
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
 
+    /**
+     * Sets a [TextView]'s size in dp — deliberately NOT sp — so the player's
+     * overlay chrome keeps the reference design's compact proportions even when
+     * the phone's system font size is turned up. The video overlay is chrome,
+     * not body copy, so it should not follow the text-accessibility scale:
+     * that scaling is what made every menu and pill read as oversized.
+     */
+    private fun TextView.dpText(sizeDp: Float) {
+        setTextSize(TypedValue.COMPLEX_UNIT_PX, sizeDp * resources.displayMetrics.density)
+    }
+
     /** How a glass menu row draws its leading marker. */
     private enum class RowMarker { RADIO, ICON, NONE }
 
@@ -1383,24 +1395,31 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** A track's secondary line, or null when it would just be noise — a bare
-     *  format id ("1"), a blank label, or a repeat of [primary]. */
+     *  format id ("1", "1/8219"), a blank label, or a repeat of [primary]. At
+     *  least two letters are required, so id-ish strings never become a row's
+     *  subtitle (that used to print stray "1/8219" lines under the labels). */
     private fun trackSub(primary: String, vararg candidates: String?): String? =
         candidates.asSequence()
             .mapNotNull { it?.takeIf { c -> c.isNotBlank() && c != primary } }
-            .firstOrNull { c -> c.any { ch -> !ch.isDigit() } }
+            .firstOrNull { c -> c.count { ch -> ch.isLetter() } >= 2 }
+
+    /** A usable display name for a media track: [label] when it reads like a
+     *  name, else "Track N" — some streams expose only bare ids ("1/8219"). */
+    private fun trackLabel(label: String?, fallbackIndex: Int): String =
+        label?.takeIf { it.count { ch -> ch.isLetter() } >= 2 } ?: "Track ${fallbackIndex + 1}"
 
     /** A small glass pill: the right-aligned value badge on a row. */
-    private fun glassPill(text: String, sizeSp: Float = 11f): TextView {
+    private fun glassPill(text: String, sizeDp: Float = 10f): TextView {
         val density = resources.displayMetrics.density
         return TextView(this).apply {
             this.text = text
-            textSize = sizeSp
+            dpText(sizeDp)
             includeFontPadding = false
             setTextColor(0xFFC9D2E0.toInt())
             gravity = Gravity.CENTER
             setPadding(
-                (9 * density).toInt(), (4 * density).toInt(),
-                (9 * density).toInt(), (4 * density).toInt()
+                (8 * density).toInt(), (3 * density).toInt(),
+                (8 * density).toInt(), (3 * density).toInt()
             )
             // No outline: the badge reads as a soft grey chip sitting on the
             // row, exactly like the reference player's bitrate pills.
@@ -1420,15 +1439,15 @@ class PlayerActivity : ComponentActivity() {
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(
-                (18 * density).toInt(), (18 * density).toInt()
-            ).apply { marginStart = (10 * density).toInt() }
+                (15 * density).toInt(), (15 * density).toInt()
+            ).apply { marginStart = (7 * density).toInt() }
         }
     }
 
     /** The leading marker of a row, or null for [RowMarker.NONE]. */
     private fun rowMarker(option: GlassOption): View? {
         val density = resources.displayMetrics.density
-        val size = (20 * density).toInt()
+        val size = (17 * density).toInt()
         return when (option.marker) {
             RowMarker.RADIO -> {
                 // The reference player's radio: a filled gradient disc with a
@@ -1443,30 +1462,30 @@ class PlayerActivity : ComponentActivity() {
                             }
                         )
                     ).apply {
-                        val inset = (5.5f * density).toInt()
+                        val inset = (4.5f * density).roundToInt()
                         setLayerInset(1, inset, inset, inset, inset)
                     }
                 } else {
                     GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
                         setColor(0x00000000)
-                        setStroke((2 * density).toInt().coerceAtLeast(1), 0x8CFFFFFF.toInt())
+                        setStroke((1.5f * density).roundToInt().coerceAtLeast(1), 0x8CFFFFFF.toInt())
                     }
                 }
                 View(this).apply {
                     background = marker
                     layoutParams = LinearLayout.LayoutParams(size, size)
-                        .apply { marginEnd = (14 * density).toInt() }
+                        .apply { marginEnd = (11 * density).toInt() }
                 }
             }
             RowMarker.ICON -> {
                 if (option.iconRes == 0) {
                     null
                 } else {
-                    val disc = (34 * density).toInt()
+                    val disc = (28 * density).toInt()
                     FrameLayout(this).apply {
                         layoutParams = LinearLayout.LayoutParams(disc, disc)
-                            .apply { marginEnd = (13 * density).toInt() }
+                            .apply { marginEnd = (10 * density).toInt() }
                         background = GradientDrawable().apply {
                             shape = GradientDrawable.OVAL
                             setColor(0x1FFFFFFF)
@@ -1477,8 +1496,8 @@ class PlayerActivity : ComponentActivity() {
                             imageTintList = ColorStateList.valueOf(0xFFE6EAF3.toInt())
                             scaleType = ImageView.ScaleType.CENTER_INSIDE
                             setPadding(
-                                (8 * density).toInt(), (8 * density).toInt(),
-                                (8 * density).toInt(), (8 * density).toInt()
+                                (6 * density).toInt(), (6 * density).toInt(),
+                                (6 * density).toInt(), (6 * density).toInt()
                             )
                         }, FrameLayout.LayoutParams(
                             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1507,7 +1526,7 @@ class PlayerActivity : ComponentActivity() {
             ).apply {
                 cornerRadius = 999f
                 setStroke(
-                    (1.2f * density).toInt().coerceAtLeast(1),
+                    (1.5f * density).roundToInt().coerceAtLeast(1),
                     withAlpha(accentMidColor, 0.85f)
                 )
             }
@@ -1524,8 +1543,8 @@ class PlayerActivity : ComponentActivity() {
             isClickable = onClick != null
             isFocusable = onClick != null
             setPadding(
-                (16 * density).toInt(), (12 * density).toInt(),
-                (14 * density).toInt(), (12 * density).toInt()
+                (13 * density).toInt(), (9 * density).toInt(),
+                (12 * density).toInt(), (9 * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -1535,7 +1554,7 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                textSize = 14f
+                dpText(13f)
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
@@ -1545,31 +1564,31 @@ class PlayerActivity : ComponentActivity() {
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
-                    textSize = 11.5f
+                    dpText(10.5f)
                     maxLines = 2
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
                 }, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = (2 * density).toInt() })
+                ).apply { topMargin = (1 * density).toInt() })
             }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         option.badge?.takeIf { it.isNotBlank() }?.let { badge ->
             row.addView(glassPill(badge), LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = (10 * density).toInt() })
+            ).apply { marginStart = (8 * density).toInt() })
         }
         if (option.selected) {
             row.addView(checkMark())
         } else if (option.chevron) {
             row.addView(TextView(this).apply {
                 text = "\u203A"
-                textSize = 20f
+                dpText(16f)
                 includeFontPadding = false
                 setTextColor(0xFF7E8AA0.toInt())
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = (8 * density).toInt() })
+            ).apply { marginStart = (6 * density).toInt() })
         }
         if (onClick != null) row.setOnClickListener { onClick() }
         return row
@@ -1581,8 +1600,8 @@ class PlayerActivity : ComponentActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
-                (12 * density).toInt(), (8 * density).toInt(),
-                (12 * density).toInt(), (4 * density).toInt()
+                (10 * density).toInt(), (6 * density).toInt(),
+                (10 * density).toInt(), (4 * density).toInt()
             )
         }
     }
@@ -1594,7 +1613,7 @@ class PlayerActivity : ComponentActivity() {
             glassRow(option, onClick),
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (5 * density).toInt() }
+            ).apply { bottomMargin = (4 * density).toInt() }
         )
     }
 
@@ -1635,7 +1654,7 @@ class PlayerActivity : ComponentActivity() {
             ?.let { line ->
                 TextView(this).apply {
                     text = line
-                    textSize = 12f
+                    dpText(11.5f)
                     includeFontPadding = false
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
@@ -1645,7 +1664,7 @@ class PlayerActivity : ComponentActivity() {
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((10 * density).toInt(), 0, 0, (10 * density).toInt())
+            setPadding((8 * density).toInt(), 0, 0, (8 * density).toInt())
             if (hintView != null) {
                 if (iconRes != 0) {
                     addView(ImageView(this@PlayerActivity).apply {
@@ -1653,19 +1672,19 @@ class PlayerActivity : ComponentActivity() {
                         imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
                         scaleType = ImageView.ScaleType.CENTER_INSIDE
                     }, LinearLayout.LayoutParams(
-                        (15 * density).toInt(), (15 * density).toInt()
-                    ).apply { marginEnd = (9 * density).toInt() })
+                        (14 * density).toInt(), (14 * density).toInt()
+                    ).apply { marginEnd = (7 * density).toInt() })
                 }
                 addView(hintView, LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                ).apply { marginEnd = (10 * density).toInt() })
+                ).apply { marginEnd = (8 * density).toInt() })
             } else {
                 addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
             }
             if (cancelable) {
                 addView(TextView(this@PlayerActivity).apply {
                     text = "\u2715"
-                    textSize = 13f
+                    dpText(12f)
                     includeFontPadding = false
                     gravity = Gravity.CENTER
                     setTextColor(0xE6FFFFFF.toInt())
@@ -1674,7 +1693,7 @@ class PlayerActivity : ComponentActivity() {
                     )
                     isClickable = true
                     setOnClickListener { dialog.dismiss() }
-                }, LinearLayout.LayoutParams((30 * density).toInt(), (30 * density).toInt()))
+                }, LinearLayout.LayoutParams((26 * density).toInt(), (26 * density).toInt()))
             }
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1687,17 +1706,27 @@ class PlayerActivity : ComponentActivity() {
         }
         panel.addView(ScrollView(this).apply {
             addView(content)
-            isFillViewport = true
+            // A permanent thin scrollbar makes it obvious the panel scrolls — the
+            // old fixed-height panel hid its last rows with no affordance at all.
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val dm = resources.displayMetrics
-        // Reserve the hint line above the panel plus a little breathing room, so
-        // the hint + panel always fit on screen and a stream offering many
-        // options scrolls inside the panel instead of clipping its edges.
-        val reserved = (58 * density).toInt()
-        val panelH = (preferredHeightDp * density).toInt().coerceAtMost(
-            (dm.heightPixels - reserved).coerceAtLeast((160 * density).toInt())
-        )
+        // The panel must FLOAT on the video with all four rounded corners
+        // visible: it is capped both against the hint row above it and against a
+        // fraction of the screen, so it never runs off the top/bottom edge (which
+        // used to clip its bottom curve and hide the last rows). Anything longer
+        // than the cap scrolls inside the panel.
+        val hintRoom = (56 * density).toInt()
+        val fitsScreen = (dm.heightPixels - hintRoom).coerceAtLeast((110 * density).toInt())
+        val maxFraction = (dm.heightPixels * 0.58f).toInt()
+        val minPanel = (110 * density).toInt()
+        val panelH = (preferredHeightDp * density).toInt()
+            .coerceAtMost(fitsScreen)
+            .coerceAtMost(maxFraction)
+            .coerceAtLeast(minPanel)
         root.addView(panel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, panelH
         ))
@@ -1712,7 +1741,14 @@ class PlayerActivity : ComponentActivity() {
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
         dialog.show()
-        val w = (dm.widthPixels * 0.9f).coerceAtMost(460 * density).toInt()
+        // Narrower than a stock dialog: the reference panel is ~3/4 of the screen
+        // height wide and never spans the full width, which is a large part of
+        // why it reads as a lightweight overlay instead of a full-screen sheet.
+        val w = minOf(
+            (dm.widthPixels * 0.86f).toInt(),
+            (dm.heightPixels * 0.78f).toInt(),
+            (400 * density).toInt(),
+        )
         dialog.window?.apply {
             setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -1746,7 +1782,7 @@ class PlayerActivity : ComponentActivity() {
         if (!message.isNullOrBlank()) {
             content.addView(TextView(this).apply {
                 text = message
-                textSize = 12.5f
+                dpText(11f)
                 includeFontPadding = false
                 setLineSpacing(3f * density, 1f)
                 setTextColor(0xFF9AA5B5.toInt())
@@ -1769,12 +1805,13 @@ class PlayerActivity : ComponentActivity() {
         content.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        // Capsule rows are ~44dp tall (59dp when they carry a second line), 5dp
+        // Capsule rows are ~35dp tall (48dp when they carry a second line), 4dp
         // apart inside the list's own padding — mirrored here so the panel opens
-        // at its natural height instead of always filling the screen.
-        val height = options.sumOf { if (it.sub.isNullOrBlank()) 44.0 else 59.0 }.toFloat() +
-            options.size * 5f + 12f +
-            (if (!message.isNullOrBlank()) 46f else 0f)
+        // at its natural height instead of always filling the screen. presentGlass
+        // still caps this against the screen, and anything longer scrolls.
+        val height = options.sumOf { if (it.sub.isNullOrBlank()) 35.0 else 48.0 }.toFloat() +
+            options.size * 4f + 14f +
+            (if (!message.isNullOrBlank()) 42f else 0f)
         onDialog?.invoke(dialog)
         val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable)
         if (hintView != null) onHint?.invoke(hintView)
@@ -1801,16 +1838,16 @@ class PlayerActivity : ComponentActivity() {
             background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
             clipToOutline = true
             setPadding(
-                (26 * density).toInt(), (28 * density).toInt(),
-                (26 * density).toInt(), (28 * density).toInt()
+                (22 * density).toInt(), (24 * density).toInt(),
+                (22 * density).toInt(), (24 * density).toInt()
             )
         }
         panel.addView(ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(accentMidColor)
-        }, LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()))
+        }, LinearLayout.LayoutParams((34 * density).toInt(), (34 * density).toInt()))
         panel.addView(TextView(this).apply {
             text = title
-            textSize = 15.5f
+            dpText(14f)
             includeFontPadding = false
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(0xFFFFFFFF.toInt())
@@ -1822,7 +1859,7 @@ class PlayerActivity : ComponentActivity() {
         ).apply { topMargin = (18 * density).toInt() })
         panel.addView(TextView(this).apply {
             text = message
-            textSize = 12.5f
+            dpText(11f)
             includeFontPadding = false
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
@@ -1842,7 +1879,11 @@ class PlayerActivity : ComponentActivity() {
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
         dialog.show()
         val dm = resources.displayMetrics
-        val w = (dm.widthPixels * 0.72f).coerceAtMost(340 * density).toInt()
+        val w = minOf(
+            (dm.widthPixels * 0.62f).toInt(),
+            (dm.heightPixels * 0.6f).toInt(),
+            (300 * density).toInt(),
+        )
         dialog.window?.apply {
             setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -2070,10 +2111,7 @@ class PlayerActivity : ComponentActivity() {
             val mediaGroup = group.mediaTrackGroup
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val primary = languageOf(f.language)
-                    ?: f.label?.takeIf { it.isNotBlank() }
-                    ?: f.id?.takeIf { it.isNotBlank() }
-                    ?: "Track ${i + 1}"
+                val primary = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
                 val sub = trackSub(primary, f.label, f.id)
                 if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
                 rows.add(
@@ -2121,26 +2159,26 @@ class PlayerActivity : ComponentActivity() {
             }
             return TextView(this).apply {
                 this.text = text
-                textSize = 13f
+                dpText(11.5f)
                 setTextColor(0xFFFFFFFF.toInt())
                 gravity = Gravity.CENTER
                 background = bg
                 includeFontPadding = false
-                setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
+                setPadding((11 * density).toInt(), (5 * density).toInt(), (11 * density).toInt(), (5 * density).toInt())
                 setOnClickListener { onClick() }
             }
         }
         fun rowLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            textSize = 14f
+            dpText(12.5f)
             setTextColor(0xFFE6EAF3.toInt())
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            textSize = 13f
+            dpText(11.5f)
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
-            minWidth = (48 * density).toInt()
+            minWidth = (40 * density).toInt()
         }
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
@@ -2207,8 +2245,8 @@ class PlayerActivity : ComponentActivity() {
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
                 setPadding(
-                    (14 * density).toInt(), (10 * density).toInt(),
-                    (14 * density).toInt(), (10 * density).toInt()
+                    (12 * density).toInt(), (8 * density).toInt(),
+                    (12 * density).toInt(), (8 * density).toInt()
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
@@ -2305,11 +2343,7 @@ class PlayerActivity : ComponentActivity() {
             val mediaGroup = group.mediaTrackGroup
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val language = languageOf(f.language)
-                val label = language
-                    ?: f.label?.takeIf { it.isNotBlank() }
-                    ?: f.id?.takeIf { it.isNotBlank() }
-                    ?: "Track ${i + 1}"
+                val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
                 val sub = trackSub(label, f.label, f.id)
                 if (isTrackSelected(p, group, i)) overrideSelected = true
                 rows.add(
