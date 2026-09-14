@@ -137,14 +137,34 @@ object PosterLoader {
         val u = normalize(url) ?: return null
         if (!u.startsWith(DATA_IMAGE)) return u
         val hash = fnv1a(u)
+        val token = CACHE_TOKEN + hash
         val file = diskDir?.let { File(it, hash) }
-        val have = file?.let { it.exists() && it.length() > 0 } ?: false
-        if (!have) {
-            val bytes = decodeDataUri(u) ?: return null
-            if (bytes.isEmpty()) return null
-            if (file != null) runCatching { file.writeBytes(bytes) }
+        val existing = file?.takeIf { it.exists() && it.length() > 0 }?.let {
+            runCatching { it.readBytes() }.getOrNull()
         }
-        return CACHE_TOKEN + hash
+        if (existing != null && existing.isNotEmpty()) {
+            // Warm the RAM cache too: home feeds tokenize hundreds of posters
+            // off the main thread and then paint them, so without this every
+            // first composition of a cell would block on a file read.
+            remember(token, existing)
+            return token
+        }
+        val bytes = decodeDataUri(u) ?: return null
+        if (bytes.isEmpty()) return null
+        val wrote = file != null && runCatching {
+            file.writeBytes(bytes)
+            file.length() > 0
+        }.getOrDefault(false)
+        if (!wrote) {
+            // A token is only a POINTER to the persisted bytes, and the original
+            // base64 payload is no longer in the item — so if the write did not
+            // land (no space, unreadable cache dir) the cell would be blank
+            // forever. Keep the data URI in that case; Coil can still render it.
+            remember(u, bytes)
+            return u
+        }
+        remember(token, bytes)
+        return token
     }
 
     /** Resolves a [CACHE_TOKEN] token back to the persisted poster bytes. */

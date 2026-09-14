@@ -22,7 +22,11 @@
          triggered on ordinary phone windows.
      (3) @id/exo_time is intentionally absent: the position/duration labels sit
          on the same row as @id/exo_progress instead. media3 resolves the labels
-         by id directly and treats a missing time container as zero width. -->
+         by id directly and treats a missing time container as zero width.
+
+     SIZING: the controls are deliberately compact (back 34, round buttons 30,
+     prev/next 34, rew/ffwd 38, play 58, pills 11sp) because the earlier, larger
+     set read as chunky on a phone in landscape. -->
 
 <merge xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
@@ -41,8 +45,8 @@
       android:background="@drawable/top_bar_bg"
       android:paddingStart="10dp"
       android:paddingEnd="8dp"
-      android:paddingTop="8dp"
-      android:paddingBottom="20dp">
+      android:paddingTop="7dp"
+      android:paddingBottom="16dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -53,8 +57,8 @@
 
       <ImageButton
           android:id="@+id/back_btn"
-          android:layout_width="38dp"
-          android:layout_height="38dp"
+          android:layout_width="34dp"
+          android:layout_height="34dp"
           android:src="@drawable/ic_back"
           android:tint="#FFFFFF"
           android:contentDescription="Back"
@@ -74,7 +78,7 @@
             android:id="@+id/title_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="16sp"
+            android:textSize="15sp"
             android:textStyle="bold"
             android:textColor="#FFFFFF"
             android:maxLines="1"
@@ -83,7 +87,7 @@
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="5dp"
             android:scrollbars="none"
             android:overScrollMode="never"
             android:clipToPadding="false">
@@ -124,8 +128,8 @@
            options (fit/crop/rotate) and screen lock. -->
       <ImageButton
           android:id="@+id/fav_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
           android:src="@drawable/ic_heart"
           android:tint="#FFFFFF"
           android:contentDescription="Favourite"
@@ -134,9 +138,9 @@
 
       <ImageButton
           android:id="@+id/download_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
-          android:layout_marginStart="5dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:layout_marginStart="4dp"
           android:src="@drawable/ic_download"
           android:tint="#FFFFFF"
           android:contentDescription="Download"
@@ -145,9 +149,9 @@
 
       <ImageButton
           android:id="@+id/pip_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
-          android:layout_marginStart="5dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:layout_marginStart="4dp"
           android:src="@drawable/ic_pip"
           android:tint="#FFFFFF"
           android:contentDescription="Picture-in-picture"
@@ -156,9 +160,9 @@
 
       <ImageButton
           android:id="@+id/options_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
-          android:layout_marginStart="5dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:layout_marginStart="4dp"
           android:src="@drawable/ic_settings"
           android:tint="#FFFFFF"
           android:contentDescription="Player options"
@@ -167,9 +171,9 @@
 
       <ImageButton
           android:id="@+id/lock_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
-          android:layout_marginStart="5dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:layout_marginStart="4dp"
           android:src="@drawable/ic_lock"
           android:tint="#FFFFFF"
           android:contentDescription="Lock controls"
@@ -188,7 +192,7 @@
       android:background="@drawable/bottom_bar_bg"
       android:paddingStart="6dp"
       android:paddingEnd="6dp"
-      android:paddingTop="14dp"
+      android:paddingTop="12dp"
       android:paddingBottom="6dp"
       android:layoutDirection="ltr">
 
@@ -207,19 +211,19 @@
       <androidx.media3.ui.DefaultTimeBar
           android:id="@id/exo_progress"
           android:layout_width="0dp"
-          android:layout_height="26dp"
+          android:layout_height="22dp"
           android:layout_weight="1"
           android:layout_marginStart="8dp"
           android:layout_marginEnd="8dp"
-          app:bar_height="4dp"
+          app:bar_height="3dp"
           app:bar_gravity="center"
-          app:touch_target_height="26dp"
+          app:touch_target_height="22dp"
           app:played_color="@color/hikari_accent_mid"
           app:buffered_color="#66FFFFFF"
           app:unplayed_color="#40FFFFFF"
           app:scrubber_color="#FFFFFF"
-          app:scrubber_enabled_size="14dp"
-          app:scrubber_dragged_size="19dp" />
+          app:scrubber_enabled_size="12dp"
+          app:scrubber_dragged_size="16dp" />
 
       <TextView
           android:id="@id/exo_duration"
@@ -230,7 +234,7 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="3dp"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:layoutDirection="ltr">
@@ -307,8 +311,8 @@
            expand control. -->
       <ImageButton
           android:id="@+id/resize_btn"
-          android:layout_width="34dp"
-          android:layout_height="34dp"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
           android:layout_marginStart="4dp"
           android:layout_marginEnd="2dp"
           android:src="@drawable/ic_resize"
@@ -386,8 +390,8 @@
 
   </LinearLayout>
 
-  <!-- Centre cluster: prev 40 + 10 + rew 44 + 10 + play 68 + 10 + ffwd 44 + 10
-       + next 40 = 276dp wide, with the "Tap to play" hint under the play
+  <!-- Centre cluster: prev 34 + 8 + rew 38 + 8 + play 58 + 8 + ffwd 38 + 8
+       + next 34 = 234dp wide, with the "Tap to play" hint under the play
        button. Keeping the cluster small avoids media3's minimal mode. -->
   <LinearLayout
       android:id="@id/exo_center_controls"
@@ -409,22 +413,22 @@
 
       <ImageButton android:id="@id/exo_prev"
           style="@style/ExoStyledControls.Button.Center.Previous"
-          android:layout_width="40dp"
-          android:layout_height="40dp"
+          android:layout_width="34dp"
+          android:layout_height="34dp"
           android:background="@drawable/circle_glass_ripple"
           android:tint="#FFFFFF" />
 
       <FrameLayout
-          android:layout_width="44dp"
-          android:layout_height="44dp"
-          android:layout_marginStart="10dp"
-          android:layout_marginEnd="10dp"
+          android:layout_width="38dp"
+          android:layout_height="38dp"
+          android:layout_marginStart="8dp"
+          android:layout_marginEnd="8dp"
           android:background="@drawable/circle_glass_ripple"
           android:addStatesFromChildren="true">
         <Button android:id="@id/exo_rew_with_amount"
             style="@style/ExoStyledControls.Button.Center.RewWithAmount"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
             android:layout_marginStart="0dp"
             android:layout_marginEnd="0dp"
             android:singleLine="false" />
@@ -433,22 +437,22 @@
       <ImageButton
           android:id="@id/exo_play_pause"
           style="@style/ExoStyledControls.Button.Center.PlayPause"
-          android:layout_width="68dp"
-          android:layout_height="68dp"
-          android:padding="12dp"
+          android:layout_width="58dp"
+          android:layout_height="58dp"
+          android:padding="10dp"
           android:background="@drawable/player_play_ring" />
 
       <FrameLayout
-          android:layout_width="44dp"
-          android:layout_height="44dp"
-          android:layout_marginStart="10dp"
-          android:layout_marginEnd="10dp"
+          android:layout_width="38dp"
+          android:layout_height="38dp"
+          android:layout_marginStart="8dp"
+          android:layout_marginEnd="8dp"
           android:background="@drawable/circle_glass_ripple"
           android:addStatesFromChildren="true">
         <Button android:id="@id/exo_ffwd_with_amount"
             style="@style/ExoStyledControls.Button.Center.FfwdWithAmount"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
             android:layout_marginStart="0dp"
             android:layout_marginEnd="0dp"
             android:singleLine="false" />
@@ -456,8 +460,8 @@
 
       <ImageButton android:id="@id/exo_next"
           style="@style/ExoStyledControls.Button.Center.Next"
-          android:layout_width="40dp"
-          android:layout_height="40dp"
+          android:layout_width="34dp"
+          android:layout_height="34dp"
           android:background="@drawable/circle_glass_ripple"
           android:tint="#FFFFFF" />
     </LinearLayout>
@@ -467,9 +471,9 @@
         android:id="@+id/play_hint"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
+        android:layout_marginTop="8dp"
         android:text="Tap to play"
-        android:textSize="12sp"
+        android:textSize="11sp"
         android:textStyle="bold"
         android:textColor="#DDFFFFFF"
         android:visibility="gone" />

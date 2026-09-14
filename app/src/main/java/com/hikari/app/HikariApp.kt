@@ -25,7 +25,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import okhttp3.Cache
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.security.Security
@@ -277,75 +280,79 @@ class HikariApp : Application() {
      */
     private fun setupImageLoader() {
         runCatching {
+            // A home feed renders a hundred-plus posters from ONE host at once.
+            // OkHttp's default dispatcher allows only 5 concurrent requests per
+            // host, so every row after the first queued behind it and looked
+            // like it never loaded ("first some images load and then scrolling
+            // horizontal not loading"). Coil gets its own dispatcher with a much
+            // higher per-host ceiling so a whole row loads in parallel, plus a
+            // bigger connection pool so those parallel requests actually reuse
+            // sockets instead of serialising on TCP/TLS handshakes.
+            val dispatcher = Dispatcher().apply {
+                maxRequests = 128
+                maxRequestsPerHost = 32
+            }
             val client = OkHttpClient.Builder()
+                .dispatcher(dispatcher)
+                .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .addInterceptor { chain ->
                     val req = chain.request()
-                    val builder = req.newBuilder()
-                        .header("User-Agent", Http.UA)
                     val host = req.url.host?.lowercase() ?: ""
                     val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
-                    // Plugins declare per-poster headers (e.g. LeakPorner's
-                    // 58img.top needs `Referer: https://leakporner.org/`). Use
-                    // the exact headers when known, else fall back to a
-                    // same-origin Referer (hotlink protection) — except for
-                    // hosts that 403 any Referer at all (see NO_REFERER_HOSTS).
-                    var hasReferer = false
-                    if (host in NO_REFERER_HOSTS) {
-                        // no Referer — fourhoi.com/surrit.com reject the image
-                        // when a Referer is present (verified: same-origin
-                        // referer => 403, bare request => 200)
-                    } else {
-                        val exact = cs3.imageHeaders[req.url.toString()]
-                        if (exact != null) {
-                            exact.forEach { (k, v) ->
-                                builder.header(k, v)
-                                if (k.equals("Referer", ignoreCase = true)) hasReferer = true
-                            }
-                        } else {
-                            // URL may differ from the recorded one (scheme/query/
-                            // params) — apply the Referer the provider declared
-                            // for this image host.
-                            val hostRef = cs3.imageHostReferers[host]
-                            if (hostRef != null) {
-                                builder.header("Referer", hostRef)
-                                hasReferer = true
-                            } else if (host.isNotBlank()) {
-                                builder.header("Referer", "${req.url.scheme}://$host/")
-                                hasReferer = true
-                            }
+                    // Header sets to try, best guess first: the exact headers a
+                    // provider declared for this poster URL, then the Referer it
+                    // declared for this image host, then a same-origin Referer
+                    // (hotlink protection), then a completely bare request.
+                    // Hosts that refuse ANY Referer (see NO_REFERER_HOSTS) start
+                    // bare. The old code only ever tried two of these and only
+                    // when the first answer was a 401/403 — a CDN that answers
+                    // a hotlink rejection with a 200 HTML page slipped through
+                    // and Coil then failed to decode it into a blank cell.
+                    val variants = ArrayList<Map<String, String>>(4)
+                    if (host !in NO_REFERER_HOSTS) {
+                        cs3.imageHeaders[req.url.toString()]?.let { variants.add(it) }
+                        val referer = cs3.imageHostReferers[host]
+                            ?: if (host.isNotBlank()) "${req.url.scheme}://$host/" else null
+                        if (referer != null && variants.none { v -> v.keys.any { it.equals("Referer", ignoreCase = true) } }) {
+                            variants.add(mapOf("Referer" to referer))
                         }
                     }
-                    val response = chain.proceed(builder.build())
-                    // Hotlink protection keeps appearing on new hosts, and it
-                    // cuts both ways: some CDNs (fourhoi.com/surrit.com are the
-                    // ones we could verify) answer 403 to ANY Referer but serve
-                    // the identical URL to a bare request. So when a poster
-                    // comes back refused and we attached a Referer, try once
-                    // more without one — that is what saves the thumbnail on
-                    // every host whose rule we don't know yet.
-                    if (hasReferer && (response.code == 401 || response.code == 403)) {
-                        runCatching { response.close() }
-                        val bare = req.newBuilder()
-                            .header("User-Agent", Http.UA)
-                            .build()
-                        return@addInterceptor chain.proceed(bare)
+                    variants.add(emptyMap())
+
+                    var last: Response? = null
+                    for (headers in variants) {
+                        val builder = req.newBuilder().header("User-Agent", Http.UA)
+                        headers.forEach { (k, v) -> builder.header(k, v) }
+                        val response = chain.proceed(builder.build())
+                        if (isUsableImage(response)) {
+                            last?.close()
+                            return@addInterceptor response
+                        }
+                        last?.close()
+                        last = response
                     }
-                    response
+                    last ?: chain.proceed(req)
                 }
                 .build()
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
+                // Posters whose CDN sends no cache headers (very common on the
+                // aggregator hosts) should still land in Coil's disk cache.
+                .respectCacheHeaders(false)
                 // Decoded bitmaps live in RAM. Coil's default is 25% of the app
                 // heap, which on a poster grid (a few hundred covers, several
                 // full-size) can fill the heap on its own and OOM the process.
-                // 32 MB is plenty for a screenful or two of thumbnails and keeps
-                // the rest of the heap free for catalogs and Compose.
-                .memoryCache {
-                    coil.memory.MemoryCache.Builder(this)
-                        .maxSizeBytes(32 * 1024 * 1024)
+                // Scale to the actual heap instead: 1/8 of it, floored at 24 MB
+                // (a screenful or two of thumbnails) and capped at 96 MB so a
+                // huge-heap device doesn't hoard memory it doesn't need.
+                .memoryCache { ctx ->
+                    val cap = (Runtime.getRuntime().maxMemory() / 8)
+                        .coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+                    coil.memory.MemoryCache.Builder(ctx)
+                        .maxSizeBytes(cap)
                         .build()
                 }
                 .diskCache {
@@ -357,6 +364,19 @@ class HikariApp : Application() {
                 .build()
             Coil.setImageLoader(loader)
         }
+    }
+
+    /**
+     * True when [response] actually carries an image: a 2xx whose body is
+     * declared as an image type. A missing Content-Type is accepted (Coil sniffs
+     * the bytes), but a text/html body is rejected — several CDNs answer a
+     * hotlink rejection with a soft 200 HTML page, which Coil would otherwise
+     * try to decode into a blank cell.
+     */
+    private fun isUsableImage(response: Response): Boolean {
+        if (!response.isSuccessful) return false
+        val type = response.body?.contentType()?.type?.lowercase() ?: return true
+        return type == "image" || type == "application" || type == "binary" || type == "octet-stream"
     }
 
     private fun initCloudStream(context: Context) {

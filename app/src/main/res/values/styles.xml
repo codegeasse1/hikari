@@ -6,21 +6,21 @@
     <style name="HikariPill">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:textSize">12sp</item>
+        <item name="android:textSize">11sp</item>
         <item name="android:textStyle">bold</item>
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:gravity">center</item>
         <item name="android:maxLines">1</item>
         <item name="android:ellipsize">end</item>
         <item name="android:background">@drawable/pill_glass_ripple</item>
-        <item name="android:drawablePadding">6dp</item>
+        <item name="android:drawablePadding">5dp</item>
         <item name="android:drawableTint">#FFFFFF</item>
-        <item name="android:layout_marginStart">4dp</item>
-        <item name="android:layout_marginEnd">4dp</item>
-        <item name="android:paddingStart">14dp</item>
-        <item name="android:paddingEnd">14dp</item>
-        <item name="android:paddingTop">9dp</item>
-        <item name="android:paddingBottom">9dp</item>
+        <item name="android:layout_marginStart">3dp</item>
+        <item name="android:layout_marginEnd">3dp</item>
+        <item name="android:paddingStart">11dp</item>
+        <item name="android:paddingEnd">11dp</item>
+        <item name="android:paddingTop">7dp</item>
+        <item name="android:paddingBottom">7dp</item>
     </style>
 
     <!-- Accent pill: the toggled/featured state (playback speed, Skip Intro,
@@ -38,17 +38,17 @@
     <style name="HikariBadge">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:textSize">11sp</item>
+        <item name="android:textSize">10sp</item>
         <item name="android:textStyle">bold</item>
         <item name="android:textColor">#F2FFFFFF</item>
         <item name="android:maxLines">1</item>
         <item name="android:ellipsize">end</item>
         <item name="android:background">@drawable/badge_glass</item>
-        <item name="android:layout_marginEnd">6dp</item>
-        <item name="android:paddingStart">9dp</item>
-        <item name="android:paddingEnd">9dp</item>
-        <item name="android:paddingTop">3dp</item>
-        <item name="android:paddingBottom">3dp</item>
+        <item name="android:layout_marginEnd">5dp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
     </style>
 
     <!-- Accent badge: the highlighted one (video quality). -->
@@ -60,7 +60,7 @@
     <style name="HikariTime">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:textSize">12sp</item>
+        <item name="android:textSize">11sp</item>
         <item name="android:textStyle">bold</item>
         <item name="android:textColor">#E6FFFFFF</item>
         <item name="android:maxLines">1</item>

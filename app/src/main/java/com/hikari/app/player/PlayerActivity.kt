@@ -16,6 +16,7 @@ import android.content.res.Configuration
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
@@ -35,8 +36,6 @@ import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -689,8 +688,13 @@ class PlayerActivity : ComponentActivity() {
                     if (verticalMode != 0) {
                         val travel = playerView?.height?.toFloat()?.takeIf { it > 0f }
                             ?: resources.displayMetrics.heightPixels.toFloat()
-                        // Swipe UP (a negative dy) increases the value.
-                        val delta = -((event.y - downY) / (travel * 0.9f))
+                        // Swipe UP (a negative dy) increases the value. The gain
+                        // is deliberately high: with a 1:1 mapping the sliders
+                        // moved so slowly that the user had to swipe the whole
+                        // screen 8-9 times to reach the end. GESTURE_SWIPE_GAIN
+                        // makes roughly a quarter of a screen-height swipe cover
+                        // the full range.
+                        val delta = -((event.y - downY) / travel) * GESTURE_SWIPE_GAIN
                         if (verticalMode == 1) {
                             applyBrightness(startBrightness + delta)
                         } else {
@@ -1265,77 +1269,158 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
+    /** The player palette (mirrors colors.xml) driving the redesigned menus. */
+    private val accentStartColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_start) }
+    private val accentEndColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_end) }
+    private val accentMidColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_mid) }
+
+    /** The cyan -> violet player gradient as a shape (the signature accent). */
+    private fun accentShape(radiusDp: Float): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(accentStartColor, accentEndColor)
+    ).apply { cornerRadius = radiusDp * resources.displayMetrics.density }
+
+    /** [color] with its alpha replaced by [fraction] — for translucent accents. */
+    private fun withAlpha(color: Int, fraction: Float): Int =
+        (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
+
     /**
-     * One tappable radio row for the glass menus (server / quality / audio).
-     * The "paper" look the user complained about was the platform AlertDialog's
-     * flat list; here every row is a rounded pill that highlights gold when it's
-     * the active choice, so the selected server/quality is obvious at a glance.
+     * One tappable option row for the glass menus (server / quality / audio /
+     * subtitles / episodes). Redesigned to match the player UI rather than the
+     * old flat gold list: a rounded glass capsule whose leading marker is a
+     * gradient disc when active, and whose active state is the cyan -> violet
+     * tint with a gradient stroke and a check.
      */
     private fun glassOptionRow(label: String, selected: Boolean, onClick: () -> Unit): View {
         val density = resources.displayMetrics.density
-        val accent = 0xFFF5C569.toInt()
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true
             isFocusable = true
-            setPadding((12 * density).toInt(), (11 * density).toInt(), (12 * density).toInt(), (11 * density).toInt())
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 12 * density
-                if (selected) {
-                    setColor(0x33F5C569.toInt())
-                    setStroke((1 * density).toInt(), 0x66F5C569.toInt())
-                } else {
+            setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
+            val rowShape = if (selected) {
+                GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(withAlpha(accentStartColor, 0.28f), withAlpha(accentEndColor, 0.32f))
+                ).apply {
+                    cornerRadius = 14 * density
+                    setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.80f))
+                }
+            } else {
+                GradientDrawable().apply {
+                    this.shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 14 * density
                     setColor(0x14FFFFFF.toInt())
+                    setStroke(1, 0x1FFFFFFF)
                 }
             }
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
         }
-        row.addView(TextView(this).apply {
-            text = if (selected) "\u25CF" else "\u25CB"
-            textSize = 15f
-            includeFontPadding = false
-            setTextColor(if (selected) accent else 0x99FFFFFF.toInt())
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            marginEnd = (12 * density).toInt()
-        })
+        val marker = if (selected) {
+            accentShape(6f).apply { shape = GradientDrawable.OVAL }
+        } else {
+            GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x00000000)
+                setStroke((1.6f * density).toInt().coerceAtLeast(1), 0x80FFFFFF.toInt())
+            }
+        }
+        row.addView(View(this).apply { background = marker }, LinearLayout.LayoutParams(
+            (11 * density).toInt(), (11 * density).toInt()
+        ).apply { marginEnd = (12 * density).toInt() })
         row.addView(TextView(this).apply {
             text = label
-            textSize = 15f
+            textSize = 14.5f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
+            typeface = Typeface.create(Typeface.DEFAULT, if (selected) Typeface.BOLD else Typeface.NORMAL)
             setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        if (selected) {
+            row.addView(TextView(this).apply {
+                text = "\u2713"
+                textSize = 15f
+                includeFontPadding = false
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(accentMidColor)
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (8 * density).toInt() })
+        }
         row.setOnClickListener { onClick() }
         return row
     }
 
+    /** A centred row container matching [showGlassOptionMenu]'s list padding. */
+    private fun optionList(): LinearLayout {
+        val density = resources.displayMetrics.density
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+        }
+    }
+
+    /** Adds [label] as a row to [list] using the shared accent row style. */
+    private fun addOptionRow(list: LinearLayout, label: String, selected: Boolean, onClick: () -> Unit) {
+        val density = resources.displayMetrics.density
+        list.addView(
+            glassOptionRow(label, selected, onClick),
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (4 * density).toInt() }
+        )
+    }
+
     /**
-     * Presents a rounded, dark, gold-accented panel — the shared shell for
-     * every player menu. `content` goes inside a scrollable body (capped to the
-     * screen so long server/quality lists scroll within the panel), with a
-     * pinned CLOSE footer. Replaces the platform's flat "paper" AlertDialog.
+     * Presents a rounded, dark panel — the shared shell for every player menu.
+     * Restyled to match the new player UI: a gradient accent bar beside a white
+     * title, a round glass close button, and a gradient "Done" pill in the
+     * footer (instead of the old amber title + flat CLOSE text). `content` goes
+     * inside a scrollable body capped to the screen, so long lists scroll
+     * within the panel.
      */
     private fun presentGlass(dialog: Dialog, title: String, content: View, preferredHeightDp: Float) {
         val density = resources.displayMetrics.density
-        val accent = 0xFFF5C569.toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 18 * density
-                setColor(0xF0121723.toInt())
-                setStroke((1 * density).toInt(), 0x33FFFFFF)
+                cornerRadius = 22 * density
+                orientation = GradientDrawable.Orientation.TOP_BOTTOM
+                colors = intArrayOf(0xF4161D2E.toInt(), 0xF00A0C16.toInt())
+                setStroke((1 * density).toInt().coerceAtLeast(1), 0x33FFFFFF)
             }
             clipToOutline = true
         }
-        root.addView(TextView(this).apply {
-            text = title
-            textSize = 17f
-            setTextColor(accent)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            letterSpacing = 0.02f
-            setPadding((18 * density).toInt(), (15 * density).toInt(), (18 * density).toInt(), (12 * density).toInt())
+
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((16 * density).toInt(), (14 * density).toInt(), (12 * density).toInt(), (12 * density).toInt())
+            addView(View(this@PlayerActivity).apply { background = accentShape(3f) },
+                LinearLayout.LayoutParams((4 * density).toInt(), (20 * density).toInt()))
+            addView(TextView(this@PlayerActivity).apply {
+                text = title
+                textSize = 16f
+                setTextColor(0xFFFFFFFF.toInt())
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                letterSpacing = 0.02f
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = (10 * density).toInt()
+            })
+            addView(TextView(this@PlayerActivity).apply {
+                text = "\u2715"
+                textSize = 13f
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                setTextColor(0xE6FFFFFF.toInt())
+                background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.circle_glass_ripple)
+                isClickable = true
+                setOnClickListener { dialog.dismiss() }
+            }, LinearLayout.LayoutParams((30 * density).toInt(), (30 * density).toInt()))
         })
         root.addView(hairline(density))
         root.addView(ScrollView(this).apply {
@@ -1343,21 +1428,26 @@ class PlayerActivity : ComponentActivity() {
             isFillViewport = true
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(hairline(density))
+
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
             addView(TextView(this@PlayerActivity).apply {
-                text = "CLOSE"
+                text = "Done"
                 textSize = 13f
-                setTextColor(accent)
+                setTextColor(0xFFFFFFFF.toInt())
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                letterSpacing = 0.06f
-                setPadding((16 * density).toInt(), (9 * density).toInt(), (16 * density).toInt(), (9 * density).toInt())
+                letterSpacing = 0.02f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                setPadding((22 * density).toInt(), (9 * density).toInt(), (22 * density).toInt(), (9 * density).toInt())
+                background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.pill_accent_ripple)
                 isClickable = true
                 setOnClickListener { dialog.dismiss() }
             })
         })
+
         dialog.setContentView(
             root,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -1377,24 +1467,15 @@ class PlayerActivity : ComponentActivity() {
 
     /** Builds + shows a radio list panel. Each tap dismisses and reports the index. */
     private fun showGlassOptionMenu(title: String, items: List<String>, checked: Int, onPick: (Int) -> Unit) {
-        val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
-        }
+        val content = optionList()
         items.forEachIndexed { i, label ->
-            content.addView(
-                glassOptionRow(label, i == checked) {
-                    dialog.dismiss()
-                    onPick(i)
-                },
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = (4 * density).toInt() }
-            )
+            addOptionRow(content, label, i == checked) {
+                dialog.dismiss()
+                onPick(i)
+            }
         }
-        presentGlass(dialog, title, content, 48f + 44f + items.size * 47f + 20f)
+        presentGlass(dialog, title, content, 47f + 44f + items.size * 46f + 20f)
     }
 
     /** The Episodes pill: lists the title's episodes (fetched from the provider
@@ -1578,11 +1659,12 @@ class PlayerActivity : ComponentActivity() {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = (15 * density).toFloat()
                 setColor(0x1AFFFFFF.toInt())
+                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.55f))
             }
             return TextView(this).apply {
                 this.text = text
                 textSize = 13f
-                setTextColor(0xFFF5C569.toInt())
+                setTextColor(0xFFFFFFFF.toInt())
                 gravity = Gravity.CENTER
                 background = bg
                 includeFontPadding = false
@@ -1606,43 +1688,35 @@ class PlayerActivity : ComponentActivity() {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
 
-        var initializing = true
-        val radioGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        // Track rows use the shared accent list, then the three settings rows
+        // (size / sync / position) sit below them.
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val trackList = optionList()
         items.forEachIndexed { idx, label ->
-            radioGroup.addView(RadioButton(this).apply {
-                text = label
-                textSize = 15f
-                setTextColor(0xFFE6EAF3.toInt())
-                buttonTintList = ColorStateList.valueOf(0xFFF5C569.toInt())
-                id = View.generateViewId()
-                isChecked = idx == checked
-                setOnCheckedChangeListener { _, isChecked ->
-                    if (!initializing && isChecked) {
-                        userPickedSubs = true
-                        when (idx) {
-                            0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                .build()
-                            1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                                .build()
-                            else -> {
-                                val (group, ti) = indexMap[idx] ?: return@setOnCheckedChangeListener
-                                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                                    .setOverrideForType(
-                                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                                    )
-                                    .build()
-                            }
-                        }
+            addOptionRow(trackList, label, idx == checked) {
+                userPickedSubs = true
+                when (idx) {
+                    0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+                    1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .build()
+                    else -> {
+                        val (group, ti) = indexMap[idx] ?: return@addOptionRow
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setOverrideForType(
+                                TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                            )
+                            .build()
                     }
                 }
-            })
+                dialog.dismiss()
+            }
         }
-        initializing = false
 
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
         fun applySize() {
@@ -1682,10 +1756,10 @@ class PlayerActivity : ComponentActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), (4 * density).toInt())
-            addView(radioGroup, LinearLayout.LayoutParams(
+            addView(trackList, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = (4 * density).toInt() })
+            ))
             addView(controlRow(
                 "Text size",
                 pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
@@ -1711,7 +1785,6 @@ class PlayerActivity : ComponentActivity() {
 
         // The whole panel scrolls (see presentGlass), so the Track rows plus the
         // size/sync controls can never be cut off the bottom on a short screen.
-        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         presentGlass(dialog, "Subtitles", root, 1000f)
     }
 
@@ -3460,6 +3533,12 @@ class PlayerActivity : ComponentActivity() {
         private const val REFRESH_WAIT_MS = 40_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        /** How much a vertical drag moves the brightness/volume sliders, in
+         *  "screen heights". 4 means roughly a quarter of a screen-height swipe
+         *  covers the whole 0..100% range (the previous 1:1 mapping was reported
+         *  as needing 8-9 full-screen swipes, i.e. far too insensitive). */
+        private const val GESTURE_SWIPE_GAIN = 4f
 
         /** Fallback public trackers for addons that don't ship their own. */
         private val TORRENT_TRACKERS = listOf(
