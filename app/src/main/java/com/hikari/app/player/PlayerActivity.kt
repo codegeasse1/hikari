@@ -1278,14 +1278,6 @@ class PlayerActivity : ComponentActivity() {
         else -> "${height}p"
     }
 
-    /** Thin translucent divider used inside the glass panels. */
-    private fun hairline(density: Float): View = View(this).apply {
-        setBackgroundColor(0x1FFFFFFF)
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, (1 * density).toInt()
-        )
-    }
-
     /** The player palette (mirrors colors.xml) driving the redesigned menus. */
     private val accentStartColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_start) }
     private val accentEndColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_end) }
@@ -1312,8 +1304,8 @@ class PlayerActivity : ComponentActivity() {
      * disc for action lists, nothing at all for plain text.
      *
      * A [selected] row is the cyan -> violet tint with a gradient stroke, a
-     * filled radio dot and a gradient check disc on the right, which is how the
-     * quality/audio/subtitle pickers show the active track.
+     * filled radio dot and a plain white checkmark on the right, which is how
+     * the quality/audio/subtitle pickers show the active track.
      */
     private class GlassOption(
         val label: String,
@@ -1390,6 +1382,13 @@ class PlayerActivity : ComponentActivity() {
         return pretty?.takeIf { it.isNotBlank() && !it.equals(language, true) } ?: language
     }
 
+    /** A track's secondary line, or null when it would just be noise — a bare
+     *  format id ("1"), a blank label, or a repeat of [primary]. */
+    private fun trackSub(primary: String, vararg candidates: String?): String? =
+        candidates.asSequence()
+            .mapNotNull { it?.takeIf { c -> c.isNotBlank() && c != primary } }
+            .firstOrNull { c -> c.any { ch -> !ch.isDigit() } }
+
     /** A small glass pill: the right-aligned value badge on a row. */
     private fun glassPill(text: String, sizeSp: Float = 11f): TextView {
         val density = resources.displayMetrics.density
@@ -1403,46 +1402,41 @@ class PlayerActivity : ComponentActivity() {
                 (9 * density).toInt(), (4 * density).toInt(),
                 (9 * density).toInt(), (4 * density).toInt()
             )
+            // No outline: the badge reads as a soft grey chip sitting on the
+            // row, exactly like the reference player's bitrate pills.
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 999f
                 setColor(0x1FFFFFFF)
-                setStroke((1 * density).toInt().coerceAtLeast(1), 0x24FFFFFF)
             }
         }
     }
 
-    /** The gradient disc with a white check that marks the active row. */
-    private fun checkDisc(sizeDp: Int): View {
+    /** The plain white check that marks the active row. */
+    private fun checkMark(): View {
         val density = resources.displayMetrics.density
-        return FrameLayout(this).apply {
+        return ImageView(this).apply {
+            setImageResource(R.drawable.ic_check)
+            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(
-                (sizeDp * density).toInt(), (sizeDp * density).toInt()
-            ).apply { marginStart = (9 * density).toInt() }
-            background = accentShape(sizeDp / 2f).apply { shape = GradientDrawable.OVAL }
-            addView(TextView(this@PlayerActivity).apply {
-                text = "\u2713"
-                textSize = sizeDp * 0.52f
-                includeFontPadding = false
-                gravity = Gravity.CENTER
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(0xFFFFFFFF.toInt())
-            }, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-            ))
+                (18 * density).toInt(), (18 * density).toInt()
+            ).apply { marginStart = (10 * density).toInt() }
         }
     }
 
     /** The leading marker of a row, or null for [RowMarker.NONE]. */
     private fun rowMarker(option: GlassOption): View? {
         val density = resources.displayMetrics.density
-        val size = (18 * density).toInt()
+        val size = (20 * density).toInt()
         return when (option.marker) {
             RowMarker.RADIO -> {
+                // The reference player's radio: a filled gradient disc with a
+                // small white dot when active, a light hollow ring otherwise.
                 val marker = if (option.selected) {
                     LayerDrawable(
                         arrayOf(
-                            accentShape(9f).apply { shape = GradientDrawable.OVAL },
+                            accentShape(10f).apply { shape = GradientDrawable.OVAL },
                             GradientDrawable().apply {
                                 shape = GradientDrawable.OVAL
                                 setColor(0xFFFFFFFF.toInt())
@@ -1456,7 +1450,7 @@ class PlayerActivity : ComponentActivity() {
                     GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
                         setColor(0x00000000)
-                        setStroke((1.6f * density).toInt().coerceAtLeast(1), 0x66FFFFFF)
+                        setStroke((2 * density).toInt().coerceAtLeast(1), 0x8CFFFFFF.toInt())
                     }
                 }
                 View(this).apply {
@@ -1503,20 +1497,25 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun glassRow(option: GlassOption, onClick: (() -> Unit)?): View {
         val density = resources.displayMetrics.density
+        // Rows are capsules: the radius is deliberately larger than half the
+        // row height, so the shape is clamped to a stadium and every row reads
+        // as a pill — the "curved" look the whole player menu set uses.
         val rowShape = if (option.selected) {
             GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(withAlpha(accentStartColor, 0.30f), withAlpha(accentEndColor, 0.34f))
             ).apply {
-                cornerRadius = 16 * density
-                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.85f))
+                cornerRadius = 999f
+                setStroke(
+                    (1.2f * density).toInt().coerceAtLeast(1),
+                    withAlpha(accentMidColor, 0.85f)
+                )
             }
         } else {
             GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 16 * density
+                cornerRadius = 999f
                 setColor(0x14FFFFFF.toInt())
-                setStroke(1, 0x1FFFFFFF)
             }
         }
         val row = LinearLayout(this).apply {
@@ -1525,8 +1524,8 @@ class PlayerActivity : ComponentActivity() {
             isClickable = onClick != null
             isFocusable = onClick != null
             setPadding(
-                (14 * density).toInt(), (11 * density).toInt(),
-                (14 * density).toInt(), (11 * density).toInt()
+                (16 * density).toInt(), (12 * density).toInt(),
+                (14 * density).toInt(), (12 * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -1536,14 +1535,12 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                textSize = 14.5f
+                textSize = 14f
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
-                typeface = Typeface.create(
-                    Typeface.DEFAULT, if (option.selected) Typeface.BOLD else Typeface.NORMAL
-                )
-                setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFDCE3EE.toInt())
             })
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
@@ -1551,10 +1548,10 @@ class PlayerActivity : ComponentActivity() {
                     textSize = 11.5f
                     maxLines = 2
                     includeFontPadding = false
-                    setTextColor(0xFF9AA5B5.toInt())
+                    setTextColor(0xFF98A3B5.toInt())
                 }, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = (3 * density).toInt() })
+                ).apply { topMargin = (2 * density).toInt() })
             }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         option.badge?.takeIf { it.isNotBlank() }?.let { badge ->
@@ -1563,7 +1560,7 @@ class PlayerActivity : ComponentActivity() {
             ).apply { marginStart = (10 * density).toInt() })
         }
         if (option.selected) {
-            row.addView(checkDisc(22))
+            row.addView(checkMark())
         } else if (option.chevron) {
             row.addView(TextView(this).apply {
                 text = "\u203A"
@@ -1585,7 +1582,7 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(
                 (12 * density).toInt(), (8 * density).toInt(),
-                (12 * density).toInt(), (8 * density).toInt()
+                (12 * density).toInt(), (4 * density).toInt()
             )
         }
     }
@@ -1597,7 +1594,7 @@ class PlayerActivity : ComponentActivity() {
             glassRow(option, onClick),
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (7 * density).toInt() }
+            ).apply { bottomMargin = (5 * density).toInt() }
         )
     }
 
@@ -1607,10 +1604,15 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Presents the rounded glass panel that shells every player dialog: an
-     * accent bar beside the title, a round glass close button, the scrollable
-     * body, and a footer carrying the contextual [hint] (the small icon + line
-     * at the bottom of the quality menu) next to the [footerLabel] pill.
+     * Presents the rounded glass panel that shells every player dialog. Above
+     * the panel sit the contextual [hint] line (with [iconRes] drawn beside it)
+     * and the round glass close button, exactly like the reference player; the
+     * panel itself carries only the scrollable [content] — no title bar and no
+     * footer button — so the rows ARE the dialog.
+     *
+     * The panel is capped to the screen (see [preferredHeightDp]) and the window
+     * is WRAP_CONTENT + centred, so a long list scrolls inside a panel that
+     * always fits instead of running off the top and bottom of the video.
      *
      * Returns the hint [TextView] so a caller can keep its text live (the
      * "server too slow" countdown), or null when no hint was requested.
@@ -1622,126 +1624,98 @@ class PlayerActivity : ComponentActivity() {
         preferredHeightDp: Float,
         hint: String? = null,
         iconRes: Int = 0,
-        footerLabel: String? = "Done",
         cancelable: Boolean = true,
     ): TextView? {
         val density = resources.displayMetrics.density
-        val root = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // A dialog with no hint of its own still gets a line up here: the title
+        // is the natural stand-in, so nothing inside the panel is a header.
+        val hintView = (hint?.takeIf { it.isNotBlank() } ?: title.takeIf { it.isNotBlank() })
+            ?.let { line ->
+                TextView(this).apply {
+                    text = line
+                    textSize = 12f
+                    includeFontPadding = false
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(0xFF9AA5B5.toInt())
+                }
+            }
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((10 * density).toInt(), 0, 0, (10 * density).toInt())
+            if (hintView != null) {
+                if (iconRes != 0) {
+                    addView(ImageView(this@PlayerActivity).apply {
+                        setImageResource(iconRes)
+                        imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
+                        scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    }, LinearLayout.LayoutParams(
+                        (15 * density).toInt(), (15 * density).toInt()
+                    ).apply { marginEnd = (9 * density).toInt() })
+                }
+                addView(hintView, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ).apply { marginEnd = (10 * density).toInt() })
+            } else {
+                addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            }
+            if (cancelable) {
+                addView(TextView(this@PlayerActivity).apply {
+                    text = "\u2715"
+                    textSize = 13f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0xE6FFFFFF.toInt())
+                    background = ContextCompat.getDrawable(
+                        this@PlayerActivity, R.drawable.circle_glass_ripple
+                    )
+                    isClickable = true
+                    setOnClickListener { dialog.dismiss() }
+                }, LinearLayout.LayoutParams((30 * density).toInt(), (30 * density).toInt()))
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
             clipToOutline = true
         }
-
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(
-                (16 * density).toInt(), (15 * density).toInt(),
-                (12 * density).toInt(), (13 * density).toInt()
-            )
-            addView(View(this@PlayerActivity).apply { background = accentShape(3f) },
-                LinearLayout.LayoutParams((4 * density).toInt(), (20 * density).toInt()))
-            addView(TextView(this@PlayerActivity).apply {
-                text = title
-                textSize = 16.5f
-                setTextColor(0xFFFFFFFF.toInt())
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                letterSpacing = 0.02f
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                includeFontPadding = false
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = (10 * density).toInt()
-                marginEnd = (8 * density).toInt()
-            })
-            addView(TextView(this@PlayerActivity).apply {
-                text = "\u2715"
-                textSize = 13f
-                includeFontPadding = false
-                gravity = Gravity.CENTER
-                setTextColor(0xE6FFFFFF.toInt())
-                background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.circle_glass_ripple)
-                isClickable = true
-                setOnClickListener { dialog.dismiss() }
-            }, LinearLayout.LayoutParams((30 * density).toInt(), (30 * density).toInt()))
-        })
-        root.addView(ScrollView(this).apply {
+        panel.addView(ScrollView(this).apply {
             addView(content)
             isFillViewport = true
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val hintView = hint?.takeIf { it.isNotBlank() }?.let { line ->
-            TextView(this).apply {
-                text = line
-                textSize = 11.5f
-                includeFontPadding = false
-                maxLines = 2
-                setTextColor(0xFF9AA5B5.toInt())
-            }
-        }
-        if (hintView != null || footerLabel != null) {
-            root.addView(hairline(density))
-            root.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(
-                    (16 * density).toInt(), (10 * density).toInt(),
-                    (12 * density).toInt(), (12 * density).toInt()
-                )
-                if (hintView != null) {
-                    if (iconRes != 0) {
-                        addView(ImageView(this@PlayerActivity).apply {
-                            setImageResource(iconRes)
-                            imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
-                            scaleType = ImageView.ScaleType.CENTER_INSIDE
-                        }, LinearLayout.LayoutParams(
-                            (15 * density).toInt(), (15 * density).toInt()
-                        ).apply { marginEnd = (9 * density).toInt() })
-                    }
-                    addView(hintView, LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                    ))
-                } else {
-                    addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
-                }
-                if (footerLabel != null) {
-                    addView(TextView(this@PlayerActivity).apply {
-                        text = footerLabel
-                        textSize = 13f
-                        setTextColor(0xFFFFFFFF.toInt())
-                        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                        letterSpacing = 0.02f
-                        gravity = Gravity.CENTER
-                        includeFontPadding = false
-                        setPadding(
-                            (22 * density).toInt(), (9 * density).toInt(),
-                            (22 * density).toInt(), (9 * density).toInt()
-                        )
-                        background = ContextCompat.getDrawable(
-                            this@PlayerActivity, R.drawable.pill_accent_ripple
-                        )
-                        isClickable = true
-                        setOnClickListener { dialog.dismiss() }
-                    }, LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { marginStart = (10 * density).toInt() })
-                }
-            })
-        }
+        val dm = resources.displayMetrics
+        // Reserve the hint line above the panel plus a little breathing room, so
+        // the hint + panel always fit on screen and a stream offering many
+        // options scrolls inside the panel instead of clipping its edges.
+        val reserved = (58 * density).toInt()
+        val panelH = (preferredHeightDp * density).toInt().coerceAtMost(
+            (dm.heightPixels - reserved).coerceAtLeast((160 * density).toInt())
+        )
+        root.addView(panel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, panelH
+        ))
 
         dialog.setContentView(
             root,
-            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         )
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
         dialog.show()
-        val dm = resources.displayMetrics
         val w = (dm.widthPixels * 0.9f).coerceAtMost(460 * density).toInt()
-        val h = (preferredHeightDp * density).coerceAtMost(dm.heightPixels * 0.86f).toInt()
         dialog.window?.apply {
-            setLayout(w, h)
+            setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
@@ -1750,10 +1724,10 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * Builds + shows a glass menu. Each tap dismisses the panel and reports the
-     * tapped row's index. [hint] is the contextual line in the panel's footer
-     * (with [iconRes] drawn beside it), [message] an optional muted paragraph
-     * above the rows, and a null [footerLabel] drops the "Done" pill entirely.
-     * Returns the created dialog, so a caller can attach its own listeners.
+     * tapped row's index. [hint] is the contextual line above the panel (with
+     * [iconRes] drawn beside it) and [message] an optional muted paragraph above
+     * the rows. Returns the created dialog, so a caller can attach its own
+     * listeners.
      */
     private fun showGlassMenu(
         title: String,
@@ -1761,7 +1735,6 @@ class PlayerActivity : ComponentActivity() {
         hint: String? = null,
         iconRes: Int = 0,
         message: String? = null,
-        footerLabel: String? = "Done",
         cancelable: Boolean = true,
         onDialog: ((Dialog) -> Unit)? = null,
         onHint: ((TextView) -> Unit)? = null,
@@ -1796,12 +1769,14 @@ class PlayerActivity : ComponentActivity() {
         content.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        val height = 56f + options.size * 64f +
-            (if (!message.isNullOrBlank()) 54f else 0f) +
-            (if (hint != null || footerLabel != null) 44f else 0f)
+        // Capsule rows are ~44dp tall (59dp when they carry a second line), 5dp
+        // apart inside the list's own padding — mirrored here so the panel opens
+        // at its natural height instead of always filling the screen.
+        val height = options.sumOf { if (it.sub.isNullOrBlank()) 44.0 else 59.0 }.toFloat() +
+            options.size * 5f + 12f +
+            (if (!message.isNullOrBlank()) 46f else 0f)
         onDialog?.invoke(dialog)
-        val hintView =
-            presentGlass(dialog, title, content, height, hint, iconRes, footerLabel, cancelable)
+        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable)
         if (hintView != null) onHint?.invoke(hintView)
         return dialog
     }
@@ -1870,6 +1845,7 @@ class PlayerActivity : ComponentActivity() {
         val w = (dm.widthPixels * 0.72f).coerceAtMost(340 * density).toInt()
         dialog.window?.apply {
             setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
             setDimAmount(0.55f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
@@ -2012,7 +1988,10 @@ class PlayerActivity : ComponentActivity() {
                 rows.add(
                     TrackRow(
                         label = label,
-                        sub = f.id?.takeIf { it.isNotBlank() && !label.contains(it) },
+                        // No secondary line: the label already carries the
+                        // resolution, and the variant's format id is a bare
+                        // number ("1", "2"…) on most HLS streams.
+                        sub = null,
                         badge = bitrateBadge(bitrate),
                         group = group,
                         index = i,
@@ -2042,7 +2021,7 @@ class PlayerActivity : ComponentActivity() {
         showGlassMenu(
             "Video quality",
             options,
-            hint = "Higher quality uses more data.",
+            hint = "Higher quality uses more data",
             iconRes = R.drawable.ic_quality,
         ) { which ->
             if (which == 0) {
@@ -2095,15 +2074,12 @@ class PlayerActivity : ComponentActivity() {
                     ?: f.label?.takeIf { it.isNotBlank() }
                     ?: f.id?.takeIf { it.isNotBlank() }
                     ?: "Track ${i + 1}"
-                val sub = listOfNotNull(
-                    f.label?.takeIf { it.isNotBlank() && it != primary },
-                    f.id?.takeIf { it.isNotBlank() && it != primary },
-                ).joinToString(" \u00B7 ")
+                val sub = trackSub(primary, f.label, f.id)
                 if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
                         label = primary,
-                        sub = sub.takeIf { it.isNotBlank() },
+                        sub = sub,
                         badge = codecBadge(f.sampleMimeType),
                         group = group,
                         index = i,
@@ -2236,9 +2212,8 @@ class PlayerActivity : ComponentActivity() {
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 16 * density
+                    cornerRadius = 999f
                     setColor(0x14FFFFFF.toInt())
-                    setStroke((1 * density).toInt().coerceAtLeast(1), 0x1FFFFFFF)
                 }
                 addView(rowLabel(label))
                 addView(weightSpacer())
@@ -2335,15 +2310,12 @@ class PlayerActivity : ComponentActivity() {
                     ?: f.label?.takeIf { it.isNotBlank() }
                     ?: f.id?.takeIf { it.isNotBlank() }
                     ?: "Track ${i + 1}"
-                val sub = listOfNotNull(
-                    f.label?.takeIf { it.isNotBlank() && it != label },
-                    f.id?.takeIf { it.isNotBlank() && it != label },
-                ).joinToString(" \u00B7 ")
+                val sub = trackSub(label, f.label, f.id)
                 if (isTrackSelected(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
                         label = label,
-                        sub = sub.takeIf { it.isNotBlank() },
+                        sub = sub,
                         badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
                         group = group,
                         index = i,
@@ -3053,7 +3025,6 @@ class PlayerActivity : ComponentActivity() {
             ),
             hint = "Switching to the next server in 3s…",
             iconRes = R.drawable.ic_server,
-            footerLabel = null,
             cancelable = false,
             onHint = { countdown = it },
         ) { which ->
@@ -3578,7 +3549,6 @@ class PlayerActivity : ComponentActivity() {
                 "connection mode lets Hikari keep waiting for them instead of giving up.",
             hint = "You can change this any time in Settings.",
             iconRes = R.drawable.ic_settings,
-            footerLabel = null,
             onDialog = { it.setOnCancelListener { dismissSlowNetTip(remember = true) } },
         ) { which ->
             when (which) {
@@ -3734,7 +3704,6 @@ class PlayerActivity : ComponentActivity() {
                 "Where do you want to save this video?",
             hint = "The in-app copy plays without internet.",
             iconRes = R.drawable.ic_download,
-            footerLabel = "Cancel",
         ) { which ->
             chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
         }
@@ -3788,7 +3757,6 @@ class PlayerActivity : ComponentActivity() {
             options,
             hint = "Used only for this download.",
             iconRes = R.drawable.ic_quality,
-            footerLabel = "Cancel",
         ) { which ->
             if (which == 0) {
                 startDownload(kind, 0, 0L)
@@ -4005,7 +3973,6 @@ class PlayerActivity : ComponentActivity() {
             ),
             hint = "You can seek to $clock any time.",
             iconRes = R.drawable.ic_skip,
-            footerLabel = null,
         ) { which ->
             if (which == 0) applyResume(positionMs)
         }
