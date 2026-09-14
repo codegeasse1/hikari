@@ -2,10 +2,8 @@ package com.hikari.app.player
 
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
-import android.app.AlertDialog
 import android.app.Dialog
 import android.app.PictureInPictureParams
-import android.app.ProgressDialog
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -16,6 +14,7 @@ import android.content.res.Configuration
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.media.AudioManager
 import android.net.Uri
@@ -33,9 +32,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -240,13 +241,13 @@ class PlayerActivity : ComponentActivity() {
 
     /** "Server too slow" dialog: a 3s auto-switch countdown with Wait/Switch.
      *  Wait re-arms the watchdog for 30 more seconds, then re-prompts. */
-    private var slowDialog: android.app.AlertDialog? = null
+    private var slowDialog: Dialog? = null
     private var slowDialogTicker: Runnable? = null
 
     /** "Connection looks slow" tip — offered while the loading cover is up, with
      *  a one-tap way to switch Slow connection mode on. Decided by [SlowNetTip]
      *  (background measurement + real playback struggle), never by a guess. */
-    private var slowNetDialog: android.app.AlertDialog? = null
+    private var slowNetDialog: Dialog? = null
 
     private var speedChip: TextView? = null
     private var qualityBtn: TextView? = null
@@ -323,11 +324,11 @@ class PlayerActivity : ComponentActivity() {
      *  subtitles without re-fetching them over the network. */
     private val subtitleRawCache = HashMap<String, String>()
 
-    private var torrentDialog: android.app.ProgressDialog? = null
+    private var torrentDialog: Dialog? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
      *  to discover its real mime/URL before ExoPlayer sees it. */
-    private var probeDialog: android.app.ProgressDialog? = null
+    private var probeDialog: Dialog? = null
 
     private lateinit var client: OkHttpClient
 
@@ -565,10 +566,26 @@ class PlayerActivity : ComponentActivity() {
         // Top-bar gear: the player options that don't deserve a pill of their
         // own (video fit and rotation).
         findViewById<ImageButton>(R.id.options_btn)?.setOnClickListener {
-            showGlassOptionMenu(
+            showGlassMenu(
                 "Player options",
-                listOf("Fit video", "Crop to fill", "Rotate screen"),
-                resizeIndex
+                listOf(
+                    GlassOption(
+                        "Fit video", "Show the whole frame",
+                        iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                        selected = resizeIndex == 0,
+                    ),
+                    GlassOption(
+                        "Crop to fill", "Zoom until the frame is filled",
+                        iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                        selected = resizeIndex == 1,
+                    ),
+                    GlassOption(
+                        "Rotate screen", "Turn the video 90\u00B0 at a time",
+                        iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
+                    ),
+                ),
+                hint = "How the video is fitted to the screen.",
+                iconRes = R.drawable.ic_settings,
             ) { which ->
                 when (which) {
                     0, 1 -> {
@@ -1284,132 +1301,358 @@ class PlayerActivity : ComponentActivity() {
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
 
+    /** How a glass menu row draws its leading marker. */
+    private enum class RowMarker { RADIO, ICON, NONE }
+
     /**
-     * One tappable option row for the glass menus (server / quality / audio /
-     * subtitles / episodes). Redesigned to match the player UI rather than the
-     * old flat gold list: a rounded glass capsule whose leading marker is a
-     * gradient disc when active, and whose active state is the cyan -> violet
-     * tint with a gradient stroke and a check.
+     * One row of a glass menu. A row is a rounded glass capsule carrying a
+     * primary [label], an optional secondary [sub] line, an optional
+     * right-aligned [badge] pill (a bitrate, a codec, a source type…) and a
+     * leading marker — a radio disc for "pick one" lists, [iconRes] in a glass
+     * disc for action lists, nothing at all for plain text.
+     *
+     * A [selected] row is the cyan -> violet tint with a gradient stroke, a
+     * filled radio dot and a gradient check disc on the right, which is how the
+     * quality/audio/subtitle pickers show the active track.
      */
-    private fun glassOptionRow(label: String, selected: Boolean, onClick: () -> Unit): View {
+    private class GlassOption(
+        val label: String,
+        val sub: String? = null,
+        val badge: String? = null,
+        val iconRes: Int = 0,
+        val chevron: Boolean = false,
+        val selected: Boolean = false,
+        val marker: RowMarker = RowMarker.RADIO,
+    ) {
+        /** The same row with a different selection state. */
+        fun withSelected(value: Boolean): GlassOption = GlassOption(
+            label, sub, badge, iconRes, chevron, value, marker
+        )
+    }
+
+    /** One pickable media track, flattened out of media3's Traks so a menu can
+     *  be built (and its selection state decided) in a single pass. */
+    private data class TrackRow(
+        val label: String,
+        val sub: String?,
+        val badge: String?,
+        val group: Tracks.Group,
+        val index: Int,
+    )
+
+    /** "~2.6 Mbps" / "~759 kbps" — the data-use badge on a quality row. */
+    private fun bitrateBadge(bitsPerSecond: Long): String? = when {
+        bitsPerSecond <= 0L -> null
+        bitsPerSecond >= 1_000_000L ->
+            "~" + String.format(
+                java.util.Locale.US, "%.1f", Math.floor(bitsPerSecond / 100_000.0) / 10.0
+            ) + " Mbps"
+        else -> "~" + ((bitsPerSecond + 500L) / 1000L) + " kbps"
+    }
+
+    /** "AAC" / "SRT" / "TTML" … — a short badge for a track's mime type. */
+    private fun codecBadge(mime: String?): String? = when {
+        mime.isNullOrBlank() -> null
+        mime.contains("subrip", true) -> "SRT"
+        mime.contains("vtt", true) -> "VTT"
+        mime.contains("ssa", true) -> "ASS"
+        mime.contains("ttml", true) -> "TTML"
+        mime.contains("mp4a", true) -> "AAC"
+        mime.contains("eac3", true) -> "E-AC-3"
+        mime.contains("ac3", true) -> "AC-3"
+        mime.contains("opus", true) -> "Opus"
+        mime.contains("vorbis", true) -> "Vorbis"
+        mime.contains("flac", true) -> "FLAC"
+        else -> null
+    }
+
+    /** "Stereo" / "5.1" — a short badge for an audio track's channel layout. */
+    private fun channelsBadge(count: Int): String? = when (count) {
+        0 -> null
+        1 -> "Mono"
+        2 -> "Stereo"
+        6 -> "5.1"
+        8 -> "7.1"
+        else -> "${count}ch"
+    }
+
+    /** The display host of [url] ("cdn.example.com"), or null when there is none. */
+    private fun hostOf(url: String): String? =
+        runCatching { Uri.parse(url).host }.getOrNull()
+            ?.removePrefix("www.")?.takeIf { it.isNotBlank() }
+
+    /** The language of a track as the user would name it ("English"), or null. */
+    private fun languageOf(language: String?): String? {
+        if (language.isNullOrBlank()) return null
+        val pretty = runCatching {
+            java.util.Locale(language).getDisplayLanguage(java.util.Locale.ENGLISH)
+        }.getOrNull()
+        return pretty?.takeIf { it.isNotBlank() && !it.equals(language, true) } ?: language
+    }
+
+    /** A small glass pill: the right-aligned value badge on a row. */
+    private fun glassPill(text: String, sizeSp: Float = 11f): TextView {
         val density = resources.displayMetrics.density
+        return TextView(this).apply {
+            this.text = text
+            textSize = sizeSp
+            includeFontPadding = false
+            setTextColor(0xFFC9D2E0.toInt())
+            gravity = Gravity.CENTER
+            setPadding(
+                (9 * density).toInt(), (4 * density).toInt(),
+                (9 * density).toInt(), (4 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(0x1FFFFFFF)
+                setStroke((1 * density).toInt().coerceAtLeast(1), 0x24FFFFFF)
+            }
+        }
+    }
+
+    /** The gradient disc with a white check that marks the active row. */
+    private fun checkDisc(sizeDp: Int): View {
+        val density = resources.displayMetrics.density
+        return FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                (sizeDp * density).toInt(), (sizeDp * density).toInt()
+            ).apply { marginStart = (9 * density).toInt() }
+            background = accentShape(sizeDp / 2f).apply { shape = GradientDrawable.OVAL }
+            addView(TextView(this@PlayerActivity).apply {
+                text = "\u2713"
+                textSize = sizeDp * 0.52f
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(0xFFFFFFFF.toInt())
+            }, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+        }
+    }
+
+    /** The leading marker of a row, or null for [RowMarker.NONE]. */
+    private fun rowMarker(option: GlassOption): View? {
+        val density = resources.displayMetrics.density
+        val size = (18 * density).toInt()
+        return when (option.marker) {
+            RowMarker.RADIO -> {
+                val marker = if (option.selected) {
+                    LayerDrawable(
+                        arrayOf(
+                            accentShape(9f).apply { shape = GradientDrawable.OVAL },
+                            GradientDrawable().apply {
+                                shape = GradientDrawable.OVAL
+                                setColor(0xFFFFFFFF.toInt())
+                            }
+                        )
+                    ).apply {
+                        val inset = (5.5f * density).toInt()
+                        setLayerInset(1, inset, inset, inset, inset)
+                    }
+                } else {
+                    GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0x00000000)
+                        setStroke((1.6f * density).toInt().coerceAtLeast(1), 0x66FFFFFF)
+                    }
+                }
+                View(this).apply {
+                    background = marker
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                        .apply { marginEnd = (14 * density).toInt() }
+                }
+            }
+            RowMarker.ICON -> {
+                if (option.iconRes == 0) {
+                    null
+                } else {
+                    val disc = (34 * density).toInt()
+                    FrameLayout(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(disc, disc)
+                            .apply { marginEnd = (13 * density).toInt() }
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(0x1FFFFFFF)
+                            setStroke((1 * density).toInt().coerceAtLeast(1), 0x2EFFFFFF)
+                        }
+                        addView(ImageView(this@PlayerActivity).apply {
+                            setImageResource(option.iconRes)
+                            imageTintList = ColorStateList.valueOf(0xFFE6EAF3.toInt())
+                            scaleType = ImageView.ScaleType.CENTER_INSIDE
+                            setPadding(
+                                (8 * density).toInt(), (8 * density).toInt(),
+                                (8 * density).toInt(), (8 * density).toInt()
+                            )
+                        }, FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        ))
+                    }
+                }
+            }
+            RowMarker.NONE -> null
+        }
+    }
+
+    /**
+     * One tappable row of the glass menus. [onClick] null draws a static row
+     * (used for the read-only rows a menu may need).
+     */
+    private fun glassRow(option: GlassOption, onClick: (() -> Unit)?): View {
+        val density = resources.displayMetrics.density
+        val rowShape = if (option.selected) {
+            GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(withAlpha(accentStartColor, 0.30f), withAlpha(accentEndColor, 0.34f))
+            ).apply {
+                cornerRadius = 16 * density
+                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.85f))
+            }
+        } else {
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 16 * density
+                setColor(0x14FFFFFF.toInt())
+                setStroke(1, 0x1FFFFFFF)
+            }
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            isFocusable = true
-            setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
-            val rowShape = if (selected) {
-                GradientDrawable(
-                    GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(withAlpha(accentStartColor, 0.28f), withAlpha(accentEndColor, 0.32f))
-                ).apply {
-                    cornerRadius = 14 * density
-                    setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.80f))
-                }
-            } else {
-                GradientDrawable().apply {
-                    this.shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 14 * density
-                    setColor(0x14FFFFFF.toInt())
-                    setStroke(1, 0x1FFFFFFF)
-                }
-            }
-            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
+            isClickable = onClick != null
+            isFocusable = onClick != null
+            setPadding(
+                (14 * density).toInt(), (11 * density).toInt(),
+                (14 * density).toInt(), (11 * density).toInt()
+            )
+            background = if (onClick == null) rowShape
+            else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
         }
-        val marker = if (selected) {
-            accentShape(6f).apply { shape = GradientDrawable.OVAL }
-        } else {
-            GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x00000000)
-                setStroke((1.6f * density).toInt().coerceAtLeast(1), 0x80FFFFFF.toInt())
-            }
-        }
-        row.addView(View(this).apply { background = marker }, LinearLayout.LayoutParams(
-            (11 * density).toInt(), (11 * density).toInt()
-        ).apply { marginEnd = (12 * density).toInt() })
-        row.addView(TextView(this).apply {
-            text = label
-            textSize = 14.5f
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            includeFontPadding = false
-            typeface = Typeface.create(Typeface.DEFAULT, if (selected) Typeface.BOLD else Typeface.NORMAL)
-            setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        if (selected) {
-            row.addView(TextView(this).apply {
-                text = "\u2713"
-                textSize = 15f
+        rowMarker(option)?.let { row.addView(it) }
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@PlayerActivity).apply {
+                text = option.label
+                textSize = 14.5f
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(accentMidColor)
+                typeface = Typeface.create(
+                    Typeface.DEFAULT, if (option.selected) Typeface.BOLD else Typeface.NORMAL
+                )
+                setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
+            })
+            option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
+                addView(TextView(this@PlayerActivity).apply {
+                    text = sub
+                    textSize = 11.5f
+                    maxLines = 2
+                    includeFontPadding = false
+                    setTextColor(0xFF9AA5B5.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (3 * density).toInt() })
+            }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        option.badge?.takeIf { it.isNotBlank() }?.let { badge ->
+            row.addView(glassPill(badge), LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (10 * density).toInt() })
+        }
+        if (option.selected) {
+            row.addView(checkDisc(22))
+        } else if (option.chevron) {
+            row.addView(TextView(this).apply {
+                text = "\u203A"
+                textSize = 20f
+                includeFontPadding = false
+                setTextColor(0xFF7E8AA0.toInt())
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { marginStart = (8 * density).toInt() })
         }
-        row.setOnClickListener { onClick() }
+        if (onClick != null) row.setOnClickListener { onClick() }
         return row
     }
 
-    /** A centred row container matching [showGlassOptionMenu]'s list padding. */
+    /** A centred row container matching [showGlassMenu]'s list padding. */
     private fun optionList(): LinearLayout {
         val density = resources.displayMetrics.density
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+            setPadding(
+                (12 * density).toInt(), (8 * density).toInt(),
+                (12 * density).toInt(), (8 * density).toInt()
+            )
         }
     }
 
-    /** Adds [label] as a row to [list] using the shared accent row style. */
-    private fun addOptionRow(list: LinearLayout, label: String, selected: Boolean, onClick: () -> Unit) {
+    /** Adds [option] as a row to [list] using the shared row style. */
+    private fun addOptionRow(list: LinearLayout, option: GlassOption, onClick: (() -> Unit)?) {
         val density = resources.displayMetrics.density
         list.addView(
-            glassOptionRow(label, selected, onClick),
+            glassRow(option, onClick),
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (4 * density).toInt() }
+            ).apply { bottomMargin = (7 * density).toInt() }
         )
     }
 
+    /** Adds a plain labelled row to [list]. */
+    private fun addOptionRow(list: LinearLayout, label: String, selected: Boolean, onClick: (() -> Unit)?) {
+        addOptionRow(list, GlassOption(label, selected = selected), onClick)
+    }
+
     /**
-     * Presents a rounded, dark panel — the shared shell for every player menu.
-     * Restyled to match the new player UI: a gradient accent bar beside a white
-     * title, a round glass close button, and a gradient "Done" pill in the
-     * footer (instead of the old amber title + flat CLOSE text). `content` goes
-     * inside a scrollable body capped to the screen, so long lists scroll
-     * within the panel.
+     * Presents the rounded glass panel that shells every player dialog: an
+     * accent bar beside the title, a round glass close button, the scrollable
+     * body, and a footer carrying the contextual [hint] (the small icon + line
+     * at the bottom of the quality menu) next to the [footerLabel] pill.
+     *
+     * Returns the hint [TextView] so a caller can keep its text live (the
+     * "server too slow" countdown), or null when no hint was requested.
      */
-    private fun presentGlass(dialog: Dialog, title: String, content: View, preferredHeightDp: Float) {
+    private fun presentGlass(
+        dialog: Dialog,
+        title: String,
+        content: View,
+        preferredHeightDp: Float,
+        hint: String? = null,
+        iconRes: Int = 0,
+        footerLabel: String? = "Done",
+        cancelable: Boolean = true,
+    ): TextView? {
         val density = resources.displayMetrics.density
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 22 * density
-                orientation = GradientDrawable.Orientation.TOP_BOTTOM
-                colors = intArrayOf(0xF4161D2E.toInt(), 0xF00A0C16.toInt())
-                setStroke((1 * density).toInt().coerceAtLeast(1), 0x33FFFFFF)
-            }
+            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
             clipToOutline = true
         }
 
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((16 * density).toInt(), (14 * density).toInt(), (12 * density).toInt(), (12 * density).toInt())
+            setPadding(
+                (16 * density).toInt(), (15 * density).toInt(),
+                (12 * density).toInt(), (13 * density).toInt()
+            )
             addView(View(this@PlayerActivity).apply { background = accentShape(3f) },
                 LinearLayout.LayoutParams((4 * density).toInt(), (20 * density).toInt()))
             addView(TextView(this@PlayerActivity).apply {
                 text = title
-                textSize = 16f
+                textSize = 16.5f
                 setTextColor(0xFFFFFFFF.toInt())
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 letterSpacing = 0.02f
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = (10 * density).toInt()
+                marginEnd = (8 * density).toInt()
             })
             addView(TextView(this@PlayerActivity).apply {
                 text = "\u2715"
@@ -1422,38 +1665,77 @@ class PlayerActivity : ComponentActivity() {
                 setOnClickListener { dialog.dismiss() }
             }, LinearLayout.LayoutParams((30 * density).toInt(), (30 * density).toInt()))
         })
-        root.addView(hairline(density))
         root.addView(ScrollView(this).apply {
             addView(content)
             isFillViewport = true
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(hairline(density))
 
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
-            addView(TextView(this@PlayerActivity).apply {
-                text = "Done"
-                textSize = 13f
-                setTextColor(0xFFFFFFFF.toInt())
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                letterSpacing = 0.02f
-                gravity = Gravity.CENTER
+        val hintView = hint?.takeIf { it.isNotBlank() }?.let { line ->
+            TextView(this).apply {
+                text = line
+                textSize = 11.5f
                 includeFontPadding = false
-                setPadding((22 * density).toInt(), (9 * density).toInt(), (22 * density).toInt(), (9 * density).toInt())
-                background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.pill_accent_ripple)
-                isClickable = true
-                setOnClickListener { dialog.dismiss() }
+                maxLines = 2
+                setTextColor(0xFF9AA5B5.toInt())
+            }
+        }
+        if (hintView != null || footerLabel != null) {
+            root.addView(hairline(density))
+            root.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(
+                    (16 * density).toInt(), (10 * density).toInt(),
+                    (12 * density).toInt(), (12 * density).toInt()
+                )
+                if (hintView != null) {
+                    if (iconRes != 0) {
+                        addView(ImageView(this@PlayerActivity).apply {
+                            setImageResource(iconRes)
+                            imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
+                            scaleType = ImageView.ScaleType.CENTER_INSIDE
+                        }, LinearLayout.LayoutParams(
+                            (15 * density).toInt(), (15 * density).toInt()
+                        ).apply { marginEnd = (9 * density).toInt() })
+                    }
+                    addView(hintView, LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ))
+                } else {
+                    addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
+                }
+                if (footerLabel != null) {
+                    addView(TextView(this@PlayerActivity).apply {
+                        text = footerLabel
+                        textSize = 13f
+                        setTextColor(0xFFFFFFFF.toInt())
+                        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                        letterSpacing = 0.02f
+                        gravity = Gravity.CENTER
+                        includeFontPadding = false
+                        setPadding(
+                            (22 * density).toInt(), (9 * density).toInt(),
+                            (22 * density).toInt(), (9 * density).toInt()
+                        )
+                        background = ContextCompat.getDrawable(
+                            this@PlayerActivity, R.drawable.pill_accent_ripple
+                        )
+                        isClickable = true
+                        setOnClickListener { dialog.dismiss() }
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { marginStart = (10 * density).toInt() })
+                }
             })
-        })
+        }
 
         dialog.setContentView(
             root,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
-        dialog.setCanceledOnTouchOutside(true)
+        dialog.setCanceledOnTouchOutside(cancelable)
+        dialog.setCancelable(cancelable)
         dialog.show()
         val dm = resources.displayMetrics
         val w = (dm.widthPixels * 0.9f).coerceAtMost(460 * density).toInt()
@@ -1463,19 +1745,135 @@ class PlayerActivity : ComponentActivity() {
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+        return hintView
     }
 
-    /** Builds + shows a radio list panel. Each tap dismisses and reports the index. */
-    private fun showGlassOptionMenu(title: String, items: List<String>, checked: Int, onPick: (Int) -> Unit) {
+    /**
+     * Builds + shows a glass menu. Each tap dismisses the panel and reports the
+     * tapped row's index. [hint] is the contextual line in the panel's footer
+     * (with [iconRes] drawn beside it), [message] an optional muted paragraph
+     * above the rows, and a null [footerLabel] drops the "Done" pill entirely.
+     * Returns the created dialog, so a caller can attach its own listeners.
+     */
+    private fun showGlassMenu(
+        title: String,
+        options: List<GlassOption>,
+        hint: String? = null,
+        iconRes: Int = 0,
+        message: String? = null,
+        footerLabel: String? = "Done",
+        cancelable: Boolean = true,
+        onDialog: ((Dialog) -> Unit)? = null,
+        onHint: ((TextView) -> Unit)? = null,
+        onPick: (Int) -> Unit,
+    ): Dialog {
+        val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        val content = optionList()
-        items.forEachIndexed { i, label ->
-            addOptionRow(content, label, i == checked) {
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (!message.isNullOrBlank()) {
+            content.addView(TextView(this).apply {
+                text = message
+                textSize = 12.5f
+                includeFontPadding = false
+                setLineSpacing(3f * density, 1f)
+                setTextColor(0xFF9AA5B5.toInt())
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(
+                    (13 * density).toInt(), (6 * density).toInt(),
+                    (13 * density).toInt(), (2 * density).toInt()
+                )
+            })
+        }
+        val list = optionList()
+        options.forEachIndexed { i, option ->
+            addOptionRow(list, option) {
                 dialog.dismiss()
                 onPick(i)
             }
         }
-        presentGlass(dialog, title, content, 47f + 44f + items.size * 46f + 20f)
+        content.addView(list, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val height = 56f + options.size * 64f +
+            (if (!message.isNullOrBlank()) 54f else 0f) +
+            (if (hint != null || footerLabel != null) 44f else 0f)
+        onDialog?.invoke(dialog)
+        val hintView =
+            presentGlass(dialog, title, content, height, hint, iconRes, footerLabel, cancelable)
+        if (hintView != null) onHint?.invoke(hintView)
+        return dialog
+    }
+
+    /**
+     * The glass progress panel shown while the player waits on a network step
+     * (finding servers, starting the torrent engine, probing a stream). Same
+     * shell as every other player dialog, so a tap never drops back to a stock
+     * Android spinner. [onCancel] fires when the user backs out / taps away.
+     */
+    private fun showGlassProgress(
+        title: String,
+        message: String,
+        cancelable: Boolean,
+        onCancel: (() -> Unit)? = null,
+    ): Dialog {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
+            clipToOutline = true
+            setPadding(
+                (26 * density).toInt(), (28 * density).toInt(),
+                (26 * density).toInt(), (28 * density).toInt()
+            )
+        }
+        panel.addView(ProgressBar(this).apply {
+            indeterminateTintList = ColorStateList.valueOf(accentMidColor)
+        }, LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()))
+        panel.addView(TextView(this).apply {
+            text = title
+            textSize = 15.5f
+            includeFontPadding = false
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (18 * density).toInt() })
+        panel.addView(TextView(this).apply {
+            text = message
+            textSize = 12.5f
+            includeFontPadding = false
+            setTextColor(0xFF9AA5B5.toInt())
+            gravity = Gravity.CENTER
+            setLineSpacing(3f * density, 1f)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (8 * density).toInt() })
+        dialog.setContentView(
+            panel,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setCancelable(cancelable)
+        if (onCancel != null) dialog.setOnCancelListener { onCancel() }
+        dialog.show()
+        val dm = resources.displayMetrics
+        val w = (dm.widthPixels * 0.72f).coerceAtMost(340 * density).toInt()
+        dialog.window?.apply {
+            setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
+            setDimAmount(0.55f)
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+        return dialog
     }
 
     /** The Episodes pill: lists the title's episodes (fetched from the provider
@@ -1491,17 +1889,28 @@ class PlayerActivity : ComponentActivity() {
                 Toast.makeText(this@PlayerActivity, "No episode list available", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            val labels = eps.map { ep ->
-                when {
-                    ep.season > 1 && ep.number > 0 ->
-                        "S${ep.season} E${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
-                    ep.number > 0 ->
-                        "Episode ${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
-                    else -> ep.name.orEmpty()
+            val options = eps.map { ep ->
+                val number = when {
+                    ep.season > 1 && ep.number > 0 -> "S${ep.season} E${ep.number}"
+                    ep.number > 0 -> "Episode ${ep.number}"
+                    else -> ""
                 }
+                GlassOption(
+                    label = when {
+                        !ep.name.isNullOrBlank() && number.isNotBlank() -> "$number \u00B7 ${ep.name}"
+                        !ep.name.isNullOrBlank() -> ep.name
+                        number.isNotBlank() -> number
+                        else -> "Episode"
+                    },
+                    selected = ep.id == historyEntry?.episodeId,
+                )
             }
-            val current = eps.indexOfFirst { it.id == historyEntry?.episodeId }
-            showGlassOptionMenu("Episodes", labels, current) { which ->
+            showGlassMenu(
+                "Episodes",
+                options,
+                hint = "Switching keeps you inside the player.",
+                iconRes = R.drawable.ic_episodes,
+            ) { which ->
                 eps.getOrNull(which)?.let { switchToEpisode(it) }
             }
         }
@@ -1515,14 +1924,11 @@ class PlayerActivity : ComponentActivity() {
         val item = favouriteItem ?: return
         val repo = contentRepo
         var cancelled = false
-        val dialog = ProgressDialog(this).apply {
-            setTitle("Loading episode")
-            setMessage("Finding servers for this episode…")
-            setCancelable(true)
-            setIndeterminate(true)
-            setOnCancelListener { cancelled = true }
-            show()
-        }
+        val dialog = showGlassProgress(
+            "Loading episode",
+            "Finding servers for this episode…",
+            cancelable = true,
+        ) { cancelled = true }
         lifecycleScope.launch {
             val streams = runCatching { repo.streamsFor(item, ep) }.getOrNull().orEmpty()
             runCatching { dialog.dismiss() }
@@ -1558,7 +1964,29 @@ class PlayerActivity : ComponentActivity() {
 
     private fun showSourcesDialog() {
         if (sources.isEmpty()) return
-        showGlassOptionMenu("Select server", sources.map { it.name }, currentIndex) { which ->
+        val options = sources.mapIndexed { i, source ->
+            GlassOption(
+                label = source.name,
+                sub = when {
+                    source.local -> "Saved on this device"
+                    else -> hostOf(source.url)
+                },
+                badge = when {
+                    source.local -> "Offline"
+                    source.torrentStream || source.isTorrent -> "Torrent"
+                    source.isM3u8 -> "HLS"
+                    source.isMpd -> "DASH"
+                    else -> null
+                },
+                selected = i == currentIndex,
+            )
+        }
+        showGlassMenu(
+            "Select server",
+            options,
+            hint = "If this server stalls, try another one.",
+            iconRes = R.drawable.ic_server,
+        ) { which ->
             if (which != currentIndex) {
                 noSubsRetry = false
                 playSource(which)
@@ -1569,36 +1997,60 @@ class PlayerActivity : ComponentActivity() {
     private fun showQualityDialog() {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Auto (adaptive)")
-        var base = 1
-        var checked = 0
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
         for (group in groups) {
             val mediaGroup = group.mediaTrackGroup
-            val override = p.trackSelectionParameters.overrides[mediaGroup]
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
                 val label = listOfNotNull(
                     f.height.takeIf { it > 0 }?.let { "${it}p" },
                     f.width.takeIf { it > 0 }?.let { "${it}px" },
-                    f.averageBitrate.takeIf { it > 0 }?.let { "${it / 1000}kbps" }
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(label)
-                indexMap[items.size - 1] = group to i
-                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
-                    checked = base + i
-                }
+                ).joinToString(" \u00B7 ").ifBlank { "Track ${i + 1}" }
+                val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+                if (isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = label,
+                        sub = f.id?.takeIf { it.isNotBlank() && !label.contains(it) },
+                        badge = bitrateBadge(bitrate),
+                        group = group,
+                        index = i,
+                    )
+                )
             }
-            base += mediaGroup.length
         }
-        showGlassOptionMenu("Video quality", items, checked) { which ->
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        val options = mutableListOf(
+            GlassOption(
+                "Auto (adaptive)",
+                "Automatically adjusts to your connection",
+                selected = !overrideSelected,
+            )
+        )
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 1] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                )
+            )
+        }
+        showGlassMenu(
+            "Video quality",
+            options,
+            hint = "Higher quality uses more data.",
+            iconRes = R.drawable.ic_quality,
+        ) { which ->
             if (which == 0) {
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
                     .build()
             } else {
-                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                val (group, ti) = indexMap[which] ?: return@showGlassMenu
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
@@ -1606,6 +2058,13 @@ class PlayerActivity : ComponentActivity() {
                     .build()
             }
         }
+    }
+
+    /** True when [group]'s track [index] is the one explicitly selected. */
+    private fun isTrackSelected(player: ExoPlayer, group: Tracks.Group, index: Int): Boolean {
+        val override = player.trackSelectionParameters.overrides[group.mediaTrackGroup]
+            ?: return false
+        return override.trackIndices.any { it == index }
     }
 
     /**
@@ -1626,27 +2085,50 @@ class PlayerActivity : ComponentActivity() {
         val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
         val density = resources.displayMetrics.density
 
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Off")
-        items.add("Auto")
-        var checked = if (textDisabled) 0 else 1
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
         for (group in groups) {
             val mediaGroup = group.mediaTrackGroup
-            val override = params.overrides[mediaGroup]
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val lang = listOfNotNull(
-                    f.language?.takeIf { it.isNotBlank() },
-                    f.label?.takeIf { it.isNotBlank() },
-                    f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(lang)
-                indexMap[items.size - 1] = group to i
-                if (!textDisabled && override != null && override.trackIndices.any { it == i }) {
-                    checked = items.size - 1
-                }
+                val primary = languageOf(f.language)
+                    ?: f.label?.takeIf { it.isNotBlank() }
+                    ?: f.id?.takeIf { it.isNotBlank() }
+                    ?: "Track ${i + 1}"
+                val sub = listOfNotNull(
+                    f.label?.takeIf { it.isNotBlank() && it != primary },
+                    f.id?.takeIf { it.isNotBlank() && it != primary },
+                ).joinToString(" \u00B7 ")
+                if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = primary,
+                        sub = sub.takeIf { it.isNotBlank() },
+                        badge = codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
             }
+        }
+        val options = mutableListOf(
+            GlassOption("Off", "Hide captions completely", selected = textDisabled && !overrideSelected),
+            GlassOption(
+                "Auto", "Follow the stream's default captions",
+                selected = !textDisabled && !overrideSelected,
+            ),
+        )
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 2] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = !textDisabled && isTrackSelected(p, row.group, row.index),
+                )
+            )
         }
 
         // Compact pill-shaped translucent +/- buttons, matching the app's glass
@@ -1657,7 +2139,7 @@ class PlayerActivity : ComponentActivity() {
         fun pill(text: String, onClick: () -> Unit): TextView {
             val bg = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = (15 * density).toFloat()
+                cornerRadius = 999f
                 setColor(0x1AFFFFFF.toInt())
                 setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.55f))
             }
@@ -1692,8 +2174,8 @@ class PlayerActivity : ComponentActivity() {
         // (size / sync / position) sit below them.
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         val trackList = optionList()
-        items.forEachIndexed { idx, label ->
-            addOptionRow(trackList, label, idx == checked) {
+        options.forEachIndexed { idx, option ->
+            addOptionRow(trackList, option) {
                 userPickedSubs = true
                 when (idx) {
                     0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
@@ -1748,6 +2230,16 @@ class PlayerActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
+                setPadding(
+                    (14 * density).toInt(), (10 * density).toInt(),
+                    (14 * density).toInt(), (10 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 16 * density
+                    setColor(0x14FFFFFF.toInt())
+                    setStroke((1 * density).toInt().coerceAtLeast(1), 0x1FFFFFFF)
+                }
                 addView(rowLabel(label))
                 addView(weightSpacer())
                 controls.forEach { addView(it) }
@@ -1755,37 +2247,53 @@ class PlayerActivity : ComponentActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), (4 * density).toInt())
             addView(trackList, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ))
-            addView(controlRow(
-                "Text size",
-                pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
-                sizeValue,
-                pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
-            ).also { it.setPadding(0, (14 * density).toInt(), 0, 0) })
-            addView(controlRow(
-                "Sync",
-                pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
-                syncValue,
-                pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
-            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
-            // Vertical position: "Higher" keeps more of the player's height
-            // clear below the captions, lifting them off the bottom edge (and
-            // out of the letterbox bar on a fitted/letterboxed video).
-            addView(controlRow(
-                "Position",
-                pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
-                posValue,
-                pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
-            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
         }
+        fun addControl(row: LinearLayout) {
+            root.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(
+                    (12 * density).toInt(), (9 * density).toInt(),
+                    (12 * density).toInt(), 0
+                )
+            })
+        }
+        addControl(controlRow(
+            "Text size",
+            pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+            sizeValue,
+            pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+        ))
+        addControl(controlRow(
+            "Sync",
+            pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
+            syncValue,
+            pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
+        ))
+        // Vertical position: "Higher" keeps more of the player's height
+        // clear below the captions, lifting them off the bottom edge (and
+        // out of the letterbox bar on a fitted/letterboxed video).
+        addControl(controlRow(
+            "Position",
+            pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+            posValue,
+            pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+        ))
 
         // The whole panel scrolls (see presentGlass), so the Track rows plus the
         // size/sync controls can never be cut off the bottom on a short screen.
-        presentGlass(dialog, "Subtitles", root, 1000f)
+        presentGlass(
+            dialog,
+            "Subtitles",
+            root,
+            1000f,
+            hint = "Applies while captions are on.",
+            iconRes = R.drawable.ic_subtitles,
+        )
     }
 
     private fun syncLabel(offsetMs: Long): String = if (offsetMs == 0L) "0.0s" else String.format("%+.1fs", offsetMs / 1000.0)
@@ -1816,37 +2324,64 @@ class PlayerActivity : ComponentActivity() {
             Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
             return
         }
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Default (adaptive)")
-        var checked = 0
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
         for (group in groups) {
             val mediaGroup = group.mediaTrackGroup
-            val override = p.trackSelectionParameters.overrides[mediaGroup]
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val label = listOfNotNull(
-                    f.language?.takeIf { it.isNotBlank() }?.let { lang ->
-                        java.util.Locale(lang).getDisplayLanguage(java.util.Locale.ENGLISH)
-                            .takeIf { it.isNotBlank() } ?: lang
-                    },
-                    f.label?.takeIf { it.isNotBlank() },
-                    f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(label)
-                indexMap[items.size - 1] = group to i
-                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
-                    checked = items.size - 1
-                }
+                val language = languageOf(f.language)
+                val label = language
+                    ?: f.label?.takeIf { it.isNotBlank() }
+                    ?: f.id?.takeIf { it.isNotBlank() }
+                    ?: "Track ${i + 1}"
+                val sub = listOfNotNull(
+                    f.label?.takeIf { it.isNotBlank() && it != label },
+                    f.id?.takeIf { it.isNotBlank() && it != label },
+                ).joinToString(" \u00B7 ")
+                if (isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = label,
+                        sub = sub.takeIf { it.isNotBlank() },
+                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
             }
         }
-        showGlassOptionMenu("Audio", items, checked) { which ->
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        val options = mutableListOf(
+            GlassOption(
+                "Default (adaptive)",
+                "Use the track this stream marks as default",
+                selected = !overrideSelected,
+            )
+        )
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 1] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                )
+            )
+        }
+        showGlassMenu(
+            "Audio",
+            options,
+            hint = "Some releases ship more than one audio track.",
+            iconRes = R.drawable.ic_audio,
+        ) { which ->
             if (which == 0) {
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                     .build()
             } else {
-                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                val (group, ti) = indexMap[which] ?: return@showGlassMenu
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
@@ -1918,13 +2453,11 @@ class PlayerActivity : ComponentActivity() {
         errorPanel?.visibility = View.GONE
 
         torrentDialog?.let { runCatching { it.dismiss() } }
-        torrentDialog = ProgressDialog(this).apply {
-            setTitle("Torrent stream")
-            setMessage("Starting torrent engine…\nFirst play can take a few seconds.")
-            setCancelable(false)
-            setIndeterminate(true)
-            show()
-        }
+        torrentDialog = showGlassProgress(
+            "Torrent stream",
+            "Starting torrent engine…\nFirst play can take a few seconds.",
+            cancelable = false,
+        )
 
         lifecycleScope.launch {
             val res = try {
@@ -2216,13 +2749,7 @@ class PlayerActivity : ComponentActivity() {
         // The full-screen title card already signals "finding a server", so the
         // little probe dialog would just flicker on top of it.
         if (loadingBanner?.visibility != View.VISIBLE) {
-            probeDialog = ProgressDialog(this).apply {
-                setTitle(src.name)
-                setMessage("Preparing stream…")
-                setCancelable(false)
-                setIndeterminate(true)
-                show()
-            }
+            probeDialog = showGlassProgress(src.name, "Preparing stream…", cancelable = false)
         }
         lifecycleScope.launch {
             val clean = sanitizeHeaders(src.headers)
@@ -2505,33 +3032,42 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         if (slowDialog != null) return
-        val countdown = TextView(this).apply {
-            textSize = 16f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(0xFFB8B8B8.toInt())
-            setPadding(48, 0, 48, 24)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Server too slow")
-            .setMessage(
-                "This server is still buffering. Switch to the next server, " +
-                    "or wait a little longer?"
-            )
-            .setView(countdown)
-            .setPositiveButton("Switch now") { _, _ ->
-                dismissSlowDialog()
-                noSubsRetry = false
+        var countdown: TextView? = null
+        val dialog = showGlassMenu(
+            "Server too slow",
+            listOf(
+                GlassOption(
+                    "Switch now",
+                    "Jump to the next server",
+                    iconRes = R.drawable.ic_server,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Wait 30s",
+                    "Give this server more time",
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = "Switching to the next server in 3s…",
+            iconRes = R.drawable.ic_server,
+            footerLabel = null,
+            cancelable = false,
+            onHint = { countdown = it },
+        ) { which ->
+            dismissSlowDialog()
+            noSubsRetry = false
+            if (which == 0) {
                 Toast.makeText(this@PlayerActivity, "Switching server", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
-            }
-            .setNegativeButton("Wait 30s") { _, _ ->
-                dismissSlowDialog()
+            } else {
                 // Stay on this server; the same prompt reappears after 30s if
                 // it still hasn't started playing.
                 scheduleBufferingWatchdog(30_000L)
             }
-            .setCancelable(false)
-            .create()
+        }
         slowDialog = dialog
         val start = System.currentTimeMillis()
         val ticker = object : Runnable {
@@ -2549,13 +3085,12 @@ class PlayerActivity : ComponentActivity() {
                     playSource(currentIndex + 1)
                     return
                 }
-                countdown.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
+                countdown?.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
                 bufferingWatchdog.postDelayed(this, 250)
             }
         }
         slowDialogTicker = ticker
         bufferingWatchdog.post(ticker)
-        dialog.show()
     }
 
     private fun dismissSlowDialog() {
@@ -3014,22 +3549,45 @@ class PlayerActivity : ComponentActivity() {
     private fun showSlowNetTip() {
         if (isFinishing || isDestroyed || renderedFirstFrame) return
         if (slowNetDialog?.isShowing == true) return
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Your connection looks slow")
-            .setMessage(
-                "Sources and video are taking a long time to answer. Slow " +
-                    "connection mode lets Hikari keep waiting for them instead " +
-                    "of giving up. Turn it on?"
-            )
-            .setPositiveButton("Turn on") { _, _ -> enableSlowModeFromTip() }
-            .setNegativeButton("Not now") { _, _ -> dismissSlowNetTip(remember = true) }
-            .setNeutralButton("Don't ask again") { _, _ ->
-                dismissSlowNetTip(remember = true, always = true)
+        val dialog = showGlassMenu(
+            "Your connection looks slow",
+            listOf(
+                GlassOption(
+                    "Turn on",
+                    "Keep waiting for slow sources",
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Not now",
+                    "Ask me again later",
+                    iconRes = R.drawable.ic_skip,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Don't ask again",
+                    "Only the Settings switch turns it back on",
+                    iconRes = R.drawable.ic_close,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            message = "Sources and video are taking a long time to answer. Slow " +
+                "connection mode lets Hikari keep waiting for them instead of giving up.",
+            hint = "You can change this any time in Settings.",
+            iconRes = R.drawable.ic_settings,
+            footerLabel = null,
+            onDialog = { it.setOnCancelListener { dismissSlowNetTip(remember = true) } },
+        ) { which ->
+            when (which) {
+                0 -> enableSlowModeFromTip()
+                1 -> dismissSlowNetTip(remember = true)
+                else -> dismissSlowNetTip(remember = true, always = true)
             }
-            .setOnCancelListener { dismissSlowNetTip(remember = true) }
-            .create()
+        }
         slowNetDialog = dialog
-        runCatching { dialog.show() }
     }
 
     /** One tap: the setting is flipped for real (persisted AND live for the
@@ -3160,16 +3718,26 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val label = episodeLabel()
-        AlertDialog.Builder(this)
-            .setTitle("Download")
-            .setMessage(
-                (if (label.isBlank()) "" else "$label\n\n") +
-                    "Where do you want to save this video?"
-            )
-            .setPositiveButton("In Hikari (offline)") { _, _ -> chooseQualityThenDownload(DownloadKind.OFFLINE) }
-            .setNeutralButton("Phone storage") { _, _ -> chooseQualityThenDownload(DownloadKind.EXPORT) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showGlassMenu(
+            "Download",
+            listOf(
+                GlassOption(
+                    "In Hikari", "Kept offline inside the app",
+                    iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
+                ),
+                GlassOption(
+                    "Phone storage", "Saved to your device's Downloads folder",
+                    iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
+                ),
+            ),
+            message = (if (label.isBlank()) "" else "$label\n") +
+                "Where do you want to save this video?",
+            hint = "The in-app copy plays without internet.",
+            iconRes = R.drawable.ic_download,
+            footerLabel = "Cancel",
+        ) { which ->
+            chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
+        }
     }
 
     /** A video quality the current stream offers: its height (0 when the
@@ -3195,13 +3763,6 @@ class PlayerActivity : ComponentActivity() {
         return byKey.values.sortedByDescending { if (it.height > 0) it.height else it.bandwidth.toInt() }
     }
 
-    private fun qualityLabel(q: VideoQuality): String {
-        val parts = mutableListOf<String>()
-        if (q.height > 0) parts.add("${q.height}p")
-        if (q.bandwidth > 0) parts.add("${q.bandwidth / 1000}kbps")
-        return parts.joinToString(" · ").ifBlank { "Default quality" }
-    }
-
     /** After the destination is chosen, offer the stream's qualities when it
      *  exposes more than one; a single-quality source goes straight to the
      *  download. */
@@ -3211,19 +3772,30 @@ class PlayerActivity : ComponentActivity() {
             startDownload(kind, 0, 0L)
             return
         }
-        val items = arrayOf("Highest quality") + qualities.map { qualityLabel(it) }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Choose quality")
-            .setItems(items) { _, which ->
-                if (which == 0) {
-                    startDownload(kind, 0, 0L)
-                } else {
-                    val q = qualities[which - 1]
-                    startDownload(kind, q.height, q.bandwidth)
-                }
+        val options = mutableListOf(
+            GlassOption("Highest quality", "The best this server offers", selected = true)
+        )
+        qualities.forEach { q ->
+            options.add(
+                GlassOption(
+                    label = if (q.height > 0) "${q.height}p" else "Default quality",
+                    badge = bitrateBadge(q.bandwidth),
+                )
+            )
+        }
+        showGlassMenu(
+            "Choose quality",
+            options,
+            hint = "Used only for this download.",
+            iconRes = R.drawable.ic_quality,
+            footerLabel = "Cancel",
+        ) { which ->
+            if (which == 0) {
+                startDownload(kind, 0, 0L)
+            } else {
+                qualities.getOrNull(which - 1)?.let { startDownload(kind, it.height, it.bandwidth) }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     /** The top bar's second line (e.g. "S1 E2 · Freedom Day") — the episode
@@ -3412,12 +3984,31 @@ class PlayerActivity : ComponentActivity() {
 
     private fun showResumeDialog(positionMs: Long) {
         if (isFinishing || isDestroyed) return
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Continue from where you left off?")
-            .setMessage("Resume from ${fmtResumeClock(positionMs)}?")
-            .setPositiveButton("Resume") { _, _ -> applyResume(positionMs) }
-            .setNegativeButton("Start over", null)
-            .show()
+        val clock = fmtResumeClock(positionMs)
+        showGlassMenu(
+            "Continue from where you left off?",
+            listOf(
+                GlassOption(
+                    "Resume",
+                    "Pick up at $clock",
+                    iconRes = R.drawable.hikari_play,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Start over",
+                    "Play this video from the beginning",
+                    iconRes = R.drawable.ic_back,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = "You can seek to $clock any time.",
+            iconRes = R.drawable.ic_skip,
+            footerLabel = null,
+        ) { which ->
+            if (which == 0) applyResume(positionMs)
+        }
     }
 
     private fun applyResume(positionMs: Long) {
