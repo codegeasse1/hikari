@@ -79,10 +79,12 @@ import coil.load
 import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
+import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.DrmSpec
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.MediaItem as AppMediaItem
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.download.DownloadKind
@@ -248,18 +250,29 @@ class PlayerActivity : ComponentActivity() {
     private var slowNetDialog: android.app.AlertDialog? = null
 
     private var speedChip: TextView? = null
-    private var rotateBtn: ImageButton? = null
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
+    private var episodesBtn: TextView? = null
     private var subsBtn: TextView? = null
     private var audioBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
     private var lockBtn: ImageButton? = null
-    private var resizeBtn: TextView? = null
+    private var favBtn: ImageButton? = null
+    private var resizeBtn: ImageButton? = null
     private var skipBtn: TextView? = null
     private var unlockBtn: TextView? = null
+    private var playHint: TextView? = null
+
+    /** The favourite toggled by the top-bar heart button, and whether it is
+     *  currently on. Built from the launch intent's history extras. */
+    private var favouriteItem: AppMediaItem? = null
+    private var isFavourite = false
+
+    /** Episode listing / in-player episode switching, built lazily so the
+     *  provider stack isn't touched until the Episodes pill is actually used. */
+    private val contentRepo by lazy { ContentRepository((applicationContext as HikariApp).providers) }
 
     /** Full-screen title-card cover shown while the first server is being
      *  found / buffered (Nuvio/Stremio style). See [showLoadingBanner]. */
@@ -457,9 +470,11 @@ class PlayerActivity : ComponentActivity() {
             }
         })
         speedChip = findViewById(R.id.speed_btn)
-        rotateBtn = findViewById(R.id.rotate_btn)
+        favBtn = findViewById(R.id.fav_btn)
+        playHint = findViewById(R.id.play_hint)
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
+        episodesBtn = findViewById(R.id.episodes_btn)
         subsBtn = findViewById(R.id.subs_btn)
         audioBtn = findViewById(R.id.audio_btn)
         lockBtn = findViewById(R.id.lock_btn)
@@ -537,18 +552,23 @@ class PlayerActivity : ComponentActivity() {
         }
 
         speedChip?.setOnClickListener { cycleSpeed() }
-        rotateBtn?.setOnClickListener { cycleRotation() }
         qualityBtn?.setOnClickListener { showQualityDialog() }
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
+        // The Episodes pill is only wireable when the player knows which title
+        // it is playing (launched from the detail screen) and the title is a
+        // series — it stays hidden otherwise, so it is never a dead button.
+        episodesBtn?.visibility = View.GONE
+        episodesBtn?.setOnClickListener { showEpisodesDialog() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
-        findViewById<TextView>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
-        // Top-bar "more" button: the player options that don't deserve a pill
-        // of their own (video fit, rotation, download).
-        findViewById<ImageButton>(R.id.more_btn)?.setOnClickListener {
+        findViewById<ImageButton>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+        favBtn?.setOnClickListener { toggleFavourite() }
+        // Top-bar gear: the player options that don't deserve a pill of their
+        // own (video fit and rotation).
+        findViewById<ImageButton>(R.id.options_btn)?.setOnClickListener {
             showGlassOptionMenu(
                 "Player options",
-                listOf("Fit video", "Crop to fill", "Rotate screen", "Download"),
+                listOf("Fit video", "Crop to fill", "Rotate screen"),
                 resizeIndex
             ) { which ->
                 when (which) {
@@ -559,10 +579,9 @@ class PlayerActivity : ComponentActivity() {
                         } else {
                             C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                         }
-                        resizeBtn?.text = if (which == 0) "Fit" else "Crop"
+                        updateResizeButton()
                     }
                     2 -> cycleRotation()
-                    3 -> showDownloadDialog()
                 }
             }
         }
@@ -693,9 +712,10 @@ class PlayerActivity : ComponentActivity() {
             true
         }
 
-        // All our controls (Back/Title/Server/Speed on top, Quality/Sub/Rotate
-        // at the bottom) live INSIDE the media3 controller layout now, so they
-        // appear and fade together with the playback controls on tap.
+        // All our controls (Back/Title/Favourite/Download/PiP/Options/Lock in the
+        // top bar, Speed/Source/Quality/Audio/Subtitles/Skip Intro in the pill
+        // row) live INSIDE the media3 controller layout now, so they appear and
+        // fade together with the playback controls on tap.
 
         // Watch-history context (set by the detail screen). When present, the
         // player periodically persists resume position into the app store.
@@ -722,7 +742,42 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             saveHandler.postDelayed(saveTask!!, 5000)
+
+            // The top-bar heart works on the same title the history entry was
+            // opened for. Its initial state comes from the stored favourites; we
+            // keep observing so a toggle on the detail screen is reflected here.
+            if (historyEntry!!.mediaId.isNotBlank()) {
+                favouriteItem = AppMediaItem(
+                    providerId = histProvider,
+                    id = historyEntry!!.mediaId,
+                    title = historyEntry!!.title,
+                    type = historyEntry!!.type,
+                    posterUrl = historyEntry!!.posterUrl,
+                    backdropUrl = intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() },
+                )
+                lifecycleScope.launch {
+                    runCatching {
+                        (applicationContext as HikariApp).store.favoritesFlow().collect { list ->
+                            val on = list.any { it.uniqueId == favouriteItem?.uniqueId }
+                            if (on != isFavourite) {
+                                isFavourite = on
+                                favBtn?.setImageResource(
+                                    if (on) R.drawable.ic_heart_filled else R.drawable.ic_heart
+                                )
+                                favBtn?.imageTintList = tintOf(on)
+                            }
+                        }
+                    }
+                }
+            }
         }
+
+        // Reveal the Episodes pill only when we know the title and it is a
+        // series — a movie (or playback with no provider context) has no
+        // episode list to show, so the pill stays hidden rather than dead.
+        episodesBtn?.visibility =
+            if (favouriteItem != null && favouriteItem?.type != MediaType.MOVIE) View.VISIBLE
+            else View.GONE
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -984,11 +1039,11 @@ class PlayerActivity : ComponentActivity() {
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
         requestedOrientation = next
-        // Phone-tilt icon tints in the app accent while forced-landscape so the
-        // state is readable at a glance (white = free/portrait).
-        val accent = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#7B5CFF"))
-        val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-        rotateBtn?.imageTintList = if (next == SCREEN_ORIENTATION_PORTRAIT) white else accent
+        Toast.makeText(
+            this,
+            if (next == SCREEN_ORIENTATION_PORTRAIT) "Portrait" else "Landscape",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun applySpeed(speed: Float) {
@@ -1025,7 +1080,43 @@ class PlayerActivity : ComponentActivity() {
         } else {
             C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
         }
-        resizeBtn?.text = if (resizeIndex == 0) "Fit" else "Crop"
+        updateResizeButton()
+    }
+
+    /** The fit/crop button has no label any more, so the state is shown by the
+     *  accent tint (accent = cropping/zoomed, white = fitting). */
+    private fun updateResizeButton() {
+        resizeBtn?.imageTintList = tintOf(resizeIndex == 0)
+    }
+
+    /** White = off, the player accent = on. Used by the mute-style state icons
+     *  (resize, favourite) so a toggled control is readable at a glance. */
+    private fun tintOf(on: Boolean) = ColorStateList.valueOf(
+        if (on) android.graphics.Color.parseColor("#7B5CFF") else android.graphics.Color.WHITE
+    )
+
+    /** Top-bar heart: add/remove this title from the app's favourites. */
+    private fun toggleFavourite() {
+        val item = favouriteItem ?: return
+        val next = !isFavourite
+        isFavourite = next
+        favBtn?.setImageResource(if (next) R.drawable.ic_heart_filled else R.drawable.ic_heart)
+        favBtn?.imageTintList = tintOf(next)
+        val app = applicationContext as HikariApp
+        app.appScope.launch {
+            runCatching {
+                if (next) {
+                    // Never downgrade an entry the detail screen saved with full
+                    // metadata: only add when this title isn't a favourite yet.
+                    if (app.store.favorites().none { it.uniqueId == item.uniqueId }) {
+                        app.store.addFavorite(item)
+                    }
+                } else {
+                    app.store.removeFavorite(item.uniqueId)
+                }
+            }
+        }
+        Toast.makeText(this, if (next) "Added to favourites" else "Removed from favourites", Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleController() {
@@ -1304,6 +1395,84 @@ class PlayerActivity : ComponentActivity() {
             )
         }
         presentGlass(dialog, title, content, 48f + 44f + items.size * 47f + 20f)
+    }
+
+    /** The Episodes pill: lists the title's episodes (fetched from the provider
+     *  stack on demand) and switches playback to the one the user picks, without
+     *  leaving the player. */
+    private fun showEpisodesDialog() {
+        val item = favouriteItem ?: return
+        val repo = contentRepo
+        Toast.makeText(this, "Loading episodes…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val eps = runCatching { repo.episodesFor(item) }.getOrNull().orEmpty()
+            if (eps.isEmpty()) {
+                Toast.makeText(this@PlayerActivity, "No episode list available", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val labels = eps.map { ep ->
+                when {
+                    ep.season > 1 && ep.number > 0 ->
+                        "S${ep.season} E${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+                    ep.number > 0 ->
+                        "Episode ${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+                    else -> ep.name.orEmpty()
+                }
+            }
+            val current = eps.indexOfFirst { it.id == historyEntry?.episodeId }
+            showGlassOptionMenu("Episodes", labels, current) { which ->
+                eps.getOrNull(which)?.let { switchToEpisode(it) }
+            }
+        }
+    }
+
+    /** Switches playback to [ep] in place: fetches that episode's servers, stops
+     *  the previous episode's live session, adopts the new episode's history key
+     *  and starts on the first server. Shows a cancellable progress dialog while
+     *  the providers search. */
+    private fun switchToEpisode(ep: Episode) {
+        val item = favouriteItem ?: return
+        val repo = contentRepo
+        var cancelled = false
+        val dialog = ProgressDialog(this).apply {
+            setTitle("Loading episode")
+            setMessage("Finding servers for this episode…")
+            setCancelable(true)
+            setIndeterminate(true)
+            setOnCancelListener { cancelled = true }
+            show()
+        }
+        lifecycleScope.launch {
+            val streams = runCatching { repo.streamsFor(item, ep) }.getOrNull().orEmpty()
+            runCatching { dialog.dismiss() }
+            if (cancelled) return@launch
+            if (streams.isEmpty()) {
+                Toast.makeText(
+                    this@PlayerActivity, "No servers found for this episode", Toast.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+            // The origin session's servers belong to the episode we just left —
+            // stop appending them, and stop restoring its remembered server.
+            liveStreamsJob?.cancel()
+            liveStreamsJob = null
+            liveSessionId = null
+            // Adopt the new episode (top-bar episode line + watch-history key).
+            applyLiveEpisode(ep)
+            // A fresh episode starts fresh: no resume position, no remembered
+            // server, and no memory of the old episode's failed URLs.
+            startPositionMs = 0L
+            seekPending = false
+            resumeHintMs = 0L
+            resumeHintDurMs = 0L
+            refreshAttempts = 0
+            noSubsRetry = false
+            resetHeaderWalk()
+            triedUrls.clear()
+            sources = streams.map { it.toPlayerSource() }
+            currentIndex = 0
+            playSource(0)
+        }
     }
 
     private fun showSourcesDialog() {
@@ -1673,7 +1842,6 @@ class PlayerActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     private fun playTorrent(index: Int) {
         val src = sources[index]
-        sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
 
         torrentDialog?.let { runCatching { it.dismiss() } }
@@ -2028,7 +2196,8 @@ class PlayerActivity : ComponentActivity() {
         // must not pick one we already know dies.
         triedUrls.add(src.url)
 
-        sourcesBtn?.text = src.name
+        // The Source pill keeps its static label; the active server's name is
+        // shown by the top-bar source chip below.
         val sourceBadge = src.name.substringBefore("|").trim().ifBlank { src.name }
         if (sourceBadge.isNotBlank()) {
             badgeSource?.text = sourceBadge
@@ -2471,9 +2640,6 @@ class PlayerActivity : ComponentActivity() {
             } else {
                 SCREEN_ORIENTATION_PORTRAIT
             }
-            val accent = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#7B5CFF"))
-            val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-            rotateBtn?.imageTintList = if (landscape) accent else white
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -2494,6 +2660,12 @@ class PlayerActivity : ComponentActivity() {
             // straight onto it (no re-probe, no header trial-and-error).
             sources.getOrNull(currentIndex)?.let { rememberPlayedSource(currentIndex, it) }
             maybeOfferResume()
+        }
+
+        // The "Tap to play" hint under the centre play button is visible only
+        // while playback is paused (or before it has started).
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            playHint?.visibility = if (isPlaying) View.GONE else View.VISIBLE
         }
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
