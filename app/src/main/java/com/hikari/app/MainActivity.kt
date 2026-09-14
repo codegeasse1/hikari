@@ -74,6 +74,13 @@ class MainActivity : AppCompatActivity() {
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
+            // In-app UI scale (Settings → In-app UI scale): when on, the app
+            // stops following the phone's font/display size and uses this.
+            val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
+            val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
+            val uiScaleFlow = remember { store.uiScaleFlow() }
+            val uiScale by uiScaleFlow.collectAsState(initial = 1f)
+
             LaunchedEffect(themeMode) {
                 // Dark status-bar icons on the light theme so they stay visible.
                 androidx.core.view.WindowCompat.getInsetsController(
@@ -91,7 +98,7 @@ class MainActivity : AppCompatActivity() {
                     ?.let { showUpdateDialog = true }
             }
 
-            HikariTheme(themeMode) {
+            HikariTheme(themeMode, uiScaleEnabled, uiScale) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
                     UpdateDialog(

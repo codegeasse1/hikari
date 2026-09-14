@@ -39,8 +39,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -186,6 +188,15 @@ private fun AppBottomBar(
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    // Six equal slots is not much room, and the labels ("Downloads",
+    // "Extensions") are the longest text in the app. On a phone whose
+    // accessibility Font size AND/OR Display size is turned up, the labels grew
+    // past their slot and were hard-clipped mid-word ("Downloa"). Size the
+    // label so it always renders at the SAME physical size — dividing out the
+    // font scale — and the worst case is then a full word in a slightly tight
+    // slot. (When "In-app UI scale" is on, fontScale is 1 here and the scale
+    // rides on the density, so the labels still scale with that setting.)
+    val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
     Box(
         Modifier
             .fillMaxWidth()
@@ -193,7 +204,7 @@ private fun AppBottomBar(
             // system bars are visible (they are hidden while immersive, so this
             // is 0 in the normal case and simply lifts the bar when they show).
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .padding(horizontal = 8.dp, vertical = 10.dp)
     ) {
         Surface(
             shape = RoundedCornerShape(28.dp),
@@ -205,7 +216,7 @@ private fun AppBottomBar(
                 Modifier
                     .fillMaxWidth()
                     .height(60.dp)
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .padding(horizontal = 2.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Tabs.forEach { tab ->
@@ -231,10 +242,12 @@ private fun AppBottomBar(
                             tab.label,
                             maxLines = 1,
                             softWrap = false,
-                            overflow = TextOverflow.Clip,
-                            fontSize = 9.sp,
+                            overflow = TextOverflow.Ellipsis,
+                            fontSize = (9f / labelScale).sp,
+                            textAlign = TextAlign.Center,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (selected) primary else muted
+                            color = if (selected) primary else muted,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }

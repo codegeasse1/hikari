@@ -316,6 +316,15 @@ fun SettingsScreen() {
                     .fillMaxWidth()
                     .padding(top = 12.dp)
             ) {
+                UiScaleCard(app)
+            }
+        }
+        item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
                 SlowConnectionCard(app)
             }
         }
@@ -641,6 +650,105 @@ private fun DownloadSettingsCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun UiScaleCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val enabledFlow = remember { app.store.uiScaleEnabledFlow() }
+    val enabled by enabledFlow.collectAsState(initial = false)
+    val scaleFlow = remember { app.store.uiScaleFlow() }
+    val scale by scaleFlow.collectAsState(initial = 1f)
+    var slider by remember { mutableStateOf(scale) }
+
+    LaunchedEffect(scale) { slider = scale }
+
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "In-app UI scale",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    "Force one interface size on every phone",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = { on ->
+                    scope.launch { runCatching { app.store.setUiScaleEnabled(on) } }
+                }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Turning OFF applies your phone's Font size and Display size settings " +
+                "to the app. Turning ON ignores those two phone settings and follows " +
+                "the in-app UI scale size below instead, so the app looks the same on " +
+                "every device.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (enabled) {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "UI scale size",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    (slider * 100).roundToInt().toString() + "%",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Slider(
+                value = slider,
+                onValueChange = { slider = it },
+                onValueChangeFinished = {
+                    val pct = (slider * 100).roundToInt().coerceIn(70, 130)
+                    slider = pct / 100f
+                    scope.launch { runCatching { app.store.setUiScale(pct) } }
+                },
+                valueRange = 0.7f..1.3f,
+                steps = 5,
+                colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f),
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent,
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Smaller",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Default",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Bigger",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 

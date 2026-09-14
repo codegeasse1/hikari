@@ -37,6 +37,8 @@ class AppStore(private val ctx: Context) {
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
+        val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
+        val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
@@ -220,6 +222,30 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTheme(key: String) {
         store.edit { it[K.THEME] = key }
+    }
+
+    // ---- In-app UI scale ----
+
+    /** When ON the app ignores the phone's Font size AND Display size settings
+     *  and scales its interface with [uiScaleFlow] instead — so it looks the
+     *  same on every phone. OFF (default) follows the system settings. */
+    fun uiScaleEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.UI_SCALE_ENABLED] ?: false }
+
+    suspend fun uiScaleEnabled(): Boolean = uiScaleEnabledFlow().first()
+
+    suspend fun setUiScaleEnabled(enabled: Boolean) {
+        store.edit { it[K.UI_SCALE_ENABLED] = enabled }
+    }
+
+    /** The in-app scale (0.7f–1.3f) used while [uiScaleEnabledFlow] is on. */
+    fun uiScaleFlow(): Flow<Float> =
+        store.data.map { (it[K.UI_SCALE_PERCENT] ?: 100).coerceIn(70, 130) / 100f }
+
+    suspend fun uiScale(): Float = uiScaleFlow().first()
+
+    suspend fun setUiScale(percent: Int) {
+        store.edit { it[K.UI_SCALE_PERCENT] = percent.coerceIn(70, 130) }
     }
 
     // ---- Ad blocking (WebView only) ----
