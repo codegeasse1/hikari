@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
@@ -60,6 +61,9 @@ class AppStore(private val ctx: Context) {
         val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
         val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
         val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
+        val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
+        val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
+        val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe
@@ -109,6 +113,41 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setShowLoadingBanner(show: Boolean) {
         store.edit { it[K.SHOW_LOADING_BANNER] = show }
+    }
+
+    /** Whether the player may suggest turning on Slow connection mode when a
+     *  play looks like it is struggling on a weak connection. On by default —
+     *  a user who keeps getting a wrong "your connection looks slow" verdict
+     *  turns it off here and never sees the dialog again. */
+    fun slowTipEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_TIP_ENABLED] ?: true }
+
+    suspend fun slowTipEnabled(): Boolean = slowTipEnabledFlow().first()
+
+    suspend fun setSlowTipEnabled(enabled: Boolean) {
+        store.edit { it[K.SLOW_TIP_ENABLED] = enabled }
+    }
+
+    /** Set by the dialog's "Don't ask again" — permanent, unlike the timed
+     *  cooldown of a plain dismissal. */
+    fun slowTipDontAskFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_TIP_DONT_ASK] ?: false }
+
+    suspend fun slowTipDontAsk(): Boolean = slowTipDontAskFlow().first()
+
+    suspend fun setSlowTipDontAsk(dontAsk: Boolean) {
+        store.edit { it[K.SLOW_TIP_DONT_ASK] = dontAsk }
+    }
+
+    /** When the tip was last dismissed with "Not now" (0 = never). Keeps the
+     *  dialog from reappearing on every single play. */
+    fun slowTipLastDismissFlow(): Flow<Long> =
+        store.data.map { it[K.SLOW_TIP_LAST_DISMISS] ?: 0L }
+
+    suspend fun slowTipLastDismiss(): Long = slowTipLastDismissFlow().first()
+
+    suspend fun setSlowTipLastDismiss(atMs: Long) {
+        store.edit { it[K.SLOW_TIP_LAST_DISMISS] = atMs }
     }
 
     /** How many downloads may run simultaneously (1–10). */

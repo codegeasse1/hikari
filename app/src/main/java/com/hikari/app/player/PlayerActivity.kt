@@ -88,13 +88,16 @@ import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
 import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.Http
+import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
+import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.ui.PosterLoader
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -233,6 +236,11 @@ class PlayerActivity : ComponentActivity() {
      *  Wait re-arms the watchdog for 30 more seconds, then re-prompts. */
     private var slowDialog: android.app.AlertDialog? = null
     private var slowDialogTicker: Runnable? = null
+
+    /** "Connection looks slow" tip — offered while the loading cover is up, with
+     *  a one-tap way to switch Slow connection mode on. Decided by [SlowNetTip]
+     *  (background measurement + real playback struggle), never by a guess. */
+    private var slowNetDialog: android.app.AlertDialog? = null
 
     private var speedChip: TextView? = null
     private var rotateBtn: ImageButton? = null
@@ -453,6 +461,18 @@ class PlayerActivity : ComponentActivity() {
         // and left the user staring at a black player.)
         loadingBanner?.setOnClickListener { }
         loadingSpinner?.setOnClickListener { }
+
+        // This play just started: let the slow-connection tip measure in the
+        // BACKGROUND (in parallel with the server search that is about to
+        // happen anyway, so it delays nothing) and watch for evidence that the
+        // play is struggling. It only ever speaks up with real evidence and
+        // retracts itself the moment video appears — see SlowNetTip.
+        SlowNetTip.onPlaybackStart()
+        lifecycleScope.launch {
+            SlowNetTip.suggestion.collect { reason ->
+                if (reason != null) showSlowNetTip() else dismissSlowNetTip()
+            }
+        }
 
         speedChip?.setOnClickListener { cycleSpeed() }
         rotateBtn?.setOnClickListener { cycleRotation() }
@@ -2229,6 +2249,9 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onRenderedFirstFrame() {
             renderedFirstFrame = true
+            // Real video is on screen — retract any "your connection looks slow"
+            // verdict, measured or not.
+            SlowNetTip.onFirstFrame()
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             hideLoadingBanner()
@@ -2242,6 +2265,9 @@ class PlayerActivity : ComponentActivity() {
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 dismissSlowDialog()
+                // Audio-only streams never fire onRenderedFirstFrame, so the same
+                // "playback really did start" signal applies here.
+                SlowNetTip.onFirstFrame()
                 // Fallback: audio-only streams never fire onRenderedFirstFrame,
                 // so drop the title card shortly after playback is ready.
                 bufferingWatchdog.postDelayed({ hideLoadingBanner() }, 1200L)
@@ -2293,7 +2319,8 @@ class PlayerActivity : ComponentActivity() {
                 (details.contains("WEBVTT", true) || details.contains("Expected", true) ||
                     details.contains("subtitle", true) || details.contains("TextDecoder", true))
             if (subtitleIssue) {
-                Toast.makeText(this@PlayerActivity, "Bad subtitle track — retrying without subtitles", Toast.LENGTH_SHORT).show()
+                // Silent retry: the user asked not to be told about every
+                // internal retry — only real server failures (below) speak up.
                 noSubsRetry = true
                 playSource(currentIndex)
                 return
@@ -2310,11 +2337,9 @@ class PlayerActivity : ComponentActivity() {
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) && headerVariant < 2) {
                 headerVariant++
-                Toast.makeText(
-                    this@PlayerActivity,
-                    "Source rejected our request — retrying with fewer headers",
-                    Toast.LENGTH_SHORT
-                ).show()
+                // Silent retry — same server, next header set down. The only
+                // message the user sees is "Server failed — trying next" once
+                // this server is finally abandoned.
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
@@ -2324,6 +2349,7 @@ class PlayerActivity : ComponentActivity() {
             val hasNext = currentIndex + 1 < sources.size
             if (hasNext) {
                 noSubsRetry = false
+                SlowNetTip.onServerFailed()
                 Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
@@ -2491,6 +2517,64 @@ class PlayerActivity : ComponentActivity() {
             spin.animate().alpha(0f).setDuration(320L).withEndAction {
                 spin.visibility = View.GONE
             }.start()
+        }
+    }
+
+    /** "Your connection looks slow?" — offered over the loading cover while the
+     *  source search runs, with a one-tap way to switch Settings' Slow
+     *  connection mode on (which is exactly what rescues a search that keeps
+     *  timing out on a weak link). Never shown once real video is on screen.
+     *  [SlowNetTip] decides, on measured evidence, whether this is worth
+     *  saying at all. */
+    private fun showSlowNetTip() {
+        if (isFinishing || isDestroyed || renderedFirstFrame) return
+        if (slowNetDialog?.isShowing == true) return
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Your connection looks slow")
+            .setMessage(
+                "Sources and video are taking a long time to answer. Slow " +
+                    "connection mode lets Hikari keep waiting for them instead " +
+                    "of giving up. Turn it on?"
+            )
+            .setPositiveButton("Turn on") { _, _ -> enableSlowModeFromTip() }
+            .setNegativeButton("Not now") { _, _ -> dismissSlowNetTip(remember = true) }
+            .setNeutralButton("Don't ask again") { _, _ ->
+                dismissSlowNetTip(remember = true, always = true)
+            }
+            .setOnCancelListener { dismissSlowNetTip(remember = true) }
+            .create()
+        slowNetDialog = dialog
+        runCatching { dialog.show() }
+    }
+
+    /** One tap: the setting is flipped for real (persisted AND live for the
+     *  requests already in flight). If this play hasn't managed to get anything
+     *  playing yet, the search is re-run with the longer budgets — that is the
+     *  actual rescue, not just a nicer next attempt. */
+    private fun enableSlowModeFromTip() {
+        dismissSlowNetTip()
+        val app = applicationContext as HikariApp
+        NetTuning.setSlowConnection(true)
+        app.appScope.launch {
+            runCatching { app.store.setSlowConnection(true) }
+        }
+        Toast.makeText(this, "Slow connection mode on", Toast.LENGTH_SHORT).show()
+        if (!renderedFirstFrame && sources.isEmpty()) refreshSources(-1)
+    }
+
+    /** Hides the tip. [remember] starts the "Not now" cooldown; [always] is the
+     *  "Don't ask again" choice, which silences it for good (the Settings
+     *  switch does the same and is the way back). */
+    private fun dismissSlowNetTip(remember: Boolean = false, always: Boolean = false) {
+        val dialog = slowNetDialog
+        slowNetDialog = null
+        runCatching { dialog?.dismiss() }
+        SlowNetTip.clear()
+        if (!remember && !always) return
+        val app = applicationContext as HikariApp
+        app.appScope.launch {
+            runCatching { app.store.setSlowTipLastDismiss(System.currentTimeMillis()) }
+            if (always) runCatching { app.store.setSlowTipDontAsk(true) }
         }
     }
 
@@ -2906,6 +2990,8 @@ class PlayerActivity : ComponentActivity() {
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
         dismissSlowDialog()
+        dismissSlowNetTip()
+        SlowNetTip.onPlaybackEnd()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }

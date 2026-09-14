@@ -11,6 +11,7 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
+import com.hikari.app.net.SlowNetTip
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
 import com.lagradost.cloudstream3.MainAPI
@@ -111,6 +112,9 @@ class HikariApp : Application() {
         initCloudStream(this)
         store = AppStore(this)
         providers = ProviderManager(store)
+        // "Your connection looks slow?" tip: measures in the background while a
+        // play is starting and only speaks up with real evidence (see SlowNetTip).
+        SlowNetTip.init(this)
         // Mirror the persisted slow-connection toggle into NetTuning (read
         // synchronously by the search/probe timeouts) and keep it in sync.
         appScope.launch {

@@ -648,9 +648,11 @@ private fun DownloadSettingsCard(app: HikariApp) {
 private fun SlowConnectionCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(false) }
+    var tipEnabled by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         enabled = app.store.slowConnection()
+        tipEnabled = app.store.slowTipEnabled()
     }
 
     Column(Modifier.padding(16.dp)) {
@@ -688,6 +690,32 @@ private fun SlowConnectionCard(app: HikariApp) {
                     enabled = it
                     NetTuning.setSlowConnection(it)
                     scope.launch { runCatching { app.store.setSlowConnection(it) } }
+                }
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Slow internet suggestion",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "When a video looks slow to start, the player offers to switch " +
+                        "Slow connection mode on. Turn this off if it keeps guessing " +
+                        "wrong on a connection that is actually fine.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = tipEnabled,
+                onCheckedChange = {
+                    tipEnabled = it
+                    scope.launch { runCatching { app.store.setSlowTipEnabled(it) } }
                 }
             )
         }
