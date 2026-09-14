@@ -45,7 +45,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,6 +68,12 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.PosterLoader
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** How many automatic re-requests a poster gets before its cell settles on the
+ *  placeholder icon. Two is enough to ride out a dropped connection or a CDN
+ *  hiccup without hammering an image that is genuinely gone. */
+private const val POSTER_RETRIES = 2
 
 @Composable
 fun MediaRow(
@@ -110,6 +119,42 @@ fun MediaRow(
     }
 }
 
+/**
+ * [AsyncImage] with a little self-healing: a request that FAILS (dropped
+ * connection, a 503 from the CDN, a momentarily busy decoder) is re-issued
+ * after a growing delay. Coil never retries by itself, so without this a poster
+ * that failed once stayed blank until its row happened to be scrolled out of
+ * view and back — the "it loads some fine, but when I scroll down some images
+ * just don't load" report. The re-request is a new [coil.request.ImageRequest]
+ * carrying a retry parameter, which is what makes Coil's AsyncImage restart it.
+ */
+@Composable
+fun PosterImage(
+    model: Any?,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    alignment: Alignment = Alignment.Center,
+) {
+    var attempt by remember(model) { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    AsyncImage(
+        model = PosterLoader.retryModel(model, attempt),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        alignment = alignment,
+        contentScale = contentScale,
+        onError = {
+            if (attempt < POSTER_RETRIES) {
+                scope.launch {
+                    delay(700L * (attempt + 1))
+                    attempt++
+                }
+            }
+        },
+    )
+}
+
 @Composable
 fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     Column(
@@ -135,11 +180,10 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
                 modifier = Modifier.size(28.dp),
             )
-            AsyncImage(
+            PosterImage(
                 model = PosterLoader.model(item.posterUrl, item.backdropUrl),
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
             )
         }
         Text(
@@ -331,11 +375,10 @@ fun HeroBanner(
                     .fillMaxSize()
                     .clickable { onClick(item) }
             ) {
-                AsyncImage(
+                PosterImage(
                     model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
                 )
                 // Darkens the top (for the overlaid app bar) and the bottom (for
                 // the title/button) so the hero text always reads.
@@ -489,11 +532,10 @@ private fun ContinueWatchingCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            AsyncImage(
+            PosterImage(
                 model = PosterLoader.model(backdrop ?: h.posterUrl),
                 contentDescription = h.title,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
             )
             Box(
                 Modifier

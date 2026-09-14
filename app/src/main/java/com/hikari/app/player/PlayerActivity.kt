@@ -1650,15 +1650,26 @@ class PlayerActivity : ComponentActivity() {
      * and the "continue from where you left off?" prompt — wear the same curved,
      * glowing silhouette.
      */
-    private fun haloStage(panel: View, panelHeight: Int): FrameLayout {
+    private fun haloStage(panel: View, panelHeight: Int, padH: Int): FrameLayout {
         val density = resources.displayMetrics.density
-        val padH = (12 * density).toInt()
-        val padV = (16 * density).toInt()
+        val padV = (26 * density).toInt()
+        // The ring hugs the panel with this much air around it; it is what makes
+        // the curve read as a curve framing the panel rather than a border.
+        val gapH = (15 * density).toInt()
+        val gapV = (12 * density).toInt()
         return FrameLayout(this).apply {
             addView(
                 GlassArcView(
                     this@PlayerActivity, accentStartColor, accentMidColor, accentEndColor
-                ).apply { insetPx = padH },
+                ).apply {
+                    padHPx = padH.toFloat()
+                    padVPx = padV.toFloat()
+                    gapHPx = gapH.toFloat()
+                    gapVPx = gapV.toFloat()
+                    // The ring traces the panel's own silhouette, so it has to
+                    // use the same curve the panel is cut to.
+                    exponent = (panel as? CurvedGlassPanel)?.exponent ?: GlassShape.EXPONENT
+                },
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
                 )
@@ -1699,6 +1710,7 @@ class PlayerActivity : ComponentActivity() {
         hint: String? = null,
         iconRes: Int = 0,
         cancelable: Boolean = true,
+        rowHost: ViewGroup? = null,
     ): TextView? {
         val density = resources.displayMetrics.density
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1754,10 +1766,13 @@ class PlayerActivity : ComponentActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
-            clipToOutline = true
+        val panel = CurvedGlassPanel(this).apply {
+            // The rows bend to the panel's curve (see CurvedGlassPanel). The
+            // caller passes the container that actually holds them when the
+            // whole list fits; otherwise the panel bends its own child (the
+            // scroll view) as one block, which is the only stable thing to do
+            // for a list that scrolls.
+            this.rows = rowHost
         }
         panel.addView(ScrollView(this).apply {
             addView(content)
@@ -1769,13 +1784,25 @@ class PlayerActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val win = windowSize()
-        val padH = (12 * density).toInt()
+        // Width of the PANEL itself (the halo paddings are added around it), so
+        // the ring is positioned against a known panel width.
+        val panelW = minOf(
+            (win.x * 0.86f).toInt(),
+            (win.y * 0.74f).toInt(),
+            (400 * density).toInt(),
+        )
+        // Room for the halo's bloom. The widest glow stroke is 56dp (28dp of it
+        // outside the ring) and the ring sits 15dp outside the panel, so ~46dp
+        // per side keeps the glow from being sliced off by the window edge;
+        // clamped so the window still fits on a narrow screen.
+        val padH = (46 * density).toInt()
+            .coerceAtMost(((win.x - panelW) / 2).coerceAtLeast((8 * density).toInt()))
         // The panel must FLOAT on the video with all four rounded corners (and
         // the halo sweeping around them) visible: it is capped against the hint
         // line plus the arc's own room above it, and against a fraction of the
         // window, so it never runs off the top/bottom edge — which used to clip
         // its bottom curve and hide the last rows. Anything longer scrolls.
-        val chrome = (64 * density).toInt()
+        val chrome = (88 * density).toInt()
         val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
         val maxFraction = (win.y * 0.58f).toInt()
         val minPanel = (110 * density).toInt()
@@ -1783,7 +1810,7 @@ class PlayerActivity : ComponentActivity() {
             .coerceAtMost(fitsScreen)
             .coerceAtMost(maxFraction)
             .coerceAtLeast(minPanel)
-        root.addView(haloStage(panel, panelH), LinearLayout.LayoutParams(
+        root.addView(haloStage(panel, panelH, padH), LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -1801,11 +1828,6 @@ class PlayerActivity : ComponentActivity() {
         // height wide and never spans the full width, which is a large part of
         // why it reads as a lightweight overlay instead of a full-screen sheet.
         // The halo paddings are added back on top so the PANEL keeps that width.
-        val panelW = minOf(
-            (win.x * 0.86f).toInt(),
-            (win.y * 0.74f).toInt(),
-            (400 * density).toInt(),
-        )
         dialog.window?.apply {
             setLayout(panelW + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -1870,7 +1892,7 @@ class PlayerActivity : ComponentActivity() {
             options.size * 4f + 14f +
             (if (!message.isNullOrBlank()) 42f else 0f)
         onDialog?.invoke(dialog)
-        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable)
+        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHost = list)
         if (hintView != null) onHint?.invoke(hintView)
         return dialog
     }
@@ -1889,11 +1911,8 @@ class PlayerActivity : ComponentActivity() {
     ): Dialog {
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        val panel = CurvedGlassPanel(this).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.dialog_panel)
-            clipToOutline = true
             setPadding(
                 (22 * density).toInt(), (24 * density).toInt(),
                 (22 * density).toInt(), (24 * density).toInt()
@@ -1924,9 +1943,16 @@ class PlayerActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = (8 * density).toInt() })
-        val padH = (12 * density).toInt()
+        val win = windowSize()
+        val w = minOf(
+            (win.x * 0.62f).toInt(),
+            (win.y * 0.6f).toInt(),
+            (300 * density).toInt(),
+        )
+        val padH = (46 * density).toInt()
+            .coerceAtMost(((win.x - w) / 2).coerceAtLeast((8 * density).toInt()))
         dialog.setContentView(
-            haloStage(panel, ViewGroup.LayoutParams.WRAP_CONTENT),
+            haloStage(panel, ViewGroup.LayoutParams.WRAP_CONTENT, padH),
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
@@ -1936,12 +1962,6 @@ class PlayerActivity : ComponentActivity() {
         dialog.setCancelable(cancelable)
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
         dialog.show()
-        val win = windowSize()
-        val w = minOf(
-            (win.x * 0.62f).toInt(),
-            (win.y * 0.6f).toInt(),
-            (300 * density).toInt(),
-        )
         dialog.window?.apply {
             setLayout(w + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -2364,6 +2384,7 @@ class PlayerActivity : ComponentActivity() {
             1000f,
             hint = "Applies while captions are on.",
             iconRes = R.drawable.ic_subtitles,
+            rowHost = root,
         )
     }
 
