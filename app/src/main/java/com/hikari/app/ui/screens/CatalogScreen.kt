@@ -3,6 +3,7 @@ package com.hikari.app.ui.screens
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -19,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -224,10 +227,16 @@ fun CatalogScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 110.dp),
+                // Same small-tile, clearly-gapped look as the search results
+                // grid: smaller posters than before, each in its own cell with
+                // a real gap, so the "Show All" wall never reads as one
+                // continuous sheet of artwork.
+                columns = GridCells.Adaptive(minSize = 84.dp),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(12.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(items, key = { it.uniqueId }) { item ->
                     CatalogCard(item) {
@@ -269,16 +278,30 @@ private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
     ) {
-        AsyncImage(
-            model = PosterLoader.model(item.posterUrl),
-            contentDescription = item.title,
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            // Behind the artwork: a poster that 403s/404s (or an item with no
+            // poster at all) keeps a deliberate-looking slot instead of a
+            // blank dark rectangle.
+            Icon(
+                Icons.Filled.Movie,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
+                modifier = Modifier.size(26.dp),
+            )
+            AsyncImage(
+                model = PosterLoader.model(item.posterUrl, item.backdropUrl),
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
         Text(
             item.title,
             style = MaterialTheme.typography.bodySmall,

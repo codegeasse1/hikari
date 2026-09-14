@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
@@ -186,6 +189,10 @@ private fun AppBottomBar(
     Box(
         Modifier
             .fillMaxWidth()
+            // Keep the floating bar clear of the gesture/navigation bar when the
+            // system bars are visible (they are hidden while immersive, so this
+            // is 0 in the normal case and simply lifts the bar when they show).
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
         Surface(
@@ -293,6 +300,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            // The app is edge-to-edge/immersive (MainActivity hides the system
+            // bars), so the Scaffold must NOT pad the content down by the status
+            // bar inset. It used to: on any device where the bars were showing,
+            // every screen started ~a status-bar lower with an empty band above
+            // it (the reported "blank bar in the status bar area" on Home and on
+            // "Show All"). Screens now draw from y=0; the floating bottom bar
+            // lifts itself above the navigation bar instead.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (showBar) {
                 AppBottomBar(

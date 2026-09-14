@@ -20,6 +20,14 @@
         <item name="android:colorBackground">@color/hikari_bg</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
+        <!-- The app runs immersive/edge-to-edge (MainActivity hides the system
+             bars), and on a phone with a notch/punch-hole the DEFAULT cutout
+             mode refuses to let the window draw into that area: the system
+             letterboxes the top with a blank bar and pushes the whole UI down
+             — which looks fine on a device without a cutout and broken on one
+             with ("fullscreen leaves a blank bar under the status bar").
+             shortEdges lets the dark background + content fill the cutout too. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 
     <style name="Theme.Hikari.App" parent="Theme.MaterialComponents.NoActionBar">
@@ -43,6 +51,10 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
+        <!-- See Theme.Hikari: draw into a notch/punch-hole too, otherwise the
+             system reserves a blank band at the top and pushes every screen
+             down by it on cutout devices. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 
     <style name="Theme.Hikari.Player" parent="android:Theme.Material.NoActionBar">

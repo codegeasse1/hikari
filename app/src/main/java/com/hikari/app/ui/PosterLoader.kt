@@ -1,6 +1,8 @@
 package com.hikari.app.ui
 
 import android.util.Base64
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.hikari.app.HikariApp
 import java.io.File
 
@@ -48,27 +50,70 @@ object PosterLoader {
     }
 
     fun model(url: String?): Any? {
-        if (url.isNullOrBlank()) return null
-        if (url.startsWith(CACHE_TOKEN)) return fromToken(url)
-        if (!url.startsWith(DATA_IMAGE)) return url
+        val u = normalize(url) ?: return null
+        if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) return u
 
-        recall(url)?.let { return it }
+        val bytes = bytesFor(u) ?: return null
+        // Hand Coil an explicit memory-cache key. The model here is raw bytes
+        // (or, worse, a ByteBuffer Coil builds from them): Coil's fallback key
+        // is the object's identity/length, so two posters of the same byte size
+        // could collide on one cached bitmap and every recomposition could miss
+        // the cache and re-decode. A key derived from the (stable) URI fixes
+        // both.
+        return ImageRequest.Builder(HikariApp.instance)
+            .data(bytes)
+            .memoryCacheKey("hikari-poster:" + fnv1a(u))
+            // The decoded bytes are already persisted in this object's own disk
+            // cache; Coil's would keep a second copy of every poster.
+            .diskCachePolicy(CachePolicy.DISABLED)
+            .build()
+    }
 
-        val file = diskDir?.let { File(it, fnv1a(url)) }
+    /** Poster for a grid/row cell: the item's own poster, or its backdrop when
+     *  the provider left the poster empty (some catalogs only fill the
+     *  landscape `image`, and an empty model is a blank cell). */
+    fun model(poster: String?, backdrop: String?): Any? =
+        model(poster?.takeIf { it.isNotBlank() } ?: backdrop)
+
+    /** Bytes for a `data:` URI or a [CACHE_TOKEN] — memory cache, then the
+     *  object's own disk cache, then a fresh decode of the base64 payload. */
+    private fun bytesFor(u: String): ByteArray? {
+        if (u.startsWith(CACHE_TOKEN)) return fromToken(u)
+
+        recall(u)?.let { return it }
+
+        val file = diskDir?.let { File(it, fnv1a(u)) }
         val onDisk = file?.takeIf { it.exists() }?.let {
             runCatching { it.readBytes() }.getOrNull()
         }
         if (onDisk != null && onDisk.isNotEmpty()) {
-            remember(url, onDisk)
+            remember(u, onDisk)
             return onDisk
         }
 
-        val bytes = decodeDataUri(url) ?: return null
-        if (bytes.isNotEmpty()) {
-            remember(url, bytes)
-            if (file != null) runCatching { file.writeBytes(bytes) }
-        }
+        val bytes = decodeDataUri(u) ?: return null
+        if (bytes.isEmpty()) return null
+        remember(u, bytes)
+        if (file != null) runCatching { file.writeBytes(bytes) }
         return bytes
+    }
+
+    /** A host-looking path with no scheme ('pic.example.com/x.jpg') — plugins
+     *  emit these now and then, and Coil has no fetcher for a scheme-less URI,
+     *  so the poster renders as an empty box. Same for protocol-relative '//'. */
+    private val HOST_LIKE = Regex("^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z]{2,}(/.*)?$")
+
+    /** Repairs the poster URLs plugins hand us: trims, and gives a missing
+     *  scheme an https one. Everything else (http(s), data:, cache tokens,
+     *  content://) passes through untouched. */
+    private fun normalize(url: String?): String? {
+        val u = url?.trim() ?: return null
+        if (u.isEmpty()) return null
+        if (u.startsWith("http://") || u.startsWith("https://")) return u
+        if (u.startsWith(DATA_IMAGE) || u.startsWith(CACHE_TOKEN)) return u
+        if (u.startsWith("//")) return "https:$u"
+        if (HOST_LIKE.matches(u)) return "https://$u"
+        return u
     }
 
     /** Decodes the base64 payload of a `data:` URI (null on any failure). */
@@ -89,13 +134,13 @@ object PosterLoader {
      * is simply dropped then (blank cell).
      */
     fun tokenize(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        if (!url.startsWith(DATA_IMAGE)) return url
-        val hash = fnv1a(url)
+        val u = normalize(url) ?: return null
+        if (!u.startsWith(DATA_IMAGE)) return u
+        val hash = fnv1a(u)
         val file = diskDir?.let { File(it, hash) }
         val have = file?.let { it.exists() && it.length() > 0 } ?: false
         if (!have) {
-            val bytes = decodeDataUri(url) ?: return null
+            val bytes = decodeDataUri(u) ?: return null
             if (bytes.isEmpty()) return null
             if (file != null) runCatching { file.writeBytes(bytes) }
         }

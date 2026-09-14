@@ -65,10 +65,7 @@ class MainActivity : AppCompatActivity() {
         // True fullscreen: hide the system status + navigation bars everywhere
         // (swipe from any edge to briefly reveal them). Content fills the whole
         // screen instead of stopping below a status bar.
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-            hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
+        applyImmersiveMode()
         val store = (application as HikariApp).store
         setContent {
             // Remember the Flow — a fresh store.themeFlow() per recomposition
@@ -118,6 +115,34 @@ class MainActivity : AppCompatActivity() {
         setMainApiApp(this)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Coming back from the background (or another activity) the system
+        // restores the status/navigation bars, so re-apply the immersive mode —
+        // otherwise the app is left with a status-bar-sized blank band that
+        // pushes every screen down until the next launch.
+        applyImmersiveMode()
+    }
+
+    /**
+     * Immersive fullscreen: hide the system status + navigation bars so the
+     * content fills the entire screen (swiping from an edge briefly reveals
+     * them). Applied at launch AND on every resume/focus gain — this is not
+     * sticky on its own, and when the bars come back they leave an empty band
+     * above the content (the "fullscreen leaves a blank bar under the status
+     * bar" report), which shows up on some devices and not others.
+     */
+    private fun applyImmersiveMode() {
+        runCatching {
+            androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        }
+    }
+
     override fun onStop() {
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
@@ -148,6 +173,10 @@ class MainActivity : AppCompatActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
+        // A dialog (plugin settings sheet, resume prompt, update dialog) taking
+        // focus shows the system bars again; re-hide them the moment we get
+        // focus back so the UI stays fullscreen.
+        applyImmersiveMode()
         val path = com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload ?: return
         com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload = null
         val app = application as HikariApp

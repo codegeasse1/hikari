@@ -1010,6 +1010,18 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
+    /** Immersive fullscreen is not sticky — re-hide the bars whenever this
+     *  activity is resumed or regains focus (see PlayerActivity.hideSystemUi). */
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
     /** Adds [url] to the detected set ONLY after confirming it serves real video. */
     private fun maybeAddVideo(url: String) {
         // Verification view never offers video.

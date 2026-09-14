@@ -2961,6 +2961,24 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Immersive fullscreen is not sticky: coming back from the background, or
+     * closing one of the player's own dialogs (resume prompt, server picker,
+     * download sheet), hands focus back with the system bars shown again —
+     * which leaves a blank, status-bar-sized band at the top of the video
+     * ("fullscreen mode leaves a blank bar in the status bar"). Re-hide the
+     * bars every time this activity is resumed or regains focus.
+     */
+    override fun onResume() {
+        super.onResume()
+        hideSystemUi()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemUi()
+    }
+
     override fun onStart() {
         super.onStart()
         // The CloudStream Torrent engine resolves its cache dir from the

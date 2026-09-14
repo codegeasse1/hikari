@@ -291,6 +291,7 @@ class HikariApp : Application() {
                     // the exact headers when known, else fall back to a
                     // same-origin Referer (hotlink protection) — except for
                     // hosts that 403 any Referer at all (see NO_REFERER_HOSTS).
+                    var hasReferer = false
                     if (host in NO_REFERER_HOSTS) {
                         // no Referer — fourhoi.com/surrit.com reject the image
                         // when a Referer is present (verified: same-origin
@@ -298,7 +299,10 @@ class HikariApp : Application() {
                     } else {
                         val exact = cs3.imageHeaders[req.url.toString()]
                         if (exact != null) {
-                            exact.forEach { (k, v) -> builder.header(k, v) }
+                            exact.forEach { (k, v) ->
+                                builder.header(k, v)
+                                if (k.equals("Referer", ignoreCase = true)) hasReferer = true
+                            }
                         } else {
                             // URL may differ from the recorded one (scheme/query/
                             // params) — apply the Referer the provider declared
@@ -306,12 +310,29 @@ class HikariApp : Application() {
                             val hostRef = cs3.imageHostReferers[host]
                             if (hostRef != null) {
                                 builder.header("Referer", hostRef)
+                                hasReferer = true
                             } else if (host.isNotBlank()) {
                                 builder.header("Referer", "${req.url.scheme}://$host/")
+                                hasReferer = true
                             }
                         }
                     }
-                    chain.proceed(builder.build())
+                    val response = chain.proceed(builder.build())
+                    // Hotlink protection keeps appearing on new hosts, and it
+                    // cuts both ways: some CDNs (fourhoi.com/surrit.com are the
+                    // ones we could verify) answer 403 to ANY Referer but serve
+                    // the identical URL to a bare request. So when a poster
+                    // comes back refused and we attached a Referer, try once
+                    // more without one — that is what saves the thumbnail on
+                    // every host whose rule we don't know yet.
+                    if (hasReferer && (response.code == 401 || response.code == 403)) {
+                        runCatching { response.close() }
+                        val bare = req.newBuilder()
+                            .header("User-Agent", Http.UA)
+                            .build()
+                        return@addInterceptor chain.proceed(bare)
+                    }
+                    response
                 }
                 .build()
             val loader = ImageLoader.Builder(this)

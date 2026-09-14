@@ -118,16 +118,30 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
     ) {
-        AsyncImage(
-            model = PosterLoader.model(item.posterUrl),
-            contentDescription = item.title,
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            // Sits behind the artwork: when the extension's image 403s/404s (or
+            // the item has no poster at all) the cell still reads as a poster
+            // slot instead of a blank dark rectangle.
+            Icon(
+                Icons.Filled.Movie,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
+                modifier = Modifier.size(28.dp),
+            )
+            AsyncImage(
+                model = PosterLoader.model(item.posterUrl, item.backdropUrl),
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
         Text(
             item.title,
             style = MaterialTheme.typography.bodySmall,
