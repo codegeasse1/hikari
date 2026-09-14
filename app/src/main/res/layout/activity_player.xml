@@ -113,6 +113,26 @@
         </LinearLayout>
     </FrameLayout>
 
+    <!-- Spinner-only cover: the same "finding your server" moment as the title
+         card above, for users who turn the banner off in Settings. Just the
+         round progress indicator on black, so the player opens immediately
+         without the artwork/name animation. -->
+    <FrameLayout
+        android:id="@+id/loading_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:layout_gravity="center"
+            android:indeterminateTint="#F5C569" />
+    </FrameLayout>
+
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
          rewind/forward arrow + the amount next to it. -->
     <LinearLayout

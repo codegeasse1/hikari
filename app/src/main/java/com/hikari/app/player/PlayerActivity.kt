@@ -251,6 +251,7 @@ class PlayerActivity : ComponentActivity() {
     /** Full-screen title-card cover shown while the first server is being
      *  found / buffered (Nuvio/Stremio style). See [showLoadingBanner]. */
     private var loadingBanner: View? = null
+    private var loadingSpinner: View? = null
     private var loadingBackdrop: ImageView? = null
     private var loadingTitleBox: View? = null
     private var loadingTitle: TextView? = null
@@ -438,6 +439,7 @@ class PlayerActivity : ComponentActivity() {
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
 
         loadingBanner = findViewById(R.id.loading_banner)
+        loadingSpinner = findViewById(R.id.loading_spinner)
         loadingBackdrop = findViewById(R.id.loading_backdrop)
         loadingTitleBox = findViewById(R.id.loading_title_box)
         loadingTitle = findViewById(R.id.loading_title)
@@ -445,12 +447,12 @@ class PlayerActivity : ComponentActivity() {
         loadingDetail = findViewById(R.id.loading_detail)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
 
-        // Tap the card to skip straight to the player/controls (and stop it
-        // from re-appearing if a later server attempt would show it again).
-        loadingBanner?.setOnClickListener {
-            bannerMode = false
-            hideLoadingBanner(immediate = true)
-        }
+        // The cover stays up by design until real video is on screen, so tapping
+        // it does nothing. (It used to skip straight to the player/controls,
+        // which made an accidental tap look like it had dismissed the title card
+        // and left the user staring at a black player.)
+        loadingBanner?.setOnClickListener { }
+        loadingSpinner?.setOnClickListener { }
 
         speedChip?.setOnClickListener { cycleSpeed() }
         rotateBtn?.setOnClickListener { cycleRotation() }
@@ -640,7 +642,7 @@ class PlayerActivity : ComponentActivity() {
         // Cover the very first frames with the title card: the detail screen
         // showed the same card while it searched, so this keeps the "finding
         // your server" screen continuous until real video is on screen.
-        if (bannerMode) showLoadingBanner()
+        showLoadingCover()
 
         if (liveId != null) {
             // The detail screen keeps searching every installed provider while
@@ -649,20 +651,42 @@ class PlayerActivity : ComponentActivity() {
             // FIRST batch that arrives also starts playback.
             liveStreamsJob = lifecycleScope.launch {
                 var pendingStart = awaitLive
+                // How many servers must be known before playback starts. 1 (the
+                // default) means "the instant the first server is found"; a
+                // higher value is the Settings "wait for more servers" choice.
+                // The search FINISHING always counts as enough too, so a title
+                // that only ever finds 2 servers starts as soon as every
+                // installed extension has answered, instead of waiting forever
+                // for a 3rd..5th one that does not exist.
+                val startAfter = intent.getIntExtra("startAfterServers", 1).coerceIn(1, 8)
+                var searchDone = false
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
                     if (sources.isEmpty()) showError("No playable sources received.", false)
                 } else null
+                val tryStart: () -> Unit = {
+                    if (pendingStart && sources.isNotEmpty() &&
+                        (searchDone || sources.size >= startAfter)
+                    ) {
+                        pendingStart = false
+                        waitTimeout?.cancel()
+                        playSource(preferredStartIndex())
+                    }
+                }
                 // The detail screen signals when its whole search is finished;
                 // if it ended with nothing, fail fast instead of waiting out
-                // the safety timeout above.
+                // the safety timeout above — and if it ended with fewer servers
+                // than we were told to wait for, start with what we have.
                 if (awaitLive) launch {
                     StreamsLive.doneFlow(liveId).collect { done ->
-                        // Only fail when the session really ended up with no
-                        // servers (append happens before markDone, so a
-                        // non-empty live flow means servers are on the way).
-                        if (done && sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                        if (!done || searchDone) return@collect
+                        searchDone = true
+                        // Append happens before markDone, so a non-empty live
+                        // flow means servers are on the way.
+                        if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
                             showError("No playable sources received.", false)
+                        } else {
+                            tryStart()
                         }
                     }
                 }
@@ -679,11 +703,7 @@ class PlayerActivity : ComponentActivity() {
                     lifecycleScope.launch(Dispatchers.IO) {
                         runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
                     }
-                    if (pendingStart) {
-                        pendingStart = false
-                        waitTimeout?.cancel()
-                        playSource(preferredStartIndex())
-                    }
+                    tryStart()
                 }
             }
             // A Play tap made before the origin addon finished listing episodes:
@@ -1768,7 +1788,8 @@ class PlayerActivity : ComponentActivity() {
 
         sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
-        if (bannerMode && loadingBanner?.visibility != View.VISIBLE) showLoadingBanner()
+        if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE)
+            showLoadingCover()
 
         player?.let { old ->
             old.removeListener(listener)
@@ -2354,6 +2375,21 @@ class PlayerActivity : ComponentActivity() {
      * until the first frame of video is drawn, so tapping Play never reads as
      * "nothing happened". Purely decorative — playback state is untouched.
      */
+    /** The cover shown while a server is being found/prepared: the full-screen
+     *  title card, or — when the user turned it off in Settings — just a round
+     *  spinner on black. */
+    private fun showLoadingCover() {
+        if (bannerMode) showLoadingBanner() else showLoadingSpinner()
+    }
+
+    /** Spinner-only cover (Settings: "Show banner until servers load" = off). */
+    private fun showLoadingSpinner() {
+        val spin = loadingSpinner ?: return
+        spin.animate().cancel()
+        spin.alpha = 1f
+        spin.visibility = View.VISIBLE
+    }
+
     private fun showLoadingBanner() {
         val banner = loadingBanner ?: return
         val box = loadingTitleBox ?: return
@@ -2422,6 +2458,7 @@ class PlayerActivity : ComponentActivity() {
     /** Fades the title card away (or removes it instantly) once real video is
      *  on screen. Safe to call repeatedly and from any state. */
     private fun hideLoadingBanner(immediate: Boolean = false) {
+        hideLoadingSpinner(immediate)
         val banner = loadingBanner ?: return
         if (banner.visibility != View.VISIBLE) return
         stopBannerAnimators()
@@ -2439,6 +2476,22 @@ class PlayerActivity : ComponentActivity() {
     private fun stopBannerAnimators() {
         bannerAnimators.forEach { runCatching { it.cancel() } }
         bannerAnimators = emptyList()
+    }
+
+    /** Fades the spinner-only cover away once real video is on screen (see
+     *  [hideLoadingBanner], which always calls this). */
+    private fun hideLoadingSpinner(immediate: Boolean = false) {
+        val spin = loadingSpinner ?: return
+        if (spin.visibility != View.VISIBLE) return
+        spin.animate().cancel()
+        if (immediate || isFinishing || isDestroyed) {
+            spin.alpha = 0f
+            spin.visibility = View.GONE
+        } else {
+            spin.animate().alpha(0f).setDuration(320L).withEndAction {
+                spin.visibility = View.GONE
+            }.start()
+        }
     }
 
     /** Adopts an episode that arrived AFTER launch — the user tapped Play while
@@ -2486,7 +2539,9 @@ class PlayerActivity : ComponentActivity() {
         // point of view this is another "finding your server" moment, not a
         // failure — and the providers may take a few seconds to answer.
         errorPanel?.visibility = View.GONE
-        if (bannerMode) showLoadingBanner()
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) showLoadingCover()
         Toast.makeText(this, "Looking for other servers…", Toast.LENGTH_SHORT).show()
         StreamsLive.requestRefresh(session)
         lifecycleScope.launch {

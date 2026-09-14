@@ -501,6 +501,18 @@ fun DetailScreen(
     // "continue from where you left off?" no matter how the user got here
     // (History tab, Home, Continue Watching, or a catalog).
     val app = context.applicationContext as HikariApp
+    // Settings that shape the Play tap: whether playback starts on the first
+    // server found or waits for a chosen number of them, and whether the
+    // full-screen title card covers the player until video is ready.
+    val playWaitFlow = remember { app.store.playWaitServersFlow() }
+    val playWaitServers by playWaitFlow.collectAsState(initial = false)
+    val playMinFlow = remember { app.store.playMinServersFlow() }
+    val playMinServers by playMinFlow.collectAsState(initial = 2)
+    val bannerFlow = remember { app.store.showLoadingBannerFlow() }
+    val showLoadingCoverSetting by bannerFlow.collectAsState(initial = true)
+    // Servers the player must know about before it starts. 1 = "as soon as the
+    // first server is found" (the default).
+    val startAfterServers = if (playWaitServers) playMinServers else 1
     // Collected reactively (not a one-shot read) so that returning here after a
     // play immediately sees the progress the player just wrote — otherwise the
     // "Continue from where you left off?" prompt never appeared on the second
@@ -565,7 +577,8 @@ fun DetailScreen(
                     "bannerBackdrop",
                     PosterLoader.tokenize(((m?.backdropUrl ?: posterUrl)).orEmpty()).orEmpty()
                 )
-                putExtra("showLoadingBanner", true)
+                putExtra("showLoadingBanner", showLoadingCoverSetting)
+                putExtra("startAfterServers", startAfterServers)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
@@ -618,7 +631,8 @@ fun DetailScreen(
         loadingStreams = true
         // Full-screen title card from the very first frame of the tap (the
         // source sheet only appears if nothing playable can be found at all).
-        showLoadingBanner = true
+        // Skipped entirely when the user turned the loading banner off.
+        showLoadingBanner = showLoadingCoverSetting
         showSheet = false
         // A fresh tap must always be allowed to open the player. If an earlier
         // launch never reported back (activity result lost, process reshuffle),

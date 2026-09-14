@@ -57,6 +57,9 @@ class AppStore(private val ctx: Context) {
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
+        val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
+        val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
+        val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe
@@ -70,6 +73,42 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setSlowConnection(enabled: Boolean) {
         store.edit { it[K.SLOW_CONNECTION] = enabled }
+    }
+
+    /** Playback start rule: false = start the moment the FIRST server is found
+     *  (default), true = wait until [playMinServers] servers are known. The
+     *  search finishing always counts as "enough", so a title with fewer
+     *  servers than the requested count still plays as soon as every installed
+     *  extension has answered. */
+    fun playWaitServersFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAY_WAIT_SERVERS] ?: false }
+
+    suspend fun playWaitServers(): Boolean = playWaitServersFlow().first()
+
+    suspend fun setPlayWaitServers(wait: Boolean) {
+        store.edit { it[K.PLAY_WAIT_SERVERS] = wait }
+    }
+
+    /** How many servers to wait for when [playWaitServersFlow] is on (1–5). */
+    fun playMinServersFlow(): Flow<Int> =
+        store.data.map { (it[K.PLAY_MIN_SERVERS] ?: 2).coerceIn(1, 5) }
+
+    suspend fun playMinServers(): Int = playMinServersFlow().first()
+
+    suspend fun setPlayMinServers(n: Int) {
+        store.edit { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
+    }
+
+    /** Show the full-screen title card (backdrop + breathing name) from Play
+     *  until the first frame of video. Off = the player opens straight away
+     *  with just a round loading spinner. On by default. */
+    fun showLoadingBannerFlow(): Flow<Boolean> =
+        store.data.map { it[K.SHOW_LOADING_BANNER] ?: true }
+
+    suspend fun showLoadingBanner(): Boolean = showLoadingBannerFlow().first()
+
+    suspend fun setShowLoadingBanner(show: Boolean) {
+        store.edit { it[K.SHOW_LOADING_BANNER] = show }
     }
 
     /** How many downloads may run simultaneously (1–10). */

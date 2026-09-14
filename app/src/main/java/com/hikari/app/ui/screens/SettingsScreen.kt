@@ -47,6 +47,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -316,6 +317,24 @@ fun SettingsScreen() {
                     .padding(top = 12.dp)
             ) {
                 SlowConnectionCard(app)
+            }
+        }
+        item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                PlaybackStartCard(app)
+            }
+        }
+        item {
+            GlassCard(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                LoadingBannerCard(app)
             }
         }
         item {
@@ -669,6 +688,168 @@ private fun SlowConnectionCard(app: HikariApp) {
                     enabled = it
                     NetTuning.setSlowConnection(it)
                     scope.launch { runCatching { app.store.setSlowConnection(it) } }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaybackStartCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var waitServers by remember { mutableStateOf(false) }
+    var minServers by remember { mutableStateOf(2f) }
+
+    LaunchedEffect(Unit) {
+        waitServers = app.store.playWaitServers()
+        minServers = app.store.playMinServers().toFloat()
+    }
+
+    fun persist(wait: Boolean) {
+        waitServers = wait
+        scope.launch { runCatching { app.store.setPlayWaitServers(wait) } }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Playback start",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Choose when the player starts after you tap Play.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = !waitServers, onClick = { persist(false) })
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Play as soon as the first server is found",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "Instant playback — the fastest option. If that server turns out " +
+                        "to be dead, the player moves to the next one automatically.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = waitServers, onClick = { persist(true) })
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Wait for more servers first",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "Playback starts once the number chosen below has been found — or " +
+                        "when every installed extension has finished searching, " +
+                        "whichever happens first.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        if (waitServers) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Servers to wait for",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    minServers.roundToInt().toString(),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Slider(
+                value = minServers,
+                onValueChange = { minServers = it },
+                onValueChangeFinished = {
+                    val n = minServers.roundToInt().coerceIn(1, 5)
+                    minServers = n.toFloat()
+                    scope.launch { runCatching { app.store.setPlayMinServers(n) } }
+                },
+                valueRange = 1f..5f,
+                steps = 3,
+                colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f),
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent,
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Slide to 3 to start once three servers are ready. If the whole " +
+                    "search finds fewer than that (say only 2), playback starts with " +
+                    "everything that was found the moment every extension has " +
+                    "finished — it never waits forever for a server that doesn't exist.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoadingBannerCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var enabled by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        enabled = app.store.showLoadingBanner()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Loading screen",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "What covers the player while it finds a server and buffers the first " +
+                "frame of video.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Show banner until servers load",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    if (enabled) {
+                        "On — the title's artwork and name (breathing in and out) stay " +
+                            "on screen until the first frame of video is ready. Tapping " +
+                            "the banner does nothing."
+                    } else {
+                        "Off — the player opens straight away with just a round loading " +
+                            "icon, no artwork or name."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    scope.launch { runCatching { app.store.setShowLoadingBanner(it) } }
                 }
             )
         }
