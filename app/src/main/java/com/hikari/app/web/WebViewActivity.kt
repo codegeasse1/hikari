@@ -67,6 +67,13 @@ import java.io.ByteArrayInputStream
  */
 class WebViewActivity : ComponentActivity() {
 
+    /** In-app UI scale: keeps this View-based screen on the same interface size
+     *  as the rest of the app (and off the phone's own font/display size when
+     *  the in-app scale is enabled). */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.hikari.app.ui.UiScale.wrap(newBase))
+    }
+
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var videoChip: TextView

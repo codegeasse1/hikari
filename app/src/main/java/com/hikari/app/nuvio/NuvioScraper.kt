@@ -235,13 +235,13 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             id = item.id,
             title = d.optString("title").ifBlank { d.optString("name") }.ifBlank { item.title },
             type = item.type,
-            posterUrl = d.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it } ?: item.posterUrl,
+            posterUrl = d.tmdbPath("poster_path")?.let { IMG + it } ?: item.posterUrl,
             year = year ?: item.year,
             overview = d.optString("overview").ifBlank { item.overview.orEmpty() }.ifBlank { null },
             genres = (0 until (d.optJSONArray("genres")?.length() ?: 0)).mapNotNull { i ->
                 d.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }
             },
-            backdropUrl = d.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_L + it } ?: item.backdropUrl,
+            backdropUrl = d.tmdbPath("backdrop_path")?.let { IMG_L + it } ?: item.backdropUrl,
             rawType = item.rawType,
         )
     }
@@ -269,12 +269,20 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                     number = en,
                     id = "S${sn}E$en",
                     name = e.optString("name").takeIf { it.isNotBlank() },
-                    image = e.optString("still_path").takeIf { it.isNotBlank() }?.let { IMG + it },
+                    image = e.tmdbPath("still_path")?.let { IMG + it },
                     season = sn,
                 )
             }
         }
         out
+    }
+
+    /** Reads a TMDB image path, treating JSON null / "" / "null" as absent.
+     *  (org.json's optString returns the literal "null" for a JSON null, which
+     *  would otherwise produce broken URLs like "…/w500null" → HTTP 404.) */
+    private fun JSONObject.tmdbPath(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return optString(key).trim().takeIf { it.isNotBlank() && it != "null" }
     }
 
     /** Maps a TMDB result object (movie/tv/trending rows) to a MediaItem. */
@@ -292,10 +300,10 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             id = id,
             title = title,
             type = t,
-            posterUrl = o.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it },
+            posterUrl = o.tmdbPath("poster_path")?.let { IMG + it },
             year = year,
             overview = o.optString("overview").takeIf { it.isNotBlank() },
-            backdropUrl = o.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_L + it },
+            backdropUrl = o.tmdbPath("backdrop_path")?.let { IMG_L + it },
             rawType = if (t == MediaType.SERIES) "tv" else "movie",
         )
     }

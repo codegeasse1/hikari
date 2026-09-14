@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.ui.UiScale
 import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -236,6 +237,9 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setUiScaleEnabled(enabled: Boolean) {
         store.edit { it[K.UI_SCALE_ENABLED] = enabled }
+        // Mirror into the synchronous cache so View-based screens (player,
+        // WebView) and the next cold start pick the change up immediately.
+        runCatching { UiScale.sync(ctx, enabled, uiScale()) }
     }
 
     /** The in-app scale (0.7f–1.3f) used while [uiScaleEnabledFlow] is on. */
@@ -246,6 +250,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setUiScale(percent: Int) {
         store.edit { it[K.UI_SCALE_PERCENT] = percent.coerceIn(70, 130) }
+        runCatching { UiScale.sync(ctx, uiScaleEnabled(), uiScale()) }
     }
 
     // ---- Ad blocking (WebView only) ----

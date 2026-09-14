@@ -11,6 +11,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:controller_layout_id="@layout/player_controller"
+        app:play_icon="@drawable/hikari_play"
+        app:pause_icon="@drawable/hikari_pause"
         app:show_buffering="when_playing" />
 
     <!-- Title-card loading cover (Nuvio/Stremio style): the title's backdrop
@@ -72,7 +74,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
                 android:gravity="center"
-                android:textColor="#F5C569"
+                android:textColor="@color/hikari_accent_mid"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 android:visibility="gone" />
@@ -101,7 +103,7 @@
             <ProgressBar
                 android:layout_width="18dp"
                 android:layout_height="18dp"
-                android:indeterminateTint="#F5C569" />
+                android:indeterminateTint="@color/hikari_accent_mid" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -130,7 +132,7 @@
             android:layout_width="52dp"
             android:layout_height="52dp"
             android:layout_gravity="center"
-            android:indeterminateTint="#F5C569" />
+            android:indeterminateTint="@color/hikari_accent_mid" />
     </FrameLayout>
 
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
@@ -163,13 +165,144 @@
             android:layout_height="wrap_content"
             android:textSize="22sp"
             android:textStyle="bold"
-            android:textColor="#F5C569"
+            android:textColor="@color/hikari_accent_mid"
             android:shadowColor="#AA000000"
             android:shadowRadius="8"
             android:shadowDy="2"
             android:shadowDx="0"
             android:layout_marginTop="2dp" />
     </LinearLayout>
+
+    <!-- Brightness / volume gesture HUD: two vertical glass sliders that fade in
+         while the finger drags up/down. The left half of the video controls
+         brightness, the right half controls volume (swipe up = increase).
+         The sliders start INVISIBLE rather than GONE so their tracks are
+         measured once at startup (a GONE view has no height until the first
+         drag, which would make the very first update a no-op), and the root is
+         non-clickable so these views never intercept the player's touches. -->
+    <FrameLayout
+        android:id="@+id/gesture_hud"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:clickable="false"
+        android:focusable="false"
+        android:importantForAccessibility="no">
+
+        <LinearLayout
+            android:id="@+id/hud_bright"
+            android:layout_width="64dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:background="@drawable/hud_panel"
+            android:paddingTop="14dp"
+            android:paddingBottom="12dp"
+            android:visibility="invisible">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_brightness_high" />
+
+            <FrameLayout
+                android:id="@+id/hud_bright_track"
+                android:layout_width="8dp"
+                android:layout_height="150dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="10dp"
+                android:background="@drawable/hud_track">
+
+                <View
+                    android:id="@+id/hud_bright_fill"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_gravity="bottom"
+                    android:background="@drawable/hud_fill" />
+
+                <View
+                    android:id="@+id/hud_bright_thumb"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:layout_gravity="bottom|center_horizontal"
+                    android:background="@drawable/hud_thumb" />
+            </FrameLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_brightness_low" />
+
+            <TextView
+                android:id="@+id/hud_bright_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:text="50%" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/hud_vol"
+            android:layout_width="64dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="14dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:background="@drawable/hud_panel"
+            android:paddingTop="14dp"
+            android:paddingBottom="12dp"
+            android:visibility="invisible">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_volume_up" />
+
+            <FrameLayout
+                android:id="@+id/hud_vol_track"
+                android:layout_width="8dp"
+                android:layout_height="150dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="10dp"
+                android:background="@drawable/hud_track">
+
+                <View
+                    android:id="@+id/hud_vol_fill"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_gravity="bottom"
+                    android:background="@drawable/hud_fill" />
+
+                <View
+                    android:id="@+id/hud_vol_thumb"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:layout_gravity="bottom|center_horizontal"
+                    android:background="@drawable/hud_thumb" />
+            </FrameLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_volume_off" />
+
+            <TextView
+                android:id="@+id/hud_vol_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:text="50%" />
+        </LinearLayout>
+    </FrameLayout>
 
     <!-- Shown when controls are locked: the only way back to the controls. -->
     <TextView

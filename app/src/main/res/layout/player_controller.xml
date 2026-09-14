@@ -1,42 +1,60 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Custom media3 PlayerControlView layout. Modeled on media3's
-     exo_player_control_view.xml (same @id/exo_* ids so the library wires
-     everything up) but with the modern two-scrim layout seen in the reference
-     player: a top bar (Back / Title+Episode / Quality / PiP), a big centre
-     play cluster and a single bottom row that holds the time, the lock, the
-     settings gear and the pill chips (Fit / 1x / Server / Skip / Quality /
-     Audio / Sub / Rotate) so every control fades together with the player. -->
-<merge xmlns:android="http://schemas.android.com/apk/res/android">
+<!-- Custom media3 PlayerControlView layout, styled after the Hikari player
+     reference design: a frosted top bar (round back button, title + metadata
+     badges, round PiP / lock / more buttons), a big centre play cluster with a
+     cyan->violet gradient ring, and a bottom block of time labels flanking a
+     gradient progress bar plus a row of frosted pill buttons.
+
+     IMPORTANT: media3 inspects this layout at runtime.
+     - PlayerControlViewLayoutManager.onLayoutWidthChanged() assumes the LAST
+       child of @id/exo_basic_controls is @id/exo_overflow_show, and it MOVES
+       children of exo_basic_controls into the (invisible) extra-controls
+       container once they stop fitting. Our own pill buttons therefore live in
+       their own container (@+id/player_pills), never inside exo_basic_controls,
+       and every media3 button inside exo_basic_controls is hidden, so nothing
+       visible can be relocated or replaced by an overflow chevron.
+     - updateLayoutForSizeChange()/useMinimalMode() size the centre cluster and
+       the bottom bar; both are kept compact so minimal mode isn't triggered on
+       ordinary phone windows.
+     - @id/exo_time is intentionally absent: the position/duration labels sit on
+       the same row as @id/exo_progress instead. media3 resolves the labels by
+       id directly and treats a missing time container as zero width. -->
+
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
 
   <View android:id="@id/exo_controls_background"
       android:layout_width="0dp"
       android:layout_height="0dp"
-      android:background="#99000000"/>
+      android:background="#3D000000"/>
 
-  <!-- Top bar -->
+  <!-- ------------------------------ Top bar ------------------------------ -->
   <LinearLayout
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
       android:layout_gravity="top"
       android:orientation="vertical"
       android:background="@drawable/top_bar_bg"
-      android:paddingTop="10dp"
-      android:paddingBottom="12dp">
+      android:paddingStart="10dp"
+      android:paddingEnd="8dp"
+      android:paddingTop="8dp"
+      android:paddingBottom="20dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:gravity="center_vertical">
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
 
       <ImageButton
           android:id="@+id/back_btn"
-          android:layout_width="44dp"
-          android:layout_height="44dp"
+          android:layout_width="40dp"
+          android:layout_height="40dp"
           android:src="@drawable/ic_back"
           android:tint="#FFFFFF"
           android:contentDescription="Back"
-          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
       <LinearLayout
@@ -45,7 +63,7 @@
           android:layout_weight="1"
           android:orientation="vertical"
           android:gravity="center_vertical"
-          android:paddingStart="4dp"
+          android:paddingStart="12dp"
           android:paddingEnd="8dp">
 
         <TextView
@@ -58,205 +76,267 @@
             android:maxLines="1"
             android:ellipsize="end" />
 
-        <TextView
-            android:id="@+id/subtitle_text"
+        <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="12sp"
-            android:textColor="#B3FFFFFF"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:visibility="gone" />
-      </LinearLayout>
+            android:layout_marginTop="7dp"
+            android:scrollbars="none"
+            android:overScrollMode="never"
+            android:clipToPadding="false">
 
-      <TextView
-          android:id="@+id/player_quality_text"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:textSize="12sp"
-          android:textColor="#B3FFFFFF"
-          android:paddingStart="6dp"
-          android:paddingEnd="6dp" />
+          <LinearLayout
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"
+              android:orientation="horizontal"
+              android:gravity="center_vertical">
+
+            <!-- Episode badge (S1 E2 · name) — the same line the old subtitle
+                 text showed, now styled as a badge. -->
+            <TextView
+                android:id="@+id/subtitle_text"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_duration"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_quality"
+                style="@style/HikariBadge.Accent"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_source"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+          </LinearLayout>
+        </HorizontalScrollView>
+      </LinearLayout>
 
       <ImageButton
           android:id="@+id/pip_btn"
-          android:layout_width="44dp"
-          android:layout_height="44dp"
+          android:layout_width="40dp"
+          android:layout_height="40dp"
           android:src="@drawable/ic_pip"
           android:tint="#FFFFFF"
           android:contentDescription="Picture-in-picture"
-          android:background="?android:attr/selectableItemBackgroundBorderless"
-          android:scaleType="centerInside"
-          android:layout_marginEnd="4dp" />
-    </LinearLayout>
-  </LinearLayout>
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
 
-  <!-- Bottom bar -->
-  <FrameLayout android:id="@id/exo_bottom_bar"
-      android:layout_width="match_parent"
-      android:layout_height="@dimen/exo_styled_bottom_bar_height"
-      android:layout_marginTop="@dimen/exo_styled_bottom_bar_margin_top"
-      android:layout_gravity="bottom"
-      android:background="@drawable/bottom_bar_bg"
-      android:layoutDirection="ltr">
-
-    <!-- Time + toolbar chips live in ONE horizontal row so they can never
-         collide on narrow screens; the chip cluster scrolls if it outgrows
-         the row. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-      <LinearLayout android:id="@id/exo_time"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:paddingStart="@dimen/exo_styled_bottom_bar_time_padding"
-          android:paddingEnd="@dimen/exo_styled_bottom_bar_time_padding"
-          android:paddingLeft="@dimen/exo_styled_bottom_bar_time_padding"
-          android:paddingRight="@dimen/exo_styled_bottom_bar_time_padding"
-          android:gravity="center_vertical"
-          android:layoutDirection="ltr">
-
-        <TextView android:id="@id/exo_position"
-            style="@style/ExoStyledControls.TimeText.Position"/>
-
-        <TextView
-            style="@style/ExoStyledControls.TimeText.Separator"/>
-
-        <TextView android:id="@id/exo_duration"
-            style="@style/ExoStyledControls.TimeText.Duration"/>
-
-      </LinearLayout>
-
-      <HorizontalScrollView
-          android:layout_width="0dp"
-          android:layout_height="wrap_content"
-          android:layout_weight="1"
-          android:scrollbars="none"
-          android:overScrollMode="never"
-          android:clipToPadding="false">
-
-        <LinearLayout android:id="@id/exo_basic_controls"
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:gravity="center_vertical"
-            android:layoutDirection="ltr">
-
-      <ImageButton android:id="@id/exo_vr"
-          style="@style/ExoStyledControls.Button.Bottom.VR"
-          android:visibility="gone"/>
-
-      <ImageButton android:id="@id/exo_shuffle"
-          style="@style/ExoStyledControls.Button.Bottom.Shuffle"
-          android:visibility="gone"/>
-
-      <ImageButton android:id="@id/exo_repeat_toggle"
-          style="@style/ExoStyledControls.Button.Bottom.RepeatToggle"
-          android:visibility="gone"/>
-
-      <!-- Lock / Settings / chips, in the reference player's order. -->
       <ImageButton
           android:id="@+id/lock_btn"
           android:layout_width="40dp"
           android:layout_height="40dp"
+          android:layout_marginStart="8dp"
           android:src="@drawable/ic_lock"
           android:tint="#FFFFFF"
           android:contentDescription="Lock controls"
-          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
-
-      <ImageButton android:id="@id/exo_settings"
-          style="@style/ExoStyledControls.Button.Bottom.Settings"/>
-
-      <TextView
-          android:id="@+id/resize_btn"
-          style="@style/HikariPlayerChip"
-          android:text="Fit" />
-
-      <TextView
-          android:id="@+id/speed_btn"
-          style="@style/HikariPlayerChip.Accent"
-          android:text="1x" />
-
-      <TextView
-          android:id="@+id/sources_btn"
-          style="@style/HikariPlayerChip"
-          android:text="Server" />
-
-      <TextView
-          android:id="@+id/skip_btn"
-          style="@style/HikariPlayerChip.Accent"
-          android:text="Skip" />
-
-      <TextView
-          android:id="@+id/quality_btn"
-          style="@style/HikariPlayerChip"
-          android:text="Quality" />
-
-      <TextView
-          android:id="@+id/audio_btn"
-          style="@style/HikariPlayerChip"
-          android:text="Audio" />
-
-      <TextView
-          android:id="@+id/subs_btn"
-          style="@style/HikariPlayerChip"
-          android:text="Sub" />
-
-      <TextView
-          android:id="@+id/download_btn"
-          style="@style/HikariPlayerChip.Accent"
-          android:text="Download" />
 
       <ImageButton
-          android:id="@+id/rotate_btn"
+          android:id="@+id/more_btn"
           android:layout_width="40dp"
           android:layout_height="40dp"
-          android:src="@drawable/ic_rotate"
+          android:layout_marginStart="8dp"
+          android:src="@drawable/ic_more"
           android:tint="#FFFFFF"
-          android:contentDescription="Rotate screen"
-          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:contentDescription="More options"
+          android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
+    </LinearLayout>
+  </LinearLayout>
+
+  <!-- ----------------------------- Bottom bar ---------------------------- -->
+  <LinearLayout
+      android:id="@id/exo_bottom_bar"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom"
+      android:orientation="vertical"
+      android:background="@drawable/bottom_bar_bg"
+      android:paddingStart="6dp"
+      android:paddingEnd="6dp"
+      android:paddingTop="14dp"
+      android:paddingBottom="6dp"
+      android:layoutDirection="ltr">
+
+    <!-- Time labels flank the progress bar on a single row (no exo_time). -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
+
+      <TextView
+          android:id="@id/exo_position"
+          style="@style/HikariTime"
+          android:layout_marginStart="8dp" />
+
+      <androidx.media3.ui.DefaultTimeBar
+          android:id="@id/exo_progress"
+          android:layout_width="0dp"
+          android:layout_height="26dp"
+          android:layout_weight="1"
+          android:layout_marginStart="8dp"
+          android:layout_marginEnd="8dp"
+          app:bar_height="4dp"
+          app:bar_gravity="center_vertical"
+          app:touch_target_height="26dp"
+          app:played_color="@color/hikari_accent_mid"
+          app:buffered_color="#66FFFFFF"
+          app:unplayed_color="#40FFFFFF"
+          app:scrubber_color="#FFFFFF"
+          app:scrubber_enabled_size="14dp"
+          app:scrubber_dragged_size="19dp" />
+
+      <TextView
+          android:id="@id/exo_duration"
+          style="@style/HikariTime"
+          android:layout_marginEnd="8dp" />
+    </LinearLayout>
+
+    <!-- Our own pill row. Deliberately a DIFFERENT parent from
+         exo_basic_controls so media3's overflow logic can never move it. -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:scrollbars="none"
+        android:overScrollMode="never"
+        android:clipToPadding="false"
+        android:paddingStart="2dp"
+        android:paddingEnd="2dp">
+
+      <LinearLayout
+          android:id="@+id/player_pills"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
+
+        <TextView
+            android:id="@+id/speed_btn"
+            style="@style/HikariPill.Accent"
+            android:drawableStart="@drawable/ic_speed"
+            android:text="1x" />
+
+        <TextView
+            android:id="@+id/sources_btn"
+            style="@style/HikariPill"
+            android:drawableStart="@drawable/ic_server"
+            android:maxWidth="230dp"
+            android:text="Server" />
+
+        <TextView
+            android:id="@+id/skip_btn"
+            style="@style/HikariPill.Accent"
+            android:drawableStart="@drawable/ic_skip"
+            android:text="Skip Intro" />
+
+        <TextView
+            android:id="@+id/resize_btn"
+            style="@style/HikariPill"
+            android:drawableStart="@drawable/ic_fullscreen"
+            android:text="Fit" />
+
+        <!-- Orientation lock. Kept as a round icon button (it was an icon in the
+             previous layout too) because PlayerActivity tints it to show whether
+             the player is currently portrait or landscape. -->
+        <ImageButton
+            android:id="@+id/rotate_btn"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
+            android:src="@drawable/ic_rotate"
+            android:tint="#FFFFFF"
+            android:contentDescription="Rotate screen"
+            android:background="@drawable/circle_glass_ripple"
+            android:scaleType="centerInside" />
+
+        <TextView
+            android:id="@+id/quality_btn"
+            style="@style/HikariPill"
+            android:drawableStart="@drawable/ic_quality"
+            android:text="Quality" />
+
+        <TextView
+            android:id="@+id/audio_btn"
+            style="@style/HikariPill"
+            android:drawableStart="@drawable/ic_audio"
+            android:text="Audio" />
+
+        <TextView
+            android:id="@+id/subs_btn"
+            style="@style/HikariPill"
+            android:drawableStart="@drawable/ic_subtitles"
+            android:text="Subtitles" />
+
+        <TextView
+            android:id="@+id/download_btn"
+            style="@style/HikariPill.Accent"
+            android:drawableStart="@drawable/ic_download"
+            android:text="Download" />
+      </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- media3's own bottom buttons. All hidden (and all zero-width), and
+         @id/exo_overflow_show is kept as the LAST child so the library's
+         overflow logic — which is a no-op here — stays consistent. -->
+    <LinearLayout
+        android:id="@id/exo_basic_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layoutDirection="ltr">
+
+      <ImageButton android:id="@id/exo_vr"
+          style="@style/ExoStyledControls.Button.Bottom.VR"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_shuffle"
+          style="@style/ExoStyledControls.Button.Bottom.Shuffle"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_repeat_toggle"
+          style="@style/ExoStyledControls.Button.Bottom.RepeatToggle"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_settings"
+          style="@style/ExoStyledControls.Button.Bottom.Settings"
+          android:visibility="gone" />
 
       <ImageButton android:id="@id/exo_fullscreen"
           style="@style/ExoStyledControls.Button.Bottom.FullScreen"
-          android:visibility="gone"/>
+          android:visibility="gone" />
 
       <ImageButton android:id="@id/exo_overflow_show"
           style="@style/ExoStyledControls.Button.Bottom.OverflowShow"
-          android:visibility="gone"/>
-
-        </LinearLayout>
-      </HorizontalScrollView>
+          android:visibility="gone" />
     </LinearLayout>
+  </LinearLayout>
 
-    <HorizontalScrollView android:id="@id/exo_extra_controls_scroll_view"
+  <HorizontalScrollView android:id="@id/exo_extra_controls_scroll_view"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom|end"
+      android:visibility="invisible">
+
+    <LinearLayout android:id="@id/exo_extra_controls"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_vertical|end"
-        android:visibility="invisible">
+        android:layoutDirection="ltr">
 
-      <LinearLayout android:id="@id/exo_extra_controls"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:layoutDirection="ltr">
+      <ImageButton android:id="@id/exo_overflow_hide"
+          style="@style/ExoStyledControls.Button.Bottom.OverflowHide" />
 
-        <ImageButton android:id="@id/exo_overflow_hide"
-            style="@style/ExoStyledControls.Button.Bottom.OverflowHide"/>
-
-      </LinearLayout>
-
-    </HorizontalScrollView>
-
-  </FrameLayout>
-
-  <View android:id="@id/exo_progress_placeholder"
-      android:layout_width="match_parent"
-      android:layout_height="@dimen/exo_styled_progress_layout_height"
-      android:layout_gravity="bottom"
-      android:layout_marginBottom="@dimen/exo_styled_progress_margin_bottom"/>
+    </LinearLayout>
+  </HorizontalScrollView>
 
   <LinearLayout android:id="@id/exo_minimal_controls"
       android:layout_width="wrap_content"
@@ -265,13 +345,17 @@
       android:layout_marginBottom="@dimen/exo_styled_minimal_controls_margin_bottom"
       android:orientation="horizontal"
       android:gravity="center_vertical"
-      android:layoutDirection="ltr">
+      android:layoutDirection="ltr"
+      android:visibility="gone">
 
     <ImageButton android:id="@id/exo_minimal_fullscreen"
-        style="@style/ExoStyledControls.Button.Bottom.FullScreen"/>
+        style="@style/ExoStyledControls.Button.Bottom.FullScreen" />
 
   </LinearLayout>
 
+  <!-- --------------------------- Centre cluster ---------------------------
+       Total width ~276dp: prev 40 + 10 + rew 44 + 10 + play 68 + 10 + ffwd 44
+       + 10 + next 40. Keeping this small avoids media3's minimal mode. -->
   <LinearLayout
       android:id="@id/exo_center_controls"
       android:layout_width="wrap_content"
@@ -279,48 +363,62 @@
       android:layout_gravity="center"
       android:background="@android:color/transparent"
       android:gravity="center"
-      android:padding="@dimen/exo_styled_controls_padding"
       android:clipToPadding="false"
       android:layoutDirection="ltr">
 
     <ImageButton android:id="@id/exo_prev"
-        style="@style/ExoStyledControls.Button.Center.Previous"/>
+        style="@style/ExoStyledControls.Button.Center.Previous"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="@drawable/circle_glass_ripple"
+        android:tint="#FFFFFF" />
 
     <FrameLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="0dp"
-        android:addStatesFromChildren="true"
-        style="@style/ExoStyledControls.Button.Center">
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:background="@drawable/circle_glass_ripple"
+        android:addStatesFromChildren="true">
       <Button android:id="@id/exo_rew_with_amount"
-          android:background="@drawable/exo_styled_controls_rewind"
-          android:layout_marginLeft="0dp"
-          android:layout_marginRight="0dp"
-          android:singleLine="false"
-          style="@style/ExoStyledControls.Button.Center.RewWithAmount"/>
+          style="@style/ExoStyledControls.Button.Center.RewWithAmount"
+          android:layout_width="44dp"
+          android:layout_height="44dp"
+          android:layout_marginStart="0dp"
+          android:layout_marginEnd="0dp"
+          android:singleLine="false" />
     </FrameLayout>
 
-    <ImageButton android:id="@id/exo_play_pause"
+    <ImageButton
+        android:id="@id/exo_play_pause"
+        style="@style/ExoStyledControls.Button.Center.PlayPause"
         android:layout_width="68dp"
         android:layout_height="68dp"
-        style="@style/ExoStyledControls.Button.Center.PlayPause"/>
+        android:padding="12dp"
+        android:background="@drawable/player_play_ring" />
 
     <FrameLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="0dp"
-        android:addStatesFromChildren="true"
-        style="@style/ExoStyledControls.Button.Center">
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:background="@drawable/circle_glass_ripple"
+        android:addStatesFromChildren="true">
       <Button android:id="@id/exo_ffwd_with_amount"
-          android:background="@drawable/exo_styled_controls_fastforward"
-          android:layout_marginLeft="0dp"
-          android:layout_marginRight="0dp"
-          android:singleLine="false"
-          style="@style/ExoStyledControls.Button.Center.FfwdWithAmount"/>
+          style="@style/ExoStyledControls.Button.Center.FfwdWithAmount"
+          android:layout_width="44dp"
+          android:layout_height="44dp"
+          android:layout_marginStart="0dp"
+          android:layout_marginEnd="0dp"
+          android:singleLine="false" />
     </FrameLayout>
 
     <ImageButton android:id="@id/exo_next"
-        style="@style/ExoStyledControls.Button.Center.Next"/>
+        style="@style/ExoStyledControls.Button.Center.Next"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="@drawable/circle_glass_ripple"
+        android:tint="#FFFFFF" />
 
   </LinearLayout>
 

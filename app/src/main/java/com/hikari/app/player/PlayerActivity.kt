@@ -16,11 +16,13 @@ import android.content.res.Configuration
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.TextUtils
 import android.util.Base64
 import android.util.Rational
@@ -93,7 +95,10 @@ import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.UiScale
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -391,6 +396,45 @@ class PlayerActivity : ComponentActivity() {
     private var seekIcon: TextView? = null
     private var seekText: TextView? = null
 
+    // ---- Brightness / volume vertical-swipe gestures ----------------------
+    // Dragging up/down on the LEFT half of the video changes the window
+    // brightness, on the RIGHT half it changes the media volume (swipe up =
+    // increase). The HUD sliders fade in while dragging and out shortly after
+    // the finger lifts.
+    private var gestureHud: View? = null
+    private var hudBright: View? = null
+    private var hudVol: View? = null
+    private var hudBrightTrack: View? = null
+    private var hudVolTrack: View? = null
+    private var hudBrightFill: View? = null
+    private var hudVolFill: View? = null
+    private var hudBrightThumb: View? = null
+    private var hudVolThumb: View? = null
+    private var hudBrightValue: TextView? = null
+    private var hudVolValue: TextView? = null
+    private val hudHandler = Handler(Looper.getMainLooper())
+    private var hudHideTask: Runnable? = null
+    /** 0 = no vertical gesture in progress, 1 = brightness, 2 = volume. */
+    private var verticalMode = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var startBrightness = -1f
+    private var startVolume = 0
+    private var maxVolume = 1
+    private var audioManager: AudioManager? = null
+
+    // ---- Top-bar metadata badges -----------------------------------------
+    private var badgeDuration: TextView? = null
+    private var badgeQuality: TextView? = null
+    private var badgeSource: TextView? = null
+
+    /** In-app UI scale: when the user turns it on (Settings → In-app UI scale)
+     *  the whole app stops following the phone's font/display size settings —
+     *  including this View-based player, which is outside the Compose tree. */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(UiScale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
@@ -428,6 +472,24 @@ class PlayerActivity : ComponentActivity() {
         seekFeedback = findViewById(R.id.seek_feedback)
         seekIcon = findViewById(R.id.seek_icon)
         seekText = findViewById(R.id.seek_text)
+        gestureHud = findViewById(R.id.gesture_hud)
+        hudBright = findViewById(R.id.hud_bright)
+        hudVol = findViewById(R.id.hud_vol)
+        hudBrightTrack = findViewById(R.id.hud_bright_track)
+        hudVolTrack = findViewById(R.id.hud_vol_track)
+        hudBrightFill = findViewById(R.id.hud_bright_fill)
+        hudVolFill = findViewById(R.id.hud_vol_fill)
+        hudBrightThumb = findViewById(R.id.hud_bright_thumb)
+        hudVolThumb = findViewById(R.id.hud_vol_thumb)
+        hudBrightValue = findViewById(R.id.hud_bright_value)
+        hudVolValue = findViewById(R.id.hud_vol_value)
+        audioManager = runCatching { getSystemService(AUDIO_SERVICE) as? AudioManager }.getOrNull()
+        maxVolume = runCatching {
+            audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)?.coerceAtLeast(1)
+        }.getOrNull() ?: 1
+        badgeDuration = findViewById(R.id.badge_duration)
+        badgeQuality = findViewById(R.id.badge_quality)
+        badgeSource = findViewById(R.id.badge_source)
         findViewById<TextView>(R.id.title_text).text = intent.getStringExtra("title").orEmpty()
 
         // Top-bar episode line (e.g. "S1E2 · Freedom Day"), matching the
@@ -481,6 +543,29 @@ class PlayerActivity : ComponentActivity() {
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
         findViewById<TextView>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+        // Top-bar "more" button: the player options that don't deserve a pill
+        // of their own (video fit, rotation, download).
+        findViewById<ImageButton>(R.id.more_btn)?.setOnClickListener {
+            showGlassOptionMenu(
+                "Player options",
+                listOf("Fit video", "Crop to fill", "Rotate screen", "Download"),
+                resizeIndex
+            ) { which ->
+                when (which) {
+                    0, 1 -> {
+                        resizeIndex = which
+                        playerView?.resizeMode = if (which == 0) {
+                            C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                        } else {
+                            C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                        }
+                        resizeBtn?.text = if (which == 0) "Fit" else "Crop"
+                    }
+                    2 -> cycleRotation()
+                    3 -> showDownloadDialog()
+                }
+            }
+        }
 
         // The download notification needs POST_NOTIFICATIONS on API 33+; the
         // launcher must be registered here, before the first download starts.
@@ -550,6 +635,9 @@ class PlayerActivity : ComponentActivity() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     holdingFast = false
+                    verticalMode = 0
+                    downX = event.x
+                    downY = event.y
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     val task = Runnable {
                         // Finger has stayed down ≥2s → play at 2× until lift.
@@ -559,6 +647,38 @@ class PlayerActivity : ComponentActivity() {
                     holdSpeedTimer = task
                     speedHandler.postDelayed(task, 2000)
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    if (verticalMode == 0) {
+                        val dx = event.x - downX
+                        val dy = event.y - downY
+                        val slop = 18 * resources.displayMetrics.density
+                        // A mostly-vertical drag takes over from the tap/hold
+                        // gestures: cancel the pending speed-up, drop the
+                        // controls and bring up the brightness/volume HUD.
+                        if (abs(dy) > slop && abs(dy) > abs(dx)) {
+                            holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
+                            holdSpeedTimer = null
+                            if (holdingFast) {
+                                holdingFast = false
+                                applySpeed(SPEEDS[speedIndex])
+                            }
+                            suppressNextTap = true
+                            playerView?.hideController()
+                            beginVerticalGesture()
+                        }
+                    }
+                    if (verticalMode != 0) {
+                        val travel = playerView?.height?.toFloat()?.takeIf { it > 0f }
+                            ?: resources.displayMetrics.heightPixels.toFloat()
+                        // Swipe UP (a negative dy) increases the value.
+                        val delta = -((event.y - downY) / (travel * 0.9f))
+                        if (verticalMode == 1) {
+                            applyBrightness(startBrightness + delta)
+                        } else {
+                            applyVolume(startVolume + (delta * maxVolume).roundToInt())
+                        }
+                    }
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     holdSpeedTimer = null
@@ -567,6 +687,7 @@ class PlayerActivity : ComponentActivity() {
                         suppressNextTap = true
                         applySpeed(SPEEDS[speedIndex])
                     }
+                    if (verticalMode != 0) endVerticalGesture()
                 }
             }
             true
@@ -863,11 +984,11 @@ class PlayerActivity : ComponentActivity() {
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
         requestedOrientation = next
-        // Phone-tilt icon tints gold while forced-landscape so the state is
-        // readable at a glance (white = free/portrait).
-        val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
+        // Phone-tilt icon tints in the app accent while forced-landscape so the
+        // state is readable at a glance (white = free/portrait).
+        val accent = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#7B5CFF"))
         val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-        rotateBtn?.imageTintList = if (next == SCREEN_ORIENTATION_PORTRAIT) white else gold
+        rotateBtn?.imageTintList = if (next == SCREEN_ORIENTATION_PORTRAIT) white else accent
     }
 
     private fun applySpeed(speed: Float) {
@@ -913,13 +1034,13 @@ class PlayerActivity : ComponentActivity() {
         if (controllerVisible) pv.hideController() else pv.showController()
     }
 
-    /** Double-tap seek: left half rewinds 5s, right half forwards 5s (matching
-     *  the 5s shown on the centre rewind/forward buttons). */
+    /** Double-tap seek: left half rewinds 10s, right half forwards 10s
+     *  (matching the 10s shown on the centre rewind/forward buttons). */
     private fun seekByTap(x: Float) {
         val p = player ?: return
         val mid = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
         val forward = x >= mid
-        val delta = if (forward) 5_000L else -5_000L
+        val delta = if (forward) 10_000L else -10_000L
         val target = (p.currentPosition + delta)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
         p.seekTo(target)
@@ -927,7 +1048,7 @@ class PlayerActivity : ComponentActivity() {
         showSeekFeedback(delta)
     }
 
-    /** Flash the double-tap seek indicator (arrow + +5s/−5s) like YouTube. */
+    /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
     private fun showSeekFeedback(deltaMs: Long) {
         val v = seekFeedback ?: return
         seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
@@ -942,6 +1063,107 @@ class PlayerActivity : ComponentActivity() {
                 }.start()
             }, 450)
         }.start()
+    }
+
+    /** Starts the brightness/volume HUD for a vertical drag. Which slider shows
+     *  depends on where the finger went down: left half = brightness, right
+     *  half = volume. */
+    private fun beginVerticalGesture() {
+        val half = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
+        verticalMode = if (downX < half) 1 else 2
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        hudHideTask = null
+        val hud = gestureHud ?: return
+        hud.animate().cancel()
+        hud.alpha = 1f
+        if (verticalMode == 1) {
+            hudVol?.visibility = View.INVISIBLE
+            hudBright?.visibility = View.VISIBLE
+            startBrightness = currentBrightness()
+            applyBrightness(startBrightness)
+        } else {
+            hudBright?.visibility = View.INVISIBLE
+            hudVol?.visibility = View.VISIBLE
+            startVolume = runCatching {
+                audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC)
+            }.getOrNull() ?: 0
+            applyVolume(startVolume)
+        }
+    }
+
+    /** The window's current brightness, falling back to the system setting for
+     *  the common "no override set yet" state (-1). */
+    private fun currentBrightness(): Float {
+        val win = window.attributes.screenBrightness
+        if (win >= 0f) return win.coerceIn(0.02f, 1f)
+        val system = runCatching {
+            Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+        }.getOrNull() ?: 128
+        return (system / 255f).coerceIn(0.02f, 1f)
+    }
+
+    private fun applyBrightness(fraction: Float) {
+        val f = fraction.coerceIn(0.02f, 1f)
+        val lp = window.attributes
+        lp.screenBrightness = f
+        window.attributes = lp
+        setHudFraction(hudBrightFill, hudBrightThumb, hudBrightTrack, f)
+        hudBrightValue?.text = "${(f * 100).roundToInt()}%"
+    }
+
+    private fun applyVolume(level: Int) {
+        val v = level.coerceIn(0, maxVolume)
+        runCatching { audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0) }
+        val fraction = if (maxVolume > 0) v.toFloat() / maxVolume else 0f
+        setHudFraction(hudVolFill, hudVolThumb, hudVolTrack, fraction)
+        hudVolValue?.text = "${(fraction * 100).roundToInt()}%"
+    }
+
+    /** Sizes the slider's gradient fill and parks the white thumb on its top
+     *  edge (the fill grows upward from the bottom of the track). */
+    private fun setHudFraction(fill: View?, thumb: View?, track: View?, fraction: Float) {
+        val h = track?.height ?: 0
+        if (h <= 0 || fill == null) return
+        val fillPx = (h * fraction.coerceIn(0f, 1f)).toInt().coerceIn(0, h)
+        val lp = fill.layoutParams
+        if (lp != null && lp.height != fillPx) {
+            lp.height = fillPx
+            fill.layoutParams = lp
+        }
+        thumb?.let { it.translationY = -(fillPx - it.height / 2f) }
+    }
+
+    /** Fades the gesture HUD out a moment after the finger lifts (cancelled if
+     *  the user starts another drag). */
+    private fun endVerticalGesture() {
+        verticalMode = 0
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        val task = Runnable {
+            hudHideTask = null
+            gestureHud?.animate()?.alpha(0f)?.setDuration(220)?.start()
+        }
+        hudHideTask = task
+        hudHandler.postDelayed(task, 700)
+    }
+
+    /** "1:39:45" (or "12:34" for sub-hour videos) — the duration badge. */
+    private fun formatDurationBadge(ms: Long): String {
+        if (ms <= 0L) return ""
+        val total = ms / 1000L
+        val h = total / 3600L
+        val m = (total % 3600L) / 60L
+        val s = total % 60L
+        return if (h > 0L) String.format("%d:%02d:%02d", h, m, s)
+        else String.format("%d:%02d", m, s)
+    }
+
+    /** The quality badge for a rendered video height. */
+    private fun qualityBadgeFor(height: Int): String = when {
+        height <= 0 -> ""
+        height >= 2000 -> "4K"
+        height >= 1000 -> "FHD"
+        height >= 700 -> "HD"
+        else -> "${height}p"
     }
 
     /** Thin translucent divider used inside the glass panels. */
@@ -1807,6 +2029,11 @@ class PlayerActivity : ComponentActivity() {
         triedUrls.add(src.url)
 
         sourcesBtn?.text = src.name
+        val sourceBadge = src.name.substringBefore("|").trim().ifBlank { src.name }
+        if (sourceBadge.isNotBlank()) {
+            badgeSource?.text = sourceBadge
+            badgeSource?.visibility = View.VISIBLE
+        }
         errorPanel?.visibility = View.GONE
         if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE)
             showLoadingCover()
@@ -1893,11 +2120,11 @@ class PlayerActivity : ComponentActivity() {
             // mid-stream is a classic "it randomly stops to buffer" cause on
             // some devices, and media3's default wake mode is NONE.
             .setWakeMode(C.WAKE_MODE_NETWORK)
-            // 5s steps on the centre rewind/forward buttons (and media3's own
+            // 10s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
-            .setSeekBackIncrementMs(5_000)
-            .setSeekForwardIncrementMs(5_000)
+            .setSeekBackIncrementMs(10_000)
+            .setSeekForwardIncrementMs(10_000)
             .build()
         this.player = player
         if (noSubsRetry) {
@@ -2228,6 +2455,13 @@ class PlayerActivity : ComponentActivity() {
         // portrait videos play portrait — once, per source. After that the
         // rotate button is entirely in the user's hands.
         override fun onVideoSizeChanged(videoSize: VideoSize) {
+            // Quality badge: the rendered video's height (updates per server,
+            // since a different source can be a different resolution).
+            val q = qualityBadgeFor(videoSize.height)
+            if (q.isNotBlank()) {
+                badgeQuality?.text = q
+                badgeQuality?.visibility = View.VISIBLE
+            }
             if (autoRotated) return
             if (videoSize.width <= 0 || videoSize.height <= 0) return
             autoRotated = true
@@ -2237,9 +2471,9 @@ class PlayerActivity : ComponentActivity() {
             } else {
                 SCREEN_ORIENTATION_PORTRAIT
             }
-            val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
+            val accent = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#7B5CFF"))
             val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-            rotateBtn?.imageTintList = if (landscape) gold else white
+            rotateBtn?.imageTintList = if (landscape) accent else white
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -2264,6 +2498,12 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
+                // Duration badge (total runtime) — known once media is ready.
+                val durBadge = formatDurationBadge(this@PlayerActivity.player?.duration ?: 0L)
+                if (durBadge.isNotBlank()) {
+                    badgeDuration?.text = durBadge
+                    badgeDuration?.visibility = View.VISIBLE
+                }
                 dismissSlowDialog()
                 // Audio-only streams never fire onRenderedFirstFrame, so the same
                 // "playback really did start" signal applies here.
@@ -3009,6 +3249,8 @@ class PlayerActivity : ComponentActivity() {
         saveTask = null
         dismissSlowDialog()
         dismissSlowNetTip()
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        hudHideTask = null
         SlowNetTip.onPlaybackEnd()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null

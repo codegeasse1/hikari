@@ -20,6 +20,13 @@ import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+    /** In-app UI scale: when on, the app ignores the phone's Font size and
+     *  Display size settings everywhere (Compose screens scale themselves in
+     *  HikariTheme; this covers the Activity's View-based content too). */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.hikari.app.ui.UiScale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         HikariApp.mainActivity = this
         // Expose the activity to the CloudStream runtime as early as possible:
@@ -80,6 +87,15 @@ class MainActivity : AppCompatActivity() {
             val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
             val uiScaleFlow = remember { store.uiScaleFlow() }
             val uiScale by uiScaleFlow.collectAsState(initial = 1f)
+
+            // Keep the synchronous mirror of the preference current, so
+            // View-based screens (player, WebView) and the next cold start
+            // apply it without waiting on DataStore.
+            LaunchedEffect(uiScaleEnabled, uiScale) {
+                com.hikari.app.ui.UiScale.sync(
+                    this@MainActivity, uiScaleEnabled, uiScale
+                )
+            }
 
             LaunchedEffect(themeMode) {
                 // Dark status-bar icons on the light theme so they stay visible.

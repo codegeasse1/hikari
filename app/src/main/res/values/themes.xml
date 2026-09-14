@@ -63,12 +63,13 @@
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
-        <!-- Brand accent: the media3 styled seekbar/progress and controls tint
-             from colorAccent, so the player matches the app's gold instead of
-             the Material default. -->
-        <item name="android:colorAccent">#F5C569</item>
-        <item name="android:colorControlActivated">#F5C569</item>
-        <item name="android:colorControlHighlight">#33F5C569</item>
+        <!-- Brand accent: native widgets/seekbars tint from colorAccent. The
+             player itself uses the cyan->violet player palette (see
+             colors.xml + drawable/player_*), so keep these in the same
+             violet family rather than the app's gold. -->
+        <item name="android:colorAccent">@color/hikari_accent_mid</item>
+        <item name="android:colorControlActivated">@color/hikari_accent_mid</item>
+        <item name="android:colorControlHighlight">@color/hikari_accent_ripple</item>
         <item name="android:colorControlNormal">#99FFFFFF</item>
     </style>
 </resources>
