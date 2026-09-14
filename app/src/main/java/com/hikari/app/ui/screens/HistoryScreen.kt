@@ -17,9 +17,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -121,20 +123,26 @@ fun HistoryScreen(nav: NavHostController) {
                 }
             }
             items(shownEntries, key = { it.uniqueKey }) { h ->
-                HistoryRow(h) {
-                    Routes.safeNavigate(
-                        nav,
-                        Routes.detail(
-                            providerId = h.providerId,
-                            type = h.type,
-                            mediaId = h.mediaId,
-                            title = h.title,
-                            posterUrl = h.posterUrl,
-                            episodeId = h.episodeId,
-                            startPositionMs = h.positionMs,
+                HistoryRow(
+                    h = h,
+                    onClick = {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.detail(
+                                providerId = h.providerId,
+                                type = h.type,
+                                mediaId = h.mediaId,
+                                title = h.title,
+                                posterUrl = h.posterUrl,
+                                episodeId = h.episodeId,
+                                startPositionMs = h.positionMs,
+                            )
                         )
-                    )
-                }
+                    },
+                    // Deletes this one entry (a single movie, or one episode of
+                    // a series) without touching the rest of the history.
+                    onDelete = { scope.launch { app.store.removeHistory(h.uniqueKey) } },
+                )
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
@@ -142,7 +150,7 @@ fun HistoryScreen(nav: NavHostController) {
 }
 
 @Composable
-private fun HistoryRow(h: HistoryEntry, onClick: () -> Unit) {
+private fun HistoryRow(h: HistoryEntry, onClick: () -> Unit, onDelete: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -202,6 +210,14 @@ private fun HistoryRow(h: HistoryEntry, onClick: () -> Unit) {
                 relativeTime(h.watchedAt),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
+            )
+        }
+        IconButton(onClick = onDelete) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = "Delete from history",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(20.dp)
             )
         }
         Icon(

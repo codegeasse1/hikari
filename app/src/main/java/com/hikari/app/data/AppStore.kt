@@ -564,6 +564,15 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.HISTORY] = "[]" }
     }
 
+    /** Remove ONE entry — a single movie, or a single episode of a series
+     *  (episodes of one title share a mediaId, so the key is per-video). */
+    suspend fun removeHistory(uniqueKey: String) {
+        store.edit { prefs ->
+            val cur = parseHistory(prefs[K.HISTORY])
+            prefs[K.HISTORY] = encodeHistory(cur.filter { it.uniqueKey != uniqueKey })
+        }
+    }
+
     fun historyPausedFlow(): Flow<Boolean> =
         store.data.map { it[K.HISTORY_PAUSED] ?: false }
 

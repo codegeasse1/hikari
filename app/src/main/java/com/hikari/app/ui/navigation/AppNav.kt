@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
@@ -62,6 +63,7 @@ import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
+import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.theme.HikariThemeMode
@@ -74,6 +76,8 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     const val DOWNLOADS = "downloads"
+    /** Titles saved with the player's heart (the favourites store). */
+    const val LIBRARY = "library"
     /**
      * Same Search screen, but pre-filled with a query (genre tags, "show all",
      * search suggestions…) and/or scoped to one provider (Home's "Search this
@@ -188,15 +192,17 @@ private fun AppBottomBar(
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    // Six equal slots is not much room, and the labels ("Downloads",
-    // "Extensions") are the longest text in the app. On a phone whose
-    // accessibility Font size AND/OR Display size is turned up, the labels grew
-    // past their slot and were hard-clipped mid-word ("Downloa"). Size the
-    // label so it always renders at the SAME physical size — dividing out the
-    // font scale — and the worst case is then a full word in a slightly tight
-    // slot. (When "In-app UI scale" is on, fontScale is 1 here and the scale
-    // rides on the density, so the labels still scale with that setting.)
+    // Equal slots are not much room, and the labels ("Downloads", "Extensions")
+    // are the longest text in the app. On a phone whose accessibility Font size
+    // AND/OR Display size is turned up, the labels grew past their slot and were
+    // hard-clipped mid-word ("Downloa"). Size the label so it always renders at
+    // the SAME physical size — dividing out the font scale — and the worst case
+    // is then a full word in a slightly tight slot. (When "In-app UI scale" is
+    // on, fontScale is 1 here and the scale rides on the density, so the labels
+    // still scale with that setting.) With the Library tab there are seven
+    // slots, so the base size drops a notch to keep every label whole.
     val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
+    val labelSp = if (Tabs.size > 6) 8f else 9f
     Box(
         Modifier
             .fillMaxWidth()
@@ -243,7 +249,7 @@ private fun AppBottomBar(
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            fontSize = (9f / labelScale).sp,
+                            fontSize = (labelSp / labelScale).sp,
                             textAlign = TextAlign.Center,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             color = if (selected) primary else muted,
@@ -265,6 +271,7 @@ private data class Tab(
 private val Tabs = listOf(
     Tab(Routes.HOME, "Home", Icons.Filled.Home),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
+    Tab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
     Tab(Routes.HISTORY, "History", Icons.Filled.History),
     Tab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
     Tab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
@@ -349,6 +356,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 SearchScreen(nav, initialQuery = q, initialProvider = provider)
             }
             composable(Routes.HISTORY) { HistoryScreen(nav) }
+            composable(Routes.LIBRARY) { LibraryScreen(nav) }
             composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }

@@ -395,6 +395,10 @@ fun HomeScreen(nav: NavHostController) {
                                 )
                             )
                         },
+                        // The ✕ on a card drops just that entry from the shared
+                        // watch-history store, so it leaves the shelf and the
+                        // History tab at the same time.
+                        onRemove = { h -> scope.launch { app.store.removeHistory(h.uniqueKey) } },
                     )
                 }
             }

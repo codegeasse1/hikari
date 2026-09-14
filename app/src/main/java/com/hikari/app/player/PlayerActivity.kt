@@ -1099,7 +1099,7 @@ class PlayerActivity : ComponentActivity() {
         if (on) android.graphics.Color.parseColor("#7B5CFF") else android.graphics.Color.WHITE
     )
 
-    /** Top-bar heart: add/remove this title from the app's favourites. */
+    /** Top-bar heart: add/remove this title from the app's Library. */
     private fun toggleFavourite() {
         val item = favouriteItem ?: return
         val next = !isFavourite
@@ -1120,7 +1120,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        Toast.makeText(this, if (next) "Added to favourites" else "Removed from favourites", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (next) "Added to library" else "Removed from library", Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleController() {

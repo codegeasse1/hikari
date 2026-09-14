@@ -431,6 +431,10 @@ fun ContinueWatchingRow(
     entries: List<HistoryEntry>,
     backdropOf: (HistoryEntry) -> String?,
     onClick: (HistoryEntry) -> Unit,
+    /** When non-null each card gets a small ✕ that removes just that entry.
+     *  Continue Watching is fed from the same watch-history store as the
+     *  History tab, so removing here removes it from both. */
+    onRemove: ((HistoryEntry) -> Unit)? = null,
 ) {
     if (entries.isEmpty()) return
     // Defensive dedupe: a duplicate Compose key would crash the whole row.
@@ -448,14 +452,26 @@ fun ContinueWatchingRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(unique, key = { it.uniqueKey }) { h ->
-                ContinueWatchingCard(h, backdropOf(h)) { onClick(h) }
+                ContinueWatchingCard(
+                    h = h,
+                    backdrop = backdropOf(h),
+                    removable = onRemove != null,
+                    onClick = { onClick(h) },
+                    onRemove = { onRemove?.invoke(h) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: () -> Unit) {
+private fun ContinueWatchingCard(
+    h: HistoryEntry,
+    backdrop: String?,
+    removable: Boolean = false,
+    onClick: () -> Unit,
+    onRemove: () -> Unit = {},
+) {
     val fraction = if (h.durationMs > 0L) {
         (h.positionMs.toFloat() / h.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -511,6 +527,25 @@ private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: ()
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            if (removable) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .clickable(onClick = onRemove),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Remove from Continue Watching",
+                        tint = Color.White,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
             }
             if (remaining > 0L) {
                 Surface(

@@ -342,17 +342,18 @@ class HikariApp : Application() {
                 // Posters whose CDN sends no cache headers (very common on the
                 // aggregator hosts) should still land in Coil's disk cache.
                 .respectCacheHeaders(false)
-                // Decoded bitmaps live in RAM. Coil's default is 25% of the app
-                // heap, which on a poster grid (a few hundred covers, several
-                // full-size) can fill the heap on its own and OOM the process.
-                // Scale to the actual heap instead: 1/8 of it, floored at 24 MB
-                // (a screenful or two of thumbnails) and capped at 96 MB so a
-                // huge-heap device doesn't hoard memory it doesn't need.
-                .memoryCache { ctx ->
+                .memoryCache {
+                    // Decoded bitmaps live in RAM. Coil's default is 25% of the
+                    // app heap, which on a poster grid (a few hundred covers,
+                    // several full-size) can fill the heap on its own and OOM the
+                    // process. Scale to the actual heap instead: 1/8 of it,
+                    // floored at 24 MB (a screenful or two of thumbnails) and
+                    // capped at 96 MB so a huge-heap device doesn't hoard memory
+                    // it doesn't need.
                     val cap = (Runtime.getRuntime().maxMemory() / 8)
                         .coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
-                    coil.memory.MemoryCache.Builder(ctx)
-                        .maxSizeBytes(cap)
+                    coil.memory.MemoryCache.Builder(this@HikariApp)
+                        .maxSizeBytes(cap.toInt())
                         .build()
                 }
                 .diskCache {

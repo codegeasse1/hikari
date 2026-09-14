@@ -132,7 +132,7 @@
           android:layout_height="30dp"
           android:src="@drawable/ic_heart"
           android:tint="#FFFFFF"
-          android:contentDescription="Favourite"
+          android:contentDescription="Add to library"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
