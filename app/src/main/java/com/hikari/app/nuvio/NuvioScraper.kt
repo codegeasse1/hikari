@@ -322,11 +322,16 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
     /**
      * TMDB is complete for most shows, but its donghua coverage stalls on some
      * long-runners. Bangumi — the Chinese anime database — tracks those week by
-     * week with the real episode titles, and its numbering concatenates to the
-     * same absolute numbers these providers serve, so the two merge by number
-     * alone: keep TMDB as the base (it owns the stills and the air dates the
-     * sites agree with), borrow a real title wherever TMDB only has
-     * "Episode 128", and append the episodes TMDB is missing entirely.
+     * week and its numbering concatenates to the same absolute numbers these
+     * providers serve, so the two merge by number alone: TMDB stays the base
+     * (it owns the stills, the air dates the sites agree with, and the English
+     * names the UI is in), and Bangumi only contributes the episodes TMDB is
+     * missing entirely.
+     *
+     * Bangumi deliberately does NOT rename anything: its titles are Chinese, so
+     * letting it overwrite TMDB's generic "Episode 128" would put Chinese rows
+     * in an English list — the caller's promise is an English title if one
+     * exists, and otherwise the source's own name.
      *
      * Never throws and never shortens the list: any Bangumi problem (no match,
      * timeout, offline) just returns TMDB's own episodes.
@@ -351,13 +356,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         val maxBgm = bgm.filter { it.airDate != null && it.airDate <= grace }
             .maxOfOrNull { it.number } ?: 0
 
-        var out = tmdb.map { e ->
-            if (!BangumiMeta.isGenericName(e.name)) e
-            else {
-                val real = byNumber[e.number]?.name?.takeIf { it.isNotBlank() }
-                if (real != null) e.copy(name = real) else e
-            }
-        }
+        var out = tmdb
         // TMDB behind (or missing a whole season) → take Bangumi's tail. The
         // cap keeps a bad match from inventing hundreds of episodes.
         if (maxBgm > maxTmdb && maxBgm - maxTmdb <= 400) {

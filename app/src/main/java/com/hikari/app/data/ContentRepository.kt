@@ -942,25 +942,48 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
-     * Swaps the mechanical labels a site-scraping extension returns ("Swallowed
-     * Star Episode 33 English Sub") for the real titles from TMDB/Bangumi while
-     * leaving the extension's own list — count, order and numbering — exactly
-     * as it is. Runs only when most of the names look mechanical (so an
-     * extension that already ships real titles is left alone), when the
-     * numbering is unambiguous (no per-season restart, which would make
-     * number → title mapping wrong), and never shortens or reorders anything.
+     * Upgrades episode names to English where TMDB has an English title for
+     * that episode, leaving the extension's own list — count, order and
+     * numbering — exactly as it is, and never reordering or shortening it.
+     *
+     * The priority the app promises is: an English title if one exists;
+     * otherwise the row keeps whatever its source called it — the site's own
+     * label for an extension item, TMDB's own name for a Nuvio item (which has
+     * no site behind it). A source label that is pure noise ("Swallowed Star
+     * Episode 33 English Sub") is the one exception: it carries no title, so
+     * TMDB's plain "Episode 33" is used instead.
+     *
+     * Runs only when some name actually needs it (foreign script, mechanical
+     * label or missing), when the numbering is unambiguous (no per-season
+     * restart, which would make number → title mapping wrong), and quietly
+     * gives up on any failure — names are a nicety, never a gate.
      */
     private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
         if (eps.size < 3) return eps
-        val mechanical = eps.count { EpisodeTitles.looksMechanical(it.name, item.title) }
-        if (mechanical <= eps.size / 2) return eps
         val numbers = eps.map { it.number }
         if (numbers.size != numbers.toSet().size) return eps
+        if (eps.none { EpisodeTitles.needsEnglish(it.name, item.title) }) return eps
         val names = withTimeoutOrNull(12_000) {
             EpisodeTitles.lookup(item.title, item.year, numbers.toSet())
         } ?: return eps
         if (names.isEmpty()) return eps
-        return eps.map { e -> names[e.number]?.let { n -> e.copy(name = n) } ?: e }
+        var changed = false
+        val out = eps.map { e ->
+            val raw = e.name
+            val replacement = when {
+                names.english[e.number] != null -> names.english[e.number]
+                raw.isNullOrBlank() -> names.generic[e.number]
+                EpisodeTitles.looksMechanical(raw, item.title) -> names.generic[e.number]
+                else -> null
+            }
+            if (replacement != null && replacement != raw) {
+                changed = true
+                e.copy(name = replacement)
+            } else {
+                e
+            }
+        }
+        return if (changed) out else eps
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

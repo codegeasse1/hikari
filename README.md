@@ -279,22 +279,36 @@ gradle assembleDebug
   `NuvioScraper.getEpisodes` drops rows whose `air_date` is in the future
   (Renegade Immortal lists 200 episodes but only 158 have aired), and when TMDB
   knows a single season it merges Bangumi (`BangumiMeta.episodes()` —
-  `api.bgm.tv`, no key needed) to fill in real episode titles and append
-  episodes TMDB is missing (Battle Through the Heavens: TMDB stops at 45,
-  Bangumi has 150+). Bangumi numbers episodes absolutely and continuously
-  across seasons, matching TMDB's numbering, but its air dates run a day later,
-  so the merged list allows one day of grace. Search Bangumi with TMDB's
-  `original_name` (native title) — English queries return garbage. If both TMDB
-  and Bangumi come up empty, `ContentRepository.episodesFromExtensions` borrows
-  the episode list from an installed site-scraping extension for the same title.
-  The extension's own labels ("Swallowed Star Episode 33 English Sub") are then
-  replaced by real titles via `EpisodeTitles.lookup()` (TMDB first, Bangumi to
-  top up) while its list — count, order and numbering — is left exactly as it
-  is. A database's generic "Episode 129" counts as a name and is preferred over
-  the site's mechanical label; the site's labels survive only when BOTH
-  databases fail outright. A title that names a season ("Sword of Coming Season
-  2") is resolved season-locally, because the site numbers that season from 1
-  while TMDB/Bangumi number the franchise continuously.
+  `api.bgm.tv`, no key needed) to append episodes TMDB is missing (Battle
+  Through the Heavens: TMDB stops at 45, Bangumi has 150+). Bangumi numbers
+  episodes absolutely and continuously across seasons, matching TMDB's
+  numbering, but its air dates run a day later, so the merged list allows one
+  day of grace. Search Bangumi with TMDB's `original_name` (native title) —
+  English queries return garbage. If both TMDB and Bangumi come up empty,
+  `ContentRepository.episodesFromExtensions` borrows the episode list from an
+  installed site-scraping extension for the same title.
+- **Episode NAMES are always English, or the source's own name.** The UI is in
+  English, so a row is upgraded ONLY when TMDB has an English title for that
+  episode (asked for with `language=en-US`, since TMDB otherwise answers in the
+  show's original language): `EpisodeTitles.lookup()` returns just those, and
+  `ContentRepository.withRealEpisodeNames` swaps them in while leaving the
+  extension's list — count, order and numbering — exactly as it is. Everything
+  else keeps what its source gave it: the site's own label for an extension
+  item, TMDB's own name for a Nuvio item (there is no site behind it). Bangumi
+  is deliberately NOT consulted for names any more — its titles are Chinese, so
+  letting them substitute for a real site title (or for TMDB's generic
+  "Episode 128") would put Chinese rows in an English list. The one exception is
+  a source label that is pure noise ("Swallowed Star Episode 33 English Sub"):
+  it carries no title, so TMDB's plain "Episode 33" is used in its place. Note
+  TMDB's English coverage of a donghua is often partial (Sword of Coming
+  season 2 has English for 4 of 27 episodes) — for a fully English list the
+  user turns on the per-extension "Always translate" toggle (the `Aあ` button
+  on Home), which runs the remaining names through `Translator`. A title that
+  names a season ("Sword of Coming Season 2") is resolved season-locally,
+  because the site numbers that season from 1 while TMDB numbers the franchise
+  continuously. A show's native title can also be indexed twice on TMDB (剑来 is
+  both the show and a one-episode short), so candidate scores break ties on
+  popularity — otherwise a 1-episode entry can win and title the wrong list.
 - **A decorated title must not defeat TMDB resolution.** Site metas carry
   decorations and translations TMDB's search index does not match: "Sword of
   Coming Season 2" and "Battle Through The Heavens: Origin" both return ZERO

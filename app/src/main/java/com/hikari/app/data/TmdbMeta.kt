@@ -194,9 +194,16 @@ object TmdbMeta {
      *   "Sword of Coming Season 2"        → "Sword of Coming"
      *   "Battle Through The Heavens: Origin" → "Battle Through The Heavens"
      *   "One Piece (2023)"                → "One Piece"
+     *   "剑来 第二季"                        → "剑来"
      *
      * The full title is always first, so an exact hit still wins; the stripped
      * forms only get used when it returns nothing.
+     *
+     * The minimum length for a stripped form is TWO characters, not three:
+     * Chinese titles are routinely that short, and a threshold of three
+     * silently dropped "剑来" — so a site item called "剑来 第二季" never resolved
+     * to anything at all, losing its cast/related/similar rows along with its
+     * episode titles. A rejected query merely costs one wasted search.
      */
     fun queryVariants(raw: String): List<String> {
         val t = raw.trim()
@@ -208,10 +215,10 @@ object TmdbMeta {
         for (base in listOf(t, flat)) {
             val noSeason = base.replace(SEASON_MARKER, " ").replace(SPACES, " ")
                 .trim().trim('-', '–', '—', ':', '：', '|', '.').trim()
-            if (noSeason.length >= 3) out.add(noSeason)
+            if (noSeason.length >= 2) out.add(noSeason)
             val head = base.substringBefore("：").substringBefore(":")
                 .substringBefore(" - ").trim()
-            if (head.length >= 4 && head.length < base.length) out.add(head)
+            if (head.length >= 2 && head.length < base.length) out.add(head)
         }
         return out.filter { it.length >= 2 }
     }
