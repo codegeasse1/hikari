@@ -91,6 +91,7 @@ import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
@@ -386,12 +387,7 @@ fun SettingsScreen(nav: NavHostController) {
                                         )
                                     },
                                     modifier = Modifier.clickable {
-                                        context.startActivity(
-                                            Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse("https://t.me/CodegeasseHikari")
-                                            )
-                                        )
+                                        openTelegram(context)
                                     }
                                 )
                             }

@@ -102,6 +102,7 @@ import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.openYouTubeVideo
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
@@ -1195,19 +1196,14 @@ fun DetailScreen(
                 extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
                     item {
                         TrailerRow(trailers) { trailer ->
-                            // Trailers open in the app's ad-free web view, the
-                            // same path Stremio-style YouTube sources use.
-                            context.startActivity(
-                                Intent(context, WebViewActivity::class.java).apply {
-                                    putExtra(
-                                        "url",
-                                        "https://www.youtube.com/watch?v=${trailer.youtubeKey}"
-                                    )
-                                    putExtra(
-                                        "title",
-                                        (m?.title ?: title) + " — " + trailer.name
-                                    )
-                                }
+                            // Trailers hand off to the YouTube app instead of
+                            // playing in Hikari's WebView: YouTube redirects to
+                            // m.youtube.com and the WebView's redirect
+                            // protection blocks that, leaving a black page.
+                            openYouTubeVideo(
+                                context,
+                                trailer.youtubeKey,
+                                (m?.title ?: title) + " — " + trailer.name
                             )
                         }
                     }
@@ -2040,8 +2036,9 @@ private fun CastRow(cast: List<CastMember>, onClick: (CastMember) -> Unit) {
     }
 }
 
-/** Trailer thumbnails (TMDB `videos` → YouTube stills). Tapping opens the video
- *  in the app's ad-free web view, the same path YouTube streams already use. */
+/** Trailer thumbnails (TMDB `videos` → YouTube stills). Tapping hands the
+ *  video to the YouTube app (see [openYouTubeVideo]) instead of playing it in
+ *  the in-app WebView, where YouTube's m.youtube.com redirect is blocked. */
 @Composable
 private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
     Column(Modifier.padding(top = 14.dp)) {

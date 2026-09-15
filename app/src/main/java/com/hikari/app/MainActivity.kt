@@ -9,10 +9,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hikari.app.net.Updater
+import com.hikari.app.ui.components.TelegramDialog
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.AppRoot
 import com.hikari.app.ui.theme.HikariTheme
@@ -75,6 +77,7 @@ class MainActivity : AppCompatActivity() {
         applyImmersiveMode()
         val store = (application as HikariApp).store
         setContent {
+            val scope = rememberCoroutineScope()
             // Remember the Flow — a fresh store.themeFlow() per recomposition
             // would make collectAsState reset to the initial key each time.
             val themeFlow = remember { store.themeFlow() }
@@ -105,6 +108,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             var showUpdateDialog by remember { mutableStateOf(false) }
+            var updateChecked by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
                 // One quiet check on launch — the dialog only appears when a
                 // newer build exists on GitHub.
@@ -112,6 +116,17 @@ class MainActivity : AppCompatActivity() {
                     .getOrNull()
                     ?.takeIf { it.available }
                     ?.let { showUpdateDialog = true }
+                updateChecked = true
+            }
+
+            // One-time Telegram invitation. Held back until the update check has
+            // finished so the two dialogs never stack, and skipped wholesale
+            // once "Don't show this again" has been ticked.
+            var showTelegramDialog by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                if (!runCatching { store.telegramDontShow() }.getOrDefault(false)) {
+                    showTelegramDialog = true
+                }
             }
 
             HikariTheme(themeMode, uiScaleEnabled, uiScale) {
@@ -120,6 +135,16 @@ class MainActivity : AppCompatActivity() {
                     UpdateDialog(
                         context = this@MainActivity,
                         onDismiss = { showUpdateDialog = false },
+                    )
+                }
+                if (showTelegramDialog && updateChecked && !showUpdateDialog) {
+                    TelegramDialog(
+                        context = this@MainActivity,
+                        onDismiss = { showTelegramDialog = false },
+                        onDontShowAgain = {
+                            showTelegramDialog = false
+                            scope.launch { runCatching { store.setTelegramDontShow(true) } }
+                        },
                     )
                 }
             }

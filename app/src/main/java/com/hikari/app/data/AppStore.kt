@@ -68,6 +68,7 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
+        val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe
@@ -169,6 +170,17 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setSlowTipLastDismiss(atMs: Long) {
         store.edit { it[K.SLOW_TIP_LAST_DISMISS] = atMs }
+    }
+
+    /** Set by the launch Telegram invitation's "Don't show this again" checkbox,
+     *  so the dialog never comes back. */
+    fun telegramDontShowFlow(): Flow<Boolean> =
+        store.data.map { it[K.TELEGRAM_DONT_SHOW] ?: false }
+
+    suspend fun telegramDontShow(): Boolean = telegramDontShowFlow().first()
+
+    suspend fun setTelegramDontShow(dontShow: Boolean) {
+        store.edit { it[K.TELEGRAM_DONT_SHOW] = dontShow }
     }
 
     /** How many downloads may run simultaneously (1–10). */
