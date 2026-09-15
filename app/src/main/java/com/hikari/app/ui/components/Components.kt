@@ -189,7 +189,7 @@ fun HeroArtwork(
             contentDescription = contentDescription,
             modifier = modifier,
             contentScale = ContentScale.Crop,
-            alignment = Alignment.Top,
+            alignment = Alignment.TopCenter,
         )
         return
     }
