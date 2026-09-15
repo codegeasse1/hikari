@@ -77,7 +77,11 @@ object TmdbMeta {
         "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9", "ten" to "10",
     )
 
-    private fun normalizeTitle(raw: String): String =
+    /** Lower-cased, punctuation-stripped, numeral-normalised title — the form
+     *  used to match a title across sources that punctuate it differently
+     *  ("Ramayana: Part Two" vs "Ramayana Part 2"). Also used by the episode
+     *  fallback to pick the right hit out of an extension's search results. */
+    fun normalizeTitle(raw: String): String =
         raw.lowercase()
             .replace(Regex("[^a-z0-9]+"), " ")
             .trim()

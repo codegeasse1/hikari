@@ -888,7 +888,54 @@ class ContentRepository(private val manager: ProviderManager) {
                 return@withContext translated
             }
         }
+        // Last resort for a metadata-only provider (Nuvio/TMDB): when the
+        // metadata sources have nothing usable — TMDB stalled behind and
+        // Bangumi with no match — borrow the episode list from an installed
+        // extension that scrapes it from its site. Those lists come straight
+        // from the source site, so they are the ground truth when the
+        // databases disagree about a donghua's episode count.
+        if (item.type == MediaType.SERIES &&
+            manager.byId(item.providerId)?.config?.type == ProviderType.NUVIO
+        ) {
+            episodesFromExtensions(item)?.let { list ->
+                val translated = translateEpisodes(item.providerId, list)
+                synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
+                return@withContext translated
+            }
+        }
         null
+    }
+
+    /**
+     * Episode-list fallback: search the installed site-scraping extensions for
+     * this title and use the first real episode list they return. Time-boxed
+     * per provider and capped at a handful of providers, so one dead extension
+     * cannot stall the detail page.
+     */
+    private suspend fun episodesFromExtensions(item: MediaItem): List<Episode>? {
+        val want = TmdbMeta.normalizeTitle(item.title)
+        if (want.length < 2) return null
+        val candidates = manager.providers.value.filter {
+            it.config.enabled &&
+                it.config.id != item.providerId &&
+                it.config.type != ProviderType.NUVIO
+        }.take(6)
+        for (p in candidates) {
+            val hits = withTimeoutOrNull(12_000) {
+                cancellableCatching { p.search(item.title, 1) }.getOrDefault(emptyList())
+            } ?: continue
+            val match = hits.firstOrNull { TmdbMeta.normalizeTitle(it.title) == want }
+                ?: hits.firstOrNull {
+                    val n = TmdbMeta.normalizeTitle(it.title)
+                    want.length >= 5 && n.startsWith(want)
+                }
+                ?: continue
+            val eps = withTimeoutOrNull(12_000) {
+                cancellableCatching { p.getEpisodes(match) }.getOrNull()
+            } ?: continue
+            if (eps.size >= 2) return eps.sortedWith(compareBy({ it.season }, { it.number }))
+        }
+        return null
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

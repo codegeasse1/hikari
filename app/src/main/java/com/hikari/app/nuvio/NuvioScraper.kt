@@ -14,6 +14,7 @@ import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -257,7 +258,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             val n = s.optInt("season_number")
             if (n > 0 && s.optInt("episode_count") > 0) n else null
         }.take(MAX_SEASONS)
-        val out = mutableListOf<Episode>()
+        val rows = mutableListOf<TmdbEp>()
         for (sn in nums) {
             val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap()) ?: continue
             val eps = sd.optJSONArray("episodes") ?: continue
@@ -265,16 +266,110 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val e = eps.optJSONObject(i) ?: continue
                 val en = e.optInt("episode_number")
                 if (en <= 0) continue
-                out += Episode(
-                    number = en,
-                    id = "S${sn}E$en",
-                    name = e.optString("name").takeIf { it.isNotBlank() },
-                    image = e.tmdbPath("still_path")?.let { IMG + it },
+                rows += TmdbEp(
                     season = sn,
+                    number = en,
+                    name = e.optString("name").takeIf { it.isNotBlank() && it != "null" },
+                    image = e.tmdbPath("still_path")?.let { IMG + it },
+                    air = e.optString("air_date").trim().takeIf { it.length == 10 },
                 )
             }
         }
-        out
+        if (rows.isEmpty()) return@withContext null
+
+        // TMDB lists the WHOLE planned run, not just what has aired: Renegade
+        // Immortal has 200 rows today with only 158 aired, and tapping one of
+        // the future ones can never play because no site has a video for it
+        // yet. Drop them here instead of offering dead rows.
+        val today = isoDay(0)
+        var list = rows.filter { it.air == null || it.air <= today }
+        if (list.isEmpty()) return@withContext null
+
+        // Donghua rescue: TMDB's long-runner coverage stalls on some titles
+        // (Battle Through the Heavens is frozen at its 2018 season). Safe only
+        // for the single continuous season these shows use, where the row
+        // numbers are the absolute episode numbers the sites actually serve.
+        if (nums.size == 1 && nums[0] == 1) {
+            list = mergeBangumi(item, tv, list)
+        }
+
+        list.sortedWith(compareBy({ it.season }, { it.number })).map {
+            Episode(
+                number = it.number,
+                id = "S${it.season}E${it.number}",
+                name = it.name,
+                image = it.image,
+                season = it.season,
+            )
+        }
+    }
+
+    /** One episode row as read from TMDB, plus the air date the released-only
+     *  filter (and the Bangumi merge) work on. */
+    private data class TmdbEp(
+        val season: Int,
+        val number: Int,
+        val name: String?,
+        val image: String?,
+        val air: String?,
+    )
+
+    /** Today, shifted by [offsetDays], as the ISO date TMDB uses for `air_date`. */
+    private fun isoDay(offsetDays: Int): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            .format(java.util.Date(System.currentTimeMillis() + offsetDays * 86_400_000L))
+
+    /**
+     * TMDB is complete for most shows, but its donghua coverage stalls on some
+     * long-runners. Bangumi — the Chinese anime database — tracks those week by
+     * week with the real episode titles, and its numbering concatenates to the
+     * same absolute numbers these providers serve, so the two merge by number
+     * alone: keep TMDB as the base (it owns the stills and the air dates the
+     * sites agree with), borrow a real title wherever TMDB only has
+     * "Episode 128", and append the episodes TMDB is missing entirely.
+     *
+     * Never throws and never shortens the list: any Bangumi problem (no match,
+     * timeout, offline) just returns TMDB's own episodes.
+     */
+    private suspend fun mergeBangumi(
+        item: MediaItem,
+        tv: JSONObject,
+        tmdb: List<TmdbEp>,
+    ): List<TmdbEp> {
+        val original = tv.optString("original_name").trim().takeIf { it.isNotBlank() && it != "null" }
+        val year = tv.optString("first_air_date").take(4).toIntOrNull()
+        val bgm = withTimeoutOrNull(9_000) {
+            runCatching { BangumiMeta.episodes(item.title, original, year) }.getOrNull()
+        } ?: return tmdb
+        if (bgm.isEmpty()) return tmdb
+        val byNumber = bgm.associateBy { it.number }
+        // Bangumi's dates run a day behind TMDB's (it lists the Chinese
+        // broadcast date), so an episode the sites already serve must not be
+        // dropped just because Bangumi still dates it tomorrow.
+        val grace = isoDay(1)
+        val maxTmdb = tmdb.maxOfOrNull { it.number } ?: 0
+        val maxBgm = bgm.filter { it.airDate != null && it.airDate <= grace }
+            .maxOfOrNull { it.number } ?: 0
+
+        var out = tmdb.map { e ->
+            if (!BangumiMeta.isGenericName(e.name)) e
+            else {
+                val real = byNumber[e.number]?.name?.takeIf { it.isNotBlank() }
+                if (real != null) e.copy(name = real) else e
+            }
+        }
+        // TMDB behind (or missing a whole season) → take Bangumi's tail. The
+        // cap keeps a bad match from inventing hundreds of episodes.
+        if (maxBgm > maxTmdb && maxBgm - maxTmdb <= 400) {
+            val have = out.mapTo(HashSet()) { it.number }
+            val extra = (maxTmdb + 1..maxBgm).mapNotNull { n ->
+                if (n in have) return@mapNotNull null
+                val b = byNumber[n] ?: return@mapNotNull null
+                TmdbEp(season = 1, number = n, name = b.name, image = null, air = b.airDate)
+            }
+            if (extra.isNotEmpty()) out = out + extra
+        }
+        return out
     }
 
     /** Reads a TMDB image path, treating JSON null / "" / "null" as absent.

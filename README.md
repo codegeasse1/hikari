@@ -275,3 +275,21 @@ gradle assembleDebug
   placeholder forever. `TmdbMeta.normalizeTitle()` folds case, punctuation and
   numerals before comparing (see `Artwork` for the cache-miss TTL that makes a
   bad match stick for days).
+- **Episode lists: TMDB first, Bangumi to top up, extensions as a last resort.**
+  `NuvioScraper.getEpisodes` drops rows whose `air_date` is in the future
+  (Renegade Immortal lists 200 episodes but only 158 have aired), and when TMDB
+  knows a single season it merges Bangumi (`BangumiMeta.episodes()` —
+  `api.bgm.tv`, no key needed) to fill in real episode titles and append
+  episodes TMDB is missing (Battle Through the Heavens: TMDB stops at 45,
+  Bangumi has 150+). Bangumi numbers episodes absolutely and continuously
+  across seasons, matching TMDB's numbering, but its air dates run a day later,
+  so the merged list allows one day of grace. Search Bangumi with TMDB's
+  `original_name` (native title) — English queries return garbage. If both TMDB
+  and Bangumi come up empty, `ContentRepository.episodesFromExtensions` borrows
+  the episode list from an installed site-scraping extension for the same title.
+- **System back must unwind in-screen sub-views.** The Extensions and Settings
+  screens hold their sub-pages in local state, not nav destinations, so without
+  a `BackHandler` the system back button popped the whole destination and
+  dropped the user on the Home tab from any folder. Both screens now register a
+  `BackHandler` that first walks back one level (repo plugin list → folder →
+  list, settings folder → index), matching the on-screen back arrow.

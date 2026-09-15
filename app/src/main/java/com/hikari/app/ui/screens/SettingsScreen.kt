@@ -2,6 +2,7 @@ package com.hikari.app.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -188,6 +189,10 @@ fun SettingsScreen(nav: NavHostController) {
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
     val installedProviders by app.providers.providers.collectAsState()
     val listState = rememberLazyListState()
+
+    // System back steps out of the open settings folder (Player, Sources…)
+    // instead of popping the whole Settings destination and landing on Home.
+    BackHandler(enabled = openFolder != null) { openFolder = null }
 
     // A folder opens at its own top: without this, opening one from partway
     // down the index would leave the new page scrolled by the old offset.

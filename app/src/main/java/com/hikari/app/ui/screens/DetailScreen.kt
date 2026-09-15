@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
@@ -522,6 +523,47 @@ fun DetailScreen(
     var selectedSeason by rememberSaveable { mutableStateOf<Int?>(null) }
     var seasonExpanded by remember { mutableStateOf(false) }
     var rangeExpanded by remember { mutableStateOf(false) }
+
+    // Related/Similar cells. Tapping a cell opens the title directly instead of
+    // dropping the user on the Search tab with a bare name query (which lists
+    // lookalikes from every extension). The cells come from TMDB, so when the
+    // open extension is TMDB-backed the numeric TMDB id IS a valid id for it
+    // and the page loads straight away; any other extension needs its own id
+    // for the title, so the same lookup its search does runs in the background
+    // and the match is opened — still without the Search tab.
+    var shelfOpening by remember { mutableStateOf<String?>(null) }
+    fun openShelfItem(item: MediaItem) {
+        val origin = providers.firstOrNull { it.config.id == providerId }
+        if (origin == null || origin.config.type == ProviderType.NUVIO) {
+            Routes.safeNavigate(
+                nav,
+                Routes.detail(
+                    providerId, item.type, item.id, item.title, item.posterUrl,
+                    rawType = item.rawType.ifBlank { "tmdb" },
+                ),
+            )
+            return
+        }
+        if (shelfOpening != null) return
+        shelfOpening = item.title
+        scope.launch {
+            val hit = withContext(Dispatchers.IO) {
+                runCatching {
+                    val hits = withTimeoutOrNull(15_000) { origin.search(item.title, 1) }.orEmpty()
+                    hits.firstOrNull { it.type == item.type } ?: hits.firstOrNull()
+                }.getOrNull()
+            }
+            shelfOpening = null
+            if (hit != null) {
+                Routes.safeNavigate(
+                    nav,
+                    Routes.detail(hit.providerId, hit.type, hit.id, hit.title, hit.posterUrl, hit.rawType),
+                )
+            } else {
+                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, item.title))
+            }
+        }
+    }
 
     val sortedEps = remember(episodes) {
         episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
@@ -1284,16 +1326,32 @@ fun DetailScreen(
                 // that actually have artwork, so a miss leaves no empty row.
                 if (related.isNotEmpty()) {
                     item {
-                        ShelfRow("Related", related) {
-                            Routes.safeNavigate(nav, Routes.searchQuery(it.title))
-                        }
+                        ShelfRow(
+                            heading = "Related",
+                            shelf = related,
+                            onClick = { openShelfItem(it) },
+                            onSearchHere = {
+                                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, it.title))
+                            },
+                            onGlobalSearch = {
+                                Routes.safeNavigate(nav, Routes.searchQuery(it.title))
+                            },
+                        )
                     }
                 }
                 if (similar.isNotEmpty()) {
                     item {
-                        ShelfRow("Similar", similar) {
-                            Routes.safeNavigate(nav, Routes.searchQuery(it.title))
-                        }
+                        ShelfRow(
+                            heading = "Similar",
+                            shelf = similar,
+                            onClick = { openShelfItem(it) },
+                            onSearchHere = {
+                                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, it.title))
+                            },
+                            onGlobalSearch = {
+                                Routes.safeNavigate(nav, Routes.searchQuery(it.title))
+                            },
+                        )
                     }
                 }
                 item { Spacer(Modifier.height(24.dp)) }
@@ -1310,6 +1368,29 @@ fun DetailScreen(
             detail = selectedEp?.name?.takeIf { it.isNotBlank() },
             image = (m?.backdropUrl?.takeIf { it.isNotBlank() }) ?: posterUrl
         )
+    }
+
+    // A Related/Similar cell opened inside an extension whose own ids we don't
+    // have: the title lookup runs in the background, so cover the page instead
+    // of leaving the tap looking dead.
+    val opening = shelfOpening
+    if (opening != null) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Text(
+                    "Opening $opening…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 12.dp, start = 24.dp, end = 24.dp)
+                )
+            }
+        }
     }
     }
 
@@ -1723,6 +1804,8 @@ private fun ShelfRow(
     heading: String,
     shelf: List<MediaItem>,
     onClick: (MediaItem) -> Unit,
+    onSearchHere: (MediaItem) -> Unit,
+    onGlobalSearch: (MediaItem) -> Unit,
 ) {
     Column(Modifier.padding(top = 12.dp)) {
         Text(
@@ -1736,24 +1819,78 @@ private fun ShelfRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(shelf, key = { it.uniqueId }) { item ->
-                Column(
-                    Modifier
-                        .width(112.dp)
-                        .clickable { onClick(item) }
-                ) {
+                Column(Modifier.width(112.dp)) {
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .aspectRatio(2f / 3f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
                     ) {
-                        AsyncImage(
-                            model = Artwork.model(item),
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
+                        // Tapping the poster loads the title itself (no trip
+                        // through the Search tab).
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { onClick(item) }
+                        ) {
+                            AsyncImage(
+                                model = Artwork.model(item),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        // The kebab in the corner carries the two ways to
+                        // search instead of open: this extension only, or every
+                        // installed extension. Same pair as the genre pills.
+                        var menuOpen by remember(item.uniqueId) { mutableStateOf(false) }
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp)
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.45f))
+                                    .clickable { menuOpen = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Filled.MoreVert,
+                                    contentDescription = "Search options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = menuOpen,
+                                onDismissRequest = { menuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Search") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Search, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        menuOpen = false
+                                        onSearchHere(item)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Global search") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Public, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        menuOpen = false
+                                        onGlobalSearch(item)
+                                    }
+                                )
+                            }
+                        }
                     }
                     Text(
                         item.title,
