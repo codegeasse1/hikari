@@ -17,6 +17,20 @@ Need help, found a bug, or want to request a feature? Join the **Hikari Telegram
 
 Everyone is welcome — post your questions, bug reports, and feature requests there and I'll help you out.
 
+### Reporting a bug — no screenshot needed
+
+Hikari records its own logs on the device, so a report can carry the real error
+text instead of a photo of the screen:
+
+1. Open **Settings → Logs & diagnostics**.
+2. Tap **Share all** (or Share on the one file you were asked for) and send it
+   along with your message.
+
+Two rolling app logs and one crash log are kept. A crash log holds the full stack
+trace plus the last 300 log lines before the crash, which is usually enough to
+identify the cause without reproducing it. Nothing is uploaded until you tap
+Share or Save, and there is a **Clear all logs** button on the same page.
+
 ## Screenshots
 
 | Home | Extensions | Extension repo |
@@ -260,7 +274,8 @@ Every release's notes live in [`CHANGELOG.md`](CHANGELOG.md) and on the
 ## Build
 
 ```bash
-# CI builds app-debug.apk on every push to main (see .github/workflows/build.yml)
+# CI builds the debug + signed release APKs on every push to main, and can be
+# run manually from the Actions tab for any branch (see .github/workflows/build.yml)
 # locally:
 gradle assembleDebug
 ```

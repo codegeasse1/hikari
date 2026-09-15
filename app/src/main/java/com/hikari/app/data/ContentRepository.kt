@@ -84,7 +84,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *  from when it starts. Comfortably under the player's live-wait timeout so
      *  servers found here still reach a player that is already open and
      *  waiting. */
-    private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(50_000L)
+    /** How long the cross-extension pass may keep working after it starts.
+     *  Extraction is the slow half (a site-specific parse per extension) and
+     *  each target can legitimately take most of its 40s budget, so a short
+     *  ceiling meant the extensions late in the list never got their turn —
+     *  which is how servers from a repo the user KNEW had them (MovieBox,
+     *  4KHDHub's mirrors, …) stayed missing from the list. Results stream to the
+     *  player as they land, so a longer tail costs nothing at play time. */
+    private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(80_000L)
 
     private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
     private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
@@ -97,7 +104,10 @@ class ContentRepository(private val manager: ProviderManager) {
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
     private val CROSS_EXT_SEARCH_CONCURRENCY = 10
-    private val CROSS_EXT_EXTRACT_CONCURRENCY = 6
+    /** How many extensions may extract at the same time. Six was low enough
+     *  that, on a phone with a dozen installed repos, most targets queued behind
+     *  the budget and never ran at all. */
+    private val CROSS_EXT_EXTRACT_CONCURRENCY = 10
     private val CROSS_EXT_SEARCH_SEMAPHORE = Semaphore(CROSS_EXT_SEARCH_CONCURRENCY)
     private val CROSS_EXT_EXTRACT_SEMAPHORE = Semaphore(CROSS_EXT_EXTRACT_CONCURRENCY)
 
@@ -109,6 +119,11 @@ class ContentRepository(private val manager: ProviderManager) {
     /** Minimum title-match score (see [titleScore]) before a search hit is
      *  trusted as "the same title on that extension". */
     private val CROSS_EXT_MIN_MATCH = 40
+
+    /** Score a hit from a shortened title has to reach. A variant only covers
+     *  part of the title, so its token overlap is naturally lower — but it must
+     *  still be clearly the same show, not just any repo entry. */
+    private val CROSS_EXT_MATCH_VARIANT = 55
 
     /** Like runCatching but re-throws CancellationException — a coroutine that
      *  gets cancelled (e.g. the user switches tabs while Home is loading every
@@ -157,7 +172,18 @@ class ContentRepository(private val manager: ProviderManager) {
     ): List<StreamSource> {
         if (list.isEmpty()) return list
         val label = p.config.type.groupLabel
-        return list.map { s -> if (s.provider.isBlank()) s.copy(provider = label) else s }
+        return list.map { s ->
+            // The engine label is only filled in when blank (an origin API
+            // knows its own grouping better than we do). The provider's id and
+            // NAME are always recorded when missing: they are what lets the
+            // player put the provider the user opened this from at the front of
+            // the server list and label its section with the repo's own name.
+            s.copy(
+                provider = s.provider.ifBlank { label },
+                providerId = s.providerId.ifBlank { p.config.id },
+                providerName = s.providerName.ifBlank { p.config.name },
+            )
+        }
     }
 
     /**
@@ -445,10 +471,20 @@ class ContentRepository(private val manager: ProviderManager) {
             // at the parallel engine slots (NUVIO_PRIORITY order).
             val nuvioTargets = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
-                    .sortedBy { p ->
-                        val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
-                        if (idx >= 0) idx else NUVIO_PRIORITY.size
-                    }
+                    .sortedWith(
+                        compareBy(
+                            // The provider the user opened this title from goes
+                            // FIRST: its own servers are the ones they expect at
+                            // the top, and it gets an engine slot before the
+                            // rest of the pool (a Nuvio origin used to be sorted
+                            // purely by the priority list, so it could be last).
+                            { p: ContentProvider -> if (p.config.id == item.providerId) 0 else 1 },
+                            { p: ContentProvider ->
+                                val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
+                                if (idx >= 0) idx else NUVIO_PRIORITY.size
+                            },
+                        )
+                    )
             } else {
                 emptyList()
             }
@@ -461,8 +497,14 @@ class ContentRepository(private val manager: ProviderManager) {
             // The other installed extensions that get their turn on EVERY
             // lookup (see crossExtensionSources). Resolved up front so both the
             // merge loop and the deadline below can use the list.
-            val crossTargets = crossExtensionTargets(item, origin)
-            if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
+        val crossTargets = crossExtensionTargets(item, origin)
+        if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
+
+        com.hikari.app.data.Logs.log(
+            "Search",
+            "start \"${item.title}\" (${item.type}) origin=${origin?.config?.name ?: "?"} " +
+                "primary=${targets.size} nuvio=${nuvioTargets.size} cross=${crossTargets.size}",
+        )
 
             // Fresh diagnostic state for this lookup.
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
@@ -592,6 +634,12 @@ class ContentRepository(private val manager: ProviderManager) {
                 finalResult = ytdlpUniversalFallback(item, episode)
                     .filterNot { isGarbageUrl(it.url) }
             }
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "done \"${item.title}\" → ${finalResult.size} servers " +
+                    finalResult.groupingBy { it.providerName.ifBlank { it.provider.ifBlank { "?" } } }
+                        .eachCount(),
+            )
             finalResult
         }
 
@@ -661,19 +709,18 @@ class ContentRepository(private val manager: ProviderManager) {
     ): List<StreamSource> {
         val title = item.title.trim()
         if (title.isBlank()) return emptyList()
-        // Search/meta/episodes are the cheap half — the wider semaphore lets
-        // every installed extension be searched at once. Only extraction (the
-        // slow, site-specific half) is throttled down below.
-        val found = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
-            withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
-                cancellableCatching { p.search(title, 1) }.getOrDefault(emptyList())
-            }.orEmpty()
+        var best = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
+        if (best == null) {
+            // Repos name titles their own way ("Foo: Bar Baz", "Foo - Season 2"),
+            // and searching the full string can come back empty even though the
+            // repo DOES carry the show. One retry with the shortest meaningful
+            // segment rescues those, instead of reporting "this repo has
+            // nothing" and leaving the user without its servers.
+            val variant = titleVariant(title)
+            if (variant != null && !variant.equals(title, ignoreCase = true)) {
+                best = searchBestMatch(p, variant, item, CROSS_EXT_MATCH_VARIANT)
+            }
         }
-        val best = found
-            .map { it to titleScore(title, item.year, it) }
-            .filter { it.second >= CROSS_EXT_MIN_MATCH }
-            .maxByOrNull { it.second }
-            ?.first
         if (best == null) {
             recordStreamMessage(p, "Searched \"$title\" — no matching title in this repo.")
             return emptyList()
@@ -719,6 +766,44 @@ class ContentRepository(private val manager: ProviderManager) {
             },
             p,
         )
+    }
+
+    /**
+     * Searches one extension and returns its best matching entry, or null when
+     * nothing clears [minMatch]. Searches are the cheap half of the
+     * cross-extension pass — the wider semaphore lets every installed extension
+     * be searched at once; only extraction is throttled down.
+     */
+    private suspend fun searchBestMatch(
+        p: ContentProvider,
+        query: String,
+        item: MediaItem,
+        minMatch: Int,
+    ): MediaItem? = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
+        withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
+            cancellableCatching { p.search(query, 1) }.getOrDefault(emptyList())
+        }.orEmpty()
+    }
+        // Scored against the REAL title, never against the shortened query, so
+        // a variant can only ever confirm a genuine match.
+        .map { it to titleScore(item.title, item.year, it) }
+        .filter { it.second >= minMatch }
+        .maxByOrNull { it.second }
+        ?.first
+
+    /**
+     * A shorter, still-specific search phrase for a title that carries a
+     * separator: "Foo: Bar Baz (2023)" → "Foo". Null when there is nothing to
+     * shorten (the retry then never fires).
+     */
+    private fun titleVariant(title: String): String? {
+        val cleaned = title
+            .replace(Regex("\\[[^\\]]*]"), " ")
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .trim()
+        return cleaned.split(Regex("[:\\-–—]"))
+            .map { it.trim() }
+            .firstOrNull { it.length in 3 until cleaned.length }
     }
 
     /** How well a search hit matches the title we're looking for, so the
@@ -816,6 +901,14 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
         }
         if (message == null) map.remove(id) else map[id] = message
+        // Mirrored into the on-device log: a "why were this repo's servers
+        // missing?" report can then be answered from the shared log file
+        // instead of guessed at (see Logs / Settings → Logs & diagnostics).
+        com.hikari.app.data.Logs.log(
+            "Provider",
+            "${origin.config.name} [${origin.config.type}]: " +
+                (message ?: "servers found"),
+        )
     }
 
     /** Bounded LRU caches so revisiting a detail page (back from the player,

@@ -46,6 +46,7 @@ class AppStore(private val ctx: Context) {
         val THEME_LINKED = booleanPreferencesKey("themeLinked")
         val PLAYER_CONTROLS = stringPreferencesKey("playerControls")
         val PLAYER_ENHANCE = stringPreferencesKey("playerEnhance")
+        val PLAYER_ENHANCE_UNSUPPORTED = booleanPreferencesKey("playerEnhanceUnsupported")
         val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         val HISTORY = stringPreferencesKey("history")
@@ -336,6 +337,21 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setEnhancePreset(key: String) {
         store.edit { it[K.PLAYER_ENHANCE] = key }
+    }
+
+    /**
+     * True once a device has proven it cannot run media3's video-effects
+     * pipeline (its GL stack refuses the frame processor). Remembered so the
+     * player stops arming the pipeline — arming it on such a device would fail
+     * EVERY play, not just the one where the user first picked a preset.
+     */
+    fun enhanceUnsupportedFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_ENHANCE_UNSUPPORTED] ?: false }
+
+    suspend fun enhanceUnsupported(): Boolean = enhanceUnsupportedFlow().first()
+
+    suspend fun setEnhanceUnsupported(value: Boolean) {
+        store.edit { it[K.PLAYER_ENHANCE_UNSUPPORTED] = value }
     }
 
     // ---- In-app UI scale ----

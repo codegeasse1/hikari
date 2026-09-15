@@ -1,3 +1,77 @@
+## 0.3.70
+
+Bug reports without screenshots, plus fixes for the "it found no sources", "the
+first play is slow" and "Provider not found" reports.
+
+### Logs you can share — Settings → Logs & diagnostics
+
+- Hikari now keeps its own logs on the device: **two rolling app logs**
+  (`app.log`, and `app.previous.log` once the first rolls over at 512 KB) and
+  **one crash log** — the most recent uncaught exception with its full stack
+  trace and the last 300 log lines leading up to it.
+- **Settings → Logs & diagnostics** lists all three, each with **Share** and
+  **Save to Downloads**, plus **Share all** / **Save all** to hand over
+  everything at once. The share sheet carries the real text files, so a report no
+  longer needs a photo of the screen.
+- The "The app crashed on a previous launch" banner gained a **Share log**
+  button next to Dismiss.
+- Logs never leave the device by themselves; the page also has **Clear all
+  logs**.
+
+### "Provider not found"
+
+- A detail page opened from History/Library/Home could dead-end on "Provider not
+  found". Extension ids are **not stable** — a CloudStream plugin that
+  re-registers its providers reindexes their ids, and some ids are derived from a
+  file name. Hikari now looks the same title up again (your History first, then
+  the installed providers, same engine first) and carries on, instead of
+  refusing to open a title that plays fine.
+- Everything that records state per provider (Library, "the server you used
+  last", search-in-provider) now uses the provider the page actually ended up
+  on, so the rescue sticks.
+
+### Faster second play — no more "Finding the best server…"
+
+- The extracted server list is now cached for the whole app instead of for each
+  screen. Backing out of the player and reopening the same title used to re-run
+  the entire multi-provider search; now it is instant. A Play tap made while the
+  page is still searching **joins** that search instead of starting a second one.
+- Provider links are signed and expire, so a stale list is never used for
+  instant play: it is shown while the fresh one is fetched, so playback can never
+  start on a dead link.
+- **Select server** now shows your provider's own servers as their own section at
+  the top, then every engine that found something.
+
+### More servers found
+
+- The cross-extension pass now runs 10 extractions in parallel (was 6) with an
+  80 s ceiling (was 50 s), so extensions further down the list really do get
+  searched.
+- If the full title finds no match, the search retries with a shortened title
+  ("Foo: Bar (2023)" → "Foo").
+- Every provider's outcome is written to the log, so "this extension returned
+  nothing" can be read from a shared log instead of guessed at.
+
+### Video enhance actually applies now
+
+- The GPU colour grade is installed **before** the video is prepared. Media3 only
+  creates the video pipeline when an effect list is already present — setting a
+  preset after playback began was silently ignored, which is why Enhance looked
+  like it did nothing.
+- On devices whose video pipeline cannot be built at all, Hikari now turns the
+  feature off and says so, instead of leaving playback on a black screen.
+
+### Player controls
+
+- The preview schematic can be switched between **Words** and **Icons**, so you
+  can see the actual glyphs the player shows, and every control's row now shows
+  its icon.
+
+### Fixes
+
+- The player's glass menu panels (Servers, Options, …) no longer jitter or twitch
+  while scrolling on Android 12+.
+
 ## 0.3.69
 
 Customisation, and a crash fix.

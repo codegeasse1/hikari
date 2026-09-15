@@ -110,6 +110,20 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private var passes = 0
 
+    /** Set while [onLayout] is running. A bend may not ask for another layout
+     *  pass from inside the pass that is already in flight — that is what turned
+     *  a scroll (or an overscroll bounce) into a visible shudder. */
+    private var inLayout = false
+
+    /** Coalesces the many scroll notifications of a single frame into one bend. */
+    private var rebendPosted = false
+
+    private val rebendRunnable = Runnable {
+        rebendPosted = false
+        passes = 0
+        bendRows()
+    }
+
     init {
         orientation = VERTICAL
         // A ViewGroup skips onDraw entirely unless it is told not to — without
@@ -217,7 +231,13 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
-        super.onLayout(changed, l, t, r, b)
+        inLayout = true
+        try {
+            super.onLayout(changed, l, t, r, b)
+        } finally {
+            inLayout = false
+        }
+        passes = 0
         bendRows()
     }
 
@@ -226,10 +246,16 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      * in practice a scroll, which changes the height inside the panel that each
      * row sits at, and therefore which part of the curve it has to clear. The
      * pass cap is reset so a long scroll can never exhaust it.
+     *
+     * Calls are coalesced onto the next frame's animation phase: a scroll emits
+     * a change event per pixel, and bending on each of them re-laid out the
+     * whole panel several times per frame. The animation phase runs before that
+     * frame's traversal, so the fresh margins are applied by the same frame.
      */
     fun rebend() {
-        passes = 0
-        bendRows()
+        if (rebendPosted || !isAttachedToWindow) return
+        rebendPosted = true
+        postOnAnimation(rebendRunnable)
     }
 
     /**
@@ -249,10 +275,13 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         // One extra pass to adopt the new margins; the pass after that finds
         // nothing left to change. The cap is belt-and-braces against a view
         // whose own layout keeps moving underneath us (a scrolling list).
-        if (shifted && passes < PASS_LIMIT) {
-            passes++
-            requestLayout()
-        }
+        if (!shifted || passes >= PASS_LIMIT) return
+        // Inside a layout pass the margins are picked up by the traversal that
+        // is already scheduled, so scheduling another one from here would fight
+        // it (and, mid-scroll, never settle).
+        if (inLayout) return
+        passes++
+        if (isAttachedToWindow) postOnAnimation { bendRows() } else requestLayout()
     }
 
     /** Bends the visible children of one row container. Returns true if any of

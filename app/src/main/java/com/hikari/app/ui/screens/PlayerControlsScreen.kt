@@ -44,9 +44,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hikari.app.HikariApp
+import com.hikari.app.R
 import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
@@ -75,6 +77,10 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     val json by jsonFlow.collectAsState(initial = "")
     var layout by remember { mutableStateOf(PlayerControlsConfig.defaults()) }
     var moveMenuFor by remember { mutableStateOf<PlayerControl?>(null) }
+    // Preview style: the player shows buttons as ICONS (most of them have no
+    // text), so the schematic can be read either as the button names or — the
+    // truer picture — as the actual glyphs the user will see.
+    var iconsPreview by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(json) { layout = PlayerControlsConfig.decode(json) }
@@ -159,13 +165,17 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
         item {
             GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Column(Modifier.padding(14.dp)) {
-                    Text(
-                        "Preview",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Preview",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        PreviewStyleToggle(icons = iconsPreview) { iconsPreview = it }
+                    }
                     Spacer(Modifier.height(8.dp))
-                    OverlaySketch(layout)
+                    OverlaySketch(layout, icons = iconsPreview)
                 }
             }
         }
@@ -210,6 +220,21 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Modifier.fillMaxWidth().padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            Box(
+                                Modifier
+                                    .size(32.dp)
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    painterResource(controlIcon(control)),
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(17.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(11.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     control.label,
@@ -296,7 +321,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>) {
+private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>, icons: Boolean) {
     val accent = MaterialTheme.colorScheme.primary
 
     fun inSlot(slot: PlayerControlSlot): List<PlayerControl> =
@@ -322,7 +347,7 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>) {
             )
             Spacer(Modifier.width(6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                inSlot(PlayerControlSlot.TOP_BAR).forEach { SketchChip(it.label, accent) }
+                inSlot(PlayerControlSlot.TOP_BAR).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
             }
         }
 
@@ -367,7 +392,7 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>) {
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    inSlot(PlayerControlSlot.BOTTOM_LEFT).forEach { SketchChip(it.label, accent) }
+                    inSlot(PlayerControlSlot.BOTTOM_LEFT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
                 }
             }
             Spacer(Modifier.width(6.dp))
@@ -375,7 +400,7 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>) {
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                inSlot(PlayerControlSlot.BOTTOM_RIGHT).forEach { SketchChip(it.label, accent) }
+                inSlot(PlayerControlSlot.BOTTOM_RIGHT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
             }
         }
 
@@ -392,18 +417,85 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>) {
 }
 
 @Composable
-private fun SketchChip(label: String, accent: Color) {
+private fun SketchChip(label: String, accent: Color, iconRes: Int? = null) {
     Box(
         Modifier
             .clip(RoundedCornerShape(5.dp))
             .background(accent.copy(alpha = 0.18f))
-            .padding(horizontal = 5.dp, vertical = 3.dp)
+            .padding(
+                horizontal = if (iconRes != null) 4.dp else 5.dp,
+                vertical = if (iconRes != null) 4.dp else 3.dp,
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFFEDF0F9),
-        )
+        if (iconRes != null) {
+            Icon(
+                painterResource(iconRes),
+                contentDescription = label,
+                tint = Color(0xFFEDF0F9),
+                modifier = Modifier.size(12.dp),
+            )
+        } else {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFEDF0F9),
+            )
+        }
+    }
+}
+
+/** The real glyph the player draws for [control], so the preview (and the rows)
+ *  match what a user sees in the overlay. */
+private fun controlIcon(control: PlayerControl): Int = when (control) {
+    PlayerControl.FAVORITE -> R.drawable.ic_heart
+    PlayerControl.DOWNLOAD -> R.drawable.ic_download
+    PlayerControl.PIP -> R.drawable.ic_pip
+    PlayerControl.OPTIONS -> R.drawable.ic_settings
+    PlayerControl.LOCK -> R.drawable.ic_lock
+    PlayerControl.SPEED -> R.drawable.ic_speed
+    PlayerControl.EPISODES -> R.drawable.ic_episodes
+    PlayerControl.SOURCES -> R.drawable.ic_server
+    PlayerControl.QUALITY -> R.drawable.ic_quality
+    PlayerControl.AUDIO -> R.drawable.ic_audio
+    PlayerControl.SUBS -> R.drawable.ic_subtitles
+    PlayerControl.ROTATE -> R.drawable.ic_rotate
+    PlayerControl.SKIP -> R.drawable.ic_skip
+    PlayerControl.RESIZE -> R.drawable.ic_resize
+    PlayerControl.ENHANCE -> R.drawable.ic_enhance
+}
+
+/** Words | Icons switch for the preview card. */
+@Composable
+private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf("Words" to false, "Icons" to true).forEach { (label, wantsIcons) ->
+            val selected = icons == wantsIcons
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                        else Color.Transparent
+                    )
+                    .clickable { onChange(wantsIcons) }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import coil.Coil
 import coil.ImageLoader
 import com.hikari.app.data.AppStore
 import com.hikari.app.data.Cs3Repo
+import com.hikari.app.data.Logs
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
@@ -111,6 +112,10 @@ class HikariApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Diagnostics first: everything after this point is logged, and the
+        // crash handler below needs the log directory to already exist.
+        Logs.init(this)
+        Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
         initCloudStream(this)
         store = AppStore(this)
@@ -183,6 +188,7 @@ class HikariApp : Application() {
                 com.hikari.app.nuvio.NuvioPluginManager.applyPatchesToInstalled(this@HikariApp)
             }
             providers.refresh()
+            Logs.log("Providers", "refreshed: ${providers.providers.value.size} installed")
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
@@ -192,11 +198,13 @@ class HikariApp : Application() {
             // rebuild the stored configs to match and refresh if anything moved.
             runCatching {
                 if (com.hikari.app.cs3.Cs3ProviderSync.reconcile(this@HikariApp, store)) {
+                    Logs.log("Providers", "CS3 sync changed the provider list — refreshing")
                     providers.refresh()
                 }
             }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
+            Logs.log("App", "startup complete (${providers.providers.value.size} providers)")
         }
     }
 
@@ -207,16 +215,19 @@ class HikariApp : Application() {
      */
     private fun installCrashHandler() {
         runCatching {
-            val file = File(cacheDir, "crash.log")
-            if (file.exists()) lastCrash = file.readText().take(1600)
+            val text = Logs.crashText(this)
+                ?: File(cacheDir, "crash.log").takeIf { it.exists() }?.readText()
+            if (!text.isNullOrBlank()) lastCrash = text.take(1600)
         }
         Thread.setDefaultUncaughtExceptionHandler { thread, t ->
-            runCatching {
-                val trace = "${t.javaClass.simpleName}: ${t.message}\n" +
+            // The full report (with breadcrumbs) goes to filesDir/logs/crash.log
+            // so Settings → Logs can share it; the banner only needs a preview.
+            val trace = runCatching { Logs.recordCrash(thread.name, t) }.getOrElse {
+                "${t.javaClass.simpleName}: ${t.message}\n" +
                     t.stackTrace.take(12).joinToString("\n") { "    at $it" }
-                File(cacheDir, "crash.log").writeText(trace)
-                lastCrash = trace
             }
+            lastCrash = trace.take(1600)
+            runCatching { File(cacheDir, "crash.log").writeText(trace) }
             android.util.Log.e("HikariCrash", "Uncaught on ${thread.name}", t)
             // NEVER leave a dead main thread running: that is what turns the
             // screen into a frozen black UI (no back button, nothing responds,
@@ -254,6 +265,7 @@ class HikariApp : Application() {
     fun clearCrash() {
         lastCrash = null
         runCatching { File(cacheDir, "crash.log").delete() }
+        runCatching { Logs.clearCrash(this) }
     }
 
     /**

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
@@ -153,6 +154,12 @@ private enum class SettingsFolder(
         "What the built-in browser is allowed to do.",
         Icons.Filled.Shield,
     ),
+    LOGS(
+        "Logs & Diagnostics",
+        "App logs & crash reports",
+        "Share what the app recorded, so a bug needs no screenshot.",
+        Icons.Filled.BugReport,
+    ),
     ABOUT(
         "About & Updates",
         "Version, links, roadmap & reset",
@@ -188,6 +195,7 @@ fun SettingsScreen(nav: NavHostController) {
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
     var showPlayerControls by remember { mutableStateOf(false) }
+    var showLogs by remember { mutableStateOf(false) }
 
     // Accent colours: the app accent repaints this whole screen live; the
     // player accent (and the "match app & player" switch) decide what the
@@ -215,6 +223,13 @@ fun SettingsScreen(nav: NavHostController) {
     // four-way placement each does not fit in one card).
     if (showPlayerControls) {
         PlayerControlsPage(app, onBack = { showPlayerControls = false })
+        return
+    }
+
+    // The logs page is its own full screen too: three files, each with two
+    // actions, plus the share-all row.
+    if (showLogs) {
+        LogsPage(app, onBack = { showLogs = false })
         return
     }
 
@@ -336,6 +351,48 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
+                }
+                SettingsFolder.LOGS -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            Column {
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.BugReport,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("App logs & crash reports") },
+                                    supportingContent = {
+                                        Text(
+                                            "Two rolling app logs and the last crash " +
+                                                "log. Share them directly instead of " +
+                                                "sending screenshots."
+                                        )
+                                    },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable { showLogs = true }
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        Text(
+                            "Logs stay on this device and are only sent when you " +
+                                "tap Share or Save on the logs page.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp, start = 4.dp),
+                        )
+                    }
                 }
                 SettingsFolder.ABOUT -> {
                     item {

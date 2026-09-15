@@ -145,6 +145,12 @@ class PlayerActivity : ComponentActivity() {
         /** Which engine found this server ("CloudStream", "Hikari", "Nuvio",
          *  "Stremio") — the section it is listed under in the server chooser. */
         val provider: String = "",
+        /** The installed provider that produced this server (`cs3|…`, `nuvio|…`).
+         *  Lets the chooser give the provider the user opened the title from its
+         *  own section, ahead of the engine sections. */
+        val providerId: String = "",
+        /** That provider's display name (the repo plugin's name). */
+        val providerName: String = "",
     )
 
     private var player: ExoPlayer? = null
@@ -187,6 +193,14 @@ class PlayerActivity : ComponentActivity() {
      *  attached detail screen to re-run the providers with fresh, freshly-
      *  signed links (see [refreshSources]) instead of replaying a dead one. */
     private var liveSessionId: String? = null
+
+    /** The provider the user opened this title FROM (the detail screen passes
+     *  it as `histProviderId`) and its display name. Its own servers are listed
+     *  in their own section ahead of the engine sections and are the ones
+     *  playback starts on — "if I am on MovieBox, play MovieBox's server
+     *  first". Both blank when the player was opened without that context. */
+    private var originProviderId: String = ""
+    private var originProviderName: String = ""
 
     /** Every URL this player has already tried this session. A re-extraction
      *  usually returns the same links (same mirror) plus a few new ones, so
@@ -241,6 +255,8 @@ class PlayerActivity : ComponentActivity() {
         trackers,
         drm = drm,
         provider = provider,
+        providerId = providerId,
+        providerName = providerName,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -259,6 +275,8 @@ class PlayerActivity : ComponentActivity() {
         trackers,
         drm = drm,
         provider = provider,
+        providerId = providerId,
+        providerName = providerName,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -756,6 +774,12 @@ class PlayerActivity : ComponentActivity() {
                 runCatching { (applicationContext as HikariApp).store.enhancePreset() }
                     .getOrNull()
             ).key
+            // A device that once refused the effects pipeline is remembered, so
+            // the player never arms it again (arming on such a device failed
+            // every play, not just the one where a preset was picked).
+            enhanceUnsupported = runCatching {
+                (applicationContext as HikariApp).store.enhanceUnsupported()
+            }.getOrDefault(false)
             applyVideoEnhance(force = true)
         }
 
@@ -877,6 +901,10 @@ class PlayerActivity : ComponentActivity() {
         // Watch-history context (set by the detail screen). When present, the
         // player periodically persists resume position into the app store.
         val histProvider = intent.getStringExtra("histProviderId")
+        originProviderId = histProvider.orEmpty()
+        originProviderName = runCatching {
+            (applicationContext as HikariApp).providers.byId(originProviderId)?.config?.name
+        }.getOrNull().orEmpty()
         if (!histProvider.isNullOrBlank()) {
             historyEntry = HistoryEntry(
                 providerId = histProvider,
@@ -972,6 +1000,8 @@ class PlayerActivity : ComponentActivity() {
                     drm = parseDrmSpec(o.optJSONObject("drm")),
                     local = o.optBoolean("local"),
                     provider = o.optString("provider"),
+                    providerId = o.optString("providerId"),
+                    providerName = o.optString("providerName"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -980,9 +1010,22 @@ class PlayerActivity : ComponentActivity() {
             // so keying on url alone would collapse every torrent source into a
             // single row.
             .distinctBy { it.infoHash ?: it.url }
+            // The provider the user opened this title from goes to the FRONT, so
+            // the server playback starts on (and the top of "Select server") is
+            // one it actually came from — "on MovieBox, play MovieBox". Stable
+            // sort, so every other engine keeps the order the repo sent.
+            .sortedBy { if (it.isFromOrigin()) 0 else 1 }
 
         val liveId = intent.getStringExtra("streamsLiveId")
         liveSessionId = liveId
+        // One line per playback in the on-device log: which title, from which
+        // provider, with how many servers — the starting point of every "why
+        // didn't it play / why was this server missing" report.
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "open \"${intent.getStringExtra("title")}\" origin=" +
+                "$originProviderName ($originProviderId) sources=${sources.size} live=${!liveId.isNullOrBlank()}",
+        )
         // The detail screen now opens the player the instant Play is tapped,
         // BEFORE any server is found, and streams servers to us over
         // [StreamsLive]. An empty list plus a live session id therefore means
@@ -1767,6 +1810,16 @@ class PlayerActivity : ComponentActivity() {
     private var enhanceUnsupported = false
 
     /**
+     * True when THIS player instance's video renderer was enabled with an
+     * effects pipeline attached. media3 can only attach one while the renderer
+     * is being enabled (it builds the video sink from the effect list present at
+     * that instant — see MediaCodecVideoRenderer.onEnabled), so this flag says
+     * whether a preset can be applied live or needs the source re-opened.
+     * Reset for every new player instance in [playDirectInner].
+     */
+    private var videoSinkArmed = false
+
+    /**
      * Hands the chosen preset to media3's video-effects pipeline. Idempotent:
      * it only talks to the player when the preset or the video's HDR-ness really
      * changed, so it is safe to call from onTracksChanged.
@@ -1783,9 +1836,13 @@ class PlayerActivity : ComponentActivity() {
         if (!force && preset.key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
         appliedEnhanceKey = preset.key
         appliedEnhanceHdr = hdr
+        // Nothing to apply and no pipeline to apply it to: skip the call
+        // entirely, so Natural can never drag an unused GL pass into playback.
+        if (preset == EnhancePreset.NATURAL && !videoSinkArmed) return
         runCatching { p.setVideoEffects(preset.effects(hdr)) }
             .onFailure {
                 enhanceUnsupported = true
+                com.hikari.app.data.Logs.logError("Player", "video effects unavailable", it)
                 android.util.Log.w("HikariPlayer", "video effects unavailable", it)
             }
     }
@@ -1811,6 +1868,39 @@ class PlayerActivity : ComponentActivity() {
 
     private fun setEnhancePreset(preset: EnhancePreset) {
         enhancePresetKey = preset.key
+        val needsPipeline = preset != EnhancePreset.NATURAL
+        val p = player
+        if (needsPipeline && !enhanceUnsupported && !videoSinkArmed &&
+            p != null && currentIndex in sources.indices
+        ) {
+            // The player was opened on Natural, so media3 never created the
+            // effects pipeline — and a running renderer cannot be given one
+            // later (the factory is only consulted while it is being enabled).
+            // Re-open the SAME source with the pipeline armed, keeping the
+            // position in the film, so the preset actually reaches the screen.
+            val position = p.currentPosition
+            if (position > 2_000L) {
+                startPositionMs = position
+                seekPending = true
+            }
+            // Let onTracksChanged re-apply the exact SDR/HDR effect list once
+            // the new player knows the tracks.
+            appliedEnhanceKey = null
+            appliedEnhanceHdr = null
+            noSubsRetry = false
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "arming video effects pipeline for ${preset.key} (reopening current source)"
+            )
+            Toast.makeText(this, "Applying ${preset.label}…", Toast.LENGTH_SHORT).show()
+            playSource(currentIndex)
+            lifecycleScope.launch {
+                runCatching {
+                    (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+                }
+            }
+            return
+        }
         applyVideoEnhance(force = true)
         if (enhanceUnsupported && preset != EnhancePreset.NATURAL) {
             Toast.makeText(
@@ -1818,6 +1908,8 @@ class PlayerActivity : ComponentActivity() {
                 "This device can't apply video effects — the preset was skipped.",
                 Toast.LENGTH_SHORT
             ).show()
+        } else if (needsPipeline) {
+            Toast.makeText(this, "${preset.label} applied", Toast.LENGTH_SHORT).show()
         }
         lifecycleScope.launch {
             runCatching {
@@ -1841,8 +1933,13 @@ class PlayerActivity : ComponentActivity() {
                     selected = p == current,
                 )
             },
-            hint = "Realtime colour grading of the video itself. " +
-                "Natural applies nothing at all.",
+            hint = if (enhanceUnsupported) {
+                "Not available on this device — its video pipeline refused " +
+                    "media3's effects engine, so Natural is used instead."
+            } else {
+                "Realtime colour grading of the video itself. " +
+                    "Natural applies nothing at all."
+            },
             iconRes = R.drawable.ic_enhance,
         ) { which ->
             val picked = presets.getOrNull(which) ?: return@showGlassMenu
@@ -2338,6 +2435,14 @@ class PlayerActivity : ComponentActivity() {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            // Android 12's "stretch" overscroll effect scales and translates
+            // the content while the user keeps dragging past the end. The rows
+            // are bent to the panel's curve from their measured positions, so a
+            // stretch changes those positions on every frame and the bend keeps
+            // chasing them — which is the up/down shudder at the end of a list.
+            // The glass panel already has its own edge light; the platform's
+            // stretch adds nothing but the jitter.
+            overScrollMode = View.OVER_SCROLL_NEVER
         }
 
         val panel = CurvedGlassPanel(this).apply {
@@ -2649,6 +2754,33 @@ class PlayerActivity : ComponentActivity() {
         return prefix.takeIf { it.isNotBlank() && prefix.length < src.name.length } ?: "Other"
     }
 
+    /**
+     * True when this server came from the provider the user opened the title
+     * from — matched by provider id first, then by the provider's display name
+     * (also as the "Provider · Server" prefix a cross-extension server carries).
+     */
+    private fun PlayerSource.isFromOrigin(): Boolean {
+        if (originProviderId.isNotBlank() && providerId == originProviderId) return true
+        if (originProviderName.isNotBlank() && providerName.equals(originProviderName, true)) return true
+        if (originProviderName.isNotBlank()) {
+            val prefix = name.substringBefore(" \u00B7 ").trim()
+            if (prefix.equals(originProviderName, ignoreCase = true)) return true
+        }
+        return false
+    }
+
+    /** Heading for the origin provider's own section — blank when there is no
+     *  origin context (the chooser then just shows the engine sections). */
+    private val originLabel: String
+        get() {
+            if (originProviderName.isNotBlank()) return originProviderName
+            if (originProviderId.isNotBlank()) {
+                return sources.firstOrNull { it.providerId == originProviderId }
+                    ?.providerName.orEmpty()
+            }
+            return ""
+        }
+
     /** One server's row — the same capsule the flat picker used. */
     private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
         label = source.name,
@@ -2690,6 +2822,26 @@ class PlayerActivity : ComponentActivity() {
             val have = sources.map { serverGroup(it) }.toSet()
             return serverGroupOrder.filter { it in have } +
                 have.filter { it !in serverGroupOrder }.sorted()
+        }
+
+        /**
+         * The list's sections as (heading, source indices): the provider the
+         * user opened the title from FIRST (its own servers are the ones they
+         * expect — "on MovieBox, play MovieBox"), then each engine that found
+         * something. A server only ever appears in one section, so the counts
+         * add up to the number of servers on screen.
+         */
+        fun sections(): List<Pair<String, List<Int>>> {
+            val out = ArrayList<Pair<String, List<Int>>>()
+            val origin = sources.indices.filter { sources[it].isFromOrigin() }
+            if (origin.isNotEmpty() && originLabel.isNotBlank()) out.add(originLabel to origin)
+            for (name in groups()) {
+                val idx = sources.indices.filter {
+                    !sources[it].isFromOrigin() && serverGroup(sources[it]) == name
+                }
+                if (idx.isNotEmpty()) out.add(name to idx)
+            }
+            return out
         }
 
         val chipRow = LinearLayout(this).apply {
@@ -2786,10 +2938,10 @@ class PlayerActivity : ComponentActivity() {
             // only the headers and rows — removeAllViews would take the chips
             // with them and leave an empty strip behind.
             while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
-            val all = groups()
-            val visible = if (chip == "All") all else all.filter { it == chip }
-            visible.forEach { name ->
-                val members = sources.withIndex().filter { serverGroup(it.value) == name }
+            val all = sections()
+            val visible = if (chip == "All") all else all.filter { it.first == chip }
+            visible.forEach { (name, memberIdx) ->
+                val members = memberIdx.map { sources[it] }
                 // The header names the engine and counts its servers; it is
                 // skipped for a single-chip view (the chip already says it).
                 if (chip == "All") {
@@ -2813,7 +2965,8 @@ class PlayerActivity : ComponentActivity() {
                         )
                     })
                 }
-                members.forEach { (i, src) ->
+                memberIdx.forEach { i ->
+                    val src = sources[i]
                     addOptionRow(list, serverOption(src, i)) {
                         dialog.dismiss()
                         if (i != currentIndex) {
@@ -2827,7 +2980,7 @@ class PlayerActivity : ComponentActivity() {
 
         fun rebuildChips() {
             chipRow.removeAllViews()
-            (listOf("All") + groups()).forEach { name ->
+            (listOf("All") + sections().map { it.first }).forEach { name ->
                 // The pill carries its own measured LayoutParams (see chipPill),
                 // so it is added bare — it can neither collapse nor be squeezed.
                 chipRow.addView(
@@ -2870,7 +3023,7 @@ class PlayerActivity : ComponentActivity() {
             "Select server",
             list,
             700f,
-            hint = "Grouped by the engine that found each server.",
+            hint = "Your provider first, then every engine that found a server.",
             iconRes = R.drawable.ic_server,
             rowHosts = listOf(list),
         )
@@ -3867,6 +4020,9 @@ class PlayerActivity : ComponentActivity() {
         firstFrameTask = null
         renderedFirstFrame = false
         firstFrameRetried = false
+        // A brand-new player instance means a brand-new video renderer, which
+        // starts with no effects pipeline attached (see [videoSinkArmed]).
+        videoSinkArmed = false
 
         // Send the SOURCE's own User-Agent when it declares one (extractors like
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
@@ -3970,6 +4126,36 @@ class PlayerActivity : ComponentActivity() {
         val mime = mainMimeOf(src)
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
+
+        // ---- Video enhance: arm the effects pipeline BEFORE prepare() -------
+        // media3 only builds the video-effects pipeline while the video renderer
+        // is being ENABLED, from the effect list present at that instant
+        // (MediaCodecVideoRenderer.onEnabled); a setVideoEffects() call made
+        // afterwards is silently dropped when the renderer was enabled without
+        // one. prepare() is what enables it, so a preset that should be in
+        // effect from the very first frame has to be handed over right here —
+        // this is exactly why the presets used to do nothing at all.
+        //
+        // Natural deliberately arms NOTHING: media3 then copies every decoded
+        // frame straight to the surface, with no GL pass. The HDR-safe variant
+        // of the preset is handed over because the stream's colour transfer is
+        // not known until prepare() has run; onTracksChanged refines it to the
+        // exact SDR/HDR effect list a moment later.
+        val armPreset = EnhancePreset.fromKey(enhancePresetKey)
+        if (armPreset != EnhancePreset.NATURAL && !enhanceUnsupported) {
+            runCatching {
+                player.setVideoEffects(armPreset.effects(hdr = true))
+                videoSinkArmed = true
+            }.onFailure {
+                videoSinkArmed = false
+                com.hikari.app.data.Logs.logError(
+                    "Player",
+                    "could not arm the video effects pipeline",
+                    it
+                )
+                android.util.Log.w("HikariPlayer", "could not arm video effects", it)
+            }
+        }
 
         player.setMediaItem(itemBuilder.build())
         player.prepare()
@@ -4427,6 +4613,11 @@ class PlayerActivity : ComponentActivity() {
             // variant that got us here, so the next replay of this video jumps
             // straight onto it (no re-probe, no header trial-and-error).
             sources.getOrNull(currentIndex)?.let { rememberPlayedSource(currentIndex, it) }
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "playing ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
+                    "(server ${currentIndex + 1}/${sources.size})",
+            )
             maybeOfferResume()
         }
 
@@ -4488,11 +4679,56 @@ class PlayerActivity : ComponentActivity() {
                     append("\nURL: ").append(sources[currentIndex].url)
                 }
             }
+            // Every playback error is recorded with the server it came from, so
+            // a "the play button spins and then it fails / goes black" report is
+            // a readable line in the shared log instead of a guess.
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "playback error on ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
+                    "(server ${currentIndex + 1}/${sources.size}): " +
+                    details.replace("\n", " | ").take(600),
+            )
             // HLS manifests often declare a subtitle track whose URL returns
             // junk ("Expected WEBVTT. Got 1" / contentIsMalformed). media3
             // treats that as a fatal parse error — retry the SAME server with
             // text tracks disabled before giving up on it.
             val code = error.errorCode
+            // The video-effects pipeline itself failed — usually a device whose
+            // GL stack cannot run media3's frame processor, occasionally an
+            // HDR stream we mis-classified. That is NOT the server's fault, so
+            // walking to the next server would just fail the same way (and burn
+            // the whole server list). Turn the pipeline off, remember it, and
+            // re-open the SAME source clean.
+            val effectsIssue =
+                code == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED ||
+                    code == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED
+            if (effectsIssue && videoSinkArmed) {
+                videoSinkArmed = false
+                enhanceUnsupported = true
+                appliedEnhanceKey = null
+                appliedEnhanceHdr = null
+                enhancePresetKey = EnhancePreset.NATURAL.key
+                com.hikari.app.data.Logs.logError(
+                    "Player",
+                    "video effects failed on this device — enhance disabled",
+                    error
+                )
+                lifecycleScope.launch {
+                    runCatching {
+                        val store = (applicationContext as HikariApp).store
+                        store.setEnhanceUnsupported(true)
+                        store.setEnhancePreset(EnhancePreset.NATURAL.key)
+                    }
+                }
+                Toast.makeText(
+                    this,
+                    "This device can't apply video effects — turning them off.",
+                    Toast.LENGTH_LONG
+                ).show()
+                noSubsRetry = false
+                playSource(currentIndex)
+                return
+            }
             val subtitleIssue = !noSubsRetry &&
                 (code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
                     code == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED) &&

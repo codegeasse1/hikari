@@ -56,6 +56,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.Logs
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
@@ -337,6 +338,24 @@ fun HomeScreen(nav: NavHostController) {
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)
                         )
+                        TextButton(onClick = {
+                            // The banner is the moment the user is most willing to
+                            // send us the report: hand over the crash log itself
+                            // (Settings → Logs & diagnostics serves the full set)
+                            // instead of asking for a screenshot.
+                            val files = Logs.existingFiles(context)
+                            if (files.isEmpty()) {
+                                Toast.makeText(
+                                    context,
+                                    "No log file found",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                shareFiles(context, files.map { it.file }, "Hikari crash log")
+                            }
+                        }) {
+                            Text("Share log")
+                        }
                         TextButton(onClick = {
                             showCrash = false
                             HikariApp.instance.clearCrash()
