@@ -323,14 +323,19 @@ class HikariApp : Application() {
 
                     var last: Response? = null
                     for (headers in variants) {
+                        // OkHttp refuses a second proceed() on a call whose
+                        // previous response body is still open ("cannot make a
+                        // new request because the previous response is still
+                        // open"), and it throws that from a dispatcher thread,
+                        // which takes the whole process down. Close the attempt
+                        // we are about to replace BEFORE asking for the next
+                        // one — closing it after the proceed was the crash.
+                        last?.close()
+                        last = null
                         val builder = req.newBuilder().header("User-Agent", Http.UA)
                         headers.forEach { (k, v) -> builder.header(k, v) }
                         val response = chain.proceed(builder.build())
-                        if (isUsableImage(response)) {
-                            last?.close()
-                            return@addInterceptor response
-                        }
-                        last?.close()
+                        if (isUsableImage(response)) return@addInterceptor response
                         last = response
                     }
                     last ?: chain.proceed(req)

@@ -63,11 +63,30 @@ object Artwork {
         return PosterLoader.model(poster(item) ?: backdrop(item))
     }
 
-    /** Wide-hero model: the item's own backdrop, else the art we looked up. */
+    /** Wide-hero model: the item's own backdrop, then the wide art we looked
+     *  up, then the item's own poster. Asking the lookup for the backdrop
+     *  BEFORE falling back to the item's portrait poster matters for banners:
+     *  plenty of catalog entries ship a poster only, and using that in a 16:9
+     *  hero crops it to a narrow strip (which is what beheads the subject). */
     fun backdropModel(item: MediaItem): Any? {
         item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) }
+        backdrop(item)?.let { return PosterLoader.model(it) }
         item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) }
-        return PosterLoader.model(backdrop(item) ?: poster(item))
+        return PosterLoader.model(poster(item))
+    }
+
+    /**
+     * Hero art as (model, isWide). [isWide] is true only for genuinely wide
+     * (backdrop-shaped) art; when only a portrait poster exists the caller must
+     * NOT centre-crop it into a 16:9 frame — see `HeroArtwork`. Like the other
+     * lookups this reads [revision], so a hero swaps to the real backdrop the
+     * moment its lookup lands.
+     */
+    fun heroModel(item: MediaItem): Pair<Any?, Boolean> {
+        item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to true }
+        backdrop(item)?.let { return PosterLoader.model(it) to true }
+        item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to false }
+        return PosterLoader.model(poster(item)) to false
     }
 
     /** Looked-up poster for [item] (null while the lookup is still running). */

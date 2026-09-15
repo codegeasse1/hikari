@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
@@ -154,6 +156,71 @@ fun PosterImage(
             }
         },
     )
+}
+
+/**
+ * Artwork for a wide hero/banner frame.
+ *
+ * [wide] art (a real backdrop, 16:9-ish) is cropped to fill the frame with the
+ * TOP edge kept, so a slightly taller backdrop loses its bottom rather than
+ * the top of the frame.
+ *
+ * A PORTRAIT poster in that same frame must not simply be cropped: filling a
+ * 16:9 box with a 2:3 poster keeps only the middle ~38% of the image, which
+ * slices the top of the frame off (the "the banner is cut / the head is
+ * chopped off" report). Instead the poster is shown the way streaming apps do
+ * it — a dimmed, zoomed copy of itself fills the frame behind, and the whole
+ * poster is drawn intact at the right edge, in front of it.
+ */
+@Composable
+fun HeroArtwork(
+    model: Any?,
+    wide: Boolean,
+    contentDescription: String? = null,
+    modifier: Modifier = Modifier,
+) {
+    if (model == null) {
+        Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
+        return
+    }
+    if (wide) {
+        PosterImage(
+            model = model,
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.Top,
+        )
+        return
+    }
+    Box(modifier) {
+        // Backdrop fill: the poster itself, scaled past the frame edges and
+        // dimmed, so the banner keeps an image behind the text without any
+        // hard crop line. (Not Modifier.blur — it is a no-op below API 31, and
+        // a scaled, dimmed copy looks the same everywhere.)
+        PosterImage(
+            model = model,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = 1.35f
+                    scaleY = 1.35f
+                    alpha = 0.55f
+                },
+            contentScale = ContentScale.Crop,
+        )
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.30f)))
+        PosterImage(
+            model = model,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .aspectRatio(2f / 3f),
+            contentScale = ContentScale.Fit,
+        )
+    }
 }
 
 @Composable
@@ -383,8 +450,10 @@ fun HeroBanner(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .clickable { onClick(item) }
             ) {
-                PosterImage(
-                    model = Artwork.backdropModel(item),
+                val hero = Artwork.heroModel(item)
+                HeroArtwork(
+                    model = hero.first,
+                    wide = hero.second,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -546,8 +615,9 @@ private fun ContinueWatchingCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            PosterImage(
+            HeroArtwork(
                 model = PosterLoader.model(backdrop ?: h.posterUrl),
+                wide = !backdrop.isNullOrBlank(),
                 contentDescription = h.title,
                 modifier = Modifier.fillMaxSize(),
             )

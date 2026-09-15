@@ -97,6 +97,7 @@ import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CompletableDeferred
@@ -1619,19 +1620,17 @@ private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) 
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
     ) {
-        // Item's own backdrop → its poster → TMDB/IMDb artwork, so a title an
-        // extension left blank still gets a real banner here.
-        val img = meta?.let { Artwork.backdropModel(it) } ?: PosterLoader.model(fallbackPoster)
-        if (img != null) {
-            AsyncImage(
-                model = img,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-        } else {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
-        }
+        // Item's own backdrop → the wide art we looked up → its poster, so a
+        // title an extension left blank still gets a real banner here. The
+        // wide/poster distinction matters: a portrait poster is never
+        // centre-cropped into this 16:9 frame (that is what cut the art off).
+        val (img, wide) = meta?.let { Artwork.heroModel(it) }
+            ?: (PosterLoader.model(fallbackPoster) to false)
+        HeroArtwork(
+            model = img,
+            wide = wide,
+            modifier = Modifier.fillMaxSize(),
+        )
         Box(
             Modifier
                 .fillMaxSize()

@@ -193,6 +193,20 @@ class PlayerActivity : ComponentActivity() {
      *  bounded so a genuinely dead video fails instead of looping forever. */
     private var refreshAttempts = 0
 
+    /** True when playback started on a server that arrived while the detail
+     *  screen's search was still running (the common case: Play is tapped, the
+     *  first server shows up, the rest are still being extracted). Such a link
+     *  can be a stale/partial extraction, which is why the same server often
+     *  plays fine a moment later — see [onPlayerError]'s reconnect. */
+    private var startedWhileSearching = false
+
+    /** The live search has finished (every installed provider answered). */
+    private var liveSearchDone = false
+
+    /** The once-per-session "ask for a fresh link for THIS server before
+     *  failing over" reconnect has already been used. */
+    private var sameServerRelinkUsed = false
+
     /** Live-update subscription to the detail screen's ongoing server search
      *  (playback starts with the first server found; this keeps appending the
      *  rest as slower providers answer). */
@@ -975,6 +989,12 @@ class PlayerActivity : ComponentActivity() {
                     ) {
                         pendingStart = false
                         waitTimeout?.cancel()
+                        // Remember that this link was extracted mid-search: if
+                        // it turns out to be a dud, the same server gets one
+                        // re-resolve before the player walks on (see
+                        // onPlayerError) — that is what makes a second Play tap
+                        // work, done here instead of making the user back out.
+                        startedWhileSearching = !searchDone
                         startOrAsk()
                     }
                 }
@@ -986,6 +1006,7 @@ class PlayerActivity : ComponentActivity() {
                     StreamsLive.doneFlow(liveId).collect { done ->
                         if (!done || searchDone) return@collect
                         searchDone = true
+                        liveSearchDone = true
                         // Append happens before markDone, so a non-empty live
                         // flow means servers are on the way.
                         if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
@@ -2534,6 +2555,18 @@ class PlayerActivity : ComponentActivity() {
     private fun showSubsDialog() {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        // A server can advertise subtitles that all failed to fetch or carried
+        // no cues — with them filtered out the picker would silently show only
+        // Off/Auto, which reads as "the app lost my subtitles". Say so instead.
+        if (groups.isEmpty() &&
+            sources.getOrNull(currentIndex)?.subtitles?.isNotEmpty() == true
+        ) {
+            Toast.makeText(
+                this,
+                "This server's subtitles couldn't be loaded",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
         val params = p.trackSelectionParameters
         val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
         val density = resources.displayMetrics.density
@@ -3694,24 +3727,77 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun fetchSubtitleText(s: SubtitleSource, headers: Map<String, String>): String? {
         subtitleRawCache[s.url]?.let { return it }
-        val bytes = Http.getBytes(s.url, headers) ?: return null
-        if (bytes.size > 4 * 1024 * 1024) return null
-        val text = String(bytes, Charsets.UTF_8).trimStart('\uFEFF')
-        val ok = when {
-            s.url.contains(".vtt", true) || s.url.contains("webvtt", true) ->
-                text.contains("WEBVTT", ignoreCase = true)
-            s.url.contains(".ass", true) || s.url.contains(".ssa", true) ->
-                text.contains("Script Info") || text.contains("Dialogue:")
-            s.url.contains(".srt", true) ->
-                Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
-            else ->
-                text.contains("WEBVTT", ignoreCase = true) ||
-                    text.contains("Dialogue:") ||
-                    Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
+        // Two attempts: with the source's own headers, then bare. Plenty of
+        // subtitle hosts 403 a request that carries a Referer (or an
+        // extension's cookies) while others only answer WITH it, and a
+        // subtitle that fails to load is invisible to the user — the picker row
+        // is there, choosing it just shows nothing.
+        for (attempt in 0..1) {
+            val h = if (attempt == 0) headers else emptyMap()
+            val bytes = Http.getBytes(s.url, h) ?: continue
+            val text = decodeSubtitleBytes(bytes) ?: continue
+            if (!isSubtitleText(text)) continue
+            subtitleRawCache[s.url] = text
+            return text
         }
-        if (!ok) return null
-        subtitleRawCache[s.url] = text
-        return text
+        return null
+    }
+
+    /** Bytes → subtitle text. Handles the containers providers really wrap
+     *  subtitles in: raw UTF-8, GZIP (".srt.gz"), a ZIP holding the subtitle
+     *  file, and UTF-16 (BOM, or NUL-padded ASCII). UTF-16 read as UTF-8 looks
+     *  like line after line of NULs, which is another way a perfectly good
+     *  subtitle used to be thrown away as junk. */
+    private fun decodeSubtitleBytes(bytes: ByteArray): String? {
+        if (bytes.size < 4 || bytes.size > 8 * 1024 * 1024) return null
+        if (bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+            val inner = runCatching {
+                java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes() }
+            }.getOrNull() ?: return null
+            return decodeSubtitleBytes(inner)
+        }
+        if (bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
+            val inner = runCatching {
+                java.util.zip.ZipInputStream(bytes.inputStream()).use { zin ->
+                    var entry = zin.nextEntry
+                    while (entry != null && entry.isDirectory) entry = zin.nextEntry
+                    if (entry == null) ByteArray(0) else zin.readBytes()
+                }
+            }.getOrNull() ?: return null
+            return decodeSubtitleBytes(inner)
+        }
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        val charset = when {
+            b0 == 0xFF && b1 == 0xFE -> Charsets.UTF_16LE
+            b0 == 0xFE && b1 == 0xFF -> Charsets.UTF_16BE
+            // NUL every other byte = UTF-16 with no BOM.
+            bytes.take(64).count { it == 0.toByte() } > 24 ->
+                if (b0 == 0) Charsets.UTF_16BE else Charsets.UTF_16LE
+            else -> Charsets.UTF_8
+        }
+        return String(bytes, charset).trimStart('\uFEFF', '\u0000', ' ', '\n', '\r')
+    }
+
+    /** True when [text] really is a subtitle: a recognisable format AND at least
+     *  one cue. The URL's extension is only a hint — providers serve ASS behind
+     *  ".srt" paths and VTT behind "?format=srt" — and a file whose header
+     *  survives but which carries no cues parses to ZERO subtitles in media3:
+     *  a row in the picker that shows nothing when selected, which is exactly
+     *  the "I selected the subtitle and it never appeared" report. Cue-less
+     *  files are rejected here so they never become a phantom row. */
+    private fun isSubtitleText(text: String): Boolean {
+        if (text.isBlank()) return false
+        val cue = Regex("\\d{1,2}:\\d{2}(:\\d{2})?[,.]\\d{1,3}\\s*-->").containsMatchIn(text)
+        return when {
+            text.contains("WEBVTT", true) -> cue
+            text.contains("Dialogue:", true) -> true
+            // an ASS/SSA header with no Dialogue line = no subtitles in it
+            text.contains("Script Info", true) -> false
+            text.contains("<tt", true) -> Regex("<p[ >]").containsMatchIn(text)
+            cue -> true
+            else -> false
+        }
     }
 
     /** Shifts every cue timestamp in an SRT/VTT/ASS subtitle by offsetMs
@@ -3815,7 +3901,14 @@ class PlayerActivity : ComponentActivity() {
     private suspend fun buildSubtitleConfigs(src: PlayerSource): List<MediaItem.SubtitleConfiguration> =
         withContext(Dispatchers.IO) {
             src.subtitles.mapNotNull { s ->
-                val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
+                val raw = fetchSubtitleText(s, src.headers)
+                if (raw == null) {
+                    android.util.Log.w(
+                        "HikariPlayer",
+                        "subtitle dropped (unfetchable or no cues): ${s.lang} ${s.url}"
+                    )
+                    return@mapNotNull null
+                }
                 val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
                 val mime = subtitleMimeOf(shifted, s.url)
                 val uri = writeSubtitleFile(shifted, s.url, mime) ?: return@mapNotNull null
@@ -4010,41 +4103,107 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex)
                 return
             }
-            // Like CloudStream: never strand the user — keep trying the next
-            // server automatically on every failure.
-            val hasNext = currentIndex + 1 < sources.size
-            if (hasNext) {
+            // A dud link extracted mid-search: the SAME server is very often
+            // fine a moment later, once the provider search has finished and
+            // re-handed out its links — "back out and press Play again" is how
+            // users have been working around it. Do the equivalent here: ask
+            // for fresh links and, if one for THIS server arrives, play it
+            // (keeping the position). Once per session, and only while the
+            // search is still running, so the normal failover below is never
+            // delayed in any other case.
+            if (startedWhileSearching && !liveSearchDone && !sameServerRelinkUsed &&
+                refreshAttempts < MAX_REFRESH_ATTEMPTS && isIoFailure(code, headerIssue) &&
+                currentIndex < sources.size
+            ) {
+                sameServerRelinkUsed = true
+                refreshAttempts++
                 noSubsRetry = false
-                SlowNetTip.onServerFailed()
-                Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
-                playSource(currentIndex + 1)
-            } else {
-                // No server left. If this looks like the servers simply died —
-                // expired signed links (HTTP 403) or a DNS/connect failure at
-                // the CDN — rather than a genuinely unplayable file, ask the
-                // detail screen for a fresh extraction before giving up:
-                // replaying a signed 4KHDHub/hubcloud URL after a few minutes
-                // can only 403, but a re-run hands out live links.
-                val ioLike = code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
-                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
-                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
-                    headerIssue
-                // Expired signed links are the classic reason a whole list dies
-                // (ioLike), but a re-extraction is also the ONLY way another
-                // repo's servers can be brought in — and with the
-                // cross-extension pass those are exactly the ones that may
-                // actually play a title this repo can't. So whenever the detail
-                // screen is still attached, ask it for fresh sources before
-                // declaring failure.
-                val canRefresh = ioLike || liveSessionId != null
-                if (!(canRefresh && refreshSources(currentIndex, details))) {
-                    showError(details, false)
+                errorPanel?.visibility = View.GONE
+                if (loadingBanner?.visibility != View.VISIBLE &&
+                    loadingSpinner?.visibility != View.VISIBLE
+                ) showLoadingCover()
+                val wantName = sources[currentIndex].name
+                val wantUrl = sources[currentIndex].url
+                val keepPosition = player?.currentPosition?.takeIf { it > 2_000L } ?: 0L
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "Reconnecting — $wantName",
+                    Toast.LENGTH_SHORT
+                ).show()
+                liveSessionId?.let { StreamsLive.requestRefresh(it) }
+                lifecycleScope.launch {
+                    val deadline = System.currentTimeMillis() + RELINK_WAIT_MS
+                    while (System.currentTimeMillis() < deadline) {
+                        delay(350)
+                        val fresh = sources.indexOfFirst { s ->
+                            s.url.isNotBlank() && s.url != wantUrl && s.url !in triedUrls &&
+                                s.name.equals(wantName, ignoreCase = true)
+                        }
+                        if (fresh >= 0) {
+                            if (keepPosition > 0L) {
+                                startPositionMs = keepPosition
+                                seekPending = true
+                            }
+                            playSource(fresh)
+                            return@launch
+                        }
+                        if (liveSearchDone) break
+                    }
+                    // Nothing fresher arrived — carry on exactly as before.
+                    failoverFromCurrent(details, code, headerIssue)
                 }
+                return
             }
+            failoverFromCurrent(details, code, headerIssue)
         }
     }
+
+    /**
+     * Every attempt on the current server is spent: advance to the next one, or
+     * — when that was the last — ask the detail screen for a fresh extraction
+     * before reporting failure.
+     */
+    private fun failoverFromCurrent(details: String, code: Int, headerIssue: Boolean) {
+        // Like CloudStream: never strand the user — keep trying the next
+        // server automatically on every failure.
+        val hasNext = currentIndex + 1 < sources.size
+        if (hasNext) {
+            noSubsRetry = false
+            SlowNetTip.onServerFailed()
+            Toast.makeText(this, "Server failed — trying next", Toast.LENGTH_SHORT).show()
+            playSource(currentIndex + 1)
+            return
+        }
+        // No server left. If this looks like the servers simply died — expired
+        // signed links (HTTP 403) or a DNS/connect failure at the CDN — rather
+        // than a genuinely unplayable file, ask the detail screen for a fresh
+        // extraction before giving up: replaying a signed 4KHDHub/hubcloud URL
+        // after a few minutes can only 403, but a re-run hands out live links.
+        // Expired signed links are the classic reason a whole list dies
+        // (ioLike), but a re-extraction is also the ONLY way another repo's
+        // servers can be brought in — and with the cross-extension pass those
+        // are exactly the ones that may actually play a title this repo can't.
+        // So whenever the detail screen is still attached, ask it for fresh
+        // sources before declaring failure.
+        val ioLike = isIoFailure(code, headerIssue)
+        val canRefresh = ioLike || liveSessionId != null
+        if (!(canRefresh && refreshSources(currentIndex, details))) {
+            showError(details, false)
+        }
+    }
+
+    /** Errors a fresh extraction can plausibly fix — a stale/expired link, a
+     *  host that refused us, bytes that were never a video — as opposed to a
+     *  file that is simply unplayable. */
+    private fun isIoFailure(code: Int, headerIssue: Boolean): Boolean =
+        headerIssue ||
+            code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+            code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
 
     /** Drop non-ASCII characters from a header value. OkHttp throws
      *  IllegalArgumentException on any header value containing chars > 127,
@@ -4812,6 +4971,12 @@ class PlayerActivity : ComponentActivity() {
          *  other installed extensions, which takes longer than re-running one
          *  repo. */
         private const val REFRESH_WAIT_MS = 40_000L
+
+        /** How long to wait for a fresh link for the server that just failed
+         *  (see onPlayerError's reconnect). Short: the user is sitting on the
+         *  title card with no video, and the normal failover must not be held
+         *  back for long. */
+        private const val RELINK_WAIT_MS = 12_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
