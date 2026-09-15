@@ -209,7 +209,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  allowed to start anyway. Searching is cheap next to extracting, so once
      *  only this many are left the first servers may start landing while the
      *  last few searches finish. */
-    private const val CROSS_EXT_SEARCH_TAIL = 12
+    private val CROSS_EXT_SEARCH_TAIL = 12
 
     // 20s for search/episodes: a CloudStream/native plugin's first call has to
     // spin up its QuickJS runtime (and, for a .hiki, load a whole dex archive —
