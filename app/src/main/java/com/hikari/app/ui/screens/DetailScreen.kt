@@ -307,7 +307,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // hstream title) used to leak into every other extension's "no
             // sources" message and made the whole app look broken.
             val origin = manager.byId(item.providerId)
-            _streamError.value = when (origin?.config?.type) {
+            val originMessage = when (origin?.config?.type) {
                 ProviderType.STREMIO ->
                     com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
                 ProviderType.CS3 ->
@@ -320,6 +320,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.nuvio.NuvioScraper.streamErrors[item.providerId]
                 else -> null
             }
+            // A Cloudflare block is the one failure the user can actually fix, so
+            // it is never hidden behind a provider's generic "no links" note.
+            _streamError.value = originMessage?.takeIf { it.isNotBlank() }
+                ?: ContentRepository.crossNote
         } else {
             _streamError.value = null
         }

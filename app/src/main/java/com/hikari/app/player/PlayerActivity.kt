@@ -3370,14 +3370,22 @@ class PlayerActivity : ComponentActivity() {
                 val total = ContentRepository.crossInstalled[e.key]
                 if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
             }
-        val state = if (running > 0) "$running still searching" else "all done"
+        val verdicts = ContentRepository.crossVerdict.values.toList()
+        val unfinished = verdicts.count {
+            val b = ContentRepository.crossReasonBucket(it.substringAfter(" — ", it))
+            b == "not reached (pass ended)" || b == "unfinished"
+        }
+        val state = when {
+            running > 0 -> "$running still searching"
+            unfinished > 0 -> "stopped early ($unfinished never finished)"
+            else -> "all done"
+        }
         val servers = if (found > 0) ", $found with servers" else ", none with servers"
         // When nothing came back, say WHAT the pass ran into, counted by kind —
         // "200 no such title, 28 could not load" answers "was it even asked? did
         // it break?" on screen, without needing a log. The single example then
         // shows the real plugin text, preferring a repo that FAILED over one
         // that simply did not carry the title (a failure is the actionable one).
-        val verdicts = ContentRepository.crossVerdict.values.toList()
         val breakdown = if (found == 0 && verdicts.isNotEmpty()) {
             val buckets = LinkedHashMap<String, Int>()
             for (v in verdicts) {
@@ -3394,8 +3402,11 @@ class PlayerActivity : ComponentActivity() {
             } ?: verdicts.firstOrNull()
             actionable?.let { " · e.g. " + oneLine(it).take(56) }.orEmpty()
         } else ""
+        // A Cloudflare block belongs to the site, not to one repo; it is the one
+        // thing here the user can actually FIX, so it always gets a line.
+        val note = ContentRepository.crossNote?.let { " · $it" }.orEmpty()
         return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
-            (if (breakdown.isBlank()) "" else " · $breakdown") + why
+            (if (breakdown.isBlank()) "" else " · $breakdown") + why + note
     }
 
     /** A reason can come straight from a plugin's exception text — collapse it

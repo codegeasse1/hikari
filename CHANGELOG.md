@@ -1,3 +1,48 @@
+## 0.3.79
+
+**The crash on opening servers is fixed, "my other repo's servers are missing" is
+fixed for real, and a Cloudflare-blocked site now says so and offers the
+verification that was missing.**
+
+- **Fixed the crash `ForegroundServiceDidNotStartInTimeException`** (the app dying
+  right after you tap Play / open a title). The background-work service stopped
+  itself without ever calling `startForeground()` when its work registry happened
+  to be empty by the time `onStartCommand` ran — which Android punishes by killing
+  the whole process. It now always steps into the foreground first and only then
+  decides there is nothing to do. (A search that finished almost instantly, e.g. a
+  cache hit, was the usual trigger.) The service also logs a `startForeground`
+  failure instead of swallowing it, so this can never again fail silently.
+- **Fixed the real reason another repo's servers were missing: the tail of the
+  list was never even asked.** The pass ran search AND extraction per repo through
+  the same 18 slots, so with 182 `.hiki` + 49 CloudStream repos installed the
+  repos at the back of the queue never got a turn — and the hint still said
+  **"Asked 231 other repos … all done, none with servers"**, because a repo was
+  counted as "asked" the moment it was *queued*. Now:
+  - **Two phases.** Phase 1 searches EVERY installed extension (28 at a time);
+    phase 2 extracts only the ones that matched, through its own slots. A repo
+    that matched can no longer hold a search slot while it fetches its episode
+    list.
+  - **"Asked" means asked.** The hint now reports `Asked N of M`, and repos the
+    pass did not reach are named as **"never reached (the pass ended before
+    asking it)"** instead of being silently counted as searched.
+  - **The pass is longer (150s) and reports "stopped early (N never finished)"**
+    rather than "all done" when it runs out of time.
+- **A Cloudflare-blocked site is no longer disguised as "this repo has no such
+  title".** When a challenge could not be passed automatically, the host is
+  recorded and the chooser's hint / the "no sources" panel now say
+  **"Cloudflare check needed on <host> — open the globe (verify) on Home, then
+  search again"**.
+- **The verification dialog appears when it is actually needed.** A challenge
+  that needs a human click now opens the verify WebView for that host *when you
+  are waiting on that one site* (play/extract). During a bulk search it is
+  deliberately not popped — the dialog would land over whatever you are doing —
+  the host is reported instead.
+- **Cloudflare can no longer starve a search.** While the pass runs, each hidden
+  solve gets a short budget and at most two run at once (a blocking solve used to
+  hold a search slot for its full 20s and the search timeout could not preempt
+  it). A duplicated repo entry can also no longer launch two lookups against the
+  same provider and report one as "couldn't be searched".
+
 ## 0.3.78
 
 **"No servers from my other repos" now says WHY — and a search that never really

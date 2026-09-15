@@ -45,14 +45,22 @@ class WorkService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android requires startForeground() shortly after every
+        // startForegroundService() call — even when the service is about to
+        // stop immediately. The registry can become empty between
+        // BackgroundWork.begin() and this callback (a token that ends its work
+        // within a few milliseconds, e.g. a cache hit), and stopping without
+        // ever going foreground makes the platform kill the whole process with
+        // ForegroundServiceDidNotStartInTimeException. So always step into the
+        // foreground first, then decide whether there is anything left to do.
+        acquireWakeLock()
+        startInForeground()
         if (intent?.action == ACTION_STOP || !BackgroundWork.isActive()) {
             // Nothing registered: either a delayed stop raced a new start, or
             // the process was restarted by the system with an empty registry.
             stopSelfWork()
             return START_NOT_STICKY
         }
-        acquireWakeLock()
-        startInForeground()
         return START_STICKY
     }
 
@@ -64,12 +72,18 @@ class WorkService : Service() {
 
     private fun startInForeground() {
         val notif = buildNotification()
-        runCatching {
+        val ok = runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
                 startForeground(NOTIF_ID, notif)
             }
+        }
+        ok.onFailure {
+            // If this ever fails the platform will kill the process, so make
+            // sure the reason ends up in the on-device log instead of only in
+            // logcat.
+            com.hikari.app.data.Logs.logError("Work", "startForeground failed", it)
         }
     }
 

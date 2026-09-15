@@ -298,16 +298,23 @@ fun HomeScreen(nav: NavHostController) {
     }
     val openVerify: () -> Unit = {
         scope.launch {
+            // Prefer the host a search actually got CHALLENGED on: the whole
+            // point of this button is to clear the block that is stopping
+            // content, and that site may belong to a different repo than the one
+            // selected here (see CloudflareVerifier.blockedHost).
+            val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
             val url = withContext(Dispatchers.IO) {
-                providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+                blocked?.let { "https://$it/" }
+                    ?: providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
             }
             if (url != null) {
                 verifyLauncher.launch(
                     Intent(context, WebViewActivity::class.java).apply {
                         putExtra("url", url)
-                        putExtra("title", "Verify: ${selectedName ?: "site"}")
+                        putExtra("title", "Verify: " + (blocked ?: selectedName ?: "site"))
                         putExtra("providerId", selected)
                         putExtra("autoCloseWhenCloudflarePassed", true)
+                        if (blocked != null) putExtra("verifyHost", blocked)
                     }
                 )
             } else {
