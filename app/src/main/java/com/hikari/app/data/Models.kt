@@ -104,6 +104,45 @@ data class Episode(
     val season: Int = 1,
 )
 
+/** One cast member from TMDB's `credits` — the detail page's Cast row. */
+data class CastMember(
+    val name: String,
+    val character: String? = null,
+    val profileUrl: String? = null,
+)
+
+/** One trailer/teaser from TMDB's `videos` — the detail page's Trailers row. */
+data class Trailer(
+    val youtubeKey: String,
+    val name: String,
+    val type: String = "Trailer",
+    val thumbnailUrl: String? = null,
+)
+
+/** The "Show Details" metadata block on the detail page, from a TMDB
+ *  `/movie/{id}` or `/tv/{id}` response. Every field is optional: TMDB omits
+ *  plenty of them, and a missing field simply drops out of the UI. */
+data class TitleDetails(
+    val status: String? = null,
+    val runtimeMinutes: Int? = null,
+    val year: Int? = null,
+    val rating: Double? = null,
+    val voteCount: Int? = null,
+    val certification: String? = null,
+    val country: String? = null,
+    val language: String? = null,
+    val director: String? = null,
+    val writers: List<String> = emptyList(),
+)
+
+/** Everything the detail page's extra sections need — the details block, the
+ *  Cast row and the Trailers row — fetched together in one TMDB call. */
+data class TitleExtras(
+    val details: TitleDetails? = null,
+    val cast: List<CastMember> = emptyList(),
+    val trailers: List<Trailer> = emptyList(),
+)
+
 /** A single watch-history entry — what the user played and where they left off. */
 data class HistoryEntry(
     val providerId: String,

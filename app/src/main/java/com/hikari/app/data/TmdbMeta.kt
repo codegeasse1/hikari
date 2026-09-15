@@ -26,10 +26,22 @@ object TmdbMeta {
 
     private const val IMG = "https://image.tmdb.org/t/p/w500"
     private const val IMG_WIDE = "https://image.tmdb.org/t/p/w780"
+    /** Cast headshots: TMDB's small profile size renders well in a circle. */
+    private const val IMG_PROFILE = "https://image.tmdb.org/t/p/w185"
 
     /** TMDB endpoint segment ("movie" | "tv") for a resolved media type. */
     private fun segment(mediaType: String): String =
         if (mediaType.equals("movie", true)) "movie" else "tv"
+
+    /** Reads a TMDB image path, treating JSON null / "" / "null" as absent.
+     *  org.json's `optString` returns the literal string "null" for a JSON
+     *  null, which used to be accepted as a path and produced URLs like
+     *  "…/w500null" (HTTP 404 → blank cell) while also short-circuiting the
+     *  IMDb fallback below, since the "path" looked present. */
+    private fun JSONObject.tmdbPath(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return optString(key).trim().takeIf { it.isNotBlank() && it != "null" }
+    }
 
     private fun yearOf(o: JSONObject): Int? {
         val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
@@ -47,8 +59,8 @@ object TmdbMeta {
             val seg = segment(resolved.mediaType)
             val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap())
             if (d != null) {
-                val p = d.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it }
-                val b = d.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_WIDE + it }
+                val p = d.tmdbPath("poster_path")?.let { IMG + it }
+                val b = d.tmdbPath("backdrop_path")?.let { IMG_WIDE + it }
                 if (p != null || b != null) return p to b
             }
         }
@@ -118,8 +130,8 @@ object TmdbMeta {
             val title = o.optString("title").ifBlank { o.optString("name") }.trim()
             if (title.isBlank()) continue
             val type = if (seg == "movie") MediaType.MOVIE else MediaType.SERIES
-            val poster = o.optString("poster_path").takeIf { it.isNotBlank() }?.let { IMG + it }
-            val backdrop = o.optString("backdrop_path").takeIf { it.isNotBlank() }?.let { IMG_WIDE + it }
+            val poster = o.tmdbPath("poster_path")?.let { IMG + it }
+            val backdrop = o.tmdbPath("backdrop_path")?.let { IMG_WIDE + it }
             // A shelf cell with no art at all reads as a hole in the row, so
             // leave those out rather than padding the shelf with blanks.
             if (poster == null && backdrop == null) continue
@@ -138,5 +150,170 @@ object TmdbMeta {
             )
         }
         return out
+    }
+
+    /** A trailer with its sort rank, so the ranking logic stays readable. */
+    private data class ScoredTrailer(val score: Int, val trailer: Trailer)
+
+    /**
+     * The detail page's extra sections — the "Show Details" metadata block, the
+     * Cast row and the Trailers row — in ONE TMDB call. `append_to_response`
+     * bundles `credits`, `videos` and the per-region certification list
+     * (`release_dates` for movies, `content_ratings` for series) into the
+     * details response, so opening a page costs one extra request, not three.
+     *
+     * Like [artwork] and [shelf] this is a bonus that runs in the background:
+     * a slow or failed lookup simply leaves the sections out, never blocking
+     * the page or playback. Null when the title can't be resolved to a TMDB id.
+     */
+    suspend fun extras(item: MediaItem): TitleExtras? {
+        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
+        val seg = segment(resolved.mediaType)
+        val certKey = if (seg == "movie") "release_dates" else "content_ratings"
+        val d = TmdbResolver.apiGet(
+            "/$seg/${resolved.tmdbId}",
+            mapOf("append_to_response" to "credits,videos,$certKey"),
+        ) ?: return null
+
+        val isMovie = seg == "movie"
+        // Movie runtime is one number; a series carries a per-episode list and,
+        // as a fallback, the runtime of its most recent episode.
+        val runtime = if (isMovie) {
+            d.optInt("runtime").takeIf { it > 0 }
+        } else {
+            d.optJSONArray("episode_run_time")
+                ?.let { arr -> (0 until arr.length()).map { arr.optInt(it) }.firstOrNull { it > 0 } }
+                ?: d.optJSONObject("last_episode_to_air")?.optInt("runtime")?.takeIf { it > 0 }
+        }
+
+        val credits = d.optJSONObject("credits")
+        val crew = credits?.optJSONArray("crew")
+        val directors = crewNames(crew, setOf("Director"), limit = 2).ifEmpty {
+            // Series list their creators separately instead of as crew.
+            val cb = d.optJSONArray("created_by")
+            (0 until (cb?.length() ?: 0)).mapNotNull { i ->
+                cb?.optJSONObject(i)?.optString("name")?.trim()?.takeIf { it.isNotBlank() }
+            }
+        }
+        val writers = crewNames(crew, setOf("Writer", "Screenplay", "Story"), limit = 3)
+
+        val details = TitleDetails(
+            status = d.optString("status").trim().takeIf { it.isNotBlank() },
+            runtimeMinutes = runtime,
+            year = yearOf(d),
+            rating = d.optDouble("vote_average").takeIf { it > 0.0 },
+            voteCount = d.optInt("vote_count").takeIf { it > 0 },
+            certification = certificationOf(d, seg),
+            country = originCountryOf(d),
+            language = d.optString("original_language").trim()
+                .takeIf { it.isNotBlank() }?.uppercase(),
+            director = directors.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            writers = writers,
+        )
+
+        val cast = ArrayList<CastMember>(20)
+        val castArr = credits?.optJSONArray("cast")
+        for (i in 0 until (castArr?.length() ?: 0)) {
+            if (cast.size >= 20) break
+            val o = castArr?.optJSONObject(i) ?: continue
+            val name = o.optString("name").trim()
+            if (name.isBlank()) continue
+            cast.add(
+                CastMember(
+                    name = name,
+                    character = o.optString("character").trim().takeIf { it.isNotBlank() },
+                    profileUrl = o.tmdbPath("profile_path")?.let { IMG_PROFILE + it },
+                )
+            )
+        }
+
+        // Trailers before teasers, official before unofficial — the order the
+        // reference clients show them in. `videos` mixes everything together.
+        val ranked = ArrayList<ScoredTrailer>(12)
+        val vids = d.optJSONObject("videos")?.optJSONArray("results")
+        for (i in 0 until (vids?.length() ?: 0)) {
+            val o = vids?.optJSONObject(i) ?: continue
+            if (!o.optString("site").equals("YouTube", true)) continue
+            val key = o.optString("key").trim()
+            if (key.isBlank()) continue
+            val type = o.optString("type").trim().ifBlank { "Video" }
+            val name = o.optString("name").trim().ifBlank { type }
+            var score = when {
+                type.equals("Trailer", true) -> 30
+                type.equals("Teaser", true) -> 20
+                else -> 10
+            }
+            if (o.optBoolean("official")) score += 5
+            ranked.add(
+                ScoredTrailer(
+                    score,
+                    Trailer(
+                        youtubeKey = key,
+                        name = name,
+                        type = type,
+                        thumbnailUrl = "https://img.youtube.com/vi/$key/hqdefault.jpg",
+                    )
+                )
+            )
+        }
+        ranked.sortByDescending { it.score }
+        val trailers = ranked.take(12).map { it.trailer }
+
+        return TitleExtras(details = details, cast = cast, trailers = trailers)
+    }
+
+    /** Names of the crew members whose `job` is in [jobs], in listing order. */
+    private fun crewNames(crew: org.json.JSONArray?, jobs: Set<String>, limit: Int): List<String> {
+        if (crew == null) return emptyList()
+        val out = ArrayList<String>(limit)
+        for (i in 0 until crew.length()) {
+            if (out.size >= limit) break
+            val o = crew.optJSONObject(i) ?: continue
+            if (o.optString("job").trim() !in jobs) continue
+            val n = o.optString("name").trim()
+            if (n.isNotBlank() && n !in out) out.add(n)
+        }
+        return out
+    }
+
+    /** US age rating when TMDB has one, else the first non-blank region's. */
+    private fun certificationOf(d: JSONObject, seg: String): String? {
+        val arr = d.optJSONObject(if (seg == "movie") "release_dates" else "content_ratings")
+            ?.optJSONArray("results") ?: return null
+        var fallback: String? = null
+        for (i in 0 until arr.length()) {
+            val r = arr.optJSONObject(i) ?: continue
+            val iso = r.optString("iso_3166_1")
+            if (seg == "movie") {
+                val dates = r.optJSONArray("release_dates") ?: continue
+                for (j in 0 until dates.length()) {
+                    val c = dates.optJSONObject(j)?.optString("certification")?.trim().orEmpty()
+                    if (c.isBlank()) continue
+                    if (iso == "US") return c
+                    if (fallback == null) fallback = c
+                }
+            } else {
+                val c = r.optString("rating").trim()
+                if (c.isBlank()) continue
+                if (iso == "US") return c
+                if (fallback == null) fallback = c
+            }
+        }
+        return fallback
+    }
+
+    private fun originCountryOf(d: JSONObject): String? {
+        d.optJSONArray("origin_country")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val c = arr.optString(i).trim()
+                if (c.isNotBlank()) return c
+            }
+        }
+        val pc = d.optJSONArray("production_countries")
+        for (i in 0 until (pc?.length() ?: 0)) {
+            val c = pc?.optJSONObject(i)?.optString("iso_3166_1")?.trim()
+            if (!c.isNullOrBlank()) return c
+        }
+        return null
     }
 }

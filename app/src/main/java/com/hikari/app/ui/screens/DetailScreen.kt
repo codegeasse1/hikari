@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -83,13 +84,17 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.CastMember
 import com.hikari.app.data.Episode
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
+import com.hikari.app.data.TitleDetails
+import com.hikari.app.data.TitleExtras
 import com.hikari.app.data.TmdbMeta
+import com.hikari.app.data.Trailer
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
@@ -154,6 +159,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     /** TMDB \"Similar\" shelf for the current title. */
     private val _similar = MutableStateFlow<List<MediaItem>>(emptyList())
     val similar: StateFlow<List<MediaItem>> = _similar.asStateFlow()
+
+    /** Detail-page extras (metadata block, Cast, Trailers) for the current
+     *  title, from a single background TMDB lookup. Null until it lands, and
+     *  stays null when the title has no TMDB match — the sections then simply
+     *  don't render. */
+    private val _extras = MutableStateFlow<TitleExtras?>(null)
+    val extras: StateFlow<TitleExtras?> = _extras.asStateFlow()
 
     /** Streams resolved ahead of time (first episode / movie) so tapping Play
      *  or the first episode starts instantly instead of waiting 20-30s for
@@ -234,6 +246,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _episodesLoaded.value = false
             _related.value = emptyList()
             _similar.value = emptyList()
+            _extras.value = null
             if (manager.byId(providerId) == null) {
                 _error.value = "Provider not found"
                 _loading.value = false
@@ -287,6 +300,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadShelves(item: MediaItem) {
+        // Extras first: they are ONE TMDB call (credits+videos+certifications)
+        // and carry the details block, so the page fills in fastest this way.
+        _extras.value = runCatching { TmdbMeta.extras(item) }.getOrNull()
         _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
         _similar.value = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
     }
@@ -472,6 +488,7 @@ fun DetailScreen(
     val providers by vm.providers.collectAsState()
     val related by vm.related.collectAsState()
     val similar by vm.similar.collectAsState()
+    val extras by vm.extras.collectAsState()
     val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1106,6 +1123,13 @@ fun DetailScreen(
                         }
                     }
                 }
+                // "Show Details" block (Nuvio/Stremio style): the stat line
+                // (year · runtime · certification · rating) plus status/country/
+                // language and the director/writer credits. Renders only once
+                // the background TMDB lookup has landed.
+                extras?.details?.let { det ->
+                    item { DetailsBlock(det) }
+                }
                 if (isSeries) {
                     item {
                         Row(
@@ -1211,6 +1235,36 @@ fun DetailScreen(
                             item(key = "ep-$index") {
                                 EpisodeRow(ep) { tryPlay(ep) }
                             }
+                        }
+                    }
+                }
+                // Cast + Trailers: the two rows Nuvio/Stremio put under the
+                // details block. Both come from the same background TMDB call,
+                // and each row is skipped entirely when it found nothing.
+                extras?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
+                    item {
+                        CastRow(cast) { member ->
+                            Routes.safeNavigate(nav, Routes.searchQuery(member.name))
+                        }
+                    }
+                }
+                extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
+                    item {
+                        TrailerRow(trailers) { trailer ->
+                            // Trailers open in the app's ad-free web view, the
+                            // same path Stremio-style YouTube sources use.
+                            context.startActivity(
+                                Intent(context, WebViewActivity::class.java).apply {
+                                    putExtra(
+                                        "url",
+                                        "https://www.youtube.com/watch?v=${trailer.youtubeKey}"
+                                    )
+                                    putExtra(
+                                        "title",
+                                        (m?.title ?: title) + " — " + trailer.name
+                                    )
+                                }
+                            )
                         }
                     }
                 }
@@ -1697,6 +1751,211 @@ private fun ShelfRow(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The "Show Details" block: year/runtime/certification/rating, then
+ *  status/country/language, then the director/writer credits — the metadata
+ *  Nuvio and Stremio show above their Cast row. Each line is skipped when the
+ *  lookup had nothing for it, so a sparse TMDB record still renders cleanly. */
+@Composable
+private fun DetailsBlock(d: TitleDetails) {
+    val stats = ArrayList<String>(5)
+    d.year?.let { stats.add(it.toString()) }
+    d.runtimeMinutes?.let { minutes ->
+        val h = minutes / 60
+        val mm = minutes % 60
+        stats.add(if (h > 0) "${h}h ${mm}m" else "${mm}m")
+    }
+    d.certification?.let { stats.add(it) }
+    d.rating?.takeIf { it > 0.0 }?.let { stats.add("★ " + (Math.round(it * 10) / 10.0)) }
+
+    val meta = ArrayList<String>(4)
+    d.status?.let { meta.add(it) }
+    d.country?.let { meta.add(it) }
+    d.language?.let { meta.add(it) }
+    d.voteCount?.takeIf { it > 0 }?.let { meta.add("$it votes") }
+
+    // A TMDB record with nothing usable would otherwise render an empty block.
+    if (stats.isEmpty() && meta.isEmpty() && d.director.isNullOrBlank() && d.writers.isEmpty()) return
+
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+        if (stats.isNotEmpty()) {
+            Text(
+                stats.joinToString("  ·  "),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+        if (meta.isNotEmpty()) {
+            Text(
+                meta.joinToString("  ·  "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+        if (!d.director.isNullOrBlank()) {
+            Text(
+                "Director: ${d.director}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        if (d.writers.isNotEmpty()) {
+            Text(
+                "Writer: ${d.writers.joinToString(", ")}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+    }
+}
+
+/** Circular-headshot Cast row, matching the Nuvio/Stremio detail page. Tapping
+ *  an actor runs a global search for their name — there is no person page in
+ *  Hikari, and a search is the closest useful action. */
+@Composable
+private fun CastRow(cast: List<CastMember>, onClick: (CastMember) -> Unit) {
+    Column(Modifier.padding(top = 14.dp)) {
+        Text(
+            "Cast",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            itemsIndexed(cast) { _, c ->
+                Column(
+                    Modifier
+                        .width(84.dp)
+                        .clickable { onClick(c) },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val profile = PosterLoader.model(c.profileUrl)
+                        if (profile != null) {
+                            AsyncImage(
+                                model = profile,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            // No headshot: the first initial of the name, so the
+                            // circle never reads as an empty/broken cell.
+                            Text(
+                                c.name.trim().take(1).uppercase(),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    Text(
+                        c.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    c.character?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 1.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Trailer thumbnails (TMDB `videos` → YouTube stills). Tapping opens the video
+ *  in the app's ad-free web view, the same path YouTube streams already use. */
+@Composable
+private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
+    Column(Modifier.padding(top = 14.dp)) {
+        Text(
+            "Trailers",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            itemsIndexed(trailers) { _, t ->
+                Column(
+                    Modifier
+                        .width(200.dp)
+                        .clickable { onClick(t) }
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        val thumb = PosterLoader.model(t.thumbnailUrl)
+                        if (thumb != null) {
+                            AsyncImage(
+                                model = thumb,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Box(
+                            Modifier
+                                .align(Alignment.Center)
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.55f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
+                        }
+                    }
+                    Text(
+                        t.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    Text(
+                        t.type,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
