@@ -1,6 +1,24 @@
 package com.hikari.app.data
 
-enum class ProviderType { STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO }
+enum class ProviderType {
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO;
+
+    /**
+     * Which section of the player's server chooser a source from this engine
+     * belongs to. The player divides the servers it found into one group per
+     * engine — CloudStream plugins, Hikari's own extensions (and its universal
+     * scrapers), Nuvio providers, Stremio addons — so the picker reads like the
+     * reference client's grouped source list instead of one undifferentiated
+     * column of links.
+     */
+    val groupLabel: String
+        get() = when (this) {
+            STREMIO -> "Stremio"
+            NUVIO -> "Nuvio"
+            CS3 -> "CloudStream"
+            HIKARI, UNIVERSAL -> "Hikari"
+        }
+}
 
 data class ProviderConfig(
     val id: String,
@@ -86,6 +104,45 @@ data class Episode(
     val season: Int = 1,
 )
 
+/** One cast member from TMDB's `credits` — the detail page's Cast row. */
+data class CastMember(
+    val name: String,
+    val character: String? = null,
+    val profileUrl: String? = null,
+)
+
+/** One trailer/teaser from TMDB's `videos` — the detail page's Trailers row. */
+data class Trailer(
+    val youtubeKey: String,
+    val name: String,
+    val type: String = "Trailer",
+    val thumbnailUrl: String? = null,
+)
+
+/** The "Show Details" metadata block on the detail page, from a TMDB
+ *  `/movie/{id}` or `/tv/{id}` response. Every field is optional: TMDB omits
+ *  plenty of them, and a missing field simply drops out of the UI. */
+data class TitleDetails(
+    val status: String? = null,
+    val runtimeMinutes: Int? = null,
+    val year: Int? = null,
+    val rating: Double? = null,
+    val voteCount: Int? = null,
+    val certification: String? = null,
+    val country: String? = null,
+    val language: String? = null,
+    val director: String? = null,
+    val writers: List<String> = emptyList(),
+)
+
+/** Everything the detail page's extra sections need — the details block, the
+ *  Cast row and the Trailers row — fetched together in one TMDB call. */
+data class TitleExtras(
+    val details: TitleDetails? = null,
+    val cast: List<CastMember> = emptyList(),
+    val trailers: List<Trailer> = emptyList(),
+)
+
 /** A single watch-history entry — what the user played and where they left off. */
 data class HistoryEntry(
     val providerId: String,
@@ -143,6 +200,11 @@ data class StreamSource(
     val externalUrl: Boolean = false,
     /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
     val drm: DrmSpec? = null,
+    /** Which engine produced this source ("CloudStream", "Hikari", "Nuvio",
+     *  "Stremio"). The player's server chooser groups by this, so each engine's
+     *  servers sit under their own heading; blank when the origin is unknown
+     *  (the chooser then falls back to an "Other" section). */
+    val provider: String = "",
 )
 
 data class CatalogRef(

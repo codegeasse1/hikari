@@ -3,6 +3,8 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.cs3.YtDlpResolver
+import com.hikari.app.net.NetTuning
+import com.hikari.app.nuvio.EpisodeTitles
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
@@ -52,9 +54,9 @@ class ContentRepository(private val manager: ProviderManager) {
     // background, so these budgets only cap how long we wait for SLOW extra
     // pages. Trimmed hard (was 90s/240s/260s) so a single dead provider can't
     // make a search feel like it never finishes.
-    private val SEARCH_PAGE_TIMEOUT_MS = 25_000L
-    private val SEARCH_PROVIDER_BUDGET_MS = 90_000L
-    private val SEARCH_TOTAL_BUDGET_MS = 100_000L
+    private val SEARCH_PAGE_TIMEOUT_MS get() = NetTuning.timeout(25_000L)
+    private val SEARCH_PROVIDER_BUDGET_MS get() = NetTuning.timeout(90_000L)
+    private val SEARCH_TOTAL_BUDGET_MS get() = NetTuning.timeout(100_000L)
 
     // ---- Cross-extension fallback ----
     // The SAME title is asked of the other installed extensions (search → best
@@ -82,11 +84,11 @@ class ContentRepository(private val manager: ProviderManager) {
      *  from when it starts. Comfortably under the player's live-wait timeout so
      *  servers found here still reach a player that is already open and
      *  waiting. */
-    private val CROSS_EXT_BUDGET_MS = 50_000L
+    private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(50_000L)
 
-    private val CROSS_EXT_SEARCH_TIMEOUT_MS = 10_000L
-    private val CROSS_EXT_EPISODES_TIMEOUT_MS = 10_000L
-    private val CROSS_EXT_STREAMS_TIMEOUT_MS = 40_000L
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(40_000L)
 
     /** Searching a title is cheap; extracting links is not, so they get their
      *  own caps. The wider one lets every installed extension be SEARCHED in
@@ -120,6 +122,43 @@ class ContentRepository(private val manager: ProviderManager) {
         } catch (t: Throwable) {
             Result.failure(t)
         }
+
+    /** One provider's stream lookup, with the slow-connection retry: while
+     *  [NetTuning] slow mode is on, a provider that times out or throws is
+     *  asked again (up to [NetTuning.attempts]) instead of being written off
+     *  for the rest of the search — the usual cause of "No playable sources
+     *  found" on mobile data, where a single late response used to end it. */
+    private suspend fun fetchStreams(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+    ): List<StreamSource> {
+        val timeoutMs = NetTuning.timeout(45_000L)
+        val maxAttempts = NetTuning.attempts()
+        var attempt = 0
+        while (true) {
+            val got = cancellableCatching {
+                withTimeoutOrNull(timeoutMs) { p.getStreams(item, episode) }.orEmpty()
+            }.getOrDefault(emptyList())
+            if (got.isNotEmpty() || ++attempt >= maxAttempts) return got
+        }
+    }
+
+    /**
+     * Stamps every source with the section of the player's server chooser it
+     * belongs to, from the ENGINE that produced it — never from the source's own
+     * name, which for a cross-extension hit is a "Repo · Server" prefix and for
+     * a plugin's own extractor is just the mirror's name. A provider that
+     * already set the field keeps it (the origin API knows better than we do).
+     */
+    private fun tagGroup(
+        list: List<StreamSource>,
+        p: ContentProvider,
+    ): List<StreamSource> {
+        if (list.isEmpty()) return list
+        val label = p.config.type.groupLabel
+        return list.map { s -> if (s.provider.isBlank()) s.copy(provider = label) else s }
+    }
 
     /**
      * Loads Home rows. Catalogs inside a provider are fetched IN PARALLEL but
@@ -448,9 +487,9 @@ class ContentRepository(private val manager: ProviderManager) {
                                 // budget. Bound these jobs by the overall
                                 // deadline; the runtime's CALL budget bounds
                                 // real work.
-                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
+                                tagGroup(fetchStreams(p, item, episode), p)
                             } else {
-                                withTimeoutOrNull(45_000L) { p.getStreams(item, episode) }.orEmpty()
+                                tagGroup(fetchStreams(p, item, episode), p)
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             if (isNuvio) {
@@ -474,7 +513,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 // through the concurrency cap plus a few fallbacks. Results are
                 // emitted progressively via onProgress, so the UI never sits on
                 // an empty spinner while this runs.
-                val deadline = started + 55_000L
+                val deadline = started + NetTuning.timeout(55_000L)
                 // With no main targets at all (e.g. a title opened from a repo
                 // that has since been uninstalled) there is nothing to wait
                 // for — start the other extensions immediately instead of
@@ -673,10 +712,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // Found here: clear this repo's diagnostic, and tag each server with the
         // repo it came from so the player's server list shows its origin.
         recordStreamMessage(p, null)
-        return got.map { s ->
-            if (p.config.name.isBlank() || s.name.startsWith(p.config.name)) s
-            else s.copy(name = "${p.config.name} · ${s.name}")
-        }
+        return tagGroup(
+            got.map { s ->
+                if (p.config.name.isBlank() || s.name.startsWith(p.config.name)) s
+                else s.copy(name = "${p.config.name} · ${s.name}")
+            },
+            p,
+        )
     }
 
     /** How well a search hit matches the title we're looking for, so the
@@ -741,7 +783,7 @@ class ContentRepository(private val manager: ProviderManager) {
         recordStreamMessage(origin, "Standard extractors found nothing - trying yt-dlp...")
         var timedOut = false
         val got = runCatching {
-            withTimeoutOrNull(45_000) { YtDlpResolver.resolve(pageUrl) }
+            withTimeoutOrNull(NetTuning.timeout(45_000)) { YtDlpResolver.resolve(pageUrl) }
                 ?: run { timedOut = true; emptyList() }
         }.getOrDefault(emptyList())
         if (got.isEmpty()) {
@@ -759,7 +801,7 @@ class ContentRepository(private val manager: ProviderManager) {
         } else {
             recordStreamMessage(origin, null)
         }
-        return got
+        return tagGroup(got, origin)
     }
 
     /** Routes a provider's stream message into the right per-provider error map
@@ -842,12 +884,106 @@ class ContentRepository(private val manager: ProviderManager) {
             }) ?: emptyList()
             if (eps.isNotEmpty()) {
                 val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
-                val translated = translateEpisodes(item.providerId, sorted)
+                val named = withRealEpisodeNames(item, sorted)
+                val translated = translateEpisodes(item.providerId, named)
+                synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
+                return@withContext translated
+            }
+        }
+        // Last resort for a metadata-only provider (Nuvio/TMDB): when the
+        // metadata sources have nothing usable — TMDB stalled behind and
+        // Bangumi with no match — borrow the episode list from an installed
+        // extension that scrapes it from its site. Those lists come straight
+        // from the source site, so they are the ground truth when the
+        // databases disagree about a donghua's episode count.
+        if (item.type == MediaType.SERIES &&
+            manager.byId(item.providerId)?.config?.type == ProviderType.NUVIO
+        ) {
+            episodesFromExtensions(item)?.let { list ->
+                val named = withRealEpisodeNames(item, list)
+                val translated = translateEpisodes(item.providerId, named)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
                 return@withContext translated
             }
         }
         null
+    }
+
+    /**
+     * Episode-list fallback: search the installed site-scraping extensions for
+     * this title and use the first real episode list they return. Time-boxed
+     * per provider and capped at a handful of providers, so one dead extension
+     * cannot stall the detail page.
+     */
+    private suspend fun episodesFromExtensions(item: MediaItem): List<Episode>? {
+        val want = TmdbMeta.normalizeTitle(item.title)
+        if (want.length < 2) return null
+        val candidates = manager.providers.value.filter {
+            it.config.enabled &&
+                it.config.id != item.providerId &&
+                it.config.type != ProviderType.NUVIO
+        }.take(6)
+        for (p in candidates) {
+            val hits = withTimeoutOrNull(12_000) {
+                cancellableCatching { p.search(item.title, 1) }.getOrDefault(emptyList())
+            } ?: continue
+            val match = hits.firstOrNull { TmdbMeta.normalizeTitle(it.title) == want }
+                ?: hits.firstOrNull {
+                    val n = TmdbMeta.normalizeTitle(it.title)
+                    want.length >= 5 && n.startsWith(want)
+                }
+                ?: continue
+            val eps = withTimeoutOrNull(12_000) {
+                cancellableCatching { p.getEpisodes(match) }.getOrNull()
+            } ?: continue
+            if (eps.size >= 2) return eps.sortedWith(compareBy({ it.season }, { it.number }))
+        }
+        return null
+    }
+
+    /**
+     * Upgrades episode names to English where TMDB has an English title for
+     * that episode, leaving the extension's own list — count, order and
+     * numbering — exactly as it is, and never reordering or shortening it.
+     *
+     * The priority the app promises is: an English title if one exists;
+     * otherwise the row keeps whatever its source called it — the site's own
+     * label for an extension item, TMDB's own name for a Nuvio item (which has
+     * no site behind it). A source label that is pure noise ("Swallowed Star
+     * Episode 33 English Sub") is the one exception: it carries no title, so
+     * TMDB's plain "Episode 33" is used instead.
+     *
+     * Runs only when some name actually needs it (foreign script, mechanical
+     * label or missing), when the numbering is unambiguous (no per-season
+     * restart, which would make number → title mapping wrong), and quietly
+     * gives up on any failure — names are a nicety, never a gate.
+     */
+    private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.size < 3) return eps
+        val numbers = eps.map { it.number }
+        if (numbers.size != numbers.toSet().size) return eps
+        if (eps.none { EpisodeTitles.needsEnglish(it.name, item.title) }) return eps
+        val names = withTimeoutOrNull(12_000) {
+            EpisodeTitles.lookup(item.title, item.year, numbers.toSet())
+        } ?: return eps
+        if (names.isEmpty()) return eps
+        var changed = false
+        val out = eps.map { e ->
+            val raw = e.name
+            val replacement = when {
+                names.english[e.number] != null -> names.english[e.number]
+                raw.isNullOrBlank() -> names.generic[e.number]
+                EpisodeTitles.looksMechanical(raw, item.title) -> names.generic[e.number]
+                else -> null
+            }
+            if (replacement != null && replacement != raw) {
+                changed = true
+                e.copy(name = replacement)
+            } else {
+                e
+            }
+        }
+        return if (changed) out else eps
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

@@ -2,10 +2,8 @@ package com.hikari.app.player
 
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
-import android.app.AlertDialog
 import android.app.Dialog
 import android.app.PictureInPictureParams
-import android.app.ProgressDialog
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -13,28 +11,34 @@ import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Point
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.RippleDrawable
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.TextUtils
-import android.util.Base64
 import android.util.Rational
+import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -77,10 +81,12 @@ import coil.load
 import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
+import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.DrmSpec
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.MediaItem as AppMediaItem
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.download.DownloadKind
@@ -88,13 +94,20 @@ import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
 import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.Http
+import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
+import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.UiScale
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -125,6 +138,9 @@ class PlayerActivity : ComponentActivity() {
          *  .m3u8 built by the downloader). Local playback skips the network
          *  probe and reads straight off disk. */
         val local: Boolean = false,
+        /** Which engine found this server ("CloudStream", "Hikari", "Nuvio",
+         *  "Stremio") — the section it is listed under in the server chooser. */
+        val provider: String = "",
     )
 
     private var player: ExoPlayer? = null
@@ -132,6 +148,35 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** Mirrors the Settings "Don't play directly" toggle: when on, a freshly
+     *  found server list is never auto-played — the grouped chooser opens
+     *  instead and playback waits for a pick. */
+    private var askServerOnPlay = false
+
+    /** Whether [askServerOnPlay] has been read from DataStore yet (it is read
+     *  lazily, on the first start decision, so an entry point that never starts
+     *  playback pays nothing). */
+    private var askServerPrefLoaded = false
+
+    /** Whether THIS launch asked for the chooser. The detail screen passes the
+     *  setting through the intent, so flipping the toggle mid-session can't
+     *  change what an already-running play does. */
+    private val askServerThisLaunch: Boolean
+        get() = intent?.getBooleanExtra("askServer", false) == true
+
+    /** Rebuild callbacks for open server choosers, so a list that grows while
+     *  the chooser is up (the detail screen keeps searching) re-renders live
+     *  instead of showing a frozen snapshot. */
+    private val sourcesWatchers = ArrayList<() -> Unit>()
+
+    private fun notifySourcesChanged() {
+        // Servers can be appended (and re-probed) from background threads, and a
+        // watcher touches views — always rebuild on the main looper.
+        val rebuildAll = Runnable { sourcesWatchers.toList().forEach { runCatching { it() } } }
+        if (Looper.myLooper() == Looper.getMainLooper()) rebuildAll.run()
+        else Handler(Looper.getMainLooper()).post(rebuildAll)
+    }
 
     /** The detail screen's live-search session id, when the player was opened
      *  through it. Lets a player whose every server has died ask the still-
@@ -147,6 +192,20 @@ class PlayerActivity : ComponentActivity() {
     /** How many times [refreshSources] has already asked for fresh sources —
      *  bounded so a genuinely dead video fails instead of looping forever. */
     private var refreshAttempts = 0
+
+    /** True when playback started on a server that arrived while the detail
+     *  screen's search was still running (the common case: Play is tapped, the
+     *  first server shows up, the rest are still being extracted). Such a link
+     *  can be a stale/partial extraction, which is why the same server often
+     *  plays fine a moment later — see [onPlayerError]'s reconnect. */
+    private var startedWhileSearching = false
+
+    /** The live search has finished (every installed provider answered). */
+    private var liveSearchDone = false
+
+    /** The once-per-session "ask for a fresh link for THIS server before
+     *  failing over" reconnect has already been used. */
+    private var sameServerRelinkUsed = false
 
     /** Live-update subscription to the detail screen's ongoing server search
      *  (playback starts with the first server found; this keeps appending the
@@ -177,6 +236,7 @@ class PlayerActivity : ComponentActivity() {
         fileIdx,
         trackers,
         drm = drm,
+        provider = provider,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -194,6 +254,7 @@ class PlayerActivity : ComponentActivity() {
         fileIdx,
         trackers,
         drm = drm,
+        provider = provider,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -231,26 +292,44 @@ class PlayerActivity : ComponentActivity() {
 
     /** "Server too slow" dialog: a 3s auto-switch countdown with Wait/Switch.
      *  Wait re-arms the watchdog for 30 more seconds, then re-prompts. */
-    private var slowDialog: android.app.AlertDialog? = null
+    private var slowDialog: Dialog? = null
     private var slowDialogTicker: Runnable? = null
 
+    /** "Connection looks slow" tip — offered while the loading cover is up, with
+     *  a one-tap way to switch Slow connection mode on. Decided by [SlowNetTip]
+     *  (background measurement + real playback struggle), never by a guess. */
+    private var slowNetDialog: Dialog? = null
+
     private var speedChip: TextView? = null
-    private var rotateBtn: ImageButton? = null
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
+    private var episodesBtn: TextView? = null
     private var subsBtn: TextView? = null
     private var audioBtn: TextView? = null
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
     private var lockBtn: ImageButton? = null
-    private var resizeBtn: TextView? = null
+    private var favBtn: ImageButton? = null
+    private var resizeBtn: ImageButton? = null
     private var skipBtn: TextView? = null
+    private var rotateBtn: TextView? = null
     private var unlockBtn: TextView? = null
+    private var playHint: TextView? = null
+
+    /** The favourite toggled by the top-bar heart button, and whether it is
+     *  currently on. Built from the launch intent's history extras. */
+    private var favouriteItem: AppMediaItem? = null
+    private var isFavourite = false
+
+    /** Episode listing / in-player episode switching, built lazily so the
+     *  provider stack isn't touched until the Episodes pill is actually used. */
+    private val contentRepo by lazy { ContentRepository((applicationContext as HikariApp).providers) }
 
     /** Full-screen title-card cover shown while the first server is being
      *  found / buffered (Nuvio/Stremio style). See [showLoadingBanner]. */
     private var loadingBanner: View? = null
+    private var loadingSpinner: View? = null
     private var loadingBackdrop: ImageView? = null
     private var loadingTitleBox: View? = null
     private var loadingTitle: TextView? = null
@@ -276,6 +355,21 @@ class PlayerActivity : ComponentActivity() {
      *  set, onTracksChanged must NOT re-assert the default (first) track. */
     private var userPickedSubs = false
 
+    /** The user's explicit subtitle / audio choice, remembered as a descriptor
+     *  rather than as a Tracks.Group reference. Attaching provider subtitles —
+     *  and pressing Sync — REBUILDS the media item, and a rebuilt source
+     *  exposes brand-new TrackGroup instances; an override keyed on the old
+     *  group then matches nothing, so the pick silently stopped having any
+     *  effect (the classic "I selected a subtitle and nothing ever appears",
+     *  and the same reason a second audio track never switched language).
+     *  [applyStickyPicks] re-applies these to whatever groups exist after every
+     *  rebuild. */
+    private var pickText: TrackPick? = null
+    private var pickAudio: TrackPick? = null
+
+    /** The user chose "Off" in the subtitle sheet. */
+    private var textOff = false
+
     /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
     private var resizeIndex = 0
 
@@ -297,11 +391,11 @@ class PlayerActivity : ComponentActivity() {
      *  subtitles without re-fetching them over the network. */
     private val subtitleRawCache = HashMap<String, String>()
 
-    private var torrentDialog: android.app.ProgressDialog? = null
+    private var torrentDialog: Dialog? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
      *  to discover its real mime/URL before ExoPlayer sees it. */
-    private var probeDialog: android.app.ProgressDialog? = null
+    private var probeDialog: Dialog? = null
 
     private lateinit var client: OkHttpClient
 
@@ -382,6 +476,45 @@ class PlayerActivity : ComponentActivity() {
     private var seekIcon: TextView? = null
     private var seekText: TextView? = null
 
+    // ---- Brightness / volume vertical-swipe gestures ----------------------
+    // Dragging up/down on the LEFT half of the video changes the window
+    // brightness, on the RIGHT half it changes the media volume (swipe up =
+    // increase). The HUD sliders fade in while dragging and out shortly after
+    // the finger lifts.
+    private var gestureHud: View? = null
+    private var hudBright: View? = null
+    private var hudVol: View? = null
+    private var hudBrightTrack: View? = null
+    private var hudVolTrack: View? = null
+    private var hudBrightFill: View? = null
+    private var hudVolFill: View? = null
+    private var hudBrightThumb: View? = null
+    private var hudVolThumb: View? = null
+    private var hudBrightValue: TextView? = null
+    private var hudVolValue: TextView? = null
+    private val hudHandler = Handler(Looper.getMainLooper())
+    private var hudHideTask: Runnable? = null
+    /** 0 = no vertical gesture in progress, 1 = brightness, 2 = volume. */
+    private var verticalMode = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var startBrightness = -1f
+    private var startVolume = 0
+    private var maxVolume = 1
+    private var audioManager: AudioManager? = null
+
+    // ---- Top-bar metadata badges -----------------------------------------
+    private var badgeDuration: TextView? = null
+    private var badgeQuality: TextView? = null
+    private var badgeSource: TextView? = null
+
+    /** In-app UI scale: when the user turns it on (Settings → In-app UI scale)
+     *  the whole app stops following the phone's font/display size settings —
+     *  including this View-based player, which is outside the Compose tree. */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(UiScale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
@@ -404,14 +537,17 @@ class PlayerActivity : ComponentActivity() {
             }
         })
         speedChip = findViewById(R.id.speed_btn)
-        rotateBtn = findViewById(R.id.rotate_btn)
+        favBtn = findViewById(R.id.fav_btn)
+        playHint = findViewById(R.id.play_hint)
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
+        episodesBtn = findViewById(R.id.episodes_btn)
         subsBtn = findViewById(R.id.subs_btn)
         audioBtn = findViewById(R.id.audio_btn)
         lockBtn = findViewById(R.id.lock_btn)
         resizeBtn = findViewById(R.id.resize_btn)
         skipBtn = findViewById(R.id.skip_btn)
+        rotateBtn = findViewById(R.id.rotate_btn)
         unlockBtn = findViewById(R.id.unlock_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
@@ -419,6 +555,24 @@ class PlayerActivity : ComponentActivity() {
         seekFeedback = findViewById(R.id.seek_feedback)
         seekIcon = findViewById(R.id.seek_icon)
         seekText = findViewById(R.id.seek_text)
+        gestureHud = findViewById(R.id.gesture_hud)
+        hudBright = findViewById(R.id.hud_bright)
+        hudVol = findViewById(R.id.hud_vol)
+        hudBrightTrack = findViewById(R.id.hud_bright_track)
+        hudVolTrack = findViewById(R.id.hud_vol_track)
+        hudBrightFill = findViewById(R.id.hud_bright_fill)
+        hudVolFill = findViewById(R.id.hud_vol_fill)
+        hudBrightThumb = findViewById(R.id.hud_bright_thumb)
+        hudVolThumb = findViewById(R.id.hud_vol_thumb)
+        hudBrightValue = findViewById(R.id.hud_bright_value)
+        hudVolValue = findViewById(R.id.hud_vol_value)
+        audioManager = runCatching { getSystemService(AUDIO_SERVICE) as? AudioManager }.getOrNull()
+        maxVolume = runCatching {
+            audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)?.coerceAtLeast(1)
+        }.getOrNull() ?: 1
+        badgeDuration = findViewById(R.id.badge_duration)
+        badgeQuality = findViewById(R.id.badge_quality)
+        badgeSource = findViewById(R.id.badge_source)
         findViewById<TextView>(R.id.title_text).text = intent.getStringExtra("title").orEmpty()
 
         // Top-bar episode line (e.g. "S1E2 · Freedom Day"), matching the
@@ -438,6 +592,7 @@ class PlayerActivity : ComponentActivity() {
         findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
 
         loadingBanner = findViewById(R.id.loading_banner)
+        loadingSpinner = findViewById(R.id.loading_spinner)
         loadingBackdrop = findViewById(R.id.loading_backdrop)
         loadingTitleBox = findViewById(R.id.loading_title_box)
         loadingTitle = findViewById(R.id.loading_title)
@@ -445,20 +600,105 @@ class PlayerActivity : ComponentActivity() {
         loadingDetail = findViewById(R.id.loading_detail)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
 
-        // Tap the card to skip straight to the player/controls (and stop it
-        // from re-appearing if a later server attempt would show it again).
-        loadingBanner?.setOnClickListener {
-            bannerMode = false
-            hideLoadingBanner(immediate = true)
+        // The cover stays up by design until real video is on screen, so tapping
+        // it does nothing. (It used to skip straight to the player/controls,
+        // which made an accidental tap look like it had dismissed the title card
+        // and left the user staring at a black player.)
+        loadingBanner?.setOnClickListener { }
+        loadingSpinner?.setOnClickListener { }
+
+        // This play just started: let the slow-connection tip measure in the
+        // BACKGROUND (in parallel with the server search that is about to
+        // happen anyway, so it delays nothing) and watch for evidence that the
+        // play is struggling. It only ever speaks up with real evidence and
+        // retracts itself the moment video appears — see SlowNetTip.
+        SlowNetTip.onPlaybackStart()
+        lifecycleScope.launch {
+            SlowNetTip.suggestion.collect { reason ->
+                if (reason != null) showSlowNetTip() else dismissSlowNetTip()
+            }
         }
 
         speedChip?.setOnClickListener { cycleSpeed() }
-        rotateBtn?.setOnClickListener { cycleRotation() }
         qualityBtn?.setOnClickListener { showQualityDialog() }
         sourcesBtn?.setOnClickListener { showSourcesDialog() }
+        // The Episodes pill is only wireable when the player knows which title
+        // it is playing (launched from the detail screen) and the title is a
+        // series — it stays hidden otherwise, so it is never a dead button.
+        episodesBtn?.visibility = View.GONE
+        episodesBtn?.setOnClickListener { showEpisodesDialog() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
-        findViewById<TextView>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+        findViewById<ImageButton>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+        favBtn?.setOnClickListener { toggleFavourite() }
+        // Top-bar gear: the player options that don't deserve a pill of their
+        // own (video fit and rotation).
+        findViewById<ImageButton>(R.id.options_btn)?.setOnClickListener {
+            // Declared as a function so toggling the server-chooser row can
+            // re-open the menu with its new state (a static option list would
+            // need a live flow just to move one checkmark).
+            fun openOptions() {
+                showGlassMenu(
+                    "Player options",
+                    listOf(
+                        GlassOption(
+                            "Fit video", "Show the whole frame",
+                            iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                            selected = resizeIndex == 0,
+                        ),
+                        GlassOption(
+                            "Crop to fill", "Zoom until the frame is filled",
+                            iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                            selected = resizeIndex == 1,
+                        ),
+                        GlassOption(
+                            "Rotate screen", "Turn the video 90\u00B0 at a time",
+                            iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
+                        ),
+                        GlassOption(
+                            "Server chooser",
+                            if (askServerOnPlay) {
+                                "On \u2014 pick a server every time"
+                            } else {
+                                "Off \u2014 start on the best server"
+                            },
+                            iconRes = R.drawable.ic_server, marker = RowMarker.ICON,
+                            selected = askServerOnPlay,
+                        ),
+                    ),
+                    hint = "Video fit, rotation, and whether servers start on their own.",
+                    iconRes = R.drawable.ic_settings,
+                ) { which ->
+                    when (which) {
+                        0, 1 -> {
+                            resizeIndex = which
+                            playerView?.resizeMode = if (which == 0) {
+                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                            } else {
+                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                            }
+                            updateResizeButton()
+                        }
+                        2 -> cycleRotation()
+                        3 -> {
+                            // Same setting as Settings -> Playback start -> the
+                            // "Don't play directly" switch, so the player can
+                            // flip it without leaving the video.
+                            askServerOnPlay = !askServerOnPlay
+                            askServerPrefLoaded = true
+                            val ask = askServerOnPlay
+                            lifecycleScope.launch {
+                                runCatching {
+                                    (applicationContext as HikariApp).store.setAskServerOnPlay(ask)
+                                }
+                            }
+                            openOptions()
+                        }
+                    }
+                }
+            }
+            openOptions()
+        }
 
         // The download notification needs POST_NOTIFICATIONS on API 33+; the
         // launcher must be registered here, before the first download starts.
@@ -470,6 +710,9 @@ class PlayerActivity : ComponentActivity() {
 
         lockBtn?.setOnClickListener { lockControls() }
         resizeBtn?.setOnClickListener { cycleResize() }
+        // Rotate is the same action as the gear menu's "Rotate screen" row, so
+        // it is reachable without opening a dialog.
+        rotateBtn?.setOnClickListener { cycleRotation() }
         skipBtn?.setOnClickListener {
             val p = player ?: return@setOnClickListener
             val target = (p.currentPosition + 85_000L).coerceIn(
@@ -528,6 +771,9 @@ class PlayerActivity : ComponentActivity() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     holdingFast = false
+                    verticalMode = 0
+                    downX = event.x
+                    downY = event.y
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     val task = Runnable {
                         // Finger has stayed down ≥2s → play at 2× until lift.
@@ -537,6 +783,43 @@ class PlayerActivity : ComponentActivity() {
                     holdSpeedTimer = task
                     speedHandler.postDelayed(task, 2000)
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    if (verticalMode == 0) {
+                        val dx = event.x - downX
+                        val dy = event.y - downY
+                        val slop = 18 * resources.displayMetrics.density
+                        // A mostly-vertical drag takes over from the tap/hold
+                        // gestures: cancel the pending speed-up, drop the
+                        // controls and bring up the brightness/volume HUD.
+                        if (abs(dy) > slop && abs(dy) > abs(dx)) {
+                            holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
+                            holdSpeedTimer = null
+                            if (holdingFast) {
+                                holdingFast = false
+                                applySpeed(SPEEDS[speedIndex])
+                            }
+                            suppressNextTap = true
+                            playerView?.hideController()
+                            beginVerticalGesture()
+                        }
+                    }
+                    if (verticalMode != 0) {
+                        val travel = playerView?.height?.toFloat()?.takeIf { it > 0f }
+                            ?: resources.displayMetrics.heightPixels.toFloat()
+                        // Swipe UP (a negative dy) increases the value. The gain
+                        // is deliberately high: with a 1:1 mapping the sliders
+                        // moved so slowly that the user had to swipe the whole
+                        // screen 8-9 times to reach the end. GESTURE_SWIPE_GAIN
+                        // makes roughly a quarter of a screen-height swipe cover
+                        // the full range.
+                        val delta = -((event.y - downY) / travel) * GESTURE_SWIPE_GAIN
+                        if (verticalMode == 1) {
+                            applyBrightness(startBrightness + delta)
+                        } else {
+                            applyVolume(startVolume + (delta * maxVolume).roundToInt())
+                        }
+                    }
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     holdSpeedTimer = null
@@ -545,14 +828,16 @@ class PlayerActivity : ComponentActivity() {
                         suppressNextTap = true
                         applySpeed(SPEEDS[speedIndex])
                     }
+                    if (verticalMode != 0) endVerticalGesture()
                 }
             }
             true
         }
 
-        // All our controls (Back/Title/Server/Speed on top, Quality/Sub/Rotate
-        // at the bottom) live INSIDE the media3 controller layout now, so they
-        // appear and fade together with the playback controls on tap.
+        // All our controls (Back/Title/Favourite/Download/PiP/Options/Lock in the
+        // top bar, Speed/Source/Quality/Audio/Subtitles/Skip Intro in the pill
+        // row) live INSIDE the media3 controller layout now, so they appear and
+        // fade together with the playback controls on tap.
 
         // Watch-history context (set by the detail screen). When present, the
         // player periodically persists resume position into the app store.
@@ -579,7 +864,42 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             saveHandler.postDelayed(saveTask!!, 5000)
+
+            // The top-bar heart works on the same title the history entry was
+            // opened for. Its initial state comes from the stored favourites; we
+            // keep observing so a toggle on the detail screen is reflected here.
+            if (historyEntry!!.mediaId.isNotBlank()) {
+                favouriteItem = AppMediaItem(
+                    providerId = histProvider,
+                    id = historyEntry!!.mediaId,
+                    title = historyEntry!!.title,
+                    type = historyEntry!!.type,
+                    posterUrl = historyEntry!!.posterUrl,
+                    backdropUrl = intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() },
+                )
+                lifecycleScope.launch {
+                    runCatching {
+                        (applicationContext as HikariApp).store.favoritesFlow().collect { list ->
+                            val on = list.any { it.uniqueId == favouriteItem?.uniqueId }
+                            if (on != isFavourite) {
+                                isFavourite = on
+                                favBtn?.setImageResource(
+                                    if (on) R.drawable.ic_heart_filled else R.drawable.ic_heart
+                                )
+                                favBtn?.imageTintList = tintOf(on)
+                            }
+                        }
+                    }
+                }
+            }
         }
+
+        // Reveal the Episodes pill only when we know the title and it is a
+        // series — a movie (or playback with no provider context) has no
+        // episode list to show, so the pill stays hidden rather than dead.
+        episodesBtn?.visibility =
+            if (favouriteItem != null && favouriteItem?.type != MediaType.MOVIE) View.VISIBLE
+            else View.GONE
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -616,6 +936,7 @@ class PlayerActivity : ComponentActivity() {
                     trackers,
                     drm = parseDrmSpec(o.optJSONObject("drm")),
                     local = o.optBoolean("local"),
+                    provider = o.optString("provider"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -640,7 +961,7 @@ class PlayerActivity : ComponentActivity() {
         // Cover the very first frames with the title card: the detail screen
         // showed the same card while it searched, so this keeps the "finding
         // your server" screen continuous until real video is on screen.
-        if (bannerMode) showLoadingBanner()
+        showLoadingCover()
 
         if (liveId != null) {
             // The detail screen keeps searching every installed provider while
@@ -649,20 +970,49 @@ class PlayerActivity : ComponentActivity() {
             // FIRST batch that arrives also starts playback.
             liveStreamsJob = lifecycleScope.launch {
                 var pendingStart = awaitLive
+                // How many servers must be known before playback starts. 1 (the
+                // default) means "the instant the first server is found"; a
+                // higher value is the Settings "wait for more servers" choice.
+                // The search FINISHING always counts as enough too, so a title
+                // that only ever finds 2 servers starts as soon as every
+                // installed extension has answered, instead of waiting forever
+                // for a 3rd..5th one that does not exist.
+                val startAfter = intent.getIntExtra("startAfterServers", 1).coerceIn(1, 8)
+                var searchDone = false
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
                     if (sources.isEmpty()) showError("No playable sources received.", false)
                 } else null
+                val tryStart: suspend () -> Unit = {
+                    if (pendingStart && sources.isNotEmpty() &&
+                        (searchDone || sources.size >= startAfter)
+                    ) {
+                        pendingStart = false
+                        waitTimeout?.cancel()
+                        // Remember that this link was extracted mid-search: if
+                        // it turns out to be a dud, the same server gets one
+                        // re-resolve before the player walks on (see
+                        // onPlayerError) — that is what makes a second Play tap
+                        // work, done here instead of making the user back out.
+                        startedWhileSearching = !searchDone
+                        startOrAsk()
+                    }
+                }
                 // The detail screen signals when its whole search is finished;
                 // if it ended with nothing, fail fast instead of waiting out
-                // the safety timeout above.
+                // the safety timeout above — and if it ended with fewer servers
+                // than we were told to wait for, start with what we have.
                 if (awaitLive) launch {
                     StreamsLive.doneFlow(liveId).collect { done ->
-                        // Only fail when the session really ended up with no
-                        // servers (append happens before markDone, so a
-                        // non-empty live flow means servers are on the way).
-                        if (done && sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                        if (!done || searchDone) return@collect
+                        searchDone = true
+                        liveSearchDone = true
+                        // Append happens before markDone, so a non-empty live
+                        // flow means servers are on the way.
+                        if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
                             showError("No playable sources received.", false)
+                        } else {
+                            tryStart()
                         }
                     }
                 }
@@ -674,16 +1024,13 @@ class PlayerActivity : ComponentActivity() {
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
+                    notifySourcesChanged()
                     // Resolve the new servers in the background too, so picking
                     // one from "Select server" doesn't fall back to a probe wait.
                     lifecycleScope.launch(Dispatchers.IO) {
                         runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
                     }
-                    if (pendingStart) {
-                        pendingStart = false
-                        waitTimeout?.cancel()
-                        playSource(preferredStartIndex())
-                    }
+                    tryStart()
                 }
             }
             // A Play tap made before the origin addon finished listing episodes:
@@ -717,7 +1064,7 @@ class PlayerActivity : ComponentActivity() {
         // known-good, already-resolved source. On the instant open (no servers
         // yet) the live collector above starts playback the moment the first
         // server arrives.
-        if (sources.isNotEmpty()) lifecycleScope.launch { playSource(preferredStartIndex()) }
+        if (sources.isNotEmpty()) startOrAsk()
     }
 
     /** Index of the server the user last played this video with — matched by
@@ -744,6 +1091,33 @@ class PlayerActivity : ComponentActivity() {
             byName >= 0 -> byName
             else -> 0
         }
+    }
+
+    /** Starts playback — or, when the "don't play directly" setting is on,
+     *  opens the grouped server chooser and waits for the user's pick. */
+    private fun startOrAsk() {
+        lifecycleScope.launch {
+            if (sources.isNotEmpty() && shouldAskServer()) {
+                showServerChooser(startMode = true)
+            } else {
+                playSource(preferredStartIndex())
+            }
+        }
+    }
+
+    /** True when a server list should stop at the chooser instead of starting
+     *  on its own. Reads the persisted setting when the launching screen did
+     *  not pass it through, so every entry point (downloads, favourites,
+     *  history, a re-open) honours the toggle too. */
+    private suspend fun shouldAskServer(): Boolean {
+        if (askServerThisLaunch) return true
+        if (!askServerPrefLoaded) {
+            askServerOnPlay = runCatching {
+                (applicationContext as HikariApp).store.askServerOnPlay()
+            }.getOrDefault(false)
+            askServerPrefLoaded = true
+        }
+        return askServerOnPlay
     }
 
     /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
@@ -823,11 +1197,11 @@ class PlayerActivity : ComponentActivity() {
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
         requestedOrientation = next
-        // Phone-tilt icon tints gold while forced-landscape so the state is
-        // readable at a glance (white = free/portrait).
-        val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
-        val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-        rotateBtn?.imageTintList = if (next == SCREEN_ORIENTATION_PORTRAIT) white else gold
+        Toast.makeText(
+            this,
+            if (next == SCREEN_ORIENTATION_PORTRAIT) "Portrait" else "Landscape",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun applySpeed(speed: Float) {
@@ -864,7 +1238,43 @@ class PlayerActivity : ComponentActivity() {
         } else {
             C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
         }
-        resizeBtn?.text = if (resizeIndex == 0) "Fit" else "Crop"
+        updateResizeButton()
+    }
+
+    /** The fit/crop button has no label any more, so the state is shown by the
+     *  accent tint (accent = cropping/zoomed, white = fitting). */
+    private fun updateResizeButton() {
+        resizeBtn?.imageTintList = tintOf(resizeIndex == 0)
+    }
+
+    /** White = off, the player accent = on. Used by the mute-style state icons
+     *  (resize, favourite) so a toggled control is readable at a glance. */
+    private fun tintOf(on: Boolean) = ColorStateList.valueOf(
+        if (on) android.graphics.Color.parseColor("#7B5CFF") else android.graphics.Color.WHITE
+    )
+
+    /** Top-bar heart: add/remove this title from the app's Library. */
+    private fun toggleFavourite() {
+        val item = favouriteItem ?: return
+        val next = !isFavourite
+        isFavourite = next
+        favBtn?.setImageResource(if (next) R.drawable.ic_heart_filled else R.drawable.ic_heart)
+        favBtn?.imageTintList = tintOf(next)
+        val app = applicationContext as HikariApp
+        app.appScope.launch {
+            runCatching {
+                if (next) {
+                    // Never downgrade an entry the detail screen saved with full
+                    // metadata: only add when this title isn't a favourite yet.
+                    if (app.store.favorites().none { it.uniqueId == item.uniqueId }) {
+                        app.store.addFavorite(item)
+                    }
+                } else {
+                    app.store.removeFavorite(item.uniqueId)
+                }
+            }
+        }
+        Toast.makeText(this, if (next) "Added to library" else "Removed from library", Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleController() {
@@ -873,13 +1283,13 @@ class PlayerActivity : ComponentActivity() {
         if (controllerVisible) pv.hideController() else pv.showController()
     }
 
-    /** Double-tap seek: left half rewinds 5s, right half forwards 5s (matching
-     *  the 5s shown on the centre rewind/forward buttons). */
+    /** Double-tap seek: left half rewinds 10s, right half forwards 10s
+     *  (matching the 10s shown on the centre rewind/forward buttons). */
     private fun seekByTap(x: Float) {
         val p = player ?: return
         val mid = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
         val forward = x >= mid
-        val delta = if (forward) 5_000L else -5_000L
+        val delta = if (forward) 10_000L else -10_000L
         val target = (p.currentPosition + delta)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
         p.seekTo(target)
@@ -887,7 +1297,7 @@ class PlayerActivity : ComponentActivity() {
         showSeekFeedback(delta)
     }
 
-    /** Flash the double-tap seek indicator (arrow + +5s/−5s) like YouTube. */
+    /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
     private fun showSeekFeedback(deltaMs: Long) {
         val v = seekFeedback ?: return
         seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
@@ -904,189 +1314,1208 @@ class PlayerActivity : ComponentActivity() {
         }.start()
     }
 
-    /** Thin translucent divider used inside the glass panels. */
-    private fun hairline(density: Float): View = View(this).apply {
-        setBackgroundColor(0x1FFFFFFF)
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, (1 * density).toInt()
+    /** Starts the brightness/volume HUD for a vertical drag. Which slider shows
+     *  depends on where the finger went down: left half = brightness, right
+     *  half = volume. */
+    private fun beginVerticalGesture() {
+        val half = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
+        verticalMode = if (downX < half) 1 else 2
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        hudHideTask = null
+        val hud = gestureHud ?: return
+        hud.animate().cancel()
+        hud.alpha = 1f
+        if (verticalMode == 1) {
+            hudVol?.visibility = View.INVISIBLE
+            hudBright?.visibility = View.VISIBLE
+            startBrightness = currentBrightness()
+            applyBrightness(startBrightness)
+        } else {
+            hudBright?.visibility = View.INVISIBLE
+            hudVol?.visibility = View.VISIBLE
+            startVolume = runCatching {
+                audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC)
+            }.getOrNull() ?: 0
+            applyVolume(startVolume)
+        }
+    }
+
+    /** The window's current brightness, falling back to the system setting for
+     *  the common "no override set yet" state (-1). */
+    private fun currentBrightness(): Float {
+        val win = window.attributes.screenBrightness
+        if (win >= 0f) return win.coerceIn(0.02f, 1f)
+        val system = runCatching {
+            Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+        }.getOrNull() ?: 128
+        return (system / 255f).coerceIn(0.02f, 1f)
+    }
+
+    private fun applyBrightness(fraction: Float) {
+        val f = fraction.coerceIn(0.02f, 1f)
+        val lp = window.attributes
+        lp.screenBrightness = f
+        window.attributes = lp
+        setHudFraction(hudBrightFill, hudBrightThumb, hudBrightTrack, f)
+        hudBrightValue?.text = "${(f * 100).roundToInt()}%"
+    }
+
+    private fun applyVolume(level: Int) {
+        val v = level.coerceIn(0, maxVolume)
+        runCatching { audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0) }
+        val fraction = if (maxVolume > 0) v.toFloat() / maxVolume else 0f
+        setHudFraction(hudVolFill, hudVolThumb, hudVolTrack, fraction)
+        hudVolValue?.text = "${(fraction * 100).roundToInt()}%"
+    }
+
+    /** Sizes the slider's gradient fill and parks the white thumb on its top
+     *  edge (the fill grows upward from the bottom of the track). */
+    private fun setHudFraction(fill: View?, thumb: View?, track: View?, fraction: Float) {
+        val h = track?.height ?: 0
+        if (h <= 0 || fill == null) return
+        val fillPx = (h * fraction.coerceIn(0f, 1f)).toInt().coerceIn(0, h)
+        val lp = fill.layoutParams
+        if (lp != null && lp.height != fillPx) {
+            lp.height = fillPx
+            fill.layoutParams = lp
+        }
+        thumb?.let { it.translationY = -(fillPx - it.height / 2f) }
+    }
+
+    /** Fades the gesture HUD out a moment after the finger lifts (cancelled if
+     *  the user starts another drag). */
+    private fun endVerticalGesture() {
+        verticalMode = 0
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        val task = Runnable {
+            hudHideTask = null
+            gestureHud?.animate()?.alpha(0f)?.setDuration(220)?.start()
+        }
+        hudHideTask = task
+        hudHandler.postDelayed(task, 700)
+    }
+
+    /** "1:39:45" (or "12:34" for sub-hour videos) — the duration badge. */
+    private fun formatDurationBadge(ms: Long): String {
+        if (ms <= 0L) return ""
+        val total = ms / 1000L
+        val h = total / 3600L
+        val m = (total % 3600L) / 60L
+        val s = total % 60L
+        return if (h > 0L) String.format("%d:%02d:%02d", h, m, s)
+        else String.format("%d:%02d", m, s)
+    }
+
+    /** The quality badge for a rendered video height. */
+    private fun qualityBadgeFor(height: Int): String = when {
+        height <= 0 -> ""
+        height >= 2000 -> "4K"
+        height >= 1000 -> "FHD"
+        height >= 700 -> "HD"
+        else -> "${height}p"
+    }
+
+    /** The player palette (mirrors colors.xml) driving the redesigned menus. */
+    private val accentStartColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_start) }
+    private val accentEndColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_end) }
+    private val accentMidColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_mid) }
+
+    /** The cyan -> violet player gradient as a shape (the signature accent). */
+    private fun accentShape(radiusDp: Float): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(accentStartColor, accentEndColor)
+    ).apply { cornerRadius = radiusDp * resources.displayMetrics.density }
+
+    /** [color] with its alpha replaced by [fraction] — for translucent accents. */
+    private fun withAlpha(color: Int, fraction: Float): Int =
+        (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
+
+    /**
+     * Sets a [TextView]'s size in dp — deliberately NOT sp — so the player's
+     * overlay chrome keeps the reference design's compact proportions even when
+     * the phone's system font size is turned up. The video overlay is chrome,
+     * not body copy, so it should not follow the text-accessibility scale:
+     * that scaling is what made every menu and pill read as oversized.
+     */
+    private fun TextView.dpText(sizeDp: Float) {
+        setTextSize(TypedValue.COMPLEX_UNIT_PX, sizeDp * resources.displayMetrics.density)
+    }
+
+    /** How a glass menu row draws its leading marker. */
+    private enum class RowMarker { RADIO, ICON, NONE }
+
+    /**
+     * One row of a glass menu. A row is a rounded glass capsule carrying a
+     * primary [label], an optional secondary [sub] line, an optional
+     * right-aligned [badge] pill (a bitrate, a codec, a source type…) and a
+     * leading marker — a radio disc for "pick one" lists, [iconRes] in a glass
+     * disc for action lists, nothing at all for plain text.
+     *
+     * A [selected] row is the cyan -> violet tint with a gradient stroke, a
+     * filled radio dot and a plain white checkmark on the right, which is how
+     * the quality/audio/subtitle pickers show the active track.
+     */
+    private class GlassOption(
+        val label: String,
+        val sub: String? = null,
+        val badge: String? = null,
+        val iconRes: Int = 0,
+        val chevron: Boolean = false,
+        val selected: Boolean = false,
+        val marker: RowMarker = RowMarker.RADIO,
+    ) {
+        /** The same row with a different selection state. */
+        fun withSelected(value: Boolean): GlassOption = GlassOption(
+            label, sub, badge, iconRes, chevron, value, marker
         )
     }
 
-    /**
-     * One tappable radio row for the glass menus (server / quality / audio).
-     * The "paper" look the user complained about was the platform AlertDialog's
-     * flat list; here every row is a rounded pill that highlights gold when it's
-     * the active choice, so the selected server/quality is obvious at a glance.
-     */
-    private fun glassOptionRow(label: String, selected: Boolean, onClick: () -> Unit): View {
+    /** One pickable media track, flattened out of media3's Traks so a menu can
+     *  be built (and its selection state decided) in a single pass. */
+    private data class TrackRow(
+        val label: String,
+        val sub: String?,
+        val badge: String?,
+        val group: Tracks.Group,
+        val index: Int,
+    )
+
+    /** A remembered subtitle/audio choice: the track's own identity (the format
+     *  language/label the provider or manifest declared), plus the position it
+     *  had in the list, so it can be found again on a rebuilt track list. */
+    private data class TrackPick(
+        val type: Int,
+        val lang: String?,
+        val label: String?,
+        val index: Int,
+    ) {
+        fun matches(format: androidx.media3.common.Format, i: Int): Boolean {
+            if (!lang.isNullOrBlank() && format.language == lang) return true
+            if (!label.isNullOrBlank() && format.label == label) return true
+            return lang.isNullOrBlank() && label.isNullOrBlank() && i == index
+        }
+    }
+
+    /** "~2.6 Mbps" / "~759 kbps" — the data-use badge on a quality row. */
+    private fun bitrateBadge(bitsPerSecond: Long): String? = when {
+        bitsPerSecond <= 0L -> null
+        bitsPerSecond >= 1_000_000L ->
+            "~" + String.format(
+                java.util.Locale.US, "%.1f", Math.floor(bitsPerSecond / 100_000.0) / 10.0
+            ) + " Mbps"
+        else -> "~" + ((bitsPerSecond + 500L) / 1000L) + " kbps"
+    }
+
+    /** "AAC" / "SRT" / "TTML" … — a short badge for a track's mime type. */
+    private fun codecBadge(mime: String?): String? = when {
+        mime.isNullOrBlank() -> null
+        mime.contains("subrip", true) -> "SRT"
+        mime.contains("vtt", true) -> "VTT"
+        mime.contains("ssa", true) -> "ASS"
+        mime.contains("ttml", true) -> "TTML"
+        mime.contains("mp4a", true) -> "AAC"
+        mime.contains("eac3", true) -> "E-AC-3"
+        mime.contains("ac3", true) -> "AC-3"
+        mime.contains("opus", true) -> "Opus"
+        mime.contains("vorbis", true) -> "Vorbis"
+        mime.contains("flac", true) -> "FLAC"
+        else -> null
+    }
+
+    /** "Stereo" / "5.1" — a short badge for an audio track's channel layout. */
+    private fun channelsBadge(count: Int): String? = when (count) {
+        0 -> null
+        1 -> "Mono"
+        2 -> "Stereo"
+        6 -> "5.1"
+        8 -> "7.1"
+        else -> "${count}ch"
+    }
+
+    /** The display host of [url] ("cdn.example.com"), or null when there is none. */
+    private fun hostOf(url: String): String? =
+        runCatching { Uri.parse(url).host }.getOrNull()
+            ?.removePrefix("www.")?.takeIf { it.isNotBlank() }
+
+    /** The language of a track as the user would name it ("English"), or null. */
+    private fun languageOf(language: String?): String? {
+        if (language.isNullOrBlank()) return null
+        val pretty = runCatching {
+            java.util.Locale(language).getDisplayLanguage(java.util.Locale.ENGLISH)
+        }.getOrNull()
+        return pretty?.takeIf { it.isNotBlank() && !it.equals(language, true) } ?: language
+    }
+
+    /** A track's secondary line, or null when it would just be noise — a bare
+     *  format id ("1", "1/8219"), a blank label, or a repeat of [primary]. At
+     *  least two letters are required, so id-ish strings never become a row's
+     *  subtitle (that used to print stray "1/8219" lines under the labels). */
+    private fun trackSub(primary: String, vararg candidates: String?): String? =
+        candidates.asSequence()
+            .mapNotNull { it?.takeIf { c -> c.isNotBlank() && c != primary } }
+            .firstOrNull { c -> c.count { ch -> ch.isLetter() } >= 2 }
+
+    /** A usable display name for a media track: [label] when it reads like a
+     *  name, else "Track N" — some streams expose only bare ids ("1/8219"). */
+    private fun trackLabel(label: String?, fallbackIndex: Int): String =
+        label?.takeIf { it.count { ch -> ch.isLetter() } >= 2 } ?: "Track ${fallbackIndex + 1}"
+
+    /** A small glass pill: the right-aligned value badge on a row. */
+    private fun glassPill(text: String, sizeDp: Float = 9.5f): TextView {
         val density = resources.displayMetrics.density
-        val accent = 0xFFF5C569.toInt()
+        return TextView(this).apply {
+            this.text = text
+            dpText(sizeDp)
+            includeFontPadding = false
+            setTextColor(0xFFC9D2E0.toInt())
+            gravity = Gravity.CENTER
+            setPadding(
+                (7 * density).toInt(), (2.5f * density).toInt(),
+                (7 * density).toInt(), (2.5f * density).toInt()
+            )
+            // No outline: the badge reads as a soft grey chip sitting on the
+            // row, exactly like the reference player's bitrate pills.
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(0x1FFFFFFF)
+            }
+        }
+    }
+
+    /** The plain white check that marks the active row. */
+    private fun checkMark(): View {
+        val density = resources.displayMetrics.density
+        return ImageView(this).apply {
+            setImageResource(R.drawable.ic_check)
+            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                (14 * density).toInt(), (14 * density).toInt()
+            ).apply { marginStart = (7 * density).toInt() }
+        }
+    }
+
+    /** The leading marker of a row, or null for [RowMarker.NONE]. */
+    private fun rowMarker(option: GlassOption): View? {
+        val density = resources.displayMetrics.density
+        val size = (16 * density).toInt()
+        return when (option.marker) {
+            RowMarker.RADIO -> {
+                // The reference player's radio: a filled gradient disc with a
+                // small white dot when active, a light hollow ring otherwise.
+                val marker = if (option.selected) {
+                    LayerDrawable(
+                        arrayOf(
+                            accentShape(10f).apply { shape = GradientDrawable.OVAL },
+                            GradientDrawable().apply {
+                                shape = GradientDrawable.OVAL
+                                setColor(0xFFFFFFFF.toInt())
+                            }
+                        )
+                    ).apply {
+                        val inset = (4.5f * density).roundToInt()
+                        setLayerInset(1, inset, inset, inset, inset)
+                    }
+                } else {
+                    GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0x00000000)
+                        setStroke((1.5f * density).roundToInt().coerceAtLeast(1), 0x8CFFFFFF.toInt())
+                    }
+                }
+                View(this).apply {
+                    background = marker
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                        .apply { marginEnd = (10 * density).toInt() }
+                }
+            }
+            RowMarker.ICON -> {
+                if (option.iconRes == 0) {
+                    null
+                } else {
+                    val disc = (26 * density).toInt()
+                    FrameLayout(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(disc, disc)
+                            .apply { marginEnd = (10 * density).toInt() }
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(0x1FFFFFFF)
+                            setStroke((1 * density).toInt().coerceAtLeast(1), 0x2EFFFFFF)
+                        }
+                        addView(ImageView(this@PlayerActivity).apply {
+                            setImageResource(option.iconRes)
+                            imageTintList = ColorStateList.valueOf(0xFFE6EAF3.toInt())
+                            scaleType = ImageView.ScaleType.CENTER_INSIDE
+                            setPadding(
+                                (6 * density).toInt(), (6 * density).toInt(),
+                                (6 * density).toInt(), (6 * density).toInt()
+                            )
+                        }, FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        ))
+                    }
+                }
+            }
+            RowMarker.NONE -> null
+        }
+    }
+
+    /**
+     * One tappable row of the glass menus. [onClick] null draws a static row
+     * (used for the read-only rows a menu may need).
+     */
+    private fun glassRow(option: GlassOption, onClick: (() -> Unit)?): View {
+        val density = resources.displayMetrics.density
+        // Rows are capsules: the radius is deliberately larger than half the
+        // row height, so the shape is clamped to a stadium and every row reads
+        // as a pill — the "curved" look the whole player menu set uses.
+        val rowShape = if (option.selected) {
+            GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(withAlpha(accentStartColor, 0.30f), withAlpha(accentEndColor, 0.34f))
+            ).apply {
+                cornerRadius = 999f
+                setStroke(
+                    (1.5f * density).roundToInt().coerceAtLeast(1),
+                    withAlpha(accentMidColor, 0.85f)
+                )
+            }
+        } else {
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(0x14FFFFFF.toInt())
+            }
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            isFocusable = true
-            setPadding((12 * density).toInt(), (11 * density).toInt(), (12 * density).toInt(), (11 * density).toInt())
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 12 * density
-                if (selected) {
-                    setColor(0x33F5C569.toInt())
-                    setStroke((1 * density).toInt(), 0x66F5C569.toInt())
-                } else {
-                    setColor(0x14FFFFFF.toInt())
-                }
-            }
+            isClickable = onClick != null
+            isFocusable = onClick != null
+            setPadding(
+                (11.5f * density).toInt(), (8.5f * density).toInt(),
+                (11f * density).toInt(), (8.5f * density).toInt()
+            )
+            background = if (onClick == null) rowShape
+            else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
         }
-        row.addView(TextView(this).apply {
-            text = if (selected) "\u25CF" else "\u25CB"
-            textSize = 15f
-            includeFontPadding = false
-            setTextColor(if (selected) accent else 0x99FFFFFF.toInt())
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            marginEnd = (12 * density).toInt()
-        })
-        row.addView(TextView(this).apply {
-            text = label
-            textSize = 15f
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD7DEEA.toInt())
+        rowMarker(option)?.let { row.addView(it) }
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@PlayerActivity).apply {
+                text = option.label
+                dpText(12.5f)
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+                includeFontPadding = false
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFDCE3EE.toInt())
+            })
+            option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
+                addView(TextView(this@PlayerActivity).apply {
+                    text = sub
+                    dpText(10f)
+                    maxLines = 2
+                    includeFontPadding = false
+                    setTextColor(0xFF98A3B5.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (1 * density).toInt() })
+            }
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        row.setOnClickListener { onClick() }
+        option.badge?.takeIf { it.isNotBlank() }?.let { badge ->
+            row.addView(glassPill(badge), LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (7 * density).toInt() })
+        }
+        if (option.selected) {
+            row.addView(checkMark())
+        } else if (option.chevron) {
+            row.addView(TextView(this).apply {
+                text = "\u203A"
+                dpText(15f)
+                includeFontPadding = false
+                setTextColor(0xFF7E8AA0.toInt())
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (6 * density).toInt() })
+        }
+        if (onClick != null) row.setOnClickListener { onClick() }
         return row
     }
 
-    /**
-     * Presents a rounded, dark, gold-accented panel — the shared shell for
-     * every player menu. `content` goes inside a scrollable body (capped to the
-     * screen so long server/quality lists scroll within the panel), with a
-     * pinned CLOSE footer. Replaces the platform's flat "paper" AlertDialog.
-     */
-    private fun presentGlass(dialog: Dialog, title: String, content: View, preferredHeightDp: Float) {
+    /** A centred row container matching [showGlassMenu]'s list padding. */
+    private fun optionList(): LinearLayout {
         val density = resources.displayMetrics.density
-        val accent = 0xFFF5C569.toInt()
-        val root = LinearLayout(this).apply {
+        return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 18 * density
-                setColor(0xF0121723.toInt())
-                setStroke((1 * density).toInt(), 0x33FFFFFF)
-            }
-            clipToOutline = true
+            setPadding(
+                (10 * density).toInt(), (5 * density).toInt(),
+                (10 * density).toInt(), (2 * density).toInt()
+            )
         }
-        root.addView(TextView(this).apply {
-            text = title
-            textSize = 17f
-            setTextColor(accent)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            letterSpacing = 0.02f
-            setPadding((18 * density).toInt(), (15 * density).toInt(), (18 * density).toInt(), (12 * density).toInt())
-        })
-        root.addView(hairline(density))
-        root.addView(ScrollView(this).apply {
-            addView(content)
-            isFillViewport = true
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(hairline(density))
+    }
+
+    /** Adds [option] as a row to [list] using the shared row style. */
+    private fun addOptionRow(list: LinearLayout, option: GlassOption, onClick: (() -> Unit)?) {
+        val density = resources.displayMetrics.density
+        list.addView(
+            glassRow(option, onClick),
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (3 * density).toInt() }
+        )
+    }
+
+    /** Adds a plain labelled row to [list]. */
+    private fun addOptionRow(list: LinearLayout, label: String, selected: Boolean, onClick: (() -> Unit)?) {
+        addOptionRow(list, GlassOption(label, selected = selected), onClick)
+    }
+
+    /** The window's CURRENT size, in px.
+     *
+     *  [resources.displayMetrics] is not that: it reports the display's natural
+     *  (portrait) metrics, so in the landscape player it answers 1080x2460 even
+     *  though the window is 2460x1080. Every "shrink to fit the screen" cap
+     *  below was therefore measured against the wrong axis and never bit, which
+     *  is why the dialogs grew past the bottom of the video. WindowMetrics (API
+     *  30+) and getRealSize both follow the current rotation. */
+    private fun windowSize(): Point {
+        val density = resources.displayMetrics.density
+        val size = Point()
+        // The activity's own window is the authority: it is exactly the area a
+        // dialog has to fit inside.
+        val decor = window?.decorView
+        if (decor != null && decor.width > 0 && decor.height > 0) {
+            size.set(decor.width, decor.height)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+            size.set(bounds.width(), bounds.height())
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealSize(size)
+        }
+        // Cross-check with the configuration, which always follows the current
+        // rotation: on some devices `currentWindowMetrics` answers with the
+        // display's NATURAL (portrait) bounds even while the activity sits in
+        // landscape. Trusting that made win.y 2460 inside a 1080-tall window,
+        // so every cap below ("0.58 of the window", "the window minus chrome")
+        // never bit: the panel grew past 1400px, hung off the bottom of the
+        // screen, and its scroll view ended up taller than its own content —
+        // i.e. a subtitle sheet whose last rows were unreachable and which
+        // could not be scrolled at all. Taking the smaller figure per axis is
+        // the safe side: on a correct device the two agree, and this one is
+        // wrong in the too-large direction only.
+        val cfgW = (resources.configuration.screenWidthDp * density).toInt()
+        val cfgH = (resources.configuration.screenHeightDp * density).toInt()
+        if (cfgW > 0 && cfgW < size.x) size.x = cfgW
+        if (cfgH > 0 && cfgH < size.y) size.y = cfgH
+        return size
+    }
+
+    /**
+     * Room a glass panel keeps inside its own bounds for the neon edge to bloom
+     * into. The panel paints that glow along its own silhouette (see
+     * [CurvedGlassPanel]), so a dialog is just the panel plus this much space
+     * around it — there is no separate ring view parked behind it. Wide enough
+     * for the widest glow stroke (44dp) to fade out before the view edge: its
+     * half-width is 22dp, so 26dp covers it with a little to spare. It is also
+     * the visible gap between the hint line above the panel and the panel's own
+     * top edge, so it is kept as tight as the glow allows.
+     */
+    private val glassHaloPx: Int
+        get() = (26 * resources.displayMetrics.density).toInt()
+
+    /**
+     * Presents the rounded glass panel that shells every player dialog. Above
+     * the panel sit the contextual [hint] line (with [iconRes] drawn beside it)
+     * and the round glass close button, exactly like the reference player; the
+     * panel itself carries only the scrollable [content] — no title bar and no
+     * footer button — so the rows ARE the dialog.
+     *
+     * The panel is capped to the screen (see [preferredHeightDp]) and the window
+     * is WRAP_CONTENT + centred, so a long list scrolls inside a panel that
+     * always fits instead of running off the top and bottom of the video.
+     *
+     * Returns the hint [TextView] so a caller can keep its text live (the
+     * "server too slow" countdown), or null when no hint was requested.
+     */
+    private fun presentGlass(
+        dialog: Dialog,
+        title: String,
+        content: View,
+        preferredHeightDp: Float,
+        hint: String? = null,
+        iconRes: Int = 0,
+        cancelable: Boolean = true,
+        rowHosts: List<ViewGroup> = emptyList(),
+    ): TextView? {
+        val density = resources.displayMetrics.density
+        val halo = glassHaloPx
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // A dialog with no hint of its own still gets a line up here: the title
+        // is the natural stand-in, so nothing inside the panel is a header.
+        val hintView = (hint?.takeIf { it.isNotBlank() } ?: title.takeIf { it.isNotBlank() })
+            ?.let { line ->
+                TextView(this).apply {
+                    text = line
+                    dpText(11f)
+                    includeFontPadding = false
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(0xFF9AA5B5.toInt())
+                }
+            }
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
-            addView(TextView(this@PlayerActivity).apply {
-                text = "CLOSE"
-                textSize = 13f
-                setTextColor(accent)
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                letterSpacing = 0.06f
-                setPadding((16 * density).toInt(), (9 * density).toInt(), (16 * density).toInt(), (9 * density).toInt())
-                isClickable = true
-                setOnClickListener { dialog.dismiss() }
-            })
-        })
+            gravity = Gravity.CENTER_VERTICAL
+            // Start the line in from the panel's own left edge (the halo is
+            // where the panel's glow lives), not from the window's. No bottom
+            // padding: the halo alone is the gap to the panel, so the hint sits
+            // right on top of the glass instead of floating well above it.
+            setPadding(halo + (8 * density).toInt(), 0, halo, 0)
+            if (hintView != null) {
+                if (iconRes != 0) {
+                    addView(ImageView(this@PlayerActivity).apply {
+                        setImageResource(iconRes)
+                        imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
+                        scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    }, LinearLayout.LayoutParams(
+                        (14 * density).toInt(), (14 * density).toInt()
+                    ).apply { marginEnd = (7 * density).toInt() })
+                }
+                addView(hintView, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ).apply { marginEnd = (8 * density).toInt() })
+            } else {
+                addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            }
+            if (cancelable) {
+                addView(TextView(this@PlayerActivity).apply {
+                    text = "\u2715"
+                    dpText(12f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0xE6FFFFFF.toInt())
+                    background = ContextCompat.getDrawable(
+                        this@PlayerActivity, R.drawable.circle_glass_ripple
+                    )
+                    isClickable = true
+                    setOnClickListener { dialog.dismiss() }
+                }, LinearLayout.LayoutParams((26 * density).toInt(), (26 * density).toInt()))
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        // A permanent thin scrollbar makes it obvious the panel scrolls — the
+        // old fixed-height panel hid its last rows with no affordance at all.
+        val scroll = ScrollView(this).apply {
+            addView(content)
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+        }
+
+        val panel = CurvedGlassPanel(this).apply {
+            haloPx = halo.toFloat()
+            startColor = accentStartColor
+            midColor = accentMidColor
+            endColor = accentEndColor
+            // The rows bend to the panel's curve (see CurvedGlassPanel). The
+            // caller hands over the containers that actually hold them — when
+            // the whole list fits that is the row container itself, and the row
+            // stack's outline then IS the shape. A dialog with rows in two
+            // places (track list + control rows) hands over both.
+            rowHosts.forEach { bendHost(it) }
+        }
+        panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        // Rows are bent to the curve at their CURRENT height inside the panel, so
+        // a scroll changes which part of the curve each one sits on. Re-bend on
+        // every scroll: without this a row that scrolls up into the panel keeps
+        // the (wider) margins it was given while it was still off-screen, and
+        // the bowed edges slice it — which is what cut the lower quality rows
+        // ("1080p" -> "0p") in a list long enough to scroll.
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> panel.rebend() }
+
+        val win = windowSize()
+        // Width of the PANEL's own silhouette (the halo is added around it), so
+        // the glass and the glow along it are sized against a known width.
+        val panelW = minOf(
+            (win.x * 0.86f).toInt(),
+            (win.y * 0.74f).toInt(),
+            (400 * density).toInt(),
+        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+            .coerceAtLeast((140 * density).toInt())
+        // The panel must FLOAT on the video with all four rounded corners (and
+        // the light sweeping around them) visible: it is capped against the hint
+        // line plus the halo's own room above it, and against a fraction of the
+        // window, so it never runs off the top/bottom edge — which used to clip
+        // its bottom curve and hide the last rows. Anything longer scrolls.
+        val chrome = (96 * density).toInt()
+        val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
+        val maxFraction = (win.y * 0.58f).toInt()
+        val minPanel = (110 * density).toInt()
+        val panelH = (preferredHeightDp * density).toInt()
+            .coerceAtMost(fitsScreen)
+            .coerceAtMost(maxFraction)
+            .coerceAtLeast(minPanel)
+        // The panel view carries its own halo, so its silhouette comes out
+        // exactly panelW x panelH in the middle of it.
+        root.addView(panel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, panelH + 2 * halo
+        ))
+
         dialog.setContentView(
             root,
-            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         )
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
-        dialog.setCanceledOnTouchOutside(true)
+        dialog.setCanceledOnTouchOutside(cancelable)
+        dialog.setCancelable(cancelable)
         dialog.show()
-        val dm = resources.displayMetrics
-        val w = (dm.widthPixels * 0.9f).coerceAtMost(460 * density).toInt()
-        val h = (preferredHeightDp * density).coerceAtMost(dm.heightPixels * 0.86f).toInt()
+        // Narrower than a stock dialog: the reference panel is ~3/4 of the window
+        // height wide and never spans the full width, which is a large part of
+        // why it reads as a lightweight overlay instead of a full-screen sheet.
+        // The halo is added back on top so the PANEL keeps that width.
         dialog.window?.apply {
-            setLayout(w, h)
+            setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+        return hintView
     }
 
-    /** Builds + shows a radio list panel. Each tap dismisses and reports the index. */
-    private fun showGlassOptionMenu(title: String, items: List<String>, checked: Int, onPick: (Int) -> Unit) {
+    /**
+     * Builds + shows a glass menu. Each tap dismisses the panel and reports the
+     * tapped row's index. [hint] is the contextual line above the panel (with
+     * [iconRes] drawn beside it) and [message] an optional muted paragraph above
+     * the rows. Returns the created dialog, so a caller can attach its own
+     * listeners.
+     */
+    private fun showGlassMenu(
+        title: String,
+        options: List<GlassOption>,
+        hint: String? = null,
+        iconRes: Int = 0,
+        message: String? = null,
+        cancelable: Boolean = true,
+        onDialog: ((Dialog) -> Unit)? = null,
+        onHint: ((TextView) -> Unit)? = null,
+        onPick: (Int) -> Unit,
+    ): Dialog {
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (!message.isNullOrBlank()) {
+            content.addView(TextView(this).apply {
+                text = message
+                dpText(10.5f)
+                includeFontPadding = false
+                setLineSpacing(3f * density, 1f)
+                setTextColor(0xFF9AA5B5.toInt())
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(
+                    (11.5f * density).toInt(), (5 * density).toInt(),
+                    (11.5f * density).toInt(), (2 * density).toInt()
+                )
+            })
         }
-        items.forEachIndexed { i, label ->
-            content.addView(
-                glassOptionRow(label, i == checked) {
-                    dialog.dismiss()
-                    onPick(i)
-                },
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = (4 * density).toInt() }
-            )
-        }
-        presentGlass(dialog, title, content, 48f + 44f + items.size * 47f + 20f)
-    }
-
-    private fun showSourcesDialog() {
-        if (sources.isEmpty()) return
-        showGlassOptionMenu("Select server", sources.map { it.name }, currentIndex) { which ->
-            if (which != currentIndex) {
-                noSubsRetry = false
-                playSource(which)
+        val list = optionList()
+        options.forEachIndexed { i, option ->
+            addOptionRow(list, option) {
+                dialog.dismiss()
+                onPick(i)
             }
         }
+        content.addView(list, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        // Capsule rows are ~34dp tall (46dp when they carry a second line), 3dp
+        // apart inside the list's own padding — mirrored here so the panel opens
+        // at its natural height instead of always filling the screen. presentGlass
+        // still caps this against the screen, and anything longer scrolls.
+        val height = options.sumOf { if (it.sub.isNullOrBlank()) 34.0 else 46.0 }.toFloat() +
+            options.size * 3f + 12f +
+            (if (!message.isNullOrBlank()) 40f else 0f)
+        onDialog?.invoke(dialog)
+        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHosts = listOf(list))
+        if (hintView != null) onHint?.invoke(hintView)
+        return dialog
+    }
+
+    /**
+     * The glass progress panel shown while the player waits on a network step
+     * (finding servers, starting the torrent engine, probing a stream). Same
+     * shell as every other player dialog, so a tap never drops back to a stock
+     * Android spinner. [onCancel] fires when the user backs out / taps away.
+     */
+    private fun showGlassProgress(
+        title: String,
+        message: String,
+        cancelable: Boolean,
+        onCancel: (() -> Unit)? = null,
+    ): Dialog {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val halo = glassHaloPx
+        val panel = CurvedGlassPanel(this).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            haloPx = halo.toFloat()
+            startColor = accentStartColor
+            midColor = accentMidColor
+            endColor = accentEndColor
+        }
+        panel.addView(ProgressBar(this).apply {
+            indeterminateTintList = ColorStateList.valueOf(accentMidColor)
+        }, LinearLayout.LayoutParams((34 * density).toInt(), (34 * density).toInt()))
+        panel.addView(TextView(this).apply {
+            text = title
+            dpText(14f)
+            includeFontPadding = false
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (18 * density).toInt() })
+        panel.addView(TextView(this).apply {
+            text = message
+            dpText(11f)
+            includeFontPadding = false
+            setTextColor(0xFF9AA5B5.toInt())
+            gravity = Gravity.CENTER
+            setLineSpacing(3f * density, 1f)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (8 * density).toInt() })
+        val win = windowSize()
+        val w = minOf(
+            (win.x * 0.62f).toInt(),
+            (win.y * 0.6f).toInt(),
+            (300 * density).toInt(),
+        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+            .coerceAtLeast((140 * density).toInt())
+        dialog.setContentView(
+            panel,
+            ViewGroup.LayoutParams(w + 2 * halo, ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setCancelable(cancelable)
+        if (onCancel != null) dialog.setOnCancelListener { onCancel() }
+        dialog.show()
+        dialog.window?.apply {
+            setLayout(w + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+            setDimAmount(0.55f)
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+        return dialog
+    }
+
+    /** The Episodes pill: lists the title's episodes (fetched from the provider
+     *  stack on demand) and switches playback to the one the user picks, without
+     *  leaving the player. */
+    private fun showEpisodesDialog() {
+        val item = favouriteItem ?: return
+        val repo = contentRepo
+        Toast.makeText(this, "Loading episodes…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val eps = runCatching { repo.episodesFor(item) }.getOrNull().orEmpty()
+            if (eps.isEmpty()) {
+                Toast.makeText(this@PlayerActivity, "No episode list available", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val options = eps.map { ep ->
+                val number = when {
+                    ep.season > 1 && ep.number > 0 -> "S${ep.season} E${ep.number}"
+                    ep.number > 0 -> "Episode ${ep.number}"
+                    else -> ""
+                }
+                GlassOption(
+                    label = when {
+                        !ep.name.isNullOrBlank() && number.isNotBlank() -> "$number \u00B7 ${ep.name}"
+                        !ep.name.isNullOrBlank() -> ep.name
+                        number.isNotBlank() -> number
+                        else -> "Episode"
+                    },
+                    selected = ep.id == historyEntry?.episodeId,
+                )
+            }
+            showGlassMenu(
+                "Episodes",
+                options,
+                hint = "Switching keeps you inside the player.",
+                iconRes = R.drawable.ic_episodes,
+            ) { which ->
+                eps.getOrNull(which)?.let { switchToEpisode(it) }
+            }
+        }
+    }
+
+    /** Switches playback to [ep] in place: fetches that episode's servers, stops
+     *  the previous episode's live session, adopts the new episode's history key
+     *  and starts on the first server. Shows a cancellable progress dialog while
+     *  the providers search. */
+    private fun switchToEpisode(ep: Episode) {
+        val item = favouriteItem ?: return
+        val repo = contentRepo
+        var cancelled = false
+        val dialog = showGlassProgress(
+            "Loading episode",
+            "Finding servers for this episode…",
+            cancelable = true,
+        ) { cancelled = true }
+        lifecycleScope.launch {
+            val streams = runCatching { repo.streamsFor(item, ep) }.getOrNull().orEmpty()
+            runCatching { dialog.dismiss() }
+            if (cancelled) return@launch
+            if (streams.isEmpty()) {
+                Toast.makeText(
+                    this@PlayerActivity, "No servers found for this episode", Toast.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+            // The origin session's servers belong to the episode we just left —
+            // stop appending them, and stop restoring its remembered server.
+            liveStreamsJob?.cancel()
+            liveStreamsJob = null
+            liveSessionId = null
+            // Adopt the new episode (top-bar episode line + watch-history key).
+            applyLiveEpisode(ep)
+            // A fresh episode starts fresh: no resume position, no remembered
+            // server, and no memory of the old episode's failed URLs.
+            startPositionMs = 0L
+            seekPending = false
+            resumeHintMs = 0L
+            resumeHintDurMs = 0L
+            refreshAttempts = 0
+            noSubsRetry = false
+            resetHeaderWalk()
+            triedUrls.clear()
+            sources = streams.map { it.toPlayerSource() }
+            notifySourcesChanged()
+            currentIndex = 0
+            playSource(0)
+        }
+    }
+
+    /** The Source pill: the same grouped picker, dismissible without a pick. */
+    private fun showSourcesDialog() = showServerChooser()
+
+    /** The fixed section order: CloudStream servers first, then Hikari's own
+     *  providers, then Nuvio, then Stremio — with anything the repository could
+     *  not attribute last. */
+    private val serverGroupOrder = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+
+    /** Which section a server belongs to. [PlayerSource.provider] is stamped by
+     *  the repository from the provider that produced it; a blank one falls back
+     *  to the "Repo · Server" name prefix, and to "Other" when even that says
+     *  nothing. */
+    private fun serverGroup(src: PlayerSource): String {
+        src.provider.takeIf { it.isNotBlank() }?.let { return it }
+        val prefix = src.name.substringBefore(" \u00B7 ").trim()
+        return prefix.takeIf { it.isNotBlank() && prefix.length < src.name.length } ?: "Other"
+    }
+
+    /** One server's row — the same capsule the flat picker used. */
+    private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
+        label = source.name,
+        sub = when {
+            source.local -> "Saved on this device"
+            else -> hostOf(source.url)
+        },
+        badge = when {
+            source.local -> "Offline"
+            source.torrentStream || source.isTorrent -> "Torrent"
+            source.isM3u8 -> "HLS"
+            source.isMpd -> "DASH"
+            else -> null
+        },
+        selected = index == currentIndex,
+    )
+
+    /**
+     * The grouped server picker: a scrollable row of engine chips (All, then
+     * every engine that actually returned something) above a list divided into
+     * sections — "CloudStream" over its servers, then "Hikari", "Nuvio",
+     * "Stremio" — so a long merged list reads like the reference app's source
+     * sheet instead of one undifferentiated column.
+     *
+     * The list is rebuilt whenever [notifySourcesChanged] fires, so servers that
+     * land while the sheet is open (the detail screen keeps searching) appear
+     * without a re-open. [startMode] is the "don't play directly" chooser: it
+     * stays up until the user picks, and backing out of it falls back to the
+     * remembered/best server rather than leaving the player blank.
+     */
+    private fun showServerChooser(startMode: Boolean = false) {
+        if (sources.isEmpty()) return
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        var chip = "All"
+
+        /** Sections that actually have servers, in the fixed order above. */
+        fun groups(): List<String> {
+            val have = sources.map { serverGroup(it) }.toSet()
+            return serverGroupOrder.filter { it in have } +
+                have.filter { it !in serverGroupOrder }.sorted()
+        }
+
+        val chipRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // Chips with labels of different lengths all sit centred in their
+            // own pill instead of being nudged onto a shared baseline.
+            isBaselineAligned = false
+        }
+        // The engine chips swipe sideways for the engines that don't fit: with
+        // four extensions installed the row is wider than the panel, and before
+        // this there was no way to reach the chips past the edge — and no hint
+        // that anything was out there. OVER_SCROLL_ALWAYS adds the stretch glow
+        // that says "this row moves".
+        val chipScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_ALWAYS
+            isFillViewport = false
+            clipToPadding = false
+            addView(chipRow, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        // One container for the chip strip, the headers AND the rows: the panel
+        // bends a registered host's children to the glass's curve, so the strip
+        // has to be one of them. Kept outside the list it was measured against
+        // the panel's full width, so its first chip sat under the concave left
+        // edge and the bowed glass sliced it into an empty stub — the "All"
+        // button that looked collapsed and cut off. As a bent child the whole
+        // strip is pulled inside the silhouette at its own height, so the first
+        // chip always clears the curve, and the strip scrolls within that.
+        val list = optionList()
+        list.addView(chipScroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = (2 * density).roundToInt() })
+
+        /**
+         * One engine chip. Its box is measured from the TEXT rather than left to
+         * the TextView's own WRAP_CONTENT: a chip that wraps inside a
+         * HorizontalScrollView which is itself inside the panel's scroll view
+         * could be handed a zero-width measure spec somewhere up that chain and
+         * collapse to an empty sliver — which is what the first chip ("All")
+         * was doing. A width taken from the glyphs cannot collapse: the pill is
+         * always at least its label plus the side pads.
+         */
+        fun chipPill(label: String, selected: Boolean, onClick: () -> Unit): TextView {
+            val bg = if (selected) {
+                GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(
+                        withAlpha(accentStartColor, 0.34f),
+                        withAlpha(accentEndColor, 0.38f)
+                    )
+                ).apply {
+                    cornerRadius = 999f
+                    setStroke(
+                        (1.2f * density).roundToInt().coerceAtLeast(1),
+                        withAlpha(accentMidColor, 0.8f)
+                    )
+                }
+            } else {
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(0x14FFFFFF.toInt())
+                }
+            }
+            val padX = (11 * density).roundToInt()
+            val probe = TextView(this).apply { dpText(10.5f) }
+            val textW = ceil(probe.paint.measureText(label)).toInt()
+            val w = (textW + padX * 2).coerceAtLeast((34 * density).roundToInt())
+            val h = (25 * density).roundToInt()
+            return TextView(this).apply {
+                text = label
+                dpText(10.5f)
+                isSingleLine = true
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
+                background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
+                isClickable = true
+                isFocusable = false
+                setOnClickListener { onClick() }
+                layoutParams = LinearLayout.LayoutParams(w, h).apply {
+                    marginEnd = (6 * density).roundToInt()
+                }
+            }
+        }
+
+        fun rebuildList() {
+            // The chip strip is this container's FIRST child (see above), so drop
+            // only the headers and rows — removeAllViews would take the chips
+            // with them and leave an empty strip behind.
+            while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
+            val all = groups()
+            val visible = if (chip == "All") all else all.filter { it == chip }
+            visible.forEach { name ->
+                val members = sources.withIndex().filter { serverGroup(it.value) == name }
+                // The header names the engine and counts its servers; it is
+                // skipped for a single-chip view (the chip already says it).
+                if (chip == "All") {
+                    val first = list.childCount == 1
+                    list.addView(TextView(this).apply {
+                        text = name.uppercase() + "  \u00B7  " + members.size
+                        dpText(10f)
+                        includeFontPadding = false
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        setTextColor(withAlpha(accentMidColor, 0.95f))
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
+                        setMargins(
+                            (4 * density).toInt(),
+                            topMargin,
+                            (4 * density).toInt(),
+                            (4 * density).toInt()
+                        )
+                    })
+                }
+                members.forEach { (i, src) ->
+                    addOptionRow(list, serverOption(src, i)) {
+                        dialog.dismiss()
+                        if (i != currentIndex) {
+                            noSubsRetry = false
+                            playSource(i)
+                        }
+                    }
+                }
+            }
+        }
+
+        fun rebuildChips() {
+            chipRow.removeAllViews()
+            (listOf("All") + groups()).forEach { name ->
+                // The pill carries its own measured LayoutParams (see chipPill),
+                // so it is added bare — it can neither collapse nor be squeezed.
+                chipRow.addView(
+                    chipPill(if (name == "All") "All" else name, name == chip) {
+                        chip = name
+                        rebuildChips()
+                        rebuildList()
+                    }
+                )
+            }
+        }
+
+        rebuildChips()
+        rebuildList()
+        val watcher: () -> Unit = {
+            // A rebuild changes the content height, so put the scroll offsets
+            // back AFTER the new rows are laid out (scrollTo clamps to the new
+            // maximum) — otherwise a server landing while the user reads the
+            // list would yank them to the top, or a re-created chip row would
+            // throw away the chip they had scrolled to.
+            val sv = list.parent as? ScrollView
+            val keepY = sv?.scrollY ?: 0
+            val keepX = chipScroll.scrollX
+            rebuildChips()
+            rebuildList()
+            sv?.post { sv.scrollTo(0, keepY) }
+            chipScroll.post { chipScroll.scrollTo(keepX, 0) }
+        }
+        sourcesWatchers.add(watcher)
+        dialog.setOnDismissListener { sourcesWatchers.remove(watcher) }
+        if (startMode) {
+            // Backing out of the start chooser must not leave the player
+            // blank: fall back to the remembered/best server.
+            dialog.setOnCancelListener {
+                lifecycleScope.launch { playSource(preferredStartIndex()) }
+            }
+        }
+        presentGlass(
+            dialog,
+            "Select server",
+            list,
+            700f,
+            hint = "Grouped by the engine that found each server.",
+            iconRes = R.drawable.ic_server,
+            rowHosts = listOf(list),
+        )
     }
 
     private fun showQualityDialog() {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Auto (adaptive)")
-        var base = 1
-        var checked = 0
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
         for (group in groups) {
             val mediaGroup = group.mediaTrackGroup
-            val override = p.trackSelectionParameters.overrides[mediaGroup]
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
                 val label = listOfNotNull(
                     f.height.takeIf { it > 0 }?.let { "${it}p" },
                     f.width.takeIf { it > 0 }?.let { "${it}px" },
-                    f.averageBitrate.takeIf { it > 0 }?.let { "${it / 1000}kbps" }
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(label)
-                indexMap[items.size - 1] = group to i
-                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
-                    checked = base + i
-                }
+                ).joinToString(" \u00B7 ").ifBlank { "Track ${i + 1}" }
+                val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+                if (isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = label,
+                        // No secondary line: the label already carries the
+                        // resolution, and the variant's format id is a bare
+                        // number ("1", "2"…) on most HLS streams.
+                        sub = null,
+                        badge = bitrateBadge(bitrate),
+                        group = group,
+                        index = i,
+                    )
+                )
             }
-            base += mediaGroup.length
         }
-        showGlassOptionMenu("Video quality", items, checked) { which ->
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        val options = mutableListOf(
+            GlassOption(
+                "Auto (adaptive)",
+                "Automatically adjusts to your connection",
+                selected = !overrideSelected,
+            )
+        )
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 1] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                )
+            )
+        }
+        showGlassMenu(
+            "Video quality",
+            options,
+            hint = "Higher quality uses more data",
+            iconRes = R.drawable.ic_quality,
+        ) { which ->
             if (which == 0) {
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
                     .build()
             } else {
-                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                val (group, ti) = indexMap[which] ?: return@showGlassMenu
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
@@ -1094,6 +2523,22 @@ class PlayerActivity : ComponentActivity() {
                     .build()
             }
         }
+    }
+
+    /** True when [group]'s track [index] is the one explicitly selected. */
+    private fun isTrackSelected(player: ExoPlayer, group: Tracks.Group, index: Int): Boolean {
+        val mediaGroup = group.mediaTrackGroup
+        val override = player.trackSelectionParameters.overrides[mediaGroup]
+        if (override != null && override.trackIndices.any { it == index }) return true
+        // A rebuilt media item invalidates the override until [applyStickyPicks]
+        // re-applies it a moment later — read the remembered pick as well, so
+        // the sheet never claims the user's choice was forgotten.
+        val pick = when (group.type) {
+            C.TRACK_TYPE_TEXT -> pickText
+            C.TRACK_TYPE_AUDIO -> pickAudio
+            else -> null
+        } ?: return false
+        return pick.matches(mediaGroup.getFormat(index), index)
     }
 
     /**
@@ -1110,31 +2555,60 @@ class PlayerActivity : ComponentActivity() {
     private fun showSubsDialog() {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        // A server can advertise subtitles that all failed to fetch or carried
+        // no cues — with them filtered out the picker would silently show only
+        // Off/Auto, which reads as "the app lost my subtitles". Say so instead.
+        if (groups.isEmpty() &&
+            sources.getOrNull(currentIndex)?.subtitles?.isNotEmpty() == true
+        ) {
+            Toast.makeText(
+                this,
+                "This server's subtitles couldn't be loaded",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
         val params = p.trackSelectionParameters
         val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
         val density = resources.displayMetrics.density
 
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Off")
-        items.add("Auto")
-        var checked = if (textDisabled) 0 else 1
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
         for (group in groups) {
             val mediaGroup = group.mediaTrackGroup
-            val override = params.overrides[mediaGroup]
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val lang = listOfNotNull(
-                    f.language?.takeIf { it.isNotBlank() },
-                    f.label?.takeIf { it.isNotBlank() },
-                    f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(lang)
-                indexMap[items.size - 1] = group to i
-                if (!textDisabled && override != null && override.trackIndices.any { it == i }) {
-                    checked = items.size - 1
-                }
+                val primary = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                val sub = trackSub(primary, f.label, f.id)
+                if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = primary,
+                        sub = sub,
+                        badge = codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
             }
+        }
+        val options = mutableListOf(
+            GlassOption("Off", "Hide captions completely", selected = textDisabled && !overrideSelected),
+            GlassOption(
+                "Auto", "Follow the stream's default captions",
+                selected = !textDisabled && !overrideSelected,
+            ),
+        )
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 2] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = !textDisabled && isTrackSelected(p, row.group, row.index),
+                )
+            )
         }
 
         // Compact pill-shaped translucent +/- buttons, matching the app's glass
@@ -1145,73 +2619,80 @@ class PlayerActivity : ComponentActivity() {
         fun pill(text: String, onClick: () -> Unit): TextView {
             val bg = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = (15 * density).toFloat()
+                cornerRadius = 999f
                 setColor(0x1AFFFFFF.toInt())
+                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.55f))
             }
             return TextView(this).apply {
                 this.text = text
-                textSize = 13f
-                setTextColor(0xFFF5C569.toInt())
+                dpText(11f)
+                setTextColor(0xFFFFFFFF.toInt())
                 gravity = Gravity.CENTER
                 background = bg
                 includeFontPadding = false
-                setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
+                setPadding((9 * density).toInt(), (4 * density).toInt(), (9 * density).toInt(), (4 * density).toInt())
                 setOnClickListener { onClick() }
             }
         }
         fun rowLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            textSize = 14f
+            dpText(12f)
             setTextColor(0xFFE6EAF3.toInt())
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            textSize = 13f
+            dpText(11f)
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
-            minWidth = (48 * density).toInt()
+            minWidth = (38 * density).toInt()
         }
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
 
-        var initializing = true
-        val radioGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        items.forEachIndexed { idx, label ->
-            radioGroup.addView(RadioButton(this).apply {
-                text = label
-                textSize = 15f
-                setTextColor(0xFFE6EAF3.toInt())
-                buttonTintList = ColorStateList.valueOf(0xFFF5C569.toInt())
-                id = View.generateViewId()
-                isChecked = idx == checked
-                setOnCheckedChangeListener { _, isChecked ->
-                    if (!initializing && isChecked) {
-                        userPickedSubs = true
-                        when (idx) {
-                            0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                .build()
-                            1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                                .build()
-                            else -> {
-                                val (group, ti) = indexMap[idx] ?: return@setOnCheckedChangeListener
-                                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                                    .setOverrideForType(
-                                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                                    )
-                                    .build()
-                            }
-                        }
+        // Track rows use the shared accent list, then the three settings rows
+        // (size / sync / position) sit below them.
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val trackList = optionList()
+        options.forEachIndexed { idx, option ->
+            addOptionRow(trackList, option) {
+                userPickedSubs = true
+                when (idx) {
+                    0 -> {
+                        textOff = true
+                        pickText = null
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .build()
+                    }
+                    1 -> {
+                        textOff = false
+                        pickText = null
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .build()
+                    }
+                    else -> {
+                        val (group, ti) = indexMap[idx] ?: return@addOptionRow
+                        val format = group.mediaTrackGroup.getFormat(ti)
+                        textOff = false
+                        // Remember WHAT was picked (language/label), not the
+                        // TrackGroup object — the group dies with the next
+                        // re-prepare, the language does not.
+                        pickText = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, ti)
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setOverrideForType(
+                                TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                            )
+                            .build()
                     }
                 }
-            })
+                dialog.dismiss()
+            }
         }
-        initializing = false
 
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
         fun applySize() {
@@ -1243,45 +2724,79 @@ class PlayerActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
+                setPadding(
+                    (10 * density).toInt(), (6 * density).toInt(),
+                    (10 * density).toInt(), (6 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(0x14FFFFFF.toInt())
+                }
                 addView(rowLabel(label))
                 addView(weightSpacer())
                 controls.forEach { addView(it) }
             }
 
+        // The three control rows live in their own container so the panel can
+        // bend them to the curve independently of the track list above them
+        // (see CurvedGlassPanel.bendHost). Registering a container AND one of
+        // its ancestors would bend the same rows twice.
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), (4 * density).toInt())
-            addView(radioGroup, LinearLayout.LayoutParams(
+            addView(trackList, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = (4 * density).toInt() })
-            addView(controlRow(
-                "Text size",
-                pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
-                sizeValue,
-                pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
-            ).also { it.setPadding(0, (14 * density).toInt(), 0, 0) })
-            addView(controlRow(
-                "Sync",
-                pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
-                syncValue,
-                pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
-            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
-            // Vertical position: "Higher" keeps more of the player's height
-            // clear below the captions, lifting them off the bottom edge (and
-            // out of the letterbox bar on a fitted/letterboxed video).
-            addView(controlRow(
-                "Position",
-                pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
-                posValue,
-                pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
-            ).also { it.setPadding(0, (10 * density).toInt(), 0, 0) })
+            ))
+            addView(controls, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
         }
+        fun addControl(row: LinearLayout) {
+            controls.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(
+                    (10 * density).toInt(), (7 * density).toInt(),
+                    (10 * density).toInt(), 0
+                )
+            })
+        }
+        addControl(controlRow(
+            "Text size",
+            pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+            sizeValue,
+            pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+        ))
+        addControl(controlRow(
+            "Sync",
+            pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
+            syncValue,
+            pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
+        ))
+        // Vertical position: "Higher" keeps more of the player's height
+        // clear below the captions, lifting them off the bottom edge (and
+        // out of the letterbox bar on a fitted/letterboxed video).
+        addControl(controlRow(
+            "Position",
+            pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+            posValue,
+            pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+        ))
 
         // The whole panel scrolls (see presentGlass), so the Track rows plus the
         // size/sync controls can never be cut off the bottom on a short screen.
-        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        presentGlass(dialog, "Subtitles", root, 1000f)
+        presentGlass(
+            dialog,
+            "Subtitles",
+            root,
+            1000f,
+            hint = "Applies while captions are on.",
+            iconRes = R.drawable.ic_subtitles,
+            rowHosts = listOf(trackList, controls),
+        )
     }
 
     private fun syncLabel(offsetMs: Long): String = if (offsetMs == 0L) "0.0s" else String.format("%+.1fs", offsetMs / 1000.0)
@@ -1302,47 +2817,117 @@ class PlayerActivity : ComponentActivity() {
      * Audio track switcher — for dual-audio releases (Hindi/Tamil/Telugu audio
      * on the same video, etc). Lists every audio group the current source
      * exposes, plus Default, and switches with an ExoPlayer track override.
+     *
+     * A language an extension delivers as its OWN stream rather than as an
+     * extra rendition inside one manifest ("MovieBox (Hindi Audio) 1080p",
+     * "… (Original Audio) 1080p") is offered here too, as a server row: the
+     * track list alone shows a single track on a release that plainly has two
+     * audio languages, and reaching the other language otherwise meant going
+     * through the server sheet and losing your place in the film.
+     *
      * The button sits in the SAME bottom chip row as Quality/Sub so it never
      * overlaps any other control.
      */
-    private fun showAudioDialog() {
+    private fun showAudioDialog(waitedForTracks: Boolean = false) {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        if (groups.isEmpty()) {
+        // A manifest's audio renditions are only known once it has been parsed,
+        // so opening this sheet during the first buffer used to report a single
+        // track — or none at all — on a stream that really carries two. Give
+        // the player a moment to finish parsing before answering.
+        if (groups.isEmpty() && !waitedForTracks && p.playbackState != Player.STATE_READY) {
+            lifecycleScope.launch {
+                for (i in 0 until 12) {
+                    val done = player?.let { pl ->
+                        pl.playbackState == Player.STATE_READY ||
+                            pl.currentTracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }
+                    } ?: true
+                    if (done) break
+                    delay(200)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                showAudioDialog(waitedForTracks = true)
+            }
+            return
+        }
+        val rows = mutableListOf<TrackRow>()
+        var overrideSelected = false
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                val sub = trackSub(label, f.label, f.id)
+                if (isTrackSelected(p, group, i)) overrideSelected = true
+                rows.add(
+                    TrackRow(
+                        label = label,
+                        sub = sub,
+                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
+            }
+        }
+        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
+        val options = mutableListOf(
+            GlassOption(
+                "Default (adaptive)",
+                "Use the track this stream marks as default",
+                selected = !overrideSelected,
+            )
+        )
+        rows.forEachIndexed { i, row ->
+            indexMap[i + 1] = row.group to row.index
+            options.add(
+                GlassOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                )
+            )
+        }
+        // Audio languages the extension ships as separate servers, so the
+        // language can be switched from HERE and the position kept.
+        val variantMap = HashMap<Int, Int>()
+        audioVariantsFor(currentIndex).forEach { (tag, index) ->
+            variantMap[options.size] = index
+            options.add(
+                GlassOption(
+                    label = tag,
+                    sub = if (index == currentIndex) "Playing now \u2014 " + sources[index].name
+                    else sources[index].name,
+                    badge = "Server",
+                    selected = index == currentIndex,
+                )
+            )
+        }
+        if (groups.isEmpty() && variantMap.isEmpty()) {
             Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
             return
         }
-        val items = mutableListOf<String>()
-        val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
-        items.add("Default (adaptive)")
-        var checked = 0
-        for (group in groups) {
-            val mediaGroup = group.mediaTrackGroup
-            val override = p.trackSelectionParameters.overrides[mediaGroup]
-            for (i in 0 until mediaGroup.length) {
-                val f = mediaGroup.getFormat(i)
-                val label = listOfNotNull(
-                    f.language?.takeIf { it.isNotBlank() }?.let { lang ->
-                        java.util.Locale(lang).getDisplayLanguage(java.util.Locale.ENGLISH)
-                            .takeIf { it.isNotBlank() } ?: lang
-                    },
-                    f.label?.takeIf { it.isNotBlank() },
-                    f.id?.takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
-                items.add(label)
-                indexMap[items.size - 1] = group to i
-                if (checked == 0 && override != null && override.trackIndices.any { it == i }) {
-                    checked = items.size - 1
-                }
-            }
-        }
-        showGlassOptionMenu("Audio", items, checked) { which ->
+        showGlassMenu(
+            "Audio",
+            options,
+            hint = if (variantMap.isEmpty()) "Some releases ship more than one audio track."
+            else "Pick a language \u2014 some servers carry the audio.",
+            iconRes = R.drawable.ic_audio,
+        ) { which ->
+            variantMap[which]?.let { switchAudioVariant(it); return@showGlassMenu }
             if (which == 0) {
+                pickAudio = null
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                     .build()
             } else {
-                val (group, ti) = indexMap[which] ?: return@showGlassOptionMenu
+                val (group, ti) = indexMap[which] ?: return@showGlassMenu
+                val format = group.mediaTrackGroup.getFormat(ti)
+                // Remember the LANGUAGE, not the TrackGroup: the group is
+                // replaced when the provider subtitles are attached, the
+                // language survives.
+                pickAudio = TrackPick(C.TRACK_TYPE_AUDIO, format.language, format.label, ti)
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
@@ -1350,6 +2935,89 @@ class PlayerActivity : ComponentActivity() {
                     .build()
             }
         }
+    }
+
+    /** Language words an extension bakes into a server name when it ships a
+     *  release in several audio languages as separate streams. */
+    private val audioLangWords = listOf(
+        "hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "marathi",
+        "punjabi", "gujarati", "bhojpuri", "urdu", "english", "original", "multi",
+    )
+
+    /** Tokens a name may carry after its audio marker ("1080p", "Dub") — skipped
+     *  when looking for a bare language word at the end of a name. */
+    private val audioTrailerWords = setOf(
+        "audio", "dub", "dubbed", "dual", "1080p", "720p", "480p", "2160p", "4k",
+        "hd", "fhd", "sd", "uhd",
+    )
+
+    /** The audio language a server name advertises ("MovieBox (Hindi Audio)
+     *  1080p" -> "Hindi Audio"), or null when the name says nothing about it.
+     *  A bracketed marker is taken as-is; a bare language word only counts as
+     *  the last meaningful token, so a title that merely CONTAINS the word
+     *  "Hindi" — or a server named "TamilBlasters · Server 1" — never reads as
+     *  an audio variant. */
+    private fun audioTagOf(name: String): String? {
+        Regex("""[\(\[]([^\)\]]*?(?:audio|dub)[^\)\]]*?)[\)\]]""", RegexOption.IGNORE_CASE)
+            .find(name)?.let { return it.groupValues[1].trim() }
+        val tokens = name.split(Regex("[\\s\u00B7|\\-_/]+")).filter { it.isNotBlank() }
+        for (i in tokens.indices.reversed()) {
+            val token = tokens[i].trim(',', ':', '.')
+            val low = token.lowercase()
+            if (low in audioTrailerWords) continue
+            if (low in audioLangWords) return token
+            break
+        }
+        return null
+    }
+
+    /** A server name with its audio marker, brackets and resolution suffix
+     *  stripped — two servers of one film in different languages reduce to the
+     *  same string, which is how the variants are matched. */
+    private fun audioBaseName(name: String, tag: String): String {
+        val at = name.indexOf(tag, ignoreCase = true)
+        val stripped = if (at >= 0) name.removeRange(at, at + tag.length) else name
+        return stripped
+            .replace(Regex("""[\(\)\[\]]"""), " ")
+            .replace(Regex("(?i)\\b\\d{3,4}p\\b"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+    }
+
+    /** Servers for the CURRENT title that differ from each other only by audio
+     *  language — the "(Hindi Audio)" / "(Original Audio)" pair an extension
+     *  emits when it delivers a multi-audio film as several streams. Kept
+     *  deliberately conservative: a candidate only counts when at least two
+     *  servers reduce to the same base name, so a stray language word can never
+     *  invent a row. Returns (display tag, source index) pairs. */
+    private fun audioVariantsFor(activeIndex: Int): List<Pair<String, Int>> {
+        val activeTag = sources.getOrNull(activeIndex)?.let { audioTagOf(it.name) }
+        val activeBase = if (activeTag != null) audioBaseName(sources[activeIndex].name, activeTag) else null
+        val candidates = sources.mapIndexedNotNull { i, s ->
+            val tag = audioTagOf(s.name) ?: return@mapIndexedNotNull null
+            val base = audioBaseName(s.name, tag)
+            if (base.length < 3) return@mapIndexedNotNull null
+            Triple(i, tag, base)
+        }.filter { activeBase == null || it.third == activeBase }
+        if (candidates.size < 2) return emptyList()
+        return candidates.map { (i, tag, _) -> tag.replaceFirstChar { it.uppercase() } to i }
+    }
+
+    /** Switches to a sibling server that carries a different audio language,
+     *  keeping the position in the film (and the remembered subtitle pick). */
+    private fun switchAudioVariant(index: Int) {
+        if (index == currentIndex || index !in sources.indices) return
+        val position = player?.currentPosition ?: 0L
+        if (position > 2_000L) {
+            // Same film, same place: an audio change must not restart it.
+            startPositionMs = position
+            seekPending = true
+        }
+        noSubsRetry = false
+        val name = sources[index].name
+        playSource(index)
+        Toast.makeText(this, "Switching audio \u2014 $name", Toast.LENGTH_SHORT).show()
     }
 
     /** Resets the per-server header walk, so the next attempt starts from the
@@ -1411,17 +3079,14 @@ class PlayerActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     private fun playTorrent(index: Int) {
         val src = sources[index]
-        sourcesBtn?.text = src.name
         errorPanel?.visibility = View.GONE
 
         torrentDialog?.let { runCatching { it.dismiss() } }
-        torrentDialog = ProgressDialog(this).apply {
-            setTitle("Torrent stream")
-            setMessage("Starting torrent engine…\nFirst play can take a few seconds.")
-            setCancelable(false)
-            setIndeterminate(true)
-            show()
-        }
+        torrentDialog = showGlassProgress(
+            "Torrent stream",
+            "Starting torrent engine…\nFirst play can take a few seconds.",
+            cancelable = false,
+        )
 
         lifecycleScope.launch {
             val res = try {
@@ -1450,6 +3115,7 @@ class PlayerActivity : ComponentActivity() {
                 val list = sources.toMutableList()
                 list[index] = converted
                 sources = list
+                notifySourcesChanged()
                 Toast.makeText(
                     this@PlayerActivity,
                     "Torrent ready — streaming from peers",
@@ -1713,13 +3379,7 @@ class PlayerActivity : ComponentActivity() {
         // The full-screen title card already signals "finding a server", so the
         // little probe dialog would just flicker on top of it.
         if (loadingBanner?.visibility != View.VISIBLE) {
-            probeDialog = ProgressDialog(this).apply {
-                setTitle(src.name)
-                setMessage("Preparing stream…")
-                setCancelable(false)
-                setIndeterminate(true)
-                show()
-            }
+            probeDialog = showGlassProgress(src.name, "Preparing stream…", cancelable = false)
         }
         lifecycleScope.launch {
             val clean = sanitizeHeaders(src.headers)
@@ -1751,6 +3411,7 @@ class PlayerActivity : ComponentActivity() {
         val list = sources.toMutableList()
         list[index] = StreamProbe.apply(src.toStreamSource(), resolved).toPlayerSource()
         sources = list
+        notifySourcesChanged()
     }
 
     private fun playDirectInner(index: Int) {
@@ -1766,9 +3427,16 @@ class PlayerActivity : ComponentActivity() {
         // must not pick one we already know dies.
         triedUrls.add(src.url)
 
-        sourcesBtn?.text = src.name
+        // The Source pill keeps its static label; the active server's name is
+        // shown by the top-bar source chip below.
+        val sourceBadge = src.name.substringBefore("|").trim().ifBlank { src.name }
+        if (sourceBadge.isNotBlank()) {
+            badgeSource?.text = sourceBadge
+            badgeSource?.visibility = View.VISIBLE
+        }
         errorPanel?.visibility = View.GONE
-        if (bannerMode && loadingBanner?.visibility != View.VISIBLE) showLoadingBanner()
+        if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE)
+            showLoadingCover()
 
         player?.let { old ->
             old.removeListener(listener)
@@ -1803,13 +3471,18 @@ class PlayerActivity : ComponentActivity() {
         // Local downloads read off the filesystem through DefaultDataSource
         // (which handles file:// and any local .m3u8's relative segment paths);
         // network sources keep the header-aware OkHttp factory.
-        val dataSourceFactory: DataSource.Factory = if (src.local) {
-            DefaultDataSource.Factory(this)
-        } else {
-            OkHttpDataSource.Factory(client)
-                .setUserAgent(ua)
-                .setDefaultRequestProperties(sourceHeaders)
-        }
+        val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(client)
+            .setUserAgent(ua)
+            .setDefaultRequestProperties(sourceHeaders)
+        // DefaultDataSource sits IN FRONT of the OkHttp factory, and that is
+        // what makes the provider subtitles work at all: they are handed to
+        // ExoPlayer as local (file://) URIs, and OkHttpDataSource alone only
+        // speaks http(s) — it throws on any other scheme, so every subtitle
+        // listed in the picker failed to load and drew nothing. DefaultDataSource
+        // routes file:/data:/content: locally and hands everything else to
+        // OkHttp, so the network behaviour (UA, headers, retry policy) is
+        // unchanged.
+        val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(this, networkFactory)
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest
@@ -1852,11 +3525,11 @@ class PlayerActivity : ComponentActivity() {
             // mid-stream is a classic "it randomly stops to buffer" cause on
             // some devices, and media3's default wake mode is NONE.
             .setWakeMode(C.WAKE_MODE_NETWORK)
-            // 5s steps on the centre rewind/forward buttons (and media3's own
+            // 10s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
-            .setSeekBackIncrementMs(5_000)
-            .setSeekForwardIncrementMs(5_000)
+            .setSeekBackIncrementMs(10_000)
+            .setSeekForwardIncrementMs(10_000)
             .build()
         this.player = player
         if (noSubsRetry) {
@@ -1874,12 +3547,7 @@ class PlayerActivity : ComponentActivity() {
         // URLs that return junk like "1", which media3 treats as a fatal parse
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
-        val mime = when {
-            src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
-                MimeTypes.APPLICATION_M3U8
-            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
-            else -> null
-        }
+        val mime = mainMimeOf(src)
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
 
@@ -1926,27 +3594,15 @@ class PlayerActivity : ComponentActivity() {
         val playedIndex = index
         lifecycleScope.launch {
             try {
-                val valid = withContext(Dispatchers.IO) {
-                    src.subtitles.mapNotNull { s ->
-                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
-                        s to encodeSubtitle(shiftSubtitleText(raw, subtitleOffsetMs, s.url))
-                    }
-                }
-                if (valid.isEmpty()) return@launch
+                val configs = buildSubtitleConfigs(src)
+                if (configs.isEmpty()) return@launch
                 if (currentIndex != playedIndex) return@launch
                 val p = player ?: return@launch
-                val configs = valid.map { (s, data) ->
-                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(data))
-                        .setMimeType(mimeFor(s.url))
-                        .setLanguage(s.lang)
-                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                        .build()
-                }
-                val item = MediaItem.Builder()
-                    .setUri(src.url)
-                    .setSubtitleConfigurations(configs)
-                if (mime != null) item.setMimeType(mime)
-                p.setMediaItem(item.build(), false)
+                // Re-prepare with the validated subtitle tracks. This rebuilds
+                // the media item, so the track groups are brand new — the
+                // user's remembered audio/subtitle pick is re-applied to them
+                // by applyStickyPicks from onTracksChanged.
+                p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle attach failed", t)
@@ -1995,33 +3651,41 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         if (slowDialog != null) return
-        val countdown = TextView(this).apply {
-            textSize = 16f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(0xFFB8B8B8.toInt())
-            setPadding(48, 0, 48, 24)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Server too slow")
-            .setMessage(
-                "This server is still buffering. Switch to the next server, " +
-                    "or wait a little longer?"
-            )
-            .setView(countdown)
-            .setPositiveButton("Switch now") { _, _ ->
-                dismissSlowDialog()
-                noSubsRetry = false
+        var countdown: TextView? = null
+        val dialog = showGlassMenu(
+            "Server too slow",
+            listOf(
+                GlassOption(
+                    "Switch now",
+                    "Jump to the next server",
+                    iconRes = R.drawable.ic_server,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Wait 30s",
+                    "Give this server more time",
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = "Switching to the next server in 3s…",
+            iconRes = R.drawable.ic_server,
+            cancelable = false,
+            onHint = { countdown = it },
+        ) { which ->
+            dismissSlowDialog()
+            noSubsRetry = false
+            if (which == 0) {
                 Toast.makeText(this@PlayerActivity, "Switching server", Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
-            }
-            .setNegativeButton("Wait 30s") { _, _ ->
-                dismissSlowDialog()
+            } else {
                 // Stay on this server; the same prompt reappears after 30s if
                 // it still hasn't started playing.
                 scheduleBufferingWatchdog(30_000L)
             }
-            .setCancelable(false)
-            .create()
+        }
         slowDialog = dialog
         val start = System.currentTimeMillis()
         val ticker = object : Runnable {
@@ -2039,13 +3703,12 @@ class PlayerActivity : ComponentActivity() {
                     playSource(currentIndex + 1)
                     return
                 }
-                countdown.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
+                countdown?.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
                 bufferingWatchdog.postDelayed(this, 250)
             }
         }
         slowDialogTicker = ticker
         bufferingWatchdog.post(ticker)
-        dialog.show()
     }
 
     private fun dismissSlowDialog() {
@@ -2064,29 +3727,78 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun fetchSubtitleText(s: SubtitleSource, headers: Map<String, String>): String? {
         subtitleRawCache[s.url]?.let { return it }
-        val bytes = Http.getBytes(s.url, headers) ?: return null
-        if (bytes.size > 4 * 1024 * 1024) return null
-        val text = String(bytes, Charsets.UTF_8).trimStart('\uFEFF')
-        val ok = when {
-            s.url.contains(".vtt", true) || s.url.contains("webvtt", true) ->
-                text.contains("WEBVTT", ignoreCase = true)
-            s.url.contains(".ass", true) || s.url.contains(".ssa", true) ->
-                text.contains("Script Info") || text.contains("Dialogue:")
-            s.url.contains(".srt", true) ->
-                Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
-            else ->
-                text.contains("WEBVTT", ignoreCase = true) ||
-                    text.contains("Dialogue:") ||
-                    Regex("\\d+\\s*\\n\\s*\\d{1,2}:\\d{2}:\\d{2}").containsMatchIn(text)
+        // Two attempts: with the source's own headers, then bare. Plenty of
+        // subtitle hosts 403 a request that carries a Referer (or an
+        // extension's cookies) while others only answer WITH it, and a
+        // subtitle that fails to load is invisible to the user — the picker row
+        // is there, choosing it just shows nothing.
+        for (attempt in 0..1) {
+            val h = if (attempt == 0) headers else emptyMap()
+            val bytes = Http.getBytes(s.url, h) ?: continue
+            val text = decodeSubtitleBytes(bytes) ?: continue
+            if (!isSubtitleText(text)) continue
+            subtitleRawCache[s.url] = text
+            return text
         }
-        if (!ok) return null
-        subtitleRawCache[s.url] = text
-        return text
+        return null
     }
 
-    private fun encodeSubtitle(text: String): String =
-        "data:text/plain;base64," +
-            Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    /** Bytes → subtitle text. Handles the containers providers really wrap
+     *  subtitles in: raw UTF-8, GZIP (".srt.gz"), a ZIP holding the subtitle
+     *  file, and UTF-16 (BOM, or NUL-padded ASCII). UTF-16 read as UTF-8 looks
+     *  like line after line of NULs, which is another way a perfectly good
+     *  subtitle used to be thrown away as junk. */
+    private fun decodeSubtitleBytes(bytes: ByteArray): String? {
+        if (bytes.size < 4 || bytes.size > 8 * 1024 * 1024) return null
+        if (bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+            val inner = runCatching {
+                java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes() }
+            }.getOrNull() ?: return null
+            return decodeSubtitleBytes(inner)
+        }
+        if (bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
+            val inner = runCatching {
+                java.util.zip.ZipInputStream(bytes.inputStream()).use { zin ->
+                    var entry = zin.nextEntry
+                    while (entry != null && entry.isDirectory) entry = zin.nextEntry
+                    if (entry == null) ByteArray(0) else zin.readBytes()
+                }
+            }.getOrNull() ?: return null
+            return decodeSubtitleBytes(inner)
+        }
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        val charset = when {
+            b0 == 0xFF && b1 == 0xFE -> Charsets.UTF_16LE
+            b0 == 0xFE && b1 == 0xFF -> Charsets.UTF_16BE
+            // NUL every other byte = UTF-16 with no BOM.
+            bytes.take(64).count { it == 0.toByte() } > 24 ->
+                if (b0 == 0) Charsets.UTF_16BE else Charsets.UTF_16LE
+            else -> Charsets.UTF_8
+        }
+        return String(bytes, charset).trimStart('\uFEFF', '\u0000', ' ', '\n', '\r')
+    }
+
+    /** True when [text] really is a subtitle: a recognisable format AND at least
+     *  one cue. The URL's extension is only a hint — providers serve ASS behind
+     *  ".srt" paths and VTT behind "?format=srt" — and a file whose header
+     *  survives but which carries no cues parses to ZERO subtitles in media3:
+     *  a row in the picker that shows nothing when selected, which is exactly
+     *  the "I selected the subtitle and it never appeared" report. Cue-less
+     *  files are rejected here so they never become a phantom row. */
+    private fun isSubtitleText(text: String): Boolean {
+        if (text.isBlank()) return false
+        val cue = Regex("\\d{1,2}:\\d{2}(:\\d{2})?[,.]\\d{1,3}\\s*-->").containsMatchIn(text)
+        return when {
+            text.contains("WEBVTT", true) -> cue
+            text.contains("Dialogue:", true) -> true
+            // an ASS/SSA header with no Dialogue line = no subtitles in it
+            text.contains("Script Info", true) -> false
+            text.contains("<tt", true) -> Regex("<p[ >]").containsMatchIn(text)
+            cue -> true
+            else -> false
+        }
+    }
 
     /** Shifts every cue timestamp in an SRT/VTT/ASS subtitle by offsetMs
      *  (negative = earlier / "slow" the subtitles, positive = later / "fast"),
@@ -2152,29 +3864,11 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val playedIndex = currentIndex
-        val mime = when {
-            src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
-                MimeTypes.APPLICATION_M3U8
-            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
-            else -> null
-        }
         lifecycleScope.launch {
             try {
-                val configs = withContext(Dispatchers.IO) {
-                    src.subtitles.mapNotNull { s ->
-                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
-                        val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
-                        MediaItem.SubtitleConfiguration.Builder(Uri.parse(encodeSubtitle(shifted)))
-                            .setMimeType(mimeFor(s.url))
-                            .setLanguage(s.lang)
-                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                            .build()
-                    }
-                }
+                val configs = buildSubtitleConfigs(src)
                 if (configs.isEmpty() || currentIndex != playedIndex) return@launch
-                val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
-                if (mime != null) item.setMimeType(mime)
-                p.setMediaItem(item.build(), false)
+                p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle sync attach failed", t)
@@ -2182,11 +3876,106 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** The main-media mime for [src] (HLS/DASH), or null to let media3 sniff the
+     *  container itself. */
+    private fun mainMimeOf(src: PlayerSource): String? = when {
+        src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
+            MimeTypes.APPLICATION_M3U8
+        src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
+        else -> null
+    }
+
+    /** The playback item for [src] with [configs] attached as side-loaded
+     *  subtitles (and the source's own mime preserved). */
+    private fun mediaItemWithSubtitles(
+        src: PlayerSource,
+        configs: List<MediaItem.SubtitleConfiguration>,
+    ): MediaItem {
+        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
+        mainMimeOf(src)?.let { item.setMimeType(it) }
+        return item.build()
+    }
+
+    /** Fetches, validates, re-times and caches this source's provider subtitles,
+     *  returning the configurations to hand ExoPlayer. Runs on an IO thread. */
+    private suspend fun buildSubtitleConfigs(src: PlayerSource): List<MediaItem.SubtitleConfiguration> =
+        withContext(Dispatchers.IO) {
+            src.subtitles.mapNotNull { s ->
+                val raw = fetchSubtitleText(s, src.headers)
+                if (raw == null) {
+                    android.util.Log.w(
+                        "HikariPlayer",
+                        "subtitle dropped (unfetchable or no cues): ${s.lang} ${s.url}"
+                    )
+                    return@mapNotNull null
+                }
+                val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
+                val mime = subtitleMimeOf(shifted, s.url)
+                val uri = writeSubtitleFile(shifted, s.url, mime) ?: return@mapNotNull null
+                MediaItem.SubtitleConfiguration.Builder(uri)
+                    .setMimeType(mime)
+                    .setLanguage(s.lang)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+            }
+        }
+
+    /** Which subtitle mime to hand ExoPlayer, sniffed from the CONTENT first and
+     *  the URL second. The URL is not trustworthy: providers serve .srt behind
+     *  extension-less API paths and .vtt behind "?format=srt" query strings, and
+     *  media3 picks its subtitle parser from this mime — a wrong one makes the
+     *  track parse to zero cues, which is exactly "the subtitle is selected but
+     *  nothing ever appears". */
+    private fun subtitleMimeOf(text: String, url: String): String {
+        val head = text.take(4000)
+        return when {
+            head.contains("WEBVTT", true) -> MimeTypes.TEXT_VTT
+            head.contains("Script Info", true) || head.contains("Dialogue:", true) -> MimeTypes.TEXT_SSA
+            head.contains("<tt", true) && head.contains("<p", true) -> MimeTypes.APPLICATION_TTML
+            Regex("\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3}\\s*-->").containsMatchIn(head) ->
+                if (url.contains(".vtt", true)) MimeTypes.TEXT_VTT else MimeTypes.APPLICATION_SUBRIP
+            else -> mimeFor(url)
+        }
+    }
+
+    /** Writes a validated subtitle into the app's subtitle cache and returns its
+     *  file:// URI — a local file is what DefaultDataSource can read, and unlike
+     *  a huge base64 data: URI it costs no extra copy of the subtitle inside the
+     *  MediaItem. Returns null when the file cannot be written. */
+    private fun writeSubtitleFile(text: String, url: String, mime: String): Uri? = runCatching {
+        val ext = when (mime) {
+            MimeTypes.TEXT_VTT -> "vtt"
+            MimeTypes.TEXT_SSA -> "ass"
+            MimeTypes.APPLICATION_TTML -> "ttml"
+            else -> "srt"
+        }
+        val dir = java.io.File(cacheDir, "subs").apply { mkdirs() }
+        // The sync offset is part of the name so a re-timed subtitle gets a
+        // fresh URI and can never be served from a stale read.
+        val stamp = Integer.toHexString((url + "|" + subtitleOffsetMs + "|" + text.length).hashCode())
+        val file = java.io.File(dir, "sub_$stamp.$ext")
+        file.writeText(text, Charsets.UTF_8)
+        // Yesterday's session leftovers are dead weight — clear them out as we
+        // write today's.
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        dir.listFiles()?.forEach { f ->
+            if (f != file && f.lastModified() < cutoff) runCatching { f.delete() }
+        }
+        Uri.fromFile(file)
+    }.getOrNull()
+
     private val listener = object : Player.Listener {
         // Auto-rotate to match the video: landscape videos play landscape,
         // portrait videos play portrait — once, per source. After that the
         // rotate button is entirely in the user's hands.
         override fun onVideoSizeChanged(videoSize: VideoSize) {
+            // Quality badge: the rendered video's height (updates per server,
+            // since a different source can be a different resolution).
+            val q = qualityBadgeFor(videoSize.height)
+            if (q.isNotBlank()) {
+                badgeQuality?.text = q
+                badgeQuality?.visibility = View.VISIBLE
+            }
             if (autoRotated) return
             if (videoSize.width <= 0 || videoSize.height <= 0) return
             autoRotated = true
@@ -2196,18 +3985,20 @@ class PlayerActivity : ComponentActivity() {
             } else {
                 SCREEN_ORIENTATION_PORTRAIT
             }
-            val gold = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F5C569"))
-            val white = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-            rotateBtn?.imageTintList = if (landscape) gold else white
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
-            selectFirstTextTrack(player ?: return, tracks)
+            val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)
+            selectFirstTextTrack(player ?: return, tracks, textApplied)
         }
 
         override fun onRenderedFirstFrame() {
             renderedFirstFrame = true
+            // Real video is on screen — retract any "your connection looks slow"
+            // verdict, measured or not.
+            SlowNetTip.onFirstFrame()
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             hideLoadingBanner()
@@ -2218,9 +4009,24 @@ class PlayerActivity : ComponentActivity() {
             maybeOfferResume()
         }
 
+        // The "Tap to play" hint under the centre play button is visible only
+        // while playback is paused (or before it has started).
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            playHint?.visibility = if (isPlaying) View.GONE else View.VISIBLE
+        }
+
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
+                // Duration badge (total runtime) — known once media is ready.
+                val durBadge = formatDurationBadge(this@PlayerActivity.player?.duration ?: 0L)
+                if (durBadge.isNotBlank()) {
+                    badgeDuration?.text = durBadge
+                    badgeDuration?.visibility = View.VISIBLE
+                }
                 dismissSlowDialog()
+                // Audio-only streams never fire onRenderedFirstFrame, so the same
+                // "playback really did start" signal applies here.
+                SlowNetTip.onFirstFrame()
                 // Fallback: audio-only streams never fire onRenderedFirstFrame,
                 // so drop the title card shortly after playback is ready.
                 bufferingWatchdog.postDelayed({ hideLoadingBanner() }, 1200L)
@@ -2272,7 +4078,8 @@ class PlayerActivity : ComponentActivity() {
                 (details.contains("WEBVTT", true) || details.contains("Expected", true) ||
                     details.contains("subtitle", true) || details.contains("TextDecoder", true))
             if (subtitleIssue) {
-                Toast.makeText(this@PlayerActivity, "Bad subtitle track — retrying without subtitles", Toast.LENGTH_SHORT).show()
+                // Silent retry: the user asked not to be told about every
+                // internal retry — only real server failures (below) speak up.
                 noSubsRetry = true
                 playSource(currentIndex)
                 return
@@ -2289,49 +4096,114 @@ class PlayerActivity : ComponentActivity() {
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) && headerVariant < 2) {
                 headerVariant++
-                Toast.makeText(
-                    this@PlayerActivity,
-                    "Source rejected our request — retrying with fewer headers",
-                    Toast.LENGTH_SHORT
-                ).show()
+                // Silent retry — same server, next header set down. The only
+                // message the user sees is "Server failed — trying next" once
+                // this server is finally abandoned.
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
             }
-            // Like CloudStream: never strand the user — keep trying the next
-            // server automatically on every failure.
-            val hasNext = currentIndex + 1 < sources.size
-            if (hasNext) {
+            // A dud link extracted mid-search: the SAME server is very often
+            // fine a moment later, once the provider search has finished and
+            // re-handed out its links — "back out and press Play again" is how
+            // users have been working around it. Do the equivalent here: ask
+            // for fresh links and, if one for THIS server arrives, play it
+            // (keeping the position). Once per session, and only while the
+            // search is still running, so the normal failover below is never
+            // delayed in any other case.
+            if (startedWhileSearching && !liveSearchDone && !sameServerRelinkUsed &&
+                refreshAttempts < MAX_REFRESH_ATTEMPTS && isIoFailure(code, headerIssue) &&
+                currentIndex < sources.size
+            ) {
+                sameServerRelinkUsed = true
+                refreshAttempts++
                 noSubsRetry = false
-                Toast.makeText(this@PlayerActivity, "Server failed — trying next", Toast.LENGTH_SHORT).show()
-                playSource(currentIndex + 1)
-            } else {
-                // No server left. If this looks like the servers simply died —
-                // expired signed links (HTTP 403) or a DNS/connect failure at
-                // the CDN — rather than a genuinely unplayable file, ask the
-                // detail screen for a fresh extraction before giving up:
-                // replaying a signed 4KHDHub/hubcloud URL after a few minutes
-                // can only 403, but a re-run hands out live links.
-                val ioLike = code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
-                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
-                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
-                    headerIssue
-                // Expired signed links are the classic reason a whole list dies
-                // (ioLike), but a re-extraction is also the ONLY way another
-                // repo's servers can be brought in — and with the
-                // cross-extension pass those are exactly the ones that may
-                // actually play a title this repo can't. So whenever the detail
-                // screen is still attached, ask it for fresh sources before
-                // declaring failure.
-                val canRefresh = ioLike || liveSessionId != null
-                if (!(canRefresh && refreshSources(currentIndex, details))) {
-                    showError(details, false)
+                errorPanel?.visibility = View.GONE
+                if (loadingBanner?.visibility != View.VISIBLE &&
+                    loadingSpinner?.visibility != View.VISIBLE
+                ) showLoadingCover()
+                val wantName = sources[currentIndex].name
+                val wantUrl = sources[currentIndex].url
+                val keepPosition = player?.currentPosition?.takeIf { it > 2_000L } ?: 0L
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "Reconnecting — $wantName",
+                    Toast.LENGTH_SHORT
+                ).show()
+                liveSessionId?.let { StreamsLive.requestRefresh(it) }
+                lifecycleScope.launch {
+                    val deadline = System.currentTimeMillis() + RELINK_WAIT_MS
+                    while (System.currentTimeMillis() < deadline) {
+                        delay(350)
+                        val fresh = sources.indexOfFirst { s ->
+                            s.url.isNotBlank() && s.url != wantUrl && s.url !in triedUrls &&
+                                s.name.equals(wantName, ignoreCase = true)
+                        }
+                        if (fresh >= 0) {
+                            if (keepPosition > 0L) {
+                                startPositionMs = keepPosition
+                                seekPending = true
+                            }
+                            playSource(fresh)
+                            return@launch
+                        }
+                        if (liveSearchDone) break
+                    }
+                    // Nothing fresher arrived — carry on exactly as before.
+                    failoverFromCurrent(details, code, headerIssue)
                 }
+                return
             }
+            failoverFromCurrent(details, code, headerIssue)
         }
     }
+
+    /**
+     * Every attempt on the current server is spent: advance to the next one, or
+     * — when that was the last — ask the detail screen for a fresh extraction
+     * before reporting failure.
+     */
+    private fun failoverFromCurrent(details: String, code: Int, headerIssue: Boolean) {
+        // Like CloudStream: never strand the user — keep trying the next
+        // server automatically on every failure.
+        val hasNext = currentIndex + 1 < sources.size
+        if (hasNext) {
+            noSubsRetry = false
+            SlowNetTip.onServerFailed()
+            Toast.makeText(this, "Server failed — trying next", Toast.LENGTH_SHORT).show()
+            playSource(currentIndex + 1)
+            return
+        }
+        // No server left. If this looks like the servers simply died — expired
+        // signed links (HTTP 403) or a DNS/connect failure at the CDN — rather
+        // than a genuinely unplayable file, ask the detail screen for a fresh
+        // extraction before giving up: replaying a signed 4KHDHub/hubcloud URL
+        // after a few minutes can only 403, but a re-run hands out live links.
+        // Expired signed links are the classic reason a whole list dies
+        // (ioLike), but a re-extraction is also the ONLY way another repo's
+        // servers can be brought in — and with the cross-extension pass those
+        // are exactly the ones that may actually play a title this repo can't.
+        // So whenever the detail screen is still attached, ask it for fresh
+        // sources before declaring failure.
+        val ioLike = isIoFailure(code, headerIssue)
+        val canRefresh = ioLike || liveSessionId != null
+        if (!(canRefresh && refreshSources(currentIndex, details))) {
+            showError(details, false)
+        }
+    }
+
+    /** Errors a fresh extraction can plausibly fix — a stale/expired link, a
+     *  host that refused us, bytes that were never a video — as opposed to a
+     *  file that is simply unplayable. */
+    private fun isIoFailure(code: Int, headerIssue: Boolean): Boolean =
+        headerIssue ||
+            code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+            code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
 
     /** Drop non-ASCII characters from a header value. OkHttp throws
      *  IllegalArgumentException on any header value containing chars > 127,
@@ -2354,6 +4226,21 @@ class PlayerActivity : ComponentActivity() {
      * until the first frame of video is drawn, so tapping Play never reads as
      * "nothing happened". Purely decorative — playback state is untouched.
      */
+    /** The cover shown while a server is being found/prepared: the full-screen
+     *  title card, or — when the user turned it off in Settings — just a round
+     *  spinner on black. */
+    private fun showLoadingCover() {
+        if (bannerMode) showLoadingBanner() else showLoadingSpinner()
+    }
+
+    /** Spinner-only cover (Settings: "Show banner until servers load" = off). */
+    private fun showLoadingSpinner() {
+        val spin = loadingSpinner ?: return
+        spin.animate().cancel()
+        spin.alpha = 1f
+        spin.visibility = View.VISIBLE
+    }
+
     private fun showLoadingBanner() {
         val banner = loadingBanner ?: return
         val box = loadingTitleBox ?: return
@@ -2422,6 +4309,7 @@ class PlayerActivity : ComponentActivity() {
     /** Fades the title card away (or removes it instantly) once real video is
      *  on screen. Safe to call repeatedly and from any state. */
     private fun hideLoadingBanner(immediate: Boolean = false) {
+        hideLoadingSpinner(immediate)
         val banner = loadingBanner ?: return
         if (banner.visibility != View.VISIBLE) return
         stopBannerAnimators()
@@ -2439,6 +4327,102 @@ class PlayerActivity : ComponentActivity() {
     private fun stopBannerAnimators() {
         bannerAnimators.forEach { runCatching { it.cancel() } }
         bannerAnimators = emptyList()
+    }
+
+    /** Fades the spinner-only cover away once real video is on screen (see
+     *  [hideLoadingBanner], which always calls this). */
+    private fun hideLoadingSpinner(immediate: Boolean = false) {
+        val spin = loadingSpinner ?: return
+        if (spin.visibility != View.VISIBLE) return
+        spin.animate().cancel()
+        if (immediate || isFinishing || isDestroyed) {
+            spin.alpha = 0f
+            spin.visibility = View.GONE
+        } else {
+            spin.animate().alpha(0f).setDuration(320L).withEndAction {
+                spin.visibility = View.GONE
+            }.start()
+        }
+    }
+
+    /** "Your connection looks slow?" — offered over the loading cover while the
+     *  source search runs, with a one-tap way to switch Settings' Slow
+     *  connection mode on (which is exactly what rescues a search that keeps
+     *  timing out on a weak link). Never shown once real video is on screen.
+     *  [SlowNetTip] decides, on measured evidence, whether this is worth
+     *  saying at all. */
+    private fun showSlowNetTip() {
+        if (isFinishing || isDestroyed || renderedFirstFrame) return
+        if (slowNetDialog?.isShowing == true) return
+        val dialog = showGlassMenu(
+            "Your connection looks slow",
+            listOf(
+                GlassOption(
+                    "Turn on",
+                    "Keep waiting for slow sources",
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Not now",
+                    "Ask me again later",
+                    iconRes = R.drawable.ic_skip,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Don't ask again",
+                    "Only the Settings switch turns it back on",
+                    iconRes = R.drawable.ic_close,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            message = "Sources and video are taking a long time to answer. Slow " +
+                "connection mode lets Hikari keep waiting for them instead of giving up.",
+            hint = "You can change this any time in Settings.",
+            iconRes = R.drawable.ic_settings,
+            onDialog = { it.setOnCancelListener { dismissSlowNetTip(remember = true) } },
+        ) { which ->
+            when (which) {
+                0 -> enableSlowModeFromTip()
+                1 -> dismissSlowNetTip(remember = true)
+                else -> dismissSlowNetTip(remember = true, always = true)
+            }
+        }
+        slowNetDialog = dialog
+    }
+
+    /** One tap: the setting is flipped for real (persisted AND live for the
+     *  requests already in flight). If this play hasn't managed to get anything
+     *  playing yet, the search is re-run with the longer budgets — that is the
+     *  actual rescue, not just a nicer next attempt. */
+    private fun enableSlowModeFromTip() {
+        dismissSlowNetTip()
+        val app = applicationContext as HikariApp
+        NetTuning.setSlowConnection(true)
+        app.appScope.launch {
+            runCatching { app.store.setSlowConnection(true) }
+        }
+        Toast.makeText(this, "Slow connection mode on", Toast.LENGTH_SHORT).show()
+        if (!renderedFirstFrame && sources.isEmpty()) refreshSources(-1)
+    }
+
+    /** Hides the tip. [remember] starts the "Not now" cooldown; [always] is the
+     *  "Don't ask again" choice, which silences it for good (the Settings
+     *  switch does the same and is the way back). */
+    private fun dismissSlowNetTip(remember: Boolean = false, always: Boolean = false) {
+        val dialog = slowNetDialog
+        slowNetDialog = null
+        runCatching { dialog?.dismiss() }
+        SlowNetTip.clear()
+        if (!remember && !always) return
+        val app = applicationContext as HikariApp
+        app.appScope.launch {
+            runCatching { app.store.setSlowTipLastDismiss(System.currentTimeMillis()) }
+            if (always) runCatching { app.store.setSlowTipDontAsk(true) }
+        }
     }
 
     /** Adopts an episode that arrived AFTER launch — the user tapped Play while
@@ -2486,7 +4470,9 @@ class PlayerActivity : ComponentActivity() {
         // point of view this is another "finding your server" moment, not a
         // failure — and the providers may take a few seconds to answer.
         errorPanel?.visibility = View.GONE
-        if (bannerMode) showLoadingBanner()
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) showLoadingCover()
         Toast.makeText(this, "Looking for other servers…", Toast.LENGTH_SHORT).show()
         StreamsLive.requestRefresh(session)
         lifecycleScope.launch {
@@ -2536,16 +4522,25 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val label = episodeLabel()
-        AlertDialog.Builder(this)
-            .setTitle("Download")
-            .setMessage(
-                (if (label.isBlank()) "" else "$label\n\n") +
-                    "Where do you want to save this video?"
-            )
-            .setPositiveButton("In Hikari (offline)") { _, _ -> chooseQualityThenDownload(DownloadKind.OFFLINE) }
-            .setNeutralButton("Phone storage") { _, _ -> chooseQualityThenDownload(DownloadKind.EXPORT) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showGlassMenu(
+            "Download",
+            listOf(
+                GlassOption(
+                    "In Hikari", "Kept offline inside the app",
+                    iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
+                ),
+                GlassOption(
+                    "Phone storage", "Saved to your device's Downloads folder",
+                    iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
+                ),
+            ),
+            message = (if (label.isBlank()) "" else "$label\n") +
+                "Where do you want to save this video?",
+            hint = "The in-app copy plays without internet.",
+            iconRes = R.drawable.ic_download,
+        ) { which ->
+            chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
+        }
     }
 
     /** A video quality the current stream offers: its height (0 when the
@@ -2571,13 +4566,6 @@ class PlayerActivity : ComponentActivity() {
         return byKey.values.sortedByDescending { if (it.height > 0) it.height else it.bandwidth.toInt() }
     }
 
-    private fun qualityLabel(q: VideoQuality): String {
-        val parts = mutableListOf<String>()
-        if (q.height > 0) parts.add("${q.height}p")
-        if (q.bandwidth > 0) parts.add("${q.bandwidth / 1000}kbps")
-        return parts.joinToString(" · ").ifBlank { "Default quality" }
-    }
-
     /** After the destination is chosen, offer the stream's qualities when it
      *  exposes more than one; a single-quality source goes straight to the
      *  download. */
@@ -2587,19 +4575,29 @@ class PlayerActivity : ComponentActivity() {
             startDownload(kind, 0, 0L)
             return
         }
-        val items = arrayOf("Highest quality") + qualities.map { qualityLabel(it) }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Choose quality")
-            .setItems(items) { _, which ->
-                if (which == 0) {
-                    startDownload(kind, 0, 0L)
-                } else {
-                    val q = qualities[which - 1]
-                    startDownload(kind, q.height, q.bandwidth)
-                }
+        val options = mutableListOf(
+            GlassOption("Highest quality", "The best this server offers", selected = true)
+        )
+        qualities.forEach { q ->
+            options.add(
+                GlassOption(
+                    label = if (q.height > 0) "${q.height}p" else "Default quality",
+                    badge = bitrateBadge(q.bandwidth),
+                )
+            )
+        }
+        showGlassMenu(
+            "Choose quality",
+            options,
+            hint = "Used only for this download.",
+            iconRes = R.drawable.ic_quality,
+        ) { which ->
+            if (which == 0) {
+                startDownload(kind, 0, 0L)
+            } else {
+                qualities.getOrNull(which - 1)?.let { startDownload(kind, it.height, it.bandwidth) }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     /** The top bar's second line (e.g. "S1 E2 · Freedom Day") — the episode
@@ -2687,18 +4685,66 @@ class PlayerActivity : ComponentActivity() {
         errorPanel?.visibility = View.VISIBLE
     }
 
-    private fun selectFirstTextTrack(player: ExoPlayer, tracks: Tracks) {
+    private fun selectFirstTextTrack(player: ExoPlayer, tracks: Tracks, pickApplied: Boolean = false) {
         if (userPickedSubs) return
+        // A remembered pick that IS present on this source outranks the default
+        // — without this, the auto-select re-asserts itself on the rebuilt
+        // track list and wipes the subtitle the user just chose. When the pick
+        // isn't available here (a failover to a server without that language),
+        // the source's own best track is shown instead of nothing.
+        if (pickApplied || textOff) return
         for (group in tracks.groups) {
-            if (group.type == C.TRACK_TYPE_TEXT) {
-                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                    .setOverrideForType(
-                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(0))
-                    )
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            val mediaGroup = group.mediaTrackGroup
+            // Prefer an English track when the stream offers several: the first
+            // one is often a forced/foreign track that only captions a line or
+            // two of the whole film.
+            val best = (0 until mediaGroup.length).firstOrNull { i ->
+                val f = mediaGroup.getFormat(i)
+                (f.language ?: "").startsWith("en", true) ||
+                    (f.language ?: "").contains("english", true) ||
+                    (f.label ?: "").contains("english", true)
+            } ?: 0
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setOverrideForType(
+                    TrackSelectionOverride(mediaGroup, ImmutableList.of(best))
+                )
+                .build()
+            return
+        }
+    }
+
+    /** Re-applies the user's remembered subtitle / audio pick to the CURRENT
+     *  track list, returning whether the pick is in effect afterwards.
+     *  Attaching provider subtitles — and pressing Sync — rebuilds the media
+     *  item, and a rebuilt source exposes brand-new TrackGroup instances; an
+     *  override keyed on the old group matches nothing, which is exactly how a
+     *  chosen subtitle stopped having any effect and a second audio track never
+     *  switched. Never fights a pick that is already in effect, so it is safe
+     *  to call on every track change. */
+    private fun applyStickyPicks(type: Int): Boolean {
+        val p = player ?: return false
+        val pick = if (type == C.TRACK_TYPE_TEXT) pickText else pickAudio
+        if (pick == null) return false
+        if (type == C.TRACK_TYPE_TEXT && textOff) return false
+        val groups = p.currentTracks.groups.filter { it.type == type }
+        if (groups.isEmpty()) return false
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                if (!pick.matches(mediaGroup.getFormat(i), i)) continue
+                val params = p.trackSelectionParameters
+                if (params.overrides[mediaGroup]?.trackIndices?.contains(i) == true) return true
+                p.trackSelectionParameters = params.buildUpon()
+                    .setTrackTypeDisabled(type, false)
+                    .clearOverridesOfType(type)
+                    .setOverrideForType(TrackSelectionOverride(mediaGroup, ImmutableList.of(i)))
                     .build()
-                return
+                return true
             }
         }
+        return false
     }
 
     private fun mimeFor(url: String): String = when {
@@ -2788,12 +4834,30 @@ class PlayerActivity : ComponentActivity() {
 
     private fun showResumeDialog(positionMs: Long) {
         if (isFinishing || isDestroyed) return
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Continue from where you left off?")
-            .setMessage("Resume from ${fmtResumeClock(positionMs)}?")
-            .setPositiveButton("Resume") { _, _ -> applyResume(positionMs) }
-            .setNegativeButton("Start over", null)
-            .show()
+        val clock = fmtResumeClock(positionMs)
+        showGlassMenu(
+            "Continue from where you left off?",
+            listOf(
+                GlassOption(
+                    "Resume",
+                    "Pick up at $clock",
+                    iconRes = R.drawable.hikari_play,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    "Start over",
+                    "Play this video from the beginning",
+                    iconRes = R.drawable.ic_back,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = "You can seek to $clock any time.",
+            iconRes = R.drawable.ic_skip,
+        ) { which ->
+            if (which == 0) applyResume(positionMs)
+        }
     }
 
     private fun applyResume(positionMs: Long) {
@@ -2820,6 +4884,24 @@ class PlayerActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    /**
+     * Immersive fullscreen is not sticky: coming back from the background, or
+     * closing one of the player's own dialogs (resume prompt, server picker,
+     * download sheet), hands focus back with the system bars shown again —
+     * which leaves a blank, status-bar-sized band at the top of the video
+     * ("fullscreen mode leaves a blank bar in the status bar"). Re-hide the
+     * bars every time this activity is resumed or regains focus.
+     */
+    override fun onResume() {
+        super.onResume()
+        hideSystemUi()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemUi()
     }
 
     override fun onStart() {
@@ -2851,6 +4933,10 @@ class PlayerActivity : ComponentActivity() {
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
         dismissSlowDialog()
+        dismissSlowNetTip()
+        hudHideTask?.let { hudHandler.removeCallbacks(it) }
+        hudHideTask = null
+        SlowNetTip.onPlaybackEnd()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
@@ -2886,7 +4972,19 @@ class PlayerActivity : ComponentActivity() {
          *  repo. */
         private const val REFRESH_WAIT_MS = 40_000L
 
+        /** How long to wait for a fresh link for the server that just failed
+         *  (see onPlayerError's reconnect). Short: the user is sitting on the
+         *  title card with no video, and the normal failover must not be held
+         *  back for long. */
+        private const val RELINK_WAIT_MS = 12_000L
+
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        /** How much a vertical drag moves the brightness/volume sliders, in
+         *  "screen heights". 4 means roughly a quarter of a screen-height swipe
+         *  covers the whole 0..100% range (the previous 1:1 mapping was reported
+         *  as needing 8-9 full-screen swipes, i.e. far too insensitive). */
+        private const val GESTURE_SWIPE_GAIN = 4f
 
         /** Fallback public trackers for addons that don't ship their own. */
         private val TORRENT_TRACKERS = listOf(

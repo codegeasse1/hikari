@@ -13,6 +13,10 @@ import android.provider.MediaStore
 import com.hikari.app.net.Http
 import com.hikari.app.net.PlayerHttp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
@@ -20,6 +24,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -67,6 +74,19 @@ object DownloadEngine {
 
     private const val BUFFER = 1 shl 16
     private const val MAX_MEM_SEGMENT = 96L * 1024 * 1024
+
+    /** How many HLS segments a single rendition fetches at once. One TCP
+     *  connection to a streaming origin is usually capped at a few MB/s (CDNs
+     *  throttle per connection), while a browser/Play-Store download opens
+     *  several connections and uses the whole link. This spreads a download
+     *  over that many connections. Kept modest so the video + audio renditions
+     *  together stay within the OkHttp per-host budget (16) in PlayerHttp. */
+    private const val SEGMENT_CONCURRENCY = 6
+
+    /** Segment fetches are retried this many times (short backoff) so a
+     *  transient 5xx/429 on one of the parallel connections never kills the
+     *  whole download. */
+    private const val SEGMENT_RETRIES = 3
 
     suspend fun run(
         ctx: Context,
@@ -116,8 +136,12 @@ object DownloadEngine {
     }
 
     /** Aggregates the video + (optional) audio rendition into one task-wide
-     *  progress reading. */
+     *  progress reading. Segments (and both renditions) are fetched in
+     *  parallel, so every mutator is synchronized and the tallies only ever
+     *  move forward — a late/smaller reading from one worker can't make the
+     *  bar regress. */
     private class Reporter(private val onProgress: suspend (DlProgress) -> Unit) {
+        private val lock = Any()
         private var vBytes = 0L
         private var vTotal = -1L
         private var vDurMs = 0L
@@ -128,43 +152,58 @@ object DownloadEngine {
         private var aTotalDurMs = 0L
         private var hasAudio = false
 
-        /** Pre-seeds the audio rendition's total duration so a task-wide progress
-         *  reading is monotonic. Without it the video-only denominator fills to
-         *  100%, then the audio rendition (whose duration roughly equals the
-         *  video's) doubles the denominator and progress appears to restart at
-         *  50% — even though nothing was lost. */
+        /** Byte callbacks fire every 64 KiB and from several workers at once;
+         *  without this the UI (and the DataStore-backed task list) would be
+         *  rewritten hundreds of times per segment. 4 updates/second is plenty
+         *  for a progress bar. */
+        private var lastEmit = 0L
+
+        /** Pre-seeds the video/audio rendition's total duration so a task-wide
+         *  progress reading is monotonic. Without it the video-only denominator
+         *  fills to 100%, then the audio rendition (whose duration roughly
+         *  equals the video's) doubles the denominator and progress appears to
+         *  restart at 50% — even though nothing was lost. */
+        fun expectVideoDuration(ms: Long) {
+            if (ms <= 0L) return
+            synchronized(lock) { if (ms > vTotalDurMs) vTotalDurMs = ms }
+        }
+
         fun expectAudioDuration(ms: Long) {
-            if (ms > 0L) {
+            if (ms <= 0L) return
+            synchronized(lock) {
                 hasAudio = true
                 aTotalDurMs = ms
             }
         }
 
-        /** Byte callbacks fire every 64 KiB; without this the UI (and the
-         *  DataStore-backed task list) would be rewritten hundreds of times per
-         *  segment. 4 updates/second is plenty for a progress bar. */
-        private var lastEmit = 0L
-
         suspend fun video(bytes: Long, total: Long, durMs: Long, totalDurMs: Long) {
-            vBytes = bytes
-            if (total > 0) vTotal = total
-            vDurMs = durMs
-            vTotalDurMs = totalDurMs
-            emit()
+            val snap = synchronized(lock) {
+                if (bytes > vBytes) vBytes = bytes
+                if (total > 0L) vTotal = total
+                if (durMs > vDurMs) vDurMs = durMs
+                if (totalDurMs > 0L) vTotalDurMs = totalDurMs
+                snapshot()
+            }
+            if (snap != null) onProgress(snap)
         }
 
         suspend fun audio(bytes: Long, total: Long, durMs: Long, totalDurMs: Long) {
-            hasAudio = true
-            aBytes = bytes
-            if (total > 0) aTotal = total
-            aDurMs = durMs
-            aTotalDurMs = totalDurMs
-            emit()
+            val snap = synchronized(lock) {
+                hasAudio = true
+                if (bytes > aBytes) aBytes = bytes
+                if (total > 0L) aTotal = total
+                if (durMs > aDurMs) aDurMs = durMs
+                if (totalDurMs > 0L) aTotalDurMs = totalDurMs
+                snapshot()
+            }
+            if (snap != null) onProgress(snap)
         }
 
-        private suspend fun emit() {
+        /** The progress reading, or null when this call falls inside the emit
+         *  throttle window. Must be called while holding [lock]. */
+        private fun snapshot(): DlProgress? {
             val now = System.currentTimeMillis()
-            if (now - lastEmit < 250L) return
+            if (now - lastEmit < 250L) return null
             lastEmit = now
             val done = vBytes + aBytes
             val total = when {
@@ -172,7 +211,7 @@ object DownloadEngine {
                 hasAudio -> -1L
                 else -> vTotal
             }
-            onProgress(DlProgress(done, total, vTotalDurMs + aTotalDurMs, vDurMs + aDurMs))
+            return DlProgress(done, total, vTotalDurMs + aTotalDurMs, vDurMs + aDurMs)
         }
     }
 
@@ -221,17 +260,28 @@ object DownloadEngine {
             videoUrl = finalUrl
         }
 
-        // Learn the audio rendition's length up front (one tiny playlist fetch)
-        // so the two-rendition progress bar never jumps backwards mid-download.
+        // Learn both renditions' lengths up front (two tiny playlist fetches)
+        // so the task-wide progress reading is monotonic from the first byte.
+        peekDurationMs(videoUrl, headers, ua)
+            .takeIf { it > 0L }
+            ?.let { reporter.expectVideoDuration(it) }
         val expectedAudioDurMs = if (audioUrl != null) peekDurationMs(audioUrl, headers, ua) else 0L
         if (expectedAudioDurMs > 0L) reporter.expectAudioDuration(expectedAudioDurMs)
 
-        val video = downloadRendition("v", videoUrl, headers, ua, workDir, reporter, true, isCancelled)
-
-        var audio: Rendition? = null
-        if (audioUrl != null) {
-            if (isCancelled()) throw DownloadCancelledException()
-            audio = downloadRendition("a", audioUrl, headers, ua, workDir, reporter, false, isCancelled)
+        // Fetch the video and audio renditions CONCURRENTLY (each itself pulling
+        // its own segments in parallel), so a stream whose audio arrives as a
+        // separate rendition no longer pays video-time + audio-time in full.
+        if (isCancelled()) throw DownloadCancelledException()
+        val (video, audio) = coroutineScope {
+            val vDeferred = async {
+                downloadRendition("v", videoUrl, headers, ua, workDir, reporter, true, isCancelled)
+            }
+            val aDeferred = audioUrl?.let { url ->
+                async {
+                    downloadRendition("a", url, headers, ua, workDir, reporter, false, isCancelled)
+                }
+            }
+            vDeferred.await() to aDeferred?.await()
         }
 
         // Master playlist referencing the local media playlists. Written even
@@ -349,48 +399,95 @@ object DownloadEngine {
             initFile = f
         }
 
-        val keyCache = HashMap<String, ByteArray>()
+        val keyCache = ConcurrentHashMap<String, ByteArray>()
         val names = ArrayList<String>(segs.size)
         val parts = ArrayList<File>(segs.size)
-        var doneDur = 0.0
-        var doneDurMs = 0L
-        var bytes = 0L
+        segs.forEachIndexed { i, _ ->
+            names.add(prefix + "_" + i.toString().padStart(5, '0') + ext)
+            parts.add(File(workDir, names[i]))
+        }
 
-        segs.forEachIndexed { i, seg ->
-            if (isCancelled()) throw DownloadCancelledException()
-            val name = prefix + "_" + i.toString().padStart(5, '0') + ext
-            val f = File(workDir, name)
-            if (!(f.exists() && f.length() > 0)) {
-                val key = seg.key
-                val method = key?.method.orEmpty()
-                if (method.isBlank() || method.equals("NONE", true)) {
-                    downloadToFile(
-                        seg.url, headers, ua, f, seg.byteRange, false,
-                        onBytes = { done, _ ->
-                            bytes = done
-                            reportRendition(reporter, isVideo, bytes, doneDurMs, totalDurMs)
-                        },
-                        isCancelled = isCancelled,
-                    )
-                } else if (method.equals("AES-128", true)) {
-                    val k = key ?: throw IOException("Encrypted segment without a key")
-                    val keyBytes = keyCache.getOrPut(k.uri) { fetchBytes(k.uri, headers, ua) }
-                    val enc = fetchBytes(seg.url, headers, ua, seg.byteRange)
-                    val iv = k.iv ?: ivFor(pl.mediaSequence + i)
-                    f.writeBytes(decryptAes128(enc, keyBytes, iv))
-                    bytes = f.length()
-                    reportRendition(reporter, isVideo, bytes, doneDurMs, totalDurMs)
-                } else {
-                    throw IOException("Unsupported HLS encryption: $method")
+        // Pull the segments in PARALLEL (see SEGMENT_CONCURRENCY): [bytesAcc]/
+        // [doneDurMsAcc] are the shared running totals the reporter reads.
+        val bytesAcc = AtomicLong(0L)
+        val doneDurMsAcc = AtomicLong(0L)
+        val nextSeg = AtomicInteger(0)
+        val workers = minOf(SEGMENT_CONCURRENCY, segs.size)
+        coroutineScope {
+            repeat(workers) {
+                launch {
+                    while (true) {
+                        if (isCancelled()) throw DownloadCancelledException()
+                        val i = nextSeg.getAndIncrement()
+                        if (i >= segs.size) break
+                        val seg = segs[i]
+                        val f = parts[i]
+                        if (!(f.exists() && f.length() > 0)) {
+                            // Bytes credited to this segment so far, so a retry
+                            // can roll its partial credit back and never count a
+                            // fragment twice.
+                            val credited = longArrayOf(0L)
+                            var attempt = 0
+                            while (true) {
+                                try {
+                                    val key = seg.key
+                                    val method = key?.method.orEmpty()
+                                    if (method.isBlank() || method.equals("NONE", true)) {
+                                        downloadToFile(
+                                            seg.url, headers, ua, f, seg.byteRange, false,
+                                            onBytes = { done, _ ->
+                                                val delta = done - credited[0]
+                                                if (delta != 0L) {
+                                                    credited[0] = done
+                                                    reportRendition(
+                                                        reporter, isVideo, bytesAcc.addAndGet(delta),
+                                                        doneDurMsAcc.get(), totalDurMs,
+                                                    )
+                                                }
+                                            },
+                                            isCancelled = isCancelled,
+                                        )
+                                    } else if (method.equals("AES-128", true)) {
+                                        val k = key ?: throw IOException("Encrypted segment without a key")
+                                        val keyBytes = keyCache[k.uri]
+                                            ?: fetchBytes(k.uri, headers, ua)
+                                                .also { keyCache[k.uri] = it }
+                                        val enc = fetchBytes(seg.url, headers, ua, seg.byteRange)
+                                        val iv = k.iv ?: ivFor(pl.mediaSequence + i)
+                                        f.writeBytes(decryptAes128(enc, keyBytes, iv))
+                                        val len = f.length()
+                                        val delta = len - credited[0]
+                                        credited[0] = len
+                                        if (delta != 0L) {
+                                            reportRendition(
+                                                reporter, isVideo, bytesAcc.addAndGet(delta),
+                                                doneDurMsAcc.get(), totalDurMs,
+                                            )
+                                        }
+                                    } else {
+                                        throw IOException("Unsupported HLS encryption: $method")
+                                    }
+                                    break
+                                } catch (c: DownloadCancelledException) {
+                                    throw c
+                                } catch (t: Throwable) {
+                                    if (isCancelled()) throw DownloadCancelledException()
+                                    if (credited[0] != 0L) {
+                                        bytesAcc.addAndGet(-credited[0])
+                                        credited[0] = 0L
+                                    }
+                                    if (++attempt >= SEGMENT_RETRIES) throw t
+                                    delay(350L * attempt)
+                                }
+                            }
+                        }
+                        // Progress is driven by the playlist's DURATIONS (byte
+                        // totals are unknown for HLS) — see DownloadTask.progress.
+                        val acc = doneDurMsAcc.addAndGet((seg.duration * 1000.0).toLong())
+                        reportRendition(reporter, isVideo, bytesAcc.get(), acc, totalDurMs)
+                    }
                 }
             }
-            names.add(name)
-            parts.add(f)
-            // Progress is driven by the playlist's DURATIONS (byte totals are
-            // unknown for HLS) — see DownloadTask.progress.
-            doneDur += seg.duration
-            doneDurMs = (doneDur * 1000.0).toLong()
-            reportRendition(reporter, isVideo, bytes, doneDurMs, totalDurMs)
         }
 
         val playlistName = prefix + "_0.m3u8"

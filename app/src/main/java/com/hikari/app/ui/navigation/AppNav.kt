@@ -9,14 +9,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
@@ -36,8 +40,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +63,7 @@ import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
+import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.theme.HikariThemeMode
@@ -69,6 +76,8 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     const val DOWNLOADS = "downloads"
+    /** Titles saved with the player's heart (the favourites store). */
+    const val LIBRARY = "library"
     /**
      * Same Search screen, but pre-filled with a query (genre tags, "show all",
      * search suggestions…) and/or scoped to one provider (Home's "Search this
@@ -183,10 +192,25 @@ private fun AppBottomBar(
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    // Equal slots are not much room, and the labels ("Downloads", "Extensions")
+    // are the longest text in the app. On a phone whose accessibility Font size
+    // AND/OR Display size is turned up, the labels grew past their slot and were
+    // hard-clipped mid-word ("Downloa"). Size the label so it always renders at
+    // the SAME physical size — dividing out the font scale — and the worst case
+    // is then a full word in a slightly tight slot. (When "In-app UI scale" is
+    // on, fontScale is 1 here and the scale rides on the density, so the labels
+    // still scale with that setting.) With the Library tab there are seven
+    // slots, so the base size drops a notch to keep every label whole.
+    val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
+    val labelSp = if (Tabs.size > 6) 8f else 9f
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            // Keep the floating bar clear of the gesture/navigation bar when the
+            // system bars are visible (they are hidden while immersive, so this
+            // is 0 in the normal case and simply lifts the bar when they show).
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 8.dp, vertical = 10.dp)
     ) {
         Surface(
             shape = RoundedCornerShape(28.dp),
@@ -198,7 +222,7 @@ private fun AppBottomBar(
                 Modifier
                     .fillMaxWidth()
                     .height(60.dp)
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .padding(horizontal = 2.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Tabs.forEach { tab ->
@@ -224,10 +248,12 @@ private fun AppBottomBar(
                             tab.label,
                             maxLines = 1,
                             softWrap = false,
-                            overflow = TextOverflow.Clip,
-                            fontSize = 9.sp,
+                            overflow = TextOverflow.Ellipsis,
+                            fontSize = (labelSp / labelScale).sp,
+                            textAlign = TextAlign.Center,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (selected) primary else muted
+                            color = if (selected) primary else muted,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
@@ -245,6 +271,7 @@ private data class Tab(
 private val Tabs = listOf(
     Tab(Routes.HOME, "Home", Icons.Filled.Home),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
+    Tab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
     Tab(Routes.HISTORY, "History", Icons.Filled.History),
     Tab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
     Tab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
@@ -293,6 +320,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            // The app is edge-to-edge/immersive (MainActivity hides the system
+            // bars), so the Scaffold must NOT pad the content down by the status
+            // bar inset. It used to: on any device where the bars were showing,
+            // every screen started ~a status-bar lower with an empty band above
+            // it (the reported "blank bar in the status bar area" on Home and on
+            // "Show All"). Screens now draw from y=0; the floating bottom bar
+            // lifts itself above the navigation bar instead.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (showBar) {
                 AppBottomBar(
@@ -321,9 +356,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 SearchScreen(nav, initialQuery = q, initialProvider = provider)
             }
             composable(Routes.HISTORY) { HistoryScreen(nav) }
+            composable(Routes.LIBRARY) { LibraryScreen(nav) }
             composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
-            composable(Routes.SETTINGS) { SettingsScreen() }
+            composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(
                 route = Routes.CATALOG,
                 arguments = listOf(

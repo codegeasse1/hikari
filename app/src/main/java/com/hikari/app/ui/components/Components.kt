@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,11 +46,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
@@ -63,8 +68,15 @@ import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** How many automatic re-requests a poster gets before its cell settles on the
+ *  placeholder icon. Two is enough to ride out a dropped connection or a CDN
+ *  hiccup without hammering an image that is genuinely gone. */
+private const val POSTER_RETRIES = 2
 
 @Composable
 fun MediaRow(
@@ -110,6 +122,107 @@ fun MediaRow(
     }
 }
 
+/**
+ * [AsyncImage] with a little self-healing: a request that FAILS (dropped
+ * connection, a 503 from the CDN, a momentarily busy decoder) is re-issued
+ * after a growing delay. Coil never retries by itself, so without this a poster
+ * that failed once stayed blank until its row happened to be scrolled out of
+ * view and back — the "it loads some fine, but when I scroll down some images
+ * just don't load" report. The re-request is a new [coil.request.ImageRequest]
+ * carrying a retry parameter, which is what makes Coil's AsyncImage restart it.
+ */
+@Composable
+fun PosterImage(
+    model: Any?,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    alignment: Alignment = Alignment.Center,
+) {
+    var attempt by remember(model) { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    AsyncImage(
+        model = PosterLoader.retryModel(model, attempt),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        alignment = alignment,
+        contentScale = contentScale,
+        onError = {
+            if (attempt < POSTER_RETRIES) {
+                scope.launch {
+                    delay(700L * (attempt + 1))
+                    attempt++
+                }
+            }
+        },
+    )
+}
+
+/**
+ * Artwork for a wide hero/banner frame.
+ *
+ * [wide] art (a real backdrop, 16:9-ish) is cropped to fill the frame with the
+ * TOP edge kept, so a slightly taller backdrop loses its bottom rather than
+ * the top of the frame.
+ *
+ * A PORTRAIT poster in that same frame must not simply be cropped: filling a
+ * 16:9 box with a 2:3 poster keeps only the middle ~38% of the image, which
+ * slices the top of the frame off (the "the banner is cut / the head is
+ * chopped off" report). Instead the poster is shown the way streaming apps do
+ * it — a dimmed, zoomed copy of itself fills the frame behind, and the whole
+ * poster is drawn intact at the right edge, in front of it.
+ */
+@Composable
+fun HeroArtwork(
+    model: Any?,
+    wide: Boolean,
+    contentDescription: String? = null,
+    modifier: Modifier = Modifier,
+) {
+    if (model == null) {
+        Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
+        return
+    }
+    if (wide) {
+        PosterImage(
+            model = model,
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.TopCenter,
+        )
+        return
+    }
+    Box(modifier) {
+        // Backdrop fill: the poster itself, scaled past the frame edges and
+        // dimmed, so the banner keeps an image behind the text without any
+        // hard crop line. (Not Modifier.blur — it is a no-op below API 31, and
+        // a scaled, dimmed copy looks the same everywhere.)
+        PosterImage(
+            model = model,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = 1.35f
+                    scaleY = 1.35f
+                    alpha = 0.55f
+                },
+            contentScale = ContentScale.Crop,
+        )
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.30f)))
+        PosterImage(
+            model = model,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .aspectRatio(2f / 3f),
+            contentScale = ContentScale.Fit,
+        )
+    }
+}
+
 @Composable
 fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     Column(
@@ -118,16 +231,29 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
     ) {
-        AsyncImage(
-            model = PosterLoader.model(item.posterUrl),
-            contentDescription = item.title,
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            // Sits behind the artwork: when the extension's image 403s/404s (or
+            // the item has no poster at all) the cell still reads as a poster
+            // slot instead of a blank dark rectangle.
+            Icon(
+                Icons.Filled.Movie,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
+                modifier = Modifier.size(28.dp),
+            )
+            PosterImage(
+                model = Artwork.model(item),
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         Text(
             item.title,
             style = MaterialTheme.typography.bodySmall,
@@ -277,11 +403,15 @@ fun GlassSearchField(
     }
 }
 
-/** A large auto-advancing featured banner for the top of Home — full-width
- *  backdrop art, the title/metadata and a "View Details" pill over a bottom
- *  scrim, with pagination dots while more than one featured title exists.
+/** A carousel of wide, movie-shaped featured cards for the top of Home — the
+ *  backdrop art with the title/metadata and a "View Details" pill over a bottom
+ *  scrim, and pagination dots while more than one featured title exists.
  *  Swiping left/right moves between featured titles (the dots track it), and
- *  tapping anywhere on a page opens the title that page shows. */
+ *  tapping anywhere on a card opens the title that card shows.
+ *
+ *  The cards are 16:9 and inset from the screen edges so the neighbours peek
+ *  in: that is what makes it read as a "poster carousel" instead of the tall
+ *  portrait hero that used to eat the top third of Home. */
 @Composable
 fun HeroBanner(
     items: List<MediaItem>,
@@ -301,27 +431,31 @@ fun HeroBanner(
             }
         }
     }
-    Box(
-        modifier
-            .fillMaxWidth()
-            .aspectRatio(0.72f)
-    ) {
+    Column(modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxSize(),
-            pageSpacing = 0.dp,
+            modifier = Modifier.fillMaxWidth(),
+            // The neighbours peek in at the sides: a wide, movie-shaped card
+            // that clearly belongs to a carousel, instead of the old
+            // full-bleed portrait hero that filled a third of the screen.
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            pageSpacing = 12.dp,
         ) { page ->
             val item = items[page]
             Box(
                 Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .clickable { onClick(item) }
             ) {
-                AsyncImage(
-                    model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
+                val hero = Artwork.heroModel(item)
+                HeroArtwork(
+                    model = hero.first,
+                    wide = hero.second,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
                 )
                 // Darkens the top (for the overlaid app bar) and the bottom (for
                 // the title/button) so the hero text always reads.
@@ -330,27 +464,25 @@ fun HeroBanner(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.40f),
-                                0.35f to Color.Transparent,
-                                0.60f to Color.Black.copy(alpha = 0.55f),
-                                1f to Color.Black.copy(alpha = 0.95f),
+                                0f to Color.Black.copy(alpha = 0.45f),
+                                0.30f to Color.Transparent,
+                                0.55f to Color.Black.copy(alpha = 0.35f),
+                                1f to Color.Black.copy(alpha = 0.92f),
                             )
                         )
                 )
                 Column(
                     Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 44.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
                 ) {
                     Text(
                         item.title,
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Black,
                         color = Color.White,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     val metaLine = buildList {
@@ -365,26 +497,34 @@ fun HeroBanner(
                     if (metaLine.isNotBlank()) {
                         Text(
                             metaLine,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color = Color.White.copy(alpha = 0.85f),
-                            textAlign = TextAlign.Center,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 6.dp),
+                            modifier = Modifier.padding(top = 2.dp),
                         )
                     }
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { onClick(item) },
                         shape = RoundedCornerShape(50),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.White,
                             contentColor = Color.Black,
                         ),
                     ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("View Details", fontWeight = FontWeight.Bold)
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "View Details",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
                 }
             }
@@ -392,8 +532,8 @@ fun HeroBanner(
         if (items.size > 1) {
             Row(
                 Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp),
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 val active = pagerState.currentPage.coerceIn(0, items.lastIndex)
@@ -417,6 +557,10 @@ fun ContinueWatchingRow(
     entries: List<HistoryEntry>,
     backdropOf: (HistoryEntry) -> String?,
     onClick: (HistoryEntry) -> Unit,
+    /** When non-null each card gets a small ✕ that removes just that entry.
+     *  Continue Watching is fed from the same watch-history store as the
+     *  History tab, so removing here removes it from both. */
+    onRemove: ((HistoryEntry) -> Unit)? = null,
 ) {
     if (entries.isEmpty()) return
     // Defensive dedupe: a duplicate Compose key would crash the whole row.
@@ -434,14 +578,26 @@ fun ContinueWatchingRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(unique, key = { it.uniqueKey }) { h ->
-                ContinueWatchingCard(h, backdropOf(h)) { onClick(h) }
+                ContinueWatchingCard(
+                    h = h,
+                    backdrop = backdropOf(h),
+                    removable = onRemove != null,
+                    onClick = { onClick(h) },
+                    onRemove = { onRemove?.invoke(h) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: () -> Unit) {
+private fun ContinueWatchingCard(
+    h: HistoryEntry,
+    backdrop: String?,
+    removable: Boolean = false,
+    onClick: () -> Unit,
+    onRemove: () -> Unit = {},
+) {
     val fraction = if (h.durationMs > 0L) {
         (h.positionMs.toFloat() / h.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -459,11 +615,11 @@ private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: ()
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            AsyncImage(
+            HeroArtwork(
                 model = PosterLoader.model(backdrop ?: h.posterUrl),
+                wide = !backdrop.isNullOrBlank(),
                 contentDescription = h.title,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
             )
             Box(
                 Modifier
@@ -497,6 +653,25 @@ private fun ContinueWatchingCard(h: HistoryEntry, backdrop: String?, onClick: ()
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            if (removable) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .clickable(onClick = onRemove),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Remove from Continue Watching",
+                        tint = Color.White,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
             }
             if (remaining > 0L) {
                 Surface(

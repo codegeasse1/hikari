@@ -3,7 +3,10 @@ package com.hikari.app.nuvio
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.TmdbMeta
 import com.hikari.app.net.Http
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -131,66 +134,128 @@ object TmdbResolver {
         }
     }
 
+    /**
+     * Resolves an extension/scraper item by name. Site metas decorate titles in
+     * ways TMDB's search index does not match — "Sword of Coming Season 2" and
+     * "Battle Through The Heavens: Origin" both return ZERO results for the
+     * literal query — and a franchise's English name on a site is often a
+     * different translation than TMDB's ("Battle Through The Heavens" is
+     * "Fights Break Sphere" there). Either case used to leave the item
+     * unresolved, which silently removed the Cast, Trailers, Details,
+     * Related and Similar sections on the whole detail page.
+     *
+     * So: search every progressively stripped form of the title
+     * ([TmdbMeta.queryVariants]) and score all candidates together, and when
+     * nothing matches by name, look through the alternate titles of the top
+     * results before giving up. Only names are used to accept a match — the
+     * year merely breaks ties — because a wrong-but-close year must never pick
+     * a different show.
+     */
     private suspend fun searchByTitle(item: MediaItem): Resolved? {
         val title = item.title.trim()
         if (title.isBlank()) return null
-        val query = mapOf("query" to title)
-        val candidates = mutableListOf<Resolved>()
-        when (item.type) {
-            MediaType.MOVIE -> candidates.addAll(searchType("movie", query, item))
-            MediaType.SERIES -> candidates.addAll(searchType(
-                if (item.rawType.contains("anime", true)) "tv" else "tv", query, item))
-            MediaType.UNKNOWN -> {
-                candidates.addAll(searchType("movie", query, item))
-                candidates.addAll(searchType("tv", query, item))
-            }
+        val variants = TmdbMeta.queryVariants(title)
+        if (variants.isEmpty()) return null
+        val kinds = when (item.type) {
+            MediaType.MOVIE -> listOf("movie")
+            MediaType.UNKNOWN -> listOf("movie", "tv")
+            else -> listOf("tv")
         }
-        return candidates.firstOrNull { it.tmdbId.isNotBlank() }
-    }
-
-    private suspend fun searchType(type: String, query: Map<String, String>, item: MediaItem): List<Resolved> {
-        val data = apiGet("/search/$type", query) ?: return emptyList()
-        val arr = data.optJSONArray("results") ?: return emptyList()
-        val title = item.title.trim().lowercase()
         val year = item.year
+        val seen = HashSet<String>()
+        val found = ArrayList<Pair<String, String>>() // id to kind, in rank order
         var best: Resolved? = null
         var bestScore = 0
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val name = o.optString("title").ifBlank { o.optString("name") }.lowercase()
-            var score = 0
-            if (name == title) score += 50
-            else if (name.contains(title) || title.contains(name)) score += 15
-            if (year != null && year > 0) {
-                val y = runCatching { o.optString("release_date").takeIf { it.isNotBlank() }?.take(4)?.toInt() }
-                    .getOrNull()
-                    ?: runCatching { o.optString("first_air_date").takeIf { it.isNotBlank() }?.take(4)?.toInt() }
-                        .getOrNull()
-                if (y == year) score += 35
-            }
-            if (score > bestScore) {
-                bestScore = score
-                best = Resolved(o.optString("id"), type)
+        for (kind in kinds) {
+            for (v in variants) {
+                val data = apiGet("/search/$kind", mapOf("query" to v)) ?: continue
+                val arr = data.optJSONArray("results") ?: continue
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id").trim()
+                    if (id.isBlank() || id == "null") continue
+                    if (seen.add(id)) found.add(id to kind)
+                    val score = candidateScore(o, variants, year)
+                    if (score > bestScore) {
+                        bestScore = score
+                        best = Resolved(id, kind)
+                    }
+                }
+                // An exact/prefix name hit is decided — no need to ask TMDB
+                // about the looser forms of the same title.
+                if (bestScore >= 40) return best
             }
         }
-        return listOfNotNull(best)
+        if (best != null && bestScore > 0) return best
+        return alternativeMatch(found, variants) ?: best
     }
 
-    /** GETs a TMDB endpoint, rotating the API key on auth/rate errors. */
-    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? {
-        for (key in API_KEYS) {
-            val params = query + ("api_key" to key)
-            val qs = params.entries.joinToString("&") { (k, v) ->
-                "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+    /** Name-match score for one search result against every title variant. */
+    private fun candidateScore(o: JSONObject, variants: List<String>, year: Int?): Int {
+        val names = listOf(
+            o.optString("title"), o.optString("name"),
+            o.optString("original_title"), o.optString("original_name"),
+        ).filter { it.isNotBlank() && it != "null" }
+        if (names.isEmpty()) return 0
+        var score = 0
+        for (v in variants) {
+            for (n in names) score = maxOf(score, TmdbMeta.titleScore(v, n))
+        }
+        if (score == 0) return 0
+        if (year != null && year > 0) {
+            val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
+            val y = raw.take(4).toIntOrNull()
+            if (y == year) score += 25 else if (y != null && Math.abs(y - year) <= 1) score += 8
+        }
+        return score
+    }
+
+    /**
+     * Last resort for a title TMDB indexes under a different translation: check
+     * the alternate titles of the first few search results (TMDB keeps
+     * "Battle Through the Heavens" as an alias of "Fights Break Sphere"). Only
+     * the top results are checked, so a miss costs a couple of requests.
+     */
+    private suspend fun alternativeMatch(
+        found: List<Pair<String, String>>,
+        variants: List<String>,
+    ): Resolved? {
+        for ((id, kind) in found.take(4)) {
+            val d = apiGet("/$kind/$id/alternative_titles", emptyMap()) ?: continue
+            val arr = d.optJSONArray("results") ?: continue
+            for (i in 0 until arr.length()) {
+                val alt = arr.optJSONObject(i)?.optString("title")?.trim().orEmpty()
+                if (alt.isBlank() || alt == "null") continue
+                if (variants.any { TmdbMeta.titleScore(it, alt) >= 40 }) return Resolved(id, kind)
             }
-            val url = "$API_BASE$path?$qs"
-            val text = Http.getString(url, mapOf("Accept" to "application/json")) ?: continue
-            val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
-            if (obj.optString("status_message").contains("Invalid API key", true)) continue
-            return obj
         }
         return null
     }
+
+    /** GETs a TMDB endpoint, rotating the API key on auth/rate errors.
+     *
+     *  ALWAYS hops to [Dispatchers.IO] first: OkHttp's `execute()` is blocking,
+     *  and every caller of this used to inherit ITS thread — the detail screen's
+     *  background shelf/extras lookup ran on `viewModelScope` (the main thread),
+     *  so the call was killed by NetworkOnMainThreadException and swallowed by
+     *  its `runCatching`, leaving the Cast/Trailers/Details/Related/Similar
+     *  sections silently missing on every title. Suspending on IO here makes
+     *  every present and future caller safe by construction. */
+    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? =
+        withContext(Dispatchers.IO) {
+            for (key in API_KEYS) {
+                val params = query + ("api_key" to key)
+                val qs = params.entries.joinToString("&") { (k, v) ->
+                    "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+                }
+                val url = "$API_BASE$path?$qs"
+                val text = Http.getString(url, mapOf("Accept" to "application/json")) ?: continue
+                val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
+                if (obj.optString("status_message").contains("Invalid API key", true)) continue
+                return@withContext obj
+            }
+            null
+        }
 
     // ---- tiny disk cache (survives restarts; bounded) ----
 

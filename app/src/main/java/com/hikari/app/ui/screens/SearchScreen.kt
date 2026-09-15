@@ -56,6 +56,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
@@ -357,7 +358,7 @@ fun SearchScreen(
                             }
                     ) {
                         AsyncImage(
-                            model = PosterLoader.model(item.posterUrl),
+                            model = Artwork.model(item),
                             contentDescription = item.title,
                             modifier = Modifier
                                 .fillMaxWidth()

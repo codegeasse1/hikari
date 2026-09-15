@@ -1,4 +1,20 @@
 <resources>
     <color name="hikari_bg">#0B0E1A</color>
     <color name="ic_launcher_background">#0B0E1A</color>
+
+    <!-- Player accent: the cyan → violet gradient used by every player control
+         (badges, pills, progress bar, slider fills, the play ring). -->
+    <color name="hikari_accent_start">#00B4DB</color>
+    <color name="hikari_accent_end">#9D4EDD</color>
+    <!-- Solid approximations for views that cannot take a gradient (media3's
+         DefaultTimeBar paints flat colors). -->
+    <color name="hikari_accent_mid">#7B5CFF</color>
+    <color name="hikari_accent_soft">#7B2CBF</color>
+    <!-- Translucent accent for native ripple/control highlights. -->
+    <color name="hikari_accent_ripple">#337B5CFF</color>
+
+    <!-- Glassmorphism fills used by the player's circular buttons / pills. -->
+    <color name="hikari_glass">#33FFFFFF</color>
+    <color name="hikari_glass_stroke">#40FFFFFF</color>
+    <color name="hikari_glass_dark">#B3080B14</color>
 </resources>

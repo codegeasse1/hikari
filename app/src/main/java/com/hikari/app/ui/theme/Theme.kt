@@ -1,10 +1,16 @@
 package com.hikari.app.ui.theme
 
+import android.util.DisplayMetrics
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 enum class HikariThemeMode(val key: String, val label: String) {
     DARK("dark", "Hikari Dark"),
@@ -77,15 +83,40 @@ private val GlassColors = darkColorScheme(
 @Composable
 fun HikariTheme(
     mode: HikariThemeMode = HikariThemeMode.DARK,
+    uiScaleEnabled: Boolean = false,
+    uiScale: Float = 1f,
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = when (mode) {
-            HikariThemeMode.DARK -> DarkColors
-            HikariThemeMode.LIGHT -> LightColors
-            HikariThemeMode.GLASS -> GlassColors
-        },
-        typography = Typography,
-        content = content,
-    )
+    // In-app UI scale. When ON, this replaces the phone's Font size AND Display
+    // size settings with a single in-app scale: the app ignores `fontScale`
+    // (stays 1.0) and rebuilds the density from the device's STABLE physical
+    // density times the chosen scale, so every device renders the same layout
+    // regardless of accessibility size settings. OFF = inherit the system
+    // density untouched (the previous behaviour).
+    val base = LocalDensity.current
+    val context = LocalContext.current
+    val density = remember(base, context, uiScaleEnabled, uiScale) {
+        if (!uiScaleEnabled) {
+            base
+        } else {
+            val stable = runCatching { DisplayMetrics.DENSITY_DEVICE_STABLE / 160f }
+                .getOrDefault(0f)
+            val unit = if (stable > 0f) stable else base.density
+            Density(
+                density = unit * uiScale.coerceIn(0.7f, 1.3f),
+                fontScale = 1f,
+            )
+        }
+    }
+    CompositionLocalProvider(LocalDensity provides density) {
+        MaterialTheme(
+            colorScheme = when (mode) {
+                HikariThemeMode.DARK -> DarkColors
+                HikariThemeMode.LIGHT -> LightColors
+                HikariThemeMode.GLASS -> GlassColors
+            },
+            typography = Typography,
+            content = content,
+        )
+    }
 }

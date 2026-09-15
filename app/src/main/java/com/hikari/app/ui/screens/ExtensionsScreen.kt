@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -1107,6 +1108,25 @@ fun ExtensionsScreen() {
     }
 
     val folder = openFolder
+
+    BackHandler(
+        enabled = openRepo != null || folder != null || allReposOpen || installedOpen || sourcesOpen,
+    ) {
+        when {
+            openRepo != null -> {
+                openRepoUrl = null
+                vm.clearStatus()
+            }
+            folder != null -> {
+                openFolder = null
+                vm.clearStatus()
+            }
+            allReposOpen -> allReposOpen = false
+            installedOpen -> installedOpen = false
+            sourcesOpen -> sourcesOpen = false
+        }
+    }
+
     when {
         openRepo != null -> RepoPluginsView(
             repo = openRepo,

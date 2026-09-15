@@ -4,9 +4,11 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.ui.UiScale
 import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -36,6 +38,8 @@ class AppStore(private val ctx: Context) {
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
+        val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
+        val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
@@ -56,6 +60,127 @@ class AppStore(private val ctx: Context) {
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
+        val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
+        val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
+        val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
+        val ASK_SERVER = booleanPreferencesKey("askServerOnPlay")
+        val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
+        val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
+        val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
+        val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
+        val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
+    }
+
+    /** Slow / mobile-data mode: raise the source-search and stream-probe
+     *  timeouts and retry providers that time out, so a weak connection doesn't
+     *  end in "No playable sources found". Off by default so fast connections
+     *  keep their snappy timeouts. */
+    fun slowConnectionFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_CONNECTION] ?: false }
+
+    suspend fun slowConnection(): Boolean = slowConnectionFlow().first()
+
+    suspend fun setSlowConnection(enabled: Boolean) {
+        store.edit { it[K.SLOW_CONNECTION] = enabled }
+    }
+
+    /** Playback start rule: false = start the moment the FIRST server is found
+     *  (default), true = wait until [playMinServers] servers are known. The
+     *  search finishing always counts as "enough", so a title with fewer
+     *  servers than the requested count still plays as soon as every installed
+     *  extension has answered. */
+    fun playWaitServersFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAY_WAIT_SERVERS] ?: false }
+
+    suspend fun playWaitServers(): Boolean = playWaitServersFlow().first()
+
+    suspend fun setPlayWaitServers(wait: Boolean) {
+        store.edit { it[K.PLAY_WAIT_SERVERS] = wait }
+    }
+
+    /** How many servers to wait for when [playWaitServersFlow] is on (1–5). */
+    fun playMinServersFlow(): Flow<Int> =
+        store.data.map { (it[K.PLAY_MIN_SERVERS] ?: 2).coerceIn(1, 5) }
+
+    suspend fun playMinServers(): Int = playMinServersFlow().first()
+
+    suspend fun setPlayMinServers(n: Int) {
+        store.edit { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
+    }
+
+    /**
+     * "Don't play directly — show all servers to choose": off (the default)
+     * keeps the instant-play behaviour, where the player starts on the first
+     * server it finds. On, the player opens with every server it could find,
+     * divided into one section per engine (CloudStream, Hikari, Nuvio,
+     * Stremio), and waits for the user to pick one instead of playing on its
+     * own.
+     */
+    fun askServerOnPlayFlow(): Flow<Boolean> =
+        store.data.map { it[K.ASK_SERVER] ?: false }
+
+    suspend fun askServerOnPlay(): Boolean = askServerOnPlayFlow().first()
+
+    suspend fun setAskServerOnPlay(ask: Boolean) {
+        store.edit { it[K.ASK_SERVER] = ask }
+    }
+
+    /** Show the full-screen title card (backdrop + breathing name) from Play
+     *  until the first frame of video. Off = the player opens straight away
+     *  with just a round loading spinner. On by default. */
+    fun showLoadingBannerFlow(): Flow<Boolean> =
+        store.data.map { it[K.SHOW_LOADING_BANNER] ?: true }
+
+    suspend fun showLoadingBanner(): Boolean = showLoadingBannerFlow().first()
+
+    suspend fun setShowLoadingBanner(show: Boolean) {
+        store.edit { it[K.SHOW_LOADING_BANNER] = show }
+    }
+
+    /** Whether the player may suggest turning on Slow connection mode when a
+     *  play looks like it is struggling on a weak connection. On by default —
+     *  a user who keeps getting a wrong "your connection looks slow" verdict
+     *  turns it off here and never sees the dialog again. */
+    fun slowTipEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_TIP_ENABLED] ?: true }
+
+    suspend fun slowTipEnabled(): Boolean = slowTipEnabledFlow().first()
+
+    suspend fun setSlowTipEnabled(enabled: Boolean) {
+        store.edit { it[K.SLOW_TIP_ENABLED] = enabled }
+    }
+
+    /** Set by the dialog's "Don't ask again" — permanent, unlike the timed
+     *  cooldown of a plain dismissal. */
+    fun slowTipDontAskFlow(): Flow<Boolean> =
+        store.data.map { it[K.SLOW_TIP_DONT_ASK] ?: false }
+
+    suspend fun slowTipDontAsk(): Boolean = slowTipDontAskFlow().first()
+
+    suspend fun setSlowTipDontAsk(dontAsk: Boolean) {
+        store.edit { it[K.SLOW_TIP_DONT_ASK] = dontAsk }
+    }
+
+    /** When the tip was last dismissed with "Not now" (0 = never). Keeps the
+     *  dialog from reappearing on every single play. */
+    fun slowTipLastDismissFlow(): Flow<Long> =
+        store.data.map { it[K.SLOW_TIP_LAST_DISMISS] ?: 0L }
+
+    suspend fun slowTipLastDismiss(): Long = slowTipLastDismissFlow().first()
+
+    suspend fun setSlowTipLastDismiss(atMs: Long) {
+        store.edit { it[K.SLOW_TIP_LAST_DISMISS] = atMs }
+    }
+
+    /** Set by the launch Telegram invitation's "Don't show this again" checkbox,
+     *  so the dialog never comes back. */
+    fun telegramDontShowFlow(): Flow<Boolean> =
+        store.data.map { it[K.TELEGRAM_DONT_SHOW] ?: false }
+
+    suspend fun telegramDontShow(): Boolean = telegramDontShowFlow().first()
+
+    suspend fun setTelegramDontShow(dontShow: Boolean) {
+        store.edit { it[K.TELEGRAM_DONT_SHOW] = dontShow }
     }
 
     /** How many downloads may run simultaneously (1–10). */
@@ -128,6 +253,34 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTheme(key: String) {
         store.edit { it[K.THEME] = key }
+    }
+
+    // ---- In-app UI scale ----
+
+    /** When ON the app ignores the phone's Font size AND Display size settings
+     *  and scales its interface with [uiScaleFlow] instead — so it looks the
+     *  same on every phone. OFF (default) follows the system settings. */
+    fun uiScaleEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.UI_SCALE_ENABLED] ?: false }
+
+    suspend fun uiScaleEnabled(): Boolean = uiScaleEnabledFlow().first()
+
+    suspend fun setUiScaleEnabled(enabled: Boolean) {
+        store.edit { it[K.UI_SCALE_ENABLED] = enabled }
+        // Mirror into the synchronous cache so View-based screens (player,
+        // WebView) and the next cold start pick the change up immediately.
+        runCatching { UiScale.sync(ctx, enabled, uiScale()) }
+    }
+
+    /** The in-app scale (0.7f–1.3f) used while [uiScaleEnabledFlow] is on. */
+    fun uiScaleFlow(): Flow<Float> =
+        store.data.map { (it[K.UI_SCALE_PERCENT] ?: 100).coerceIn(70, 130) / 100f }
+
+    suspend fun uiScale(): Float = uiScaleFlow().first()
+
+    suspend fun setUiScale(percent: Int) {
+        store.edit { it[K.UI_SCALE_PERCENT] = percent.coerceIn(70, 130) }
+        runCatching { UiScale.sync(ctx, uiScaleEnabled(), uiScale()) }
     }
 
     // ---- Ad blocking (WebView only) ----
@@ -439,6 +592,15 @@ class AppStore(private val ctx: Context) {
 
     suspend fun clearHistory() {
         store.edit { it[K.HISTORY] = "[]" }
+    }
+
+    /** Remove ONE entry — a single movie, or a single episode of a series
+     *  (episodes of one title share a mediaId, so the key is per-video). */
+    suspend fun removeHistory(uniqueKey: String) {
+        store.edit { prefs ->
+            val cur = parseHistory(prefs[K.HISTORY])
+            prefs[K.HISTORY] = encodeHistory(cur.filter { it.uniqueKey != uniqueKey })
+        }
     }
 
     fun historyPausedFlow(): Flow<Boolean> =

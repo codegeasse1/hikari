@@ -67,6 +67,13 @@ import java.io.ByteArrayInputStream
  */
 class WebViewActivity : ComponentActivity() {
 
+    /** In-app UI scale: keeps this View-based screen on the same interface size
+     *  as the rest of the app (and off the phone's own font/display size when
+     *  the in-app scale is enabled). */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.hikari.app.ui.UiScale.wrap(newBase))
+    }
+
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var videoChip: TextView
@@ -1008,6 +1015,18 @@ class WebViewActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    /** Immersive fullscreen is not sticky — re-hide the bars whenever this
+     *  activity is resumed or regains focus (see PlayerActivity.hideSystemUi). */
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
     /** Adds [url] to the detected set ONLY after confirming it serves real video. */

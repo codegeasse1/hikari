@@ -9,10 +9,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hikari.app.net.Updater
+import com.hikari.app.ui.components.TelegramDialog
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.AppRoot
 import com.hikari.app.ui.theme.HikariTheme
@@ -20,6 +22,13 @@ import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+    /** In-app UI scale: when on, the app ignores the phone's Font size and
+     *  Display size settings everywhere (Compose screens scale themselves in
+     *  HikariTheme; this covers the Activity's View-based content too). */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.hikari.app.ui.UiScale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         HikariApp.mainActivity = this
         // Expose the activity to the CloudStream runtime as early as possible:
@@ -65,17 +74,31 @@ class MainActivity : AppCompatActivity() {
         // True fullscreen: hide the system status + navigation bars everywhere
         // (swipe from any edge to briefly reveal them). Content fills the whole
         // screen instead of stopping below a status bar.
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-            hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
+        applyImmersiveMode()
         val store = (application as HikariApp).store
         setContent {
+            val scope = rememberCoroutineScope()
             // Remember the Flow — a fresh store.themeFlow() per recomposition
             // would make collectAsState reset to the initial key each time.
             val themeFlow = remember { store.themeFlow() }
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
+
+            // In-app UI scale (Settings → In-app UI scale): when on, the app
+            // stops following the phone's font/display size and uses this.
+            val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
+            val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
+            val uiScaleFlow = remember { store.uiScaleFlow() }
+            val uiScale by uiScaleFlow.collectAsState(initial = 1f)
+
+            // Keep the synchronous mirror of the preference current, so
+            // View-based screens (player, WebView) and the next cold start
+            // apply it without waiting on DataStore.
+            LaunchedEffect(uiScaleEnabled, uiScale) {
+                com.hikari.app.ui.UiScale.sync(
+                    this@MainActivity, uiScaleEnabled, uiScale
+                )
+            }
 
             LaunchedEffect(themeMode) {
                 // Dark status-bar icons on the light theme so they stay visible.
@@ -85,6 +108,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             var showUpdateDialog by remember { mutableStateOf(false) }
+            var updateChecked by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
                 // One quiet check on launch — the dialog only appears when a
                 // newer build exists on GitHub.
@@ -92,14 +116,35 @@ class MainActivity : AppCompatActivity() {
                     .getOrNull()
                     ?.takeIf { it.available }
                     ?.let { showUpdateDialog = true }
+                updateChecked = true
             }
 
-            HikariTheme(themeMode) {
+            // One-time Telegram invitation. Held back until the update check has
+            // finished so the two dialogs never stack, and skipped wholesale
+            // once "Don't show this again" has been ticked.
+            var showTelegramDialog by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                if (!runCatching { store.telegramDontShow() }.getOrDefault(false)) {
+                    showTelegramDialog = true
+                }
+            }
+
+            HikariTheme(themeMode, uiScaleEnabled, uiScale) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
                     UpdateDialog(
                         context = this@MainActivity,
                         onDismiss = { showUpdateDialog = false },
+                    )
+                }
+                if (showTelegramDialog && updateChecked && !showUpdateDialog) {
+                    TelegramDialog(
+                        context = this@MainActivity,
+                        onDismiss = { showTelegramDialog = false },
+                        onDontShowAgain = {
+                            showTelegramDialog = false
+                            scope.launch { runCatching { store.setTelegramDontShow(true) } }
+                        },
                     )
                 }
             }
@@ -116,6 +161,34 @@ class MainActivity : AppCompatActivity() {
         // or not an Activity. Set it reflectively — the jar's MainAPI shape
         // varies, so each strategy is guarded.
         setMainApiApp(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Coming back from the background (or another activity) the system
+        // restores the status/navigation bars, so re-apply the immersive mode —
+        // otherwise the app is left with a status-bar-sized blank band that
+        // pushes every screen down until the next launch.
+        applyImmersiveMode()
+    }
+
+    /**
+     * Immersive fullscreen: hide the system status + navigation bars so the
+     * content fills the entire screen (swiping from an edge briefly reveals
+     * them). Applied at launch AND on every resume/focus gain — this is not
+     * sticky on its own, and when the bars come back they leave an empty band
+     * above the content (the "fullscreen leaves a blank bar under the status
+     * bar" report), which shows up on some devices and not others.
+     */
+    private fun applyImmersiveMode() {
+        runCatching {
+            androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        }
     }
 
     override fun onStop() {
@@ -148,6 +221,10 @@ class MainActivity : AppCompatActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
+        // A dialog (plugin settings sheet, resume prompt, update dialog) taking
+        // focus shows the system bars again; re-hide them the moment we get
+        // focus back so the UI stays fullscreen.
+        applyImmersiveMode()
         val path = com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload ?: return
         com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload = null
         val app = application as HikariApp

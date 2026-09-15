@@ -1022,7 +1022,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         // Some providers' load() walks many pages (e.g. PimpBunny model pages
         // paginate up to 50) — cap it so the detail screen can never hang.
         val r = try {
-            withTimeoutOrNull(45_000) {
+            withTimeoutOrNull(com.hikari.app.net.NetTuning.timeout(45_000)) {
                 val first = tryLoad(a, id)
                 // Providers like iStreamFlare build a JSON video-id string and
                 // fill its `url` field during load(); a hollow one (url:null,

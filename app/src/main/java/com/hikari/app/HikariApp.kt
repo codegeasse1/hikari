@@ -10,6 +10,8 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.net.Http
+import com.hikari.app.net.NetTuning
+import com.hikari.app.net.SlowNetTip
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
 import com.lagradost.cloudstream3.MainAPI
@@ -20,9 +22,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import okhttp3.Cache
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.security.Security
@@ -109,6 +115,14 @@ class HikariApp : Application() {
         initCloudStream(this)
         store = AppStore(this)
         providers = ProviderManager(store)
+        // "Your connection looks slow?" tip: measures in the background while a
+        // play is starting and only speaks up with real evidence (see SlowNetTip).
+        SlowNetTip.init(this)
+        // Mirror the persisted slow-connection toggle into NetTuning (read
+        // synchronously by the search/probe timeouts) and keep it in sync.
+        appScope.launch {
+            store.slowConnectionFlow().collect { NetTuning.setSlowConnection(it) }
+        }
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
@@ -266,54 +280,85 @@ class HikariApp : Application() {
      */
     private fun setupImageLoader() {
         runCatching {
+            // A home feed renders a hundred-plus posters from ONE host at once.
+            // OkHttp's default dispatcher allows only 5 concurrent requests per
+            // host, so every row after the first queued behind it and looked
+            // like it never loaded ("first some images load and then scrolling
+            // horizontal not loading"). Coil gets its own dispatcher with a much
+            // higher per-host ceiling so a whole row loads in parallel, plus a
+            // bigger connection pool so those parallel requests actually reuse
+            // sockets instead of serialising on TCP/TLS handshakes.
+            val dispatcher = Dispatcher().apply {
+                maxRequests = 128
+                maxRequestsPerHost = 32
+            }
             val client = OkHttpClient.Builder()
+                .dispatcher(dispatcher)
+                .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .addInterceptor { chain ->
                     val req = chain.request()
-                    val builder = req.newBuilder()
-                        .header("User-Agent", Http.UA)
                     val host = req.url.host?.lowercase() ?: ""
                     val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
-                    // Plugins declare per-poster headers (e.g. LeakPorner's
-                    // 58img.top needs `Referer: https://leakporner.org/`). Use
-                    // the exact headers when known, else fall back to a
-                    // same-origin Referer (hotlink protection) — except for
-                    // hosts that 403 any Referer at all (see NO_REFERER_HOSTS).
-                    if (host in NO_REFERER_HOSTS) {
-                        // no Referer — fourhoi.com/surrit.com reject the image
-                        // when a Referer is present (verified: same-origin
-                        // referer => 403, bare request => 200)
-                    } else {
-                        val exact = cs3.imageHeaders[req.url.toString()]
-                        if (exact != null) {
-                            exact.forEach { (k, v) -> builder.header(k, v) }
-                        } else {
-                            // URL may differ from the recorded one (scheme/query/
-                            // params) — apply the Referer the provider declared
-                            // for this image host.
-                            val hostRef = cs3.imageHostReferers[host]
-                            if (hostRef != null) {
-                                builder.header("Referer", hostRef)
-                            } else if (host.isNotBlank()) {
-                                builder.header("Referer", "${req.url.scheme}://$host/")
-                            }
+                    // Header sets to try, best guess first: the exact headers a
+                    // provider declared for this poster URL, then the Referer it
+                    // declared for this image host, then a same-origin Referer
+                    // (hotlink protection), then a completely bare request.
+                    // Hosts that refuse ANY Referer (see NO_REFERER_HOSTS) start
+                    // bare. The old code only ever tried two of these and only
+                    // when the first answer was a 401/403 — a CDN that answers
+                    // a hotlink rejection with a 200 HTML page slipped through
+                    // and Coil then failed to decode it into a blank cell.
+                    val variants = ArrayList<Map<String, String>>(4)
+                    if (host !in NO_REFERER_HOSTS) {
+                        cs3.imageHeaders[req.url.toString()]?.let { variants.add(it) }
+                        val referer = cs3.imageHostReferers[host]
+                            ?: if (host.isNotBlank()) "${req.url.scheme}://$host/" else null
+                        if (referer != null && variants.none { v -> v.keys.any { it.equals("Referer", ignoreCase = true) } }) {
+                            variants.add(mapOf("Referer" to referer))
                         }
                     }
-                    chain.proceed(builder.build())
+                    variants.add(emptyMap())
+
+                    var last: Response? = null
+                    for (headers in variants) {
+                        // OkHttp refuses a second proceed() on a call whose
+                        // previous response body is still open ("cannot make a
+                        // new request because the previous response is still
+                        // open"), and it throws that from a dispatcher thread,
+                        // which takes the whole process down. Close the attempt
+                        // we are about to replace BEFORE asking for the next
+                        // one — closing it after the proceed was the crash.
+                        last?.close()
+                        last = null
+                        val builder = req.newBuilder().header("User-Agent", Http.UA)
+                        headers.forEach { (k, v) -> builder.header(k, v) }
+                        val response = chain.proceed(builder.build())
+                        if (isUsableImage(response)) return@addInterceptor response
+                        last = response
+                    }
+                    last ?: chain.proceed(req)
                 }
                 .build()
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
-                // Decoded bitmaps live in RAM. Coil's default is 25% of the app
-                // heap, which on a poster grid (a few hundred covers, several
-                // full-size) can fill the heap on its own and OOM the process.
-                // 32 MB is plenty for a screenful or two of thumbnails and keeps
-                // the rest of the heap free for catalogs and Compose.
+                // Posters whose CDN sends no cache headers (very common on the
+                // aggregator hosts) should still land in Coil's disk cache.
+                .respectCacheHeaders(false)
                 .memoryCache {
-                    coil.memory.MemoryCache.Builder(this)
-                        .maxSizeBytes(32 * 1024 * 1024)
+                    // Decoded bitmaps live in RAM. Coil's default is 25% of the
+                    // app heap, which on a poster grid (a few hundred covers,
+                    // several full-size) can fill the heap on its own and OOM the
+                    // process. Scale to the actual heap instead: 1/8 of it,
+                    // floored at 24 MB (a screenful or two of thumbnails) and
+                    // capped at 96 MB so a huge-heap device doesn't hoard memory
+                    // it doesn't need.
+                    val cap = (Runtime.getRuntime().maxMemory() / 8)
+                        .coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+                    coil.memory.MemoryCache.Builder(this@HikariApp)
+                        .maxSizeBytes(cap.toInt())
                         .build()
                 }
                 .diskCache {
@@ -325,6 +370,19 @@ class HikariApp : Application() {
                 .build()
             Coil.setImageLoader(loader)
         }
+    }
+
+    /**
+     * True when [response] actually carries an image: a 2xx whose body is
+     * declared as an image type. A missing Content-Type is accepted (Coil sniffs
+     * the bytes), but a text/html body is rejected — several CDNs answer a
+     * hotlink rejection with a soft 200 HTML page, which Coil would otherwise
+     * try to decode into a blank cell.
+     */
+    private fun isUsableImage(response: Response): Boolean {
+        if (!response.isSuccessful) return false
+        val type = response.body?.contentType()?.type?.lowercase() ?: return true
+        return type == "image" || type == "application" || type == "binary" || type == "octet-stream"
     }
 
     private fun initCloudStream(context: Context) {
