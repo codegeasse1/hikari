@@ -1644,49 +1644,14 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Wraps [panel] in the "halo stage": a frame with just enough room around
-     * the panel for [GlassArcView] to paint its glow. Every player dialog builds
-     * its panel through here, so all of them — the menus, the progress panels
-     * and the "continue from where you left off?" prompt — wear the same curved,
-     * glowing silhouette.
+     * Room a glass panel keeps inside its own bounds for the neon edge to bloom
+     * into. The panel paints that glow along its own silhouette (see
+     * [CurvedGlassPanel]), so a dialog is just the panel plus this much space
+     * around it — there is no separate ring view parked behind it. Wide enough
+     * for the widest glow stroke (44dp) to fade out before the view edge.
      */
-    private fun haloStage(panel: View, panelHeight: Int, padH: Int): FrameLayout {
-        val density = resources.displayMetrics.density
-        val padV = (26 * density).toInt()
-        // The ring hugs the panel with this much air around it; it is what makes
-        // the curve read as a curve framing the panel rather than a border.
-        val gapH = (15 * density).toInt()
-        val gapV = (12 * density).toInt()
-        return FrameLayout(this).apply {
-            addView(
-                GlassArcView(
-                    this@PlayerActivity, accentStartColor, accentMidColor, accentEndColor
-                ).apply {
-                    padHPx = padH.toFloat()
-                    padVPx = padV.toFloat()
-                    gapHPx = gapH.toFloat()
-                    gapVPx = gapV.toFloat()
-                    // The ring traces the panel's own silhouette, so it has to
-                    // use the same curve the panel is cut to.
-                    exponent = (panel as? CurvedGlassPanel)?.exponent ?: GlassShape.EXPONENT
-                },
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-                )
-            )
-            addView(
-                panel,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, panelHeight
-                ).apply {
-                    leftMargin = padH
-                    rightMargin = padH
-                    topMargin = padV
-                    bottomMargin = padV
-                }
-            )
-        }
-    }
+    private val glassHaloPx: Int
+        get() = (30 * resources.displayMetrics.density).toInt()
 
     /**
      * Presents the rounded glass panel that shells every player dialog. Above
@@ -1713,6 +1678,7 @@ class PlayerActivity : ComponentActivity() {
         rowHost: ViewGroup? = null,
     ): TextView? {
         val density = resources.displayMetrics.density
+        val halo = glassHaloPx
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         // A dialog with no hint of its own still gets a line up here: the title
@@ -1731,7 +1697,9 @@ class PlayerActivity : ComponentActivity() {
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((8 * density).toInt(), 0, 0, (8 * density).toInt())
+            // Start the line in from the panel's own left edge (the halo is
+            // where the panel's glow lives), not from the window's.
+            setPadding(halo + (8 * density).toInt(), 0, halo, (8 * density).toInt())
             if (hintView != null) {
                 if (iconRes != 0) {
                     addView(ImageView(this@PlayerActivity).apply {
@@ -1767,6 +1735,10 @@ class PlayerActivity : ComponentActivity() {
         ))
 
         val panel = CurvedGlassPanel(this).apply {
+            haloPx = halo.toFloat()
+            startColor = accentStartColor
+            midColor = accentMidColor
+            endColor = accentEndColor
             // The rows bend to the panel's curve (see CurvedGlassPanel). The
             // caller passes the container that actually holds them when the
             // whole list fits; otherwise the panel bends its own child (the
@@ -1784,25 +1756,20 @@ class PlayerActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val win = windowSize()
-        // Width of the PANEL itself (the halo paddings are added around it), so
-        // the ring is positioned against a known panel width.
+        // Width of the PANEL's own silhouette (the halo is added around it), so
+        // the glass and the glow along it are sized against a known width.
         val panelW = minOf(
             (win.x * 0.86f).toInt(),
             (win.y * 0.74f).toInt(),
             (400 * density).toInt(),
-        )
-        // Room for the halo's bloom. The widest glow stroke is 56dp (28dp of it
-        // outside the ring) and the ring sits 15dp outside the panel, so ~46dp
-        // per side keeps the glow from being sliced off by the window edge;
-        // clamped so the window still fits on a narrow screen.
-        val padH = (46 * density).toInt()
-            .coerceAtMost(((win.x - panelW) / 2).coerceAtLeast((8 * density).toInt()))
+        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+            .coerceAtLeast((140 * density).toInt())
         // The panel must FLOAT on the video with all four rounded corners (and
-        // the halo sweeping around them) visible: it is capped against the hint
-        // line plus the arc's own room above it, and against a fraction of the
+        // the light sweeping around them) visible: it is capped against the hint
+        // line plus the halo's own room above it, and against a fraction of the
         // window, so it never runs off the top/bottom edge — which used to clip
         // its bottom curve and hide the last rows. Anything longer scrolls.
-        val chrome = (88 * density).toInt()
+        val chrome = (96 * density).toInt()
         val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
         val maxFraction = (win.y * 0.58f).toInt()
         val minPanel = (110 * density).toInt()
@@ -1810,8 +1777,10 @@ class PlayerActivity : ComponentActivity() {
             .coerceAtMost(fitsScreen)
             .coerceAtMost(maxFraction)
             .coerceAtLeast(minPanel)
-        root.addView(haloStage(panel, panelH, padH), LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        // The panel view carries its own halo, so its silhouette comes out
+        // exactly panelW x panelH in the middle of it.
+        root.addView(panel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, panelH + 2 * halo
         ))
 
         dialog.setContentView(
@@ -1827,9 +1796,9 @@ class PlayerActivity : ComponentActivity() {
         // Narrower than a stock dialog: the reference panel is ~3/4 of the window
         // height wide and never spans the full width, which is a large part of
         // why it reads as a lightweight overlay instead of a full-screen sheet.
-        // The halo paddings are added back on top so the PANEL keeps that width.
+        // The halo is added back on top so the PANEL keeps that width.
         dialog.window?.apply {
-            setLayout(panelW + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -1911,12 +1880,13 @@ class PlayerActivity : ComponentActivity() {
     ): Dialog {
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val halo = glassHaloPx
         val panel = CurvedGlassPanel(this).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(
-                (22 * density).toInt(), (24 * density).toInt(),
-                (22 * density).toInt(), (24 * density).toInt()
-            )
+            haloPx = halo.toFloat()
+            startColor = accentStartColor
+            midColor = accentMidColor
+            endColor = accentEndColor
         }
         panel.addView(ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(accentMidColor)
@@ -1948,14 +1918,11 @@ class PlayerActivity : ComponentActivity() {
             (win.x * 0.62f).toInt(),
             (win.y * 0.6f).toInt(),
             (300 * density).toInt(),
-        )
-        val padH = (46 * density).toInt()
-            .coerceAtMost(((win.x - w) / 2).coerceAtLeast((8 * density).toInt()))
+        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+            .coerceAtLeast((140 * density).toInt())
         dialog.setContentView(
-            haloStage(panel, ViewGroup.LayoutParams.WRAP_CONTENT, padH),
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            panel,
+            ViewGroup.LayoutParams(w + 2 * halo, ViewGroup.LayoutParams.WRAP_CONTENT)
         )
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(false)
@@ -1963,7 +1930,7 @@ class PlayerActivity : ComponentActivity() {
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
         dialog.show()
         dialog.window?.apply {
-            setLayout(w + 2 * padH, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(w + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.55f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
