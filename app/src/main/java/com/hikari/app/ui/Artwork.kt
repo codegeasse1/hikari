@@ -5,6 +5,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.TmdbMeta
 import java.io.File
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -106,7 +107,9 @@ object Artwork {
         if (!inFlight.add(key)) return
         executor.execute {
             try {
-                val res = runCatching { TmdbMeta.artwork(item) }.getOrNull()
+                // The lookup is suspending; this worker is a plain thread, so
+                // bridge into it. Blocking a daemon artwork thread is fine.
+                val res = runCatching { runBlocking { TmdbMeta.artwork(item) } }.getOrNull()
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
                 saveCache()
                 revision.value = revisionCounter.incrementAndGet()
