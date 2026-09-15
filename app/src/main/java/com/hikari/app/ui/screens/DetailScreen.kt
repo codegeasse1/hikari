@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,19 +28,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -80,10 +89,12 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.StreamSource
+import com.hikari.app.data.TmdbMeta
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.Routes
@@ -133,6 +144,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** TMDB \"Recommendations\" shelf for the current title — what people
+     *  watched next. Empty until the (background) lookup lands. */
+    private val _related = MutableStateFlow<List<MediaItem>>(emptyList())
+    val related: StateFlow<List<MediaItem>> = _related.asStateFlow()
+
+    /** TMDB \"Similar\" shelf for the current title. */
+    private val _similar = MutableStateFlow<List<MediaItem>>(emptyList())
+    val similar: StateFlow<List<MediaItem>> = _similar.asStateFlow()
 
     /** Streams resolved ahead of time (first episode / movie) so tapping Play
      *  or the first episode starts instantly instead of waiting 20-30s for
@@ -211,6 +231,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _streamError.value = null
             _episodes.value = null
             _episodesLoaded.value = false
+            _related.value = emptyList()
+            _similar.value = emptyList()
             if (manager.byId(providerId) == null) {
                 _error.value = "Provider not found"
                 _loading.value = false
@@ -254,8 +276,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     _episodesLoaded.value = true
                 }
             }
-            prefetchFirstStreams(_meta.value ?: base)
+            val item = _meta.value ?: base
+            // Shelves are a bonus, never a gate: they resolve in the background
+            // so a slow (or failed) TMDB call can never delay the page or
+            // playback. A miss simply leaves the rows out.
+            launch { loadShelves(item) }
+            prefetchFirstStreams(item)
         }
+    }
+
+    private suspend fun loadShelves(item: MediaItem) {
+        _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
+        _similar.value = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
     }
 
     /** Streams currently being resolved, keyed the same as [streamCache]. A
@@ -437,6 +469,8 @@ fun DetailScreen(
     val searchedProviders by vm.searchedProviders.collectAsState()
     val streamError by vm.streamError.collectAsState()
     val providers by vm.providers.collectAsState()
+    val related by vm.related.collectAsState()
+    val similar by vm.similar.collectAsState()
     val m = meta
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -543,6 +577,12 @@ fun DetailScreen(
                 (it.title.equals(title, ignoreCase = true) && it.type == type)
         }
     }
+
+    // Library state for this page's heart button. Collecting the Flow (rather
+    // than reading `favorites()` once) means the icon also flips if the same
+    // title is (un)saved from the player or another screen while this is open.
+    val favoritesFlow = remember { app.store.favoritesFlow() }
+    val favorites by favoritesFlow.collectAsState(initial = emptyList())
 
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
@@ -832,6 +872,40 @@ fun DetailScreen(
         openStreams(ep, 0L)
     }
 
+    // What the primary action button plays: the first episode with progress
+    // worth continuing (the visible page first, then the rest of the season),
+    // so a returning viewer gets a "Resume S1 E3" button instead of having to
+    // remember where they stopped. Null = nothing to resume.
+    val resumeEp = remember(shownEps, sortedEps, historyForTitle, episodeId) {
+        shownEps.firstOrNull { savedProgressFor(it) != null }
+            ?: sortedEps.firstOrNull { savedProgressFor(it) != null }
+    }
+
+    // What the heart saves into the Library — built from the (type-corrected)
+    // meta when it has arrived, and from the nav args before that, so the
+    // button works even while the origin's /meta is still in flight.
+    val savedItem = remember(m, providerId, mediaId, title, posterUrl, rawType, type) {
+        MediaItem(
+            providerId = providerId,
+            id = mediaId,
+            title = m?.title ?: title,
+            type = m?.type ?: type,
+            posterUrl = m?.posterUrl ?: posterUrl,
+            year = m?.year,
+            overview = m?.overview,
+            genres = m?.genres.orEmpty(),
+            backdropUrl = m?.backdropUrl,
+            rawType = rawType.ifBlank { m?.rawType.orEmpty() },
+        )
+    }
+    val isSaved = favorites.any { it.uniqueId == savedItem.uniqueId }
+    val toggleSaved: () -> Unit = {
+        scope.launch {
+            if (isSaved) app.store.removeFavorite(savedItem.uniqueId)
+            else app.store.addFavorite(savedItem)
+        }
+    }
+
     // Arriving from watch history: once metadata/episodes are loaded, offer to
     // resume the target episode (or the movie) instead of silently jumping in.
     var resumeHandled by remember { mutableStateOf(false) }
@@ -885,18 +959,64 @@ fun DetailScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 m!!.genres.take(4).forEach { g ->
-                                    Box(
-                                        Modifier
-                                            .clip(RoundedCornerShape(20.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                                            .clickable { Routes.safeNavigate(nav, Routes.searchQuery(g)) }
-                                    ) {
-                                        Text(
-                                            g,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                                    // Tapping a tag asks WHERE to search:
+                                    // "Search" stays inside this title's own
+                                    // extension, "Global search" fans out to
+                                    // every installed provider. Keeping both on
+                                    // the pill means one tap is still enough to
+                                    // discover the choice, without hijacking the
+                                    // tap to a single behaviour.
+                                    var tagOpen by remember { mutableStateOf(false) }
+                                    Box {
+                                        Row(
+                                            Modifier
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                                .clickable { tagOpen = true }
+                                                .padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                g,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Spacer(Modifier.width(2.dp))
+                                            Icon(
+                                                Icons.Filled.ArrowDropDown,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = tagOpen,
+                                            onDismissRequest = { tagOpen = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Search") },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.Search, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    tagOpen = false
+                                                    Routes.safeNavigate(
+                                                        nav,
+                                                        Routes.searchInProvider(providerId, g)
+                                                    )
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Global search") },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.Public, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    tagOpen = false
+                                                    Routes.safeNavigate(nav, Routes.searchQuery(g))
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -923,26 +1043,65 @@ fun DetailScreen(
                 // give mislabeled/unknown items a Play button so nothing is
                 // ever unplayable.
                 val isSeries = m?.type == MediaType.SERIES || (episodes?.isNotEmpty() == true)
-                // Show the Play button whenever there's no episode list to pick
-                // from (a genuine movie, or a series whose provider exposes no
-                // episode list) — and ONLY the episode list once episodes exist,
-                // even if the provider mislabelled the item as a movie.
+                // A movie (or a series whose provider exposes no episode list)
+                // plays straight from this button. A real series gets the SAME
+                // button, pointed at the episode the viewer is up to, so a
+                // returning viewer never has to hunt through the list — while
+                // the episode rows below still allow picking any other one.
                 val canPlay = !isSeries || episodes.isNullOrEmpty()
-                if (canPlay) {
-                    item {
+                val btnEp = if (canPlay) null else (resumeEp ?: sortedEps.firstOrNull())
+                val actionLabel = when {
+                    resumeEp != null ->
+                        if (resumeEp.season > 1) "Resume S${resumeEp.season} E${resumeEp.number}"
+                        else "Resume E${resumeEp.number}"
+                    btnEp == null -> "Play"
+                    btnEp.season > 1 -> "Play S${btnEp.season} E${btnEp.number}"
+                    else -> "Play E${btnEp.number}"
+                }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Button(
-                            onClick = { tryPlay(null) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                            onClick = { tryPlay(btnEp) },
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            // Always "Play": the source search keeps running in
-                            // the background (prefetch + live feed) and the
-                            // sheet shows its own loader, so the button must
-                            // never sit on a "Preparing…" spinner of its own.
-                            Text("Play")
+                            // Always an action word, never a spinner: the
+                            // source search keeps running in the background
+                            // (prefetch + live feed) and the sheet shows its
+                            // own loader, so the button must never sit on a
+                            // "Preparing…" spinner of its own.
+                            Text(actionLabel)
+                        }
+                        // Library toggle, mirroring the player's heart: the same
+                        // MediaItem and the same store calls, so the two views
+                        // can never disagree about what is saved.
+                        if (isSaved) {
+                            FilledTonalButton(onClick = toggleSaved) {
+                                Icon(
+                                    Icons.Filled.Favorite,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Saved")
+                            }
+                        } else {
+                            OutlinedButton(onClick = toggleSaved) {
+                                Icon(
+                                    Icons.Filled.FavoriteBorder,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Library")
+                            }
                         }
                     }
                 }
@@ -1051,6 +1210,24 @@ fun DetailScreen(
                             item(key = "ep-$index") {
                                 EpisodeRow(ep) { tryPlay(ep) }
                             }
+                        }
+                    }
+                }
+                // Same-title shelves from TMDB — the Nuvio detail page's
+                // Related/Similar tabs, as inline rows. They show up only once
+                // the background lookup lands, and only when it found titles
+                // that actually have artwork, so a miss leaves no empty row.
+                if (related.isNotEmpty()) {
+                    item {
+                        ShelfRow("Related", related) {
+                            Routes.safeNavigate(nav, Routes.searchQuery(it.title))
+                        }
+                    }
+                }
+                if (similar.isNotEmpty()) {
+                    item {
+                        ShelfRow("Similar", similar) {
+                            Routes.safeNavigate(nav, Routes.searchQuery(it.title))
                         }
                     }
                 }
@@ -1432,12 +1609,19 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
 
 @Composable
 private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) {
+    // A wide 16:9 banner — the same shape as the Home carousel and the Nuvio
+    // detail page — instead of the old 240dp letterbox, which cropped the sides
+    // off wide art and showed a blurry poster strip instead. With a full
+    // 16:9 frame nothing is cut off at the top, and the bottom of the art fades
+    // into the page background.
     Box(
         Modifier
             .fillMaxWidth()
-            .height(240.dp)
+            .aspectRatio(16f / 9f)
     ) {
-        val img = PosterLoader.model(meta?.backdropUrl ?: fallbackPoster)
+        // Item's own backdrop → its poster → TMDB/IMDb artwork, so a title an
+        // extension left blank still gets a real banner here.
+        val img = meta?.let { Artwork.backdropModel(it) } ?: PosterLoader.model(fallbackPoster)
         if (img != null) {
             AsyncImage(
                 model = img,
@@ -1453,7 +1637,9 @@ private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) 
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color.Transparent, MaterialTheme.colorScheme.background)
+                        0f to Color.Transparent,
+                        0.55f to Color.Transparent,
+                        1f to MaterialTheme.colorScheme.background
                     )
                 )
         )
@@ -1463,6 +1649,58 @@ private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) 
                 contentDescription = "Back",
                 tint = Color.White
             )
+        }
+    }
+}
+
+/** A horizontal "Related"/"Similar" shelf of poster cells under the detail
+ *  page's episode list (the Nuvio detail page's Related/Similar tabs, inline). */
+@Composable
+private fun ShelfRow(
+    heading: String,
+    shelf: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+) {
+    Column(Modifier.padding(top = 12.dp)) {
+        Text(
+            heading,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(shelf, key = { it.uniqueId }) { item ->
+                Column(
+                    Modifier
+                        .width(112.dp)
+                        .clickable { onClick(item) }
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(2f / 3f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        AsyncImage(
+                            model = Artwork.model(item),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
         }
     }
 }

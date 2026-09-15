@@ -55,6 +55,7 @@ import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
@@ -296,7 +297,7 @@ private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
                 modifier = Modifier.size(26.dp),
             )
             AsyncImage(
-                model = PosterLoader.model(item.posterUrl, item.backdropUrl),
+                model = Artwork.model(item),
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop

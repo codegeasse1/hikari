@@ -66,6 +66,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -181,7 +182,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
                 modifier = Modifier.size(28.dp),
             )
             PosterImage(
-                model = PosterLoader.model(item.posterUrl, item.backdropUrl),
+                model = Artwork.model(item),
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -335,11 +336,15 @@ fun GlassSearchField(
     }
 }
 
-/** A large auto-advancing featured banner for the top of Home — full-width
- *  backdrop art, the title/metadata and a "View Details" pill over a bottom
- *  scrim, with pagination dots while more than one featured title exists.
+/** A carousel of wide, movie-shaped featured cards for the top of Home — the
+ *  backdrop art with the title/metadata and a "View Details" pill over a bottom
+ *  scrim, and pagination dots while more than one featured title exists.
  *  Swiping left/right moves between featured titles (the dots track it), and
- *  tapping anywhere on a page opens the title that page shows. */
+ *  tapping anywhere on a card opens the title that card shows.
+ *
+ *  The cards are 16:9 and inset from the screen edges so the neighbours peek
+ *  in: that is what makes it read as a "poster carousel" instead of the tall
+ *  portrait hero that used to eat the top third of Home. */
 @Composable
 fun HeroBanner(
     items: List<MediaItem>,
@@ -359,24 +364,27 @@ fun HeroBanner(
             }
         }
     }
-    Box(
-        modifier
-            .fillMaxWidth()
-            .aspectRatio(0.72f)
-    ) {
+    Column(modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxSize(),
-            pageSpacing = 0.dp,
+            modifier = Modifier.fillMaxWidth(),
+            // The neighbours peek in at the sides: a wide, movie-shaped card
+            // that clearly belongs to a carousel, instead of the old
+            // full-bleed portrait hero that filled a third of the screen.
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            pageSpacing = 12.dp,
         ) { page ->
             val item = items[page]
             Box(
                 Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .clickable { onClick(item) }
             ) {
                 PosterImage(
-                    model = PosterLoader.model(item.backdropUrl ?: item.posterUrl),
+                    model = Artwork.backdropModel(item),
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -387,27 +395,25 @@ fun HeroBanner(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.40f),
-                                0.35f to Color.Transparent,
-                                0.60f to Color.Black.copy(alpha = 0.55f),
-                                1f to Color.Black.copy(alpha = 0.95f),
+                                0f to Color.Black.copy(alpha = 0.45f),
+                                0.30f to Color.Transparent,
+                                0.55f to Color.Black.copy(alpha = 0.35f),
+                                1f to Color.Black.copy(alpha = 0.92f),
                             )
                         )
                 )
                 Column(
                     Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 44.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
                 ) {
                     Text(
                         item.title,
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Black,
                         color = Color.White,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     val metaLine = buildList {
@@ -422,26 +428,34 @@ fun HeroBanner(
                     if (metaLine.isNotBlank()) {
                         Text(
                             metaLine,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color = Color.White.copy(alpha = 0.85f),
-                            textAlign = TextAlign.Center,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 6.dp),
+                            modifier = Modifier.padding(top = 2.dp),
                         )
                     }
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { onClick(item) },
                         shape = RoundedCornerShape(50),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.White,
                             contentColor = Color.Black,
                         ),
                     ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("View Details", fontWeight = FontWeight.Bold)
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "View Details",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
                 }
             }
@@ -449,8 +463,8 @@ fun HeroBanner(
         if (items.size > 1) {
             Row(
                 Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp),
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 val active = pagerState.currentPage.coerceIn(0, items.lastIndex)
