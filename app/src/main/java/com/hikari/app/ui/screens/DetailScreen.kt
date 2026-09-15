@@ -1358,6 +1358,7 @@ fun DetailScreen(
             }
         }
     }
+    }
 
     if (showLoadingBanner) {
         PlayLoadingBanner(
@@ -1391,7 +1392,6 @@ fun DetailScreen(
                 )
             }
         }
-    }
     }
 
     if (showSheet) {
