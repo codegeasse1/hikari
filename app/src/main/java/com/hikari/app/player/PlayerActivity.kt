@@ -77,6 +77,7 @@ import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
@@ -158,6 +159,29 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** True once [playSource] has actually chosen a server this session. Until
+     *  then nothing may be drawn as "already selected": `currentIndex` starts
+     *  at its 0 default, so a plain `index == currentIndex` check painted the
+     *  FIRST row of the chooser as the current one — and the row's tap handler
+     *  then treated a tap on that row as a no-op, closing the chooser without
+     *  playing anything. */
+    private var playbackCommitted = false
+
+    /** True while the startMode chooser is up waiting for the user's pick, so
+     *  that backing out of it falls back to the remembered server. A dismiss
+     *  caused by the user's own tap must NOT also trigger that fallback. */
+    private var startChoicePending = false
+
+    /** The startMode chooser is presented at most once per Activity. The live
+     *  search keeps appending servers, and a late [startOrAsk] used to re-open
+     *  the chooser the user had already answered (or backed out of), which is
+     *  the "server list comes back by itself" bug. */
+    private var startChooserShown = false
+
+    /** Set when the user rotates with the button, so the once-per-source
+     *  auto-rotate never overrides their choice. */
+    private var userRotated = false
 
     /** Mirrors the Settings "Don't play directly" toggle: when on, a freshly
      *  found server list is never auto-played — the grouped chooser opens
@@ -556,6 +580,13 @@ class PlayerActivity : ComponentActivity() {
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
             override fun onVisibilityChanged(visibility: Int) {
                 controllerVisible = visibility == View.VISIBLE
+                // The pill row is a HorizontalScrollView. A focused pill (the
+                // media3 control view asks for focus, and a scroll view reveals
+                // a focused descendant) could pull the row to one end and leave
+                // it parked there for the rest of the session — the first pill
+                // sat half cut off in portrait. Every fresh appearance of the
+                // controls starts the row at its left edge again.
+                if (controllerVisible) resetPillScroll()
             }
         })
         speedChip = findViewById(R.id.speed_btn)
@@ -1274,6 +1305,9 @@ class PlayerActivity : ComponentActivity() {
             SCREEN_ORIENTATION_UNSPECIFIED, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
+        // The user has taken over: the once-per-source auto-rotate must not
+        // spin the screen back to the video's own orientation afterwards.
+        userRotated = true
         requestedOrientation = next
         Toast.makeText(
             this,
@@ -1736,16 +1770,36 @@ class PlayerActivity : ComponentActivity() {
 
         // A pill that just moved out of the top bar needs its accent fill back.
         applyAccentPalette()
+
+        // Start the scrollable pill row at its left edge, never wherever a
+        // focus jump (media3's control view) left it.
+        resetPillScroll()
+    }
+
+    /** Puts the pill row back at its left edge. */
+    private fun resetPillScroll() {
+        val sc = findViewById<HorizontalScrollView>(R.id.player_pill_scroll) ?: return
+        if (sc.scrollX != 0) sc.scrollTo(0, 0)
     }
 
     private fun syncLeftSpacer() {
         val right = findViewById<View>(R.id.player_right_actions) ?: return
         val spacer = findViewById<View>(R.id.player_left_spacer) ?: return
-        val w = right.measuredWidth
-        if (w <= 0) return
+        // Mirroring the right container's width keeps a centred pill row on the
+        // screen's centre line — but only while the pills fit. When the row is
+        // wider than the space left for it (portrait, with eight pills) the
+        // mirror is dead weight that eats another ~31dp of a strip that already
+        // has to be scrolled, so the spacer drops back to its minimum instead.
+        val pills = findViewById<View>(R.id.player_pills)
+        val scroll = findViewById<HorizontalScrollView>(R.id.player_pill_scroll)
+        val overflows = pills != null && scroll != null && scroll.measuredWidth > 0 &&
+            pills.measuredWidth > scroll.measuredWidth
+        val target = if (overflows) (2 * resources.displayMetrics.density).roundToInt()
+        else right.measuredWidth
+        if (target <= 0) return
         val lp = spacer.layoutParams
-        if (lp.width != w) {
-            lp.width = w
+        if (lp.width != target) {
+            lp.width = target
             spacer.layoutParams = lp
         }
     }
@@ -2514,6 +2568,40 @@ class PlayerActivity : ComponentActivity() {
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+
+        // A cap TALLER than the rows it holds is just empty glass: the panel's
+        // bottom keeps its curve while the rows stop well above it, which is
+        // what a bare band of panel between two groups of rows is. Measure the
+        // content at the panel's own width and shrink the panel onto it — the
+        // cap above stays as an upper bound, and anything longer still scrolls.
+        val panelLp = panel.layoutParams as? LinearLayout.LayoutParams
+        var appliedSil = -1
+        fun fitToContent() {
+            if (panelLp == null) return
+            val innerW = panel.width - 2 * halo
+            if (innerW <= 0 || panel.height - 2 * halo <= 0) return
+            content.measure(
+                View.MeasureSpec.makeMeasureSpec(innerW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            )
+            val contentH = content.measuredHeight
+            if (contentH <= 0) return
+            // The panel's own padding (halo + row gap, top and bottom) is part
+            // of the silhouette, so the wanted height is the rows plus it — the
+            // halo is added AROUND the silhouette, not inside it.
+            val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
+                panel.paddingTop + panel.paddingBottom
+            val sil = wanted.coerceIn(minPanel, minOf(fitsScreen, maxFraction))
+            if (sil == appliedSil) return
+            appliedSil = sil
+            panelLp.height = sil + 2 * halo
+            panel.layoutParams = panelLp
+        }
+        // Widths only exist after the dialog is shown, and the rows can change
+        // height while it is up (a server landing mid-search), so fit now and
+        // again on every content layout change.
+        scroll.post { fitToContent() }
+        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitToContent() }
         return hintView
     }
 
@@ -2739,10 +2827,19 @@ class PlayerActivity : ComponentActivity() {
     /** The Source pill: the same grouped picker, dismissible without a pick. */
     private fun showSourcesDialog() = showServerChooser()
 
-    /** The fixed section order: CloudStream servers first, then Hikari's own
-     *  providers, then Nuvio, then Stremio — with anything the repository could
-     *  not attribute last. */
-    private val serverGroupOrder = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+    /** The fixed section order: the engine the user opened the title from first
+     *  — the other repos of THAT engine are the closest thing to "my
+     *  provider", and used to land behind forty Hikari servers — then
+     *  CloudStream, Hikari's own providers, Nuvio and Stremio, with anything
+     *  the repository could not attribute last. */
+    private val serverGroupOrder: List<String>
+        get() {
+            val base = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+            val originEngine = sources.firstOrNull { it.isFromOrigin() && it.provider.isNotBlank() }
+                ?.provider
+                ?: return base
+            return listOf(originEngine) + base.filter { it != originEngine }
+        }
 
     /** Which section a server belongs to. [PlayerSource.provider] is stamped by
      *  the repository from the provider that produced it; a blank one falls back
@@ -2795,7 +2892,9 @@ class PlayerActivity : ComponentActivity() {
             source.isMpd -> "DASH"
             else -> null
         },
-        selected = index == currentIndex,
+        // Only mark a row as current once playback has actually been committed
+        // to a server — see [playbackCommitted].
+        selected = playbackCommitted && index == currentIndex,
     )
 
     /**
@@ -2813,6 +2912,16 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun showServerChooser(startMode: Boolean = false) {
         if (sources.isEmpty()) return
+        if (startMode) {
+            // Present the start chooser at most once per Activity: the live
+            // search keeps growing the list, and re-opening the chooser after
+            // the user already picked (or backed out) is the bug where the
+            // server list reappears by itself and playback restarts on the
+            // fastest server instead of the one that was chosen.
+            if (startChooserShown) return
+            startChooserShown = true
+            startChoicePending = true
+        }
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         var chip = "All"
@@ -2933,49 +3042,99 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+        /** A flat signature of one row, so a rebuild can tell "the list only
+         *  grew" (append) from "the layout really changed" (re-render). */
+        fun itemKey(i: Int): String {
+            val s = sources[i]
+            return s.name + "\u0001" + s.url
+        }
+
+        // What the list holds right now (headings + rows, in order) and the
+        // selection those rows were drawn with.
+        var builtSig = ArrayList<String>()
+        var builtSelected = -1
+
         fun rebuildList() {
-            // The chip strip is this container's FIRST child (see above), so drop
-            // only the headers and rows — removeAllViews would take the chips
-            // with them and leave an empty strip behind.
-            while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
             val all = sections()
             val visible = if (chip == "All") all else all.filter { it.first == chip }
+            val sig = ArrayList<String>()
             visible.forEach { (name, memberIdx) ->
-                val members = memberIdx.map { sources[it] }
-                // The header names the engine and counts its servers; it is
-                // skipped for a single-chip view (the chip already says it).
+                if (chip == "All") sig.add("#" + name + "\u0001" + memberIdx.size)
+                memberIdx.forEach { sig.add(itemKey(it)) }
+            }
+            // A live search keeps appending servers for a minute or two. Before
+            // this, every rebuild re-created every row, which tore down the row
+            // a finger was already pressing: the tap arrived as an ACTION_CANCEL
+            // and was silently swallowed — the chooser closed and nothing
+            // played. When the new layout only APPENDS to the rendered one, keep
+            // what is on screen and add just the new rows.
+            val grew = sig.size >= builtSig.size &&
+                builtSig.indices.all { builtSig[it] == sig[it] }
+            val keep = if (grew && builtSelected == currentIndex &&
+                builtSig.isNotEmpty()) builtSig.size else 0
+            if (keep == 0) {
+                // The chip strip is this container's FIRST child (see above), so
+                // drop only the headers and rows — removeAllViews would take the
+                // chips with them and leave an empty strip behind.
+                while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
+            }
+            var pos = 0
+            visible.forEach { (name, memberIdx) ->
                 if (chip == "All") {
-                    val first = list.childCount == 1
-                    list.addView(TextView(this).apply {
-                        text = name.uppercase() + "  \u00B7  " + members.size
-                        dpText(10f)
-                        includeFontPadding = false
-                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                        setTextColor(withAlpha(accentMidColor, 0.95f))
-                    }, LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
-                        setMargins(
-                            (4 * density).toInt(),
-                            topMargin,
-                            (4 * density).toInt(),
-                            (4 * density).toInt()
-                        )
-                    })
+                    val isNew = pos >= keep
+                    pos++
+                    if (isNew) {
+                        // The header names the engine and counts its servers;
+                        // it is skipped for a single-chip view (the chip
+                        // already says it).
+                        val first = list.childCount == 1
+                        list.addView(TextView(this).apply {
+                            text = name.uppercase() + "  \u00B7  " + memberIdx.size
+                            dpText(10f)
+                            includeFontPadding = false
+                            isSingleLine = true
+                            ellipsize = TextUtils.TruncateAt.END
+                            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                            setTextColor(withAlpha(accentMidColor, 0.95f))
+                        }, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
+                            setMargins(
+                                (4 * density).toInt(),
+                                topMargin,
+                                (4 * density).toInt(),
+                                (4 * density).toInt()
+                            )
+                        })
+                    }
                 }
                 memberIdx.forEach { i ->
-                    val src = sources[i]
-                    addOptionRow(list, serverOption(src, i)) {
-                        dialog.dismiss()
-                        if (i != currentIndex) {
-                            noSubsRetry = false
-                            playSource(i)
+                    val isNew = pos >= keep
+                    pos++
+                    if (isNew) {
+                        val src = sources[i]
+                        addOptionRow(list, serverOption(src, i)) {
+                            // The tap IS the answer: never let the
+                            // dismiss-induced fallback start a different server
+                            // on the way out.
+                            startChoicePending = false
+                            dialog.dismiss()
+                            // Before anything has played, `currentIndex` is
+                            // still its 0 default, so a tap on the first row
+                            // must play it like any other row rather than being
+                            // treated as "already on this one".
+                            if (i != currentIndex || !playbackCommitted) {
+                                noSubsRetry = false
+                                playSource(i)
+                            }
                         }
                     }
                 }
             }
+            builtSig = sig
+            builtSelected = currentIndex
         }
 
         fun rebuildChips() {
@@ -3010,11 +3169,15 @@ class PlayerActivity : ComponentActivity() {
             chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
         sourcesWatchers.add(watcher)
-        dialog.setOnDismissListener { sourcesWatchers.remove(watcher) }
-        if (startMode) {
-            // Backing out of the start chooser must not leave the player
-            // blank: fall back to the remembered/best server.
-            dialog.setOnCancelListener {
+        dialog.setOnDismissListener {
+            sourcesWatchers.remove(watcher)
+            // Closed without a pick (the back button, the ✕, a tap outside):
+            // fall back to the remembered/best server rather than leaving the
+            // player blank on the loading card. A tap on a row has already
+            // cleared the flag and gone on to play that row, so this never
+            // starts a *different* server than the one the user chose.
+            if (startChoicePending) {
+                startChoicePending = false
                 lifecycleScope.launch { playSource(preferredStartIndex()) }
             }
         }
@@ -3610,8 +3773,11 @@ class PlayerActivity : ComponentActivity() {
         }
         if (index != currentIndex) headerVariant = 0
         autoRotated = false
+        userRotated = false
         userPickedSubs = false
         currentIndex = index
+        // From here on the chooser may show this row as the current one.
+        playbackCommitted = true
         val src = sources[index]
         // Persisting here would remember a source that has NOT proven itself —
         // a signed link that turns out to be expired, or a URL/host whose right
@@ -4570,30 +4736,73 @@ class PlayerActivity : ComponentActivity() {
         Uri.fromFile(file)
     }.getOrNull()
 
+    /** The video's real pixel size taken from the video track's own format, for
+     *  the case where media3 never reports a size: with the video-effects
+     *  pipeline armed, `PlaybackVideoGraphWrapper.onVideoSizeChanged` is an
+     *  empty override, so the player's size callback never fires — which left
+     *  the quality badge missing AND the screen stuck in portrait with a
+     *  letterboxed landscape video. The track format still carries the coded
+     *  size (rotation included), so the real size can be derived from it. */
+    private fun videoFormatSize(tracks: Tracks): Pair<Int, Int>? {
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO || group.length == 0) continue
+            val fmt = runCatching { group.getTrackFormat(0) }.getOrNull() ?: continue
+            var w = fmt.width
+            var h = fmt.height
+            if (w <= 0 || h <= 0) continue
+            if (fmt.rotationDegrees == 90 || fmt.rotationDegrees == 270) {
+                val t = w
+                w = h
+                h = t
+            }
+            return w to h
+        }
+        return null
+    }
+
+    /** Everything that depends on knowing the video's real size: the quality
+     *  badge, the render aspect ratio, and the once-per-source auto-rotate.
+     *  Called from the size callback, and — when that callback never comes —
+     *  from the tracks callback. */
+    private fun onKnownVideoSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        // Quality badge: the rendered video's height (updates per server,
+        // since a different source can be a different resolution).
+        val q = qualityBadgeFor(height)
+        if (q.isNotBlank()) {
+            badgeQuality?.text = q
+            badgeQuality?.visibility = View.VISIBLE
+        }
+        // Keep the surface at the video's shape. PlayerView exposes no setter
+        // for this (its field and update method are private), so it is reached
+        // through the AspectRatioFrameLayout it inflates as `exo_content_frame`
+        // — id resolved by name, like the other media3 controls above.
+        runCatching {
+            (exoView("exo_content_frame") as? AspectRatioFrameLayout)
+                ?.setAspectRatio(width.toFloat() / height.toFloat())
+        }
+        if (autoRotated || userRotated) return
+        autoRotated = true
+        val landscape = width > height
+        requestedOrientation = if (landscape) {
+            SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
     private val listener = object : Player.Listener {
         // Auto-rotate to match the video: landscape videos play landscape,
         // portrait videos play portrait — once, per source. After that the
         // rotate button is entirely in the user's hands.
         override fun onVideoSizeChanged(videoSize: VideoSize) {
-            // Quality badge: the rendered video's height (updates per server,
-            // since a different source can be a different resolution).
-            val q = qualityBadgeFor(videoSize.height)
-            if (q.isNotBlank()) {
-                badgeQuality?.text = q
-                badgeQuality?.visibility = View.VISIBLE
-            }
-            if (autoRotated) return
-            if (videoSize.width <= 0 || videoSize.height <= 0) return
-            autoRotated = true
-            val landscape = videoSize.width > videoSize.height
-            requestedOrientation = if (landscape) {
-                SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            } else {
-                SCREEN_ORIENTATION_PORTRAIT
-            }
+            onKnownVideoSize(videoSize.width, videoSize.height)
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            // A source rendered through the video-effects pipeline never gets an
+            // onVideoSizeChanged, so take the size from the video track itself.
+            videoFormatSize(tracks)?.let { (w, h) -> onKnownVideoSize(w, h) }
             applyVideoEnhance()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return

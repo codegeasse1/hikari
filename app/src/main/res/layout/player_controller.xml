@@ -266,6 +266,7 @@
            exo_basic_controls so media3's overflow logic can never move them,
            and scrollable so a narrow phone just scrolls the row. -->
       <HorizontalScrollView
+          android:id="@+id/player_pill_scroll"
           android:layout_width="0dp"
           android:layout_height="wrap_content"
           android:layout_weight="1"
@@ -273,6 +274,7 @@
           android:overScrollMode="never"
           android:clipToPadding="false"
           android:fillViewport="true"
+          android:descendantFocusability="blocksDescendants"
           android:paddingStart="2dp"
           android:paddingEnd="2dp">
 

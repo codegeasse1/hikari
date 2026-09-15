@@ -11,6 +11,8 @@ import android.graphics.Shader
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import com.hikari.app.data.Logs
+import java.util.WeakHashMap
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -117,6 +119,17 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
 
     /** Coalesces the many scroll notifications of a single frame into one bend. */
     private var rebendPosted = false
+
+    /** The left/right margins each row was laid out with, keyed weakly so a
+     *  rebuilt list cannot pin its old rows in memory. Every bend is computed
+     *  from these rather than from the margins the previous bend applied — see
+     *  [bendHostChildren]. */
+    private val baseMargins = WeakHashMap<View, IntArray>()
+
+    /** Rows that once had a real size, so a row that loses it can be reported
+     *  (one line per row, not one per frame) instead of vanishing silently. */
+    private val sizedOnce = WeakHashMap<View, Boolean>()
+    private val collapsedLogged = WeakHashMap<View, Boolean>()
 
     private val rebendRunnable = Runnable {
         rebendPosted = false
@@ -296,7 +309,25 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i)
             if (child.visibility != View.VISIBLE) continue
-            if (child.width <= 0 || child.height <= 0) continue
+            if (child.width <= 0 || child.height <= 0) {
+                // A row that is VISIBLE but has no size is exactly what an empty
+                // band in the panel looks like: it holds its line open but can
+                // paint nothing. Put its margins back so the next layout gives
+                // it a size again, and say so once — silence here is what let a
+                // squeezed row sit in the list looking like a gap.
+                if (host.isLaidOut && host.width > 0 && sizedOnce.containsKey(child) &&
+                    collapsedLogged.put(child, true) == null
+                ) {
+                    Logs.log(
+                        "Panel",
+                        "row $i (${child.javaClass.simpleName}) lost its size " +
+                            "(${child.width}x${child.height}) — margins reset"
+                    )
+                    putBackBaseMargins(child)
+                }
+                continue
+            }
+            sizedOnce[child] = true
             // offsetDescendantRectToMyCoords ADDS the descendant's own offset to
             // the rect it is handed, so the rect has to be reseeded with the
             // child's bounds every single time. Reusing it across iterations
@@ -308,6 +339,18 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             rect.set(0, 0, child.width, child.height)
             offsetDescendantRectToMyCoords(child, rect)
             if (rect.bottom <= top || rect.top >= top + h) continue
+            val lp = child.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
+            val base = baseMargins.getOrPut(child) { intArrayOf(lp.leftMargin, lp.rightMargin) }
+            // Where this row sits with the bend taken back off. Margins are
+            // always derived from this reference, never from the margins the
+            // previous pass applied: a row's width is what its inset is measured
+            // against, so counting from the last result let each pass shrink the
+            // next one, and a row could be pulled in until nothing was left of
+            // it. From the base, the same layout always yields the same margins.
+            val baseLeft = rect.left - (lp.leftMargin - base[0])
+            val baseRight = rect.right + (lp.rightMargin - base[1])
+            val baseWidth = baseRight - baseLeft
+            if (baseWidth <= 0) continue
             // A block that spans the panel's full height IS the scrolling
             // viewport: its own extremes sit where the sides sweep back to
             // their corners, so measuring them there would clamp the whole list
@@ -327,7 +370,10 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // which for a 51dp row is very nearly the panel's mid-height —
             // flattened the whole stack into one uniform column, i.e. a
             // rectangle floating inside a warped panel.
-            val radius = min(child.height, child.width) / 2f
+            // The radius is taken from the row's UNBENT width: its bent width is
+            // an effect of the bend, so feeding it back in made the inset (and
+            // so the next width) a function of itself.
+            val radius = min(child.height.toFloat(), baseWidth.toFloat()) / 2f
             val centerY = (rect.top + rect.bottom) / 2f
             var needLeft = 0f
             var needRight = 0f
@@ -345,21 +391,28 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 needLeft = max(needLeft, GlassShape.leftEdge(w, h, dy, bulgeX, concaveX) - inset)
                 needRight = max(needRight, w - GlassShape.rightEdge(w, h, dy, bulgeX, concaveX) - inset)
             }
-            val targetLeft = (left + needLeft + rowGapPx).toInt()
-            val targetRight = (left + w - needRight - rowGapPx).toInt()
+            // The two curves are shallow (a few px at the ends, a couple of dp
+            // mid-panel), so a need beyond a fifth of the row means the rect the
+            // curve was sampled against is stale — a row mid-layout, or a rect
+            // measured during a scroll. Cap it rather than let a bad frame pull
+            // a row out of existence.
+            val cap = baseWidth * 0.22f
+            needLeft = needLeft.coerceAtMost(cap)
+            needRight = needRight.coerceAtMost(cap)
+            val targetLeft = (baseLeft + needLeft + rowGapPx).toInt()
+            val targetRight = (baseRight - needRight - rowGapPx).toInt()
             if (targetRight <= targetLeft) continue
-            val lp = child.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
-            var leftMargin = lp.leftMargin
-            var rightMargin = lp.rightMargin
+            var leftMargin: Int
+            var rightMargin: Int
             if (lp.width == ViewGroup.LayoutParams.MATCH_PARENT) {
                 // Stretchable: move both edges onto the target.
-                leftMargin += targetLeft - rect.left
-                rightMargin += rect.right - targetRight
+                leftMargin = base[0] + (targetLeft - baseLeft)
+                rightMargin = base[1] + (baseRight - targetRight)
             } else {
                 // Fixed-width (a spinner, a badge): only ever nudge it back
                 // inside, never restretch it.
-                if (rect.left < targetLeft) leftMargin += targetLeft - rect.left
-                if (rect.right > targetRight) rightMargin += rect.right - targetRight
+                leftMargin = base[0] + max(0, targetLeft - baseLeft)
+                rightMargin = base[1] + max(0, baseRight - targetRight)
             }
             leftMargin = leftMargin.coerceAtLeast(0)
             rightMargin = rightMargin.coerceAtLeast(0)
@@ -371,6 +424,16 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             }
         }
         return shifted
+    }
+
+    /** Puts a row's margins back to the ones it was laid out with. */
+    private fun putBackBaseMargins(child: View) {
+        val base = baseMargins[child] ?: return
+        val lp = child.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        if (lp.leftMargin == base[0] && lp.rightMargin == base[1]) return
+        lp.leftMargin = base[0]
+        lp.rightMargin = base[1]
+        child.layoutParams = lp
     }
 
     private fun withAlpha(color: Int, fraction: Float): Int {

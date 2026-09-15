@@ -1,3 +1,54 @@
+## 0.3.71
+
+Fixes for the "don't play directly" server list, the video's missing quality
+badge / wrong orientation, the server order, and the cut-off pill row.
+
+### The server list ("Don't play directly — show all servers to choose")
+
+- **Tapping a server now always plays it.** With the chooser up, the first row
+  was drawn as the current server (the player's index starts at 0 before
+  anything has played) and a tap on that row was treated as "already on this
+  one" — so the list closed and nothing ever started. No row is marked as
+  current until playback has actually been committed to one, and a tap on the
+  first row plays it like any other.
+- **The list no longer eats taps while it is still growing.** Each batch of new
+  servers rebuilt every row from scratch, which destroyed the row a finger was
+  pressing: the tap arrived as a cancel and was dropped. Rows are now appended
+  in place while the list only grows.
+- **The list no longer re-opens by itself.** The server chooser is shown at most
+  once per play, so a late batch of servers can't bring it back after the user
+  has already picked (this was the "the server list shows again, then it starts
+  on the fastest server" report).
+- Backing out of the list (Back, ✕, a tap outside) still falls back to the
+  remembered/best server instead of leaving the player on the loading card —
+  but a tap on a row never also triggers that fallback.
+
+### Player
+
+- **Quality badge comes back, and landscape video now rotates.** With the video
+  enhancer active media3 never reports the video's size (its effects pipeline
+  swallows the callback), so the badge never appeared and the screen stayed
+  portrait with a letterboxed video. The size is now read from the video track
+  itself as a fallback, and it also sets the render aspect ratio.
+- **The rotate button wins.** Auto-rotate happens once per source and never
+  overrides a rotation the user chose with the button.
+- **The pill row is no longer cut off in portrait.** The row is a scrolling
+  strip, and a focused pill could pull it to one end and leave the first pill
+  half cut off for the rest of the session. It now starts at its left edge
+  every time the controls appear, and the centring spacer only reserves room
+  while the pills actually fit.
+- **Glass panels are measured onto their rows.** A panel taller than the rows it
+  held left a bare band of glass below them; the panel is now shrunk to fit its
+  content (still capped, still scrollable when longer), and the row-bending
+  maths is idempotent so a row can never be squeezed to nothing.
+
+### Server order
+
+- **The origin's own engine now comes first.** A title opened from a CloudStream
+  repo asks the user's OTHER CloudStream repos in the first pass — they used to
+  wait out the grace window and then sort behind the whole Hikari pool, which is
+  why they showed up below dozens of Hikari servers.
+
 ## 0.3.70
 
 Bug reports without screenshots, plus fixes for the "it found no sources", "the

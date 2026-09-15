@@ -498,12 +498,25 @@ class ContentRepository(private val manager: ProviderManager) {
             // lookup (see crossExtensionSources). Resolved up front so both the
             // merge loop and the deadline below can use the list.
         val crossTargets = crossExtensionTargets(item, origin)
+        // Other repos of the SAME engine as the origin (e.g. the user's other
+        // CloudStream repos when the title was opened from one) are pulled out
+        // and searched in the FIRST pass, right beside the origin: they search
+        // by the same kind of id, and they are the closest thing to "my
+        // provider". Waiting out the grace window for them is what buried them
+        // under forty Hikari servers.
+        val sameEngine = if (origin == null) {
+            emptyList()
+        } else {
+            crossTargets.filter { it.config.type == origin.config.type }
+        }
+        val lateTargets = crossTargets.filter { it !in sameEngine }
         if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
 
         com.hikari.app.data.Logs.log(
             "Search",
             "start \"${item.title}\" (${item.type}) origin=${origin?.config?.name ?: "?"} " +
-                "primary=${targets.size} nuvio=${nuvioTargets.size} cross=${crossTargets.size}",
+                "primary=${targets.size} nuvio=${nuvioTargets.size} " +
+                "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size}",
         )
 
             // Fresh diagnostic state for this lookup.
@@ -572,8 +585,13 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 var lastEmitted = -1
-                var crossJobs: List<kotlinx.coroutines.Deferred<List<StreamSource>>> = emptyList()
-                var crossStartedAt = 0L
+                // Same-engine repos start with the main pass (see `sameEngine`).
+                var crossJobs: List<kotlinx.coroutines.Deferred<List<StreamSource>>> =
+                    sameEngine.map { p ->
+                        scope.async { crossExtensionSources(p, item, episode) }
+                    }
+                var crossStartedAt = if (crossJobs.isEmpty()) 0L else started
+                var lateStartedAt = 0L
                 while (true) {
                     jobs.forEach { merge(it) }
                     crossJobs.forEach { merge(it) }
@@ -592,15 +610,21 @@ class ContentRepository(private val manager: ProviderManager) {
                     // repo" true for extensions, not just Stremio/Nuvio — and
                     // it runs even when the origin DID return servers, because
                     // those may all be dead while another repo's are not.
-                    if (crossStartedAt == 0L && crossTargets.isNotEmpty() &&
+                    if (lateStartedAt == 0L && lateTargets.isNotEmpty() &&
                         now - started >= crossGrace
                     ) {
-                        crossStartedAt = now
-                        crossJobs = crossTargets.map { p ->
+                        lateStartedAt = now
+                        crossJobs = crossJobs + lateTargets.map { p ->
                             scope.async { crossExtensionSources(p, item, episode) }
                         }
                     }
-                    val allDone = jobs.all { it.isCompleted } && crossJobs.all { it.isCompleted }
+                    val allDone = jobs.all { it.isCompleted } &&
+                        crossJobs.all { it.isCompleted } &&
+                        // The late pass must have STARTED before we may declare
+                        // "nothing left to wait for": with the grace window
+                        // still open, every main job finishing used to end the
+                        // lookup here and the other engines were never asked.
+                        (lateTargets.isEmpty() || lateStartedAt != 0L)
                     if (allDone) break
                     // Wait for EVERY provider (like Stremio aggregating every
                     // addon): each installed nuvio provider is independent
@@ -609,8 +633,9 @@ class ContentRepository(private val manager: ProviderManager) {
                     // old first-non-empty early-close cancelled every provider
                     // that hadn't answered within ~1.5s, which is why only one
                     // provider's servers ever showed up in the player.
-                    val hardDeadline = if (crossStartedAt == 0L) deadline
-                    else maxOf(deadline, crossStartedAt + CROSS_EXT_BUDGET_MS)
+                    val crossDeadlineFrom = maxOf(crossStartedAt, lateStartedAt)
+                    val hardDeadline = if (crossDeadlineFrom == 0L) deadline
+                    else maxOf(deadline, crossDeadlineFrom + CROSS_EXT_BUDGET_MS)
                     if (now > hardDeadline) break
                     kotlinx.coroutines.delay(80)
                 }
@@ -681,17 +706,22 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             }
             .sortedBy { p ->
-                // Trust order: native .hiki extensions first, then CloudStream
-                // plugins, then universal scrapers, then Stremio addons. Within
-                // a group the install order is preserved (stable sort), and the
-                // earlier a target is listed the earlier it can grab a
-                // (throttled) extractor slot — so the repos most likely to
-                // answer quickly get their chance before the budget runs out.
-                when (p.config.type) {
-                    ProviderType.HIKARI -> 0
-                    ProviderType.CS3 -> 1
-                    ProviderType.UNIVERSAL -> 2
-                    else -> 3
+                // Trust order: the origin's OWN engine first (other repos of
+                // the same plugin family are the ones the user expects right
+                // after the origin — the CloudStream repos next to the
+                // CloudStream title), then native .hiki extensions, then the
+                // rest of the CloudStream plugins, then universal scrapers,
+                // then Stremio addons. Within a group the install order is
+                // preserved (stable sort), and the earlier a target is listed
+                // the earlier it can grab a (throttled) extractor slot — so the
+                // repos most likely to answer quickly get their chance before
+                // the budget runs out.
+                when {
+                    origin != null && p.config.type == origin.config.type -> 0
+                    p.config.type == ProviderType.HIKARI -> 1
+                    p.config.type == ProviderType.CS3 -> 2
+                    p.config.type == ProviderType.UNIVERSAL -> 3
+                    else -> 4
                 }
             }
             .take(CROSS_EXT_MAX_TARGETS)
