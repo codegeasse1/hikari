@@ -1,6 +1,24 @@
 package com.hikari.app.data
 
-enum class ProviderType { STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO }
+enum class ProviderType {
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO;
+
+    /**
+     * Which section of the player's server chooser a source from this engine
+     * belongs to. The player divides the servers it found into one group per
+     * engine — CloudStream plugins, Hikari's own extensions (and its universal
+     * scrapers), Nuvio providers, Stremio addons — so the picker reads like the
+     * reference client's grouped source list instead of one undifferentiated
+     * column of links.
+     */
+    val groupLabel: String
+        get() = when (this) {
+            STREMIO -> "Stremio"
+            NUVIO -> "Nuvio"
+            CS3 -> "CloudStream"
+            HIKARI, UNIVERSAL -> "Hikari"
+        }
+}
 
 data class ProviderConfig(
     val id: String,
@@ -143,6 +161,11 @@ data class StreamSource(
     val externalUrl: Boolean = false,
     /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
     val drm: DrmSpec? = null,
+    /** Which engine produced this source ("CloudStream", "Hikari", "Nuvio",
+     *  "Stremio"). The player's server chooser groups by this, so each engine's
+     *  servers sit under their own heading; blank when the origin is unknown
+     *  (the chooser then falls back to an "Other" section). */
+    val provider: String = "",
 )
 
 data class CatalogRef(

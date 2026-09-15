@@ -144,6 +144,22 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
+     * Stamps every source with the section of the player's server chooser it
+     * belongs to, from the ENGINE that produced it — never from the source's own
+     * name, which for a cross-extension hit is a "Repo · Server" prefix and for
+     * a plugin's own extractor is just the mirror's name. A provider that
+     * already set the field keeps it (the origin API knows better than we do).
+     */
+    private fun tagGroup(
+        list: List<StreamSource>,
+        p: ContentProvider,
+    ): List<StreamSource> {
+        if (list.isEmpty()) return list
+        val label = p.config.type.groupLabel
+        return list.map { s -> if (s.provider.isBlank()) s.copy(provider = label) else s }
+    }
+
+    /**
      * Loads Home rows. Catalogs inside a provider are fetched IN PARALLEL but
      * through a small semaphore so a slow network can't flood the IO pool with
      * hundreds of simultaneous requests (which froze the UI on weak devices).
@@ -470,9 +486,9 @@ class ContentRepository(private val manager: ProviderManager) {
                                 // budget. Bound these jobs by the overall
                                 // deadline; the runtime's CALL budget bounds
                                 // real work.
-                                fetchStreams(p, item, episode)
+                                tagGroup(fetchStreams(p, item, episode), p)
                             } else {
-                                fetchStreams(p, item, episode)
+                                tagGroup(fetchStreams(p, item, episode), p)
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             if (isNuvio) {
@@ -695,10 +711,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // Found here: clear this repo's diagnostic, and tag each server with the
         // repo it came from so the player's server list shows its origin.
         recordStreamMessage(p, null)
-        return got.map { s ->
-            if (p.config.name.isBlank() || s.name.startsWith(p.config.name)) s
-            else s.copy(name = "${p.config.name} · ${s.name}")
-        }
+        return tagGroup(
+            got.map { s ->
+                if (p.config.name.isBlank() || s.name.startsWith(p.config.name)) s
+                else s.copy(name = "${p.config.name} · ${s.name}")
+            },
+            p,
+        )
     }
 
     /** How well a search hit matches the title we're looking for, so the
@@ -781,7 +800,7 @@ class ContentRepository(private val manager: ProviderManager) {
         } else {
             recordStreamMessage(origin, null)
         }
-        return got
+        return tagGroup(got, origin)
     }
 
     /** Routes a provider's stream message into the right per-provider error map

@@ -835,10 +835,12 @@ private fun PlaybackStartCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var waitServers by remember { mutableStateOf(false) }
     var minServers by remember { mutableStateOf(2f) }
+    var askServer by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         waitServers = app.store.playWaitServers()
         minServers = app.store.playMinServers().toFloat()
+        askServer = app.store.askServerOnPlay()
     }
 
     fun persist(wait: Boolean) {
@@ -933,6 +935,39 @@ private fun PlaybackStartCard(app: HikariApp) {
                     "finished — it never waits forever for a server that doesn't exist.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Don't play directly — show all servers to choose",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    if (askServer) {
+                        "On — tapping Play stops at the server list instead of " +
+                            "starting a server by itself. Every server found is " +
+                            "divided into sections by the engine it came from " +
+                            "(CloudStream, Hikari, Nuvio, Stremio) so you can pick " +
+                            "one deliberately."
+                    } else {
+                        "Off — the player starts on the first server it finds and " +
+                            "only moves to another one if that server turns out to " +
+                            "be dead."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = askServer,
+                onCheckedChange = {
+                    askServer = it
+                    scope.launch { runCatching { app.store.setAskServerOnPlay(it) } }
+                }
             )
         }
     }

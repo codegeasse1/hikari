@@ -35,6 +35,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -137,6 +138,9 @@ class PlayerActivity : ComponentActivity() {
          *  .m3u8 built by the downloader). Local playback skips the network
          *  probe and reads straight off disk. */
         val local: Boolean = false,
+        /** Which engine found this server ("CloudStream", "Hikari", "Nuvio",
+         *  "Stremio") — the section it is listed under in the server chooser. */
+        val provider: String = "",
     )
 
     private var player: ExoPlayer? = null
@@ -144,6 +148,35 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** Mirrors the Settings "Don't play directly" toggle: when on, a freshly
+     *  found server list is never auto-played — the grouped chooser opens
+     *  instead and playback waits for a pick. */
+    private var askServerOnPlay = false
+
+    /** Whether [askServerOnPlay] has been read from DataStore yet (it is read
+     *  lazily, on the first start decision, so an entry point that never starts
+     *  playback pays nothing). */
+    private var askServerPrefLoaded = false
+
+    /** Whether THIS launch asked for the chooser. The detail screen passes the
+     *  setting through the intent, so flipping the toggle mid-session can't
+     *  change what an already-running play does. */
+    private val askServerThisLaunch: Boolean
+        get() = intent?.getBooleanExtra("askServer", false) == true
+
+    /** Rebuild callbacks for open server choosers, so a list that grows while
+     *  the chooser is up (the detail screen keeps searching) re-renders live
+     *  instead of showing a frozen snapshot. */
+    private val sourcesWatchers = ArrayList<() -> Unit>()
+
+    private fun notifySourcesChanged() {
+        // Servers can be appended (and re-probed) from background threads, and a
+        // watcher touches views — always rebuild on the main looper.
+        val rebuildAll = Runnable { sourcesWatchers.toList().forEach { runCatching { it() } } }
+        if (Looper.myLooper() == Looper.getMainLooper()) rebuildAll.run()
+        else Handler(Looper.getMainLooper()).post(rebuildAll)
+    }
 
     /** The detail screen's live-search session id, when the player was opened
      *  through it. Lets a player whose every server has died ask the still-
@@ -189,6 +222,7 @@ class PlayerActivity : ComponentActivity() {
         fileIdx,
         trackers,
         drm = drm,
+        provider = provider,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -206,6 +240,7 @@ class PlayerActivity : ComponentActivity() {
         fileIdx,
         trackers,
         drm = drm,
+        provider = provider,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -570,40 +605,70 @@ class PlayerActivity : ComponentActivity() {
         // Top-bar gear: the player options that don't deserve a pill of their
         // own (video fit and rotation).
         findViewById<ImageButton>(R.id.options_btn)?.setOnClickListener {
-            showGlassMenu(
-                "Player options",
-                listOf(
-                    GlassOption(
-                        "Fit video", "Show the whole frame",
-                        iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
-                        selected = resizeIndex == 0,
+            // Declared as a function so toggling the server-chooser row can
+            // re-open the menu with its new state (a static option list would
+            // need a live flow just to move one checkmark).
+            fun openOptions() {
+                showGlassMenu(
+                    "Player options",
+                    listOf(
+                        GlassOption(
+                            "Fit video", "Show the whole frame",
+                            iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                            selected = resizeIndex == 0,
+                        ),
+                        GlassOption(
+                            "Crop to fill", "Zoom until the frame is filled",
+                            iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                            selected = resizeIndex == 1,
+                        ),
+                        GlassOption(
+                            "Rotate screen", "Turn the video 90\u00B0 at a time",
+                            iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
+                        ),
+                        GlassOption(
+                            "Server chooser",
+                            if (askServerOnPlay) {
+                                "On \u2014 pick a server every time"
+                            } else {
+                                "Off \u2014 start on the best server"
+                            },
+                            iconRes = R.drawable.ic_server, marker = RowMarker.ICON,
+                            selected = askServerOnPlay,
+                        ),
                     ),
-                    GlassOption(
-                        "Crop to fill", "Zoom until the frame is filled",
-                        iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
-                        selected = resizeIndex == 1,
-                    ),
-                    GlassOption(
-                        "Rotate screen", "Turn the video 90\u00B0 at a time",
-                        iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
-                    ),
-                ),
-                hint = "How the video is fitted to the screen.",
-                iconRes = R.drawable.ic_settings,
-            ) { which ->
-                when (which) {
-                    0, 1 -> {
-                        resizeIndex = which
-                        playerView?.resizeMode = if (which == 0) {
-                            C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                        } else {
-                            C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                    hint = "Video fit, rotation, and whether servers start on their own.",
+                    iconRes = R.drawable.ic_settings,
+                ) { which ->
+                    when (which) {
+                        0, 1 -> {
+                            resizeIndex = which
+                            playerView?.resizeMode = if (which == 0) {
+                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                            } else {
+                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                            }
+                            updateResizeButton()
                         }
-                        updateResizeButton()
+                        2 -> cycleRotation()
+                        3 -> {
+                            // Same setting as Settings -> Playback start -> the
+                            // "Don't play directly" switch, so the player can
+                            // flip it without leaving the video.
+                            askServerOnPlay = !askServerOnPlay
+                            askServerPrefLoaded = true
+                            val ask = askServerOnPlay
+                            lifecycleScope.launch {
+                                runCatching {
+                                    (applicationContext as HikariApp).store.setAskServerOnPlay(ask)
+                                }
+                            }
+                            openOptions()
+                        }
                     }
-                    2 -> cycleRotation()
                 }
             }
+            openOptions()
         }
 
         // The download notification needs POST_NOTIFICATIONS on API 33+; the
@@ -842,6 +907,7 @@ class PlayerActivity : ComponentActivity() {
                     trackers,
                     drm = parseDrmSpec(o.optJSONObject("drm")),
                     local = o.optBoolean("local"),
+                    provider = o.optString("provider"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -894,7 +960,7 @@ class PlayerActivity : ComponentActivity() {
                     ) {
                         pendingStart = false
                         waitTimeout?.cancel()
-                        playSource(preferredStartIndex())
+                        startOrAsk()
                     }
                 }
                 // The detail screen signals when its whole search is finished;
@@ -922,6 +988,7 @@ class PlayerActivity : ComponentActivity() {
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
+                    notifySourcesChanged()
                     // Resolve the new servers in the background too, so picking
                     // one from "Select server" doesn't fall back to a probe wait.
                     lifecycleScope.launch(Dispatchers.IO) {
@@ -961,7 +1028,7 @@ class PlayerActivity : ComponentActivity() {
         // known-good, already-resolved source. On the instant open (no servers
         // yet) the live collector above starts playback the moment the first
         // server arrives.
-        if (sources.isNotEmpty()) lifecycleScope.launch { playSource(preferredStartIndex()) }
+        if (sources.isNotEmpty()) startOrAsk()
     }
 
     /** Index of the server the user last played this video with — matched by
@@ -988,6 +1055,33 @@ class PlayerActivity : ComponentActivity() {
             byName >= 0 -> byName
             else -> 0
         }
+    }
+
+    /** Starts playback — or, when the "don't play directly" setting is on,
+     *  opens the grouped server chooser and waits for the user's pick. */
+    private fun startOrAsk() {
+        lifecycleScope.launch {
+            if (sources.isNotEmpty() && shouldAskServer()) {
+                showServerChooser(startMode = true)
+            } else {
+                playSource(preferredStartIndex())
+            }
+        }
+    }
+
+    /** True when a server list should stop at the chooser instead of starting
+     *  on its own. Reads the persisted setting when the launching screen did
+     *  not pass it through, so every entry point (downloads, favourites,
+     *  history, a re-open) honours the toggle too. */
+    private suspend fun shouldAskServer(): Boolean {
+        if (askServerThisLaunch) return true
+        if (!askServerPrefLoaded) {
+            askServerOnPlay = runCatching {
+                (applicationContext as HikariApp).store.askServerOnPlay()
+            }.getOrDefault(false)
+            askServerPrefLoaded = true
+        }
+        return askServerOnPlay
     }
 
     /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
@@ -1415,7 +1509,7 @@ class PlayerActivity : ComponentActivity() {
         label?.takeIf { it.count { ch -> ch.isLetter() } >= 2 } ?: "Track ${fallbackIndex + 1}"
 
     /** A small glass pill: the right-aligned value badge on a row. */
-    private fun glassPill(text: String, sizeDp: Float = 10f): TextView {
+    private fun glassPill(text: String, sizeDp: Float = 9.5f): TextView {
         val density = resources.displayMetrics.density
         return TextView(this).apply {
             this.text = text
@@ -1424,8 +1518,8 @@ class PlayerActivity : ComponentActivity() {
             setTextColor(0xFFC9D2E0.toInt())
             gravity = Gravity.CENTER
             setPadding(
-                (8 * density).toInt(), (3 * density).toInt(),
-                (8 * density).toInt(), (3 * density).toInt()
+                (7 * density).toInt(), (2.5f * density).toInt(),
+                (7 * density).toInt(), (2.5f * density).toInt()
             )
             // No outline: the badge reads as a soft grey chip sitting on the
             // row, exactly like the reference player's bitrate pills.
@@ -1445,7 +1539,7 @@ class PlayerActivity : ComponentActivity() {
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(
-                (15 * density).toInt(), (15 * density).toInt()
+                (14 * density).toInt(), (14 * density).toInt()
             ).apply { marginStart = (7 * density).toInt() }
         }
     }
@@ -1453,7 +1547,7 @@ class PlayerActivity : ComponentActivity() {
     /** The leading marker of a row, or null for [RowMarker.NONE]. */
     private fun rowMarker(option: GlassOption): View? {
         val density = resources.displayMetrics.density
-        val size = (17 * density).toInt()
+        val size = (16 * density).toInt()
         return when (option.marker) {
             RowMarker.RADIO -> {
                 // The reference player's radio: a filled gradient disc with a
@@ -1481,14 +1575,14 @@ class PlayerActivity : ComponentActivity() {
                 View(this).apply {
                     background = marker
                     layoutParams = LinearLayout.LayoutParams(size, size)
-                        .apply { marginEnd = (11 * density).toInt() }
+                        .apply { marginEnd = (10 * density).toInt() }
                 }
             }
             RowMarker.ICON -> {
                 if (option.iconRes == 0) {
                     null
                 } else {
-                    val disc = (28 * density).toInt()
+                    val disc = (26 * density).toInt()
                     FrameLayout(this).apply {
                         layoutParams = LinearLayout.LayoutParams(disc, disc)
                             .apply { marginEnd = (10 * density).toInt() }
@@ -1549,8 +1643,8 @@ class PlayerActivity : ComponentActivity() {
             isClickable = onClick != null
             isFocusable = onClick != null
             setPadding(
-                (13 * density).toInt(), (10.5f * density).toInt(),
-                (12 * density).toInt(), (10.5f * density).toInt()
+                (11.5f * density).toInt(), (8.5f * density).toInt(),
+                (11f * density).toInt(), (8.5f * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -1560,7 +1654,7 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                dpText(13f)
+                dpText(12.5f)
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
@@ -1570,7 +1664,7 @@ class PlayerActivity : ComponentActivity() {
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
-                    dpText(10.5f)
+                    dpText(10f)
                     maxLines = 2
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
@@ -1582,14 +1676,14 @@ class PlayerActivity : ComponentActivity() {
         option.badge?.takeIf { it.isNotBlank() }?.let { badge ->
             row.addView(glassPill(badge), LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = (8 * density).toInt() })
+            ).apply { marginStart = (7 * density).toInt() })
         }
         if (option.selected) {
             row.addView(checkMark())
         } else if (option.chevron) {
             row.addView(TextView(this).apply {
                 text = "\u203A"
-                dpText(16f)
+                dpText(15f)
                 includeFontPadding = false
                 setTextColor(0xFF7E8AA0.toInt())
             }, LinearLayout.LayoutParams(
@@ -1606,8 +1700,8 @@ class PlayerActivity : ComponentActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
-                (10 * density).toInt(), (6 * density).toInt(),
-                (10 * density).toInt(), (4 * density).toInt()
+                (10 * density).toInt(), (5 * density).toInt(),
+                (10 * density).toInt(), (2 * density).toInt()
             )
         }
     }
@@ -1619,7 +1713,7 @@ class PlayerActivity : ComponentActivity() {
             glassRow(option, onClick),
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (4 * density).toInt() }
+            ).apply { bottomMargin = (3 * density).toInt() }
         )
     }
 
@@ -1637,14 +1731,35 @@ class PlayerActivity : ComponentActivity() {
      *  is why the dialogs grew past the bottom of the video. WindowMetrics (API
      *  30+) and getRealSize both follow the current rotation. */
     private fun windowSize(): Point {
+        val density = resources.displayMetrics.density
         val size = Point()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        // The activity's own window is the authority: it is exactly the area a
+        // dialog has to fit inside.
+        val decor = window?.decorView
+        if (decor != null && decor.width > 0 && decor.height > 0) {
+            size.set(decor.width, decor.height)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val bounds = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
             size.set(bounds.width(), bounds.height())
         } else {
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.getRealSize(size)
         }
+        // Cross-check with the configuration, which always follows the current
+        // rotation: on some devices `currentWindowMetrics` answers with the
+        // display's NATURAL (portrait) bounds even while the activity sits in
+        // landscape. Trusting that made win.y 2460 inside a 1080-tall window,
+        // so every cap below ("0.58 of the window", "the window minus chrome")
+        // never bit: the panel grew past 1400px, hung off the bottom of the
+        // screen, and its scroll view ended up taller than its own content —
+        // i.e. a subtitle sheet whose last rows were unreachable and which
+        // could not be scrolled at all. Taking the smaller figure per axis is
+        // the safe side: on a correct device the two agree, and this one is
+        // wrong in the too-large direction only.
+        val cfgW = (resources.configuration.screenWidthDp * density).toInt()
+        val cfgH = (resources.configuration.screenHeightDp * density).toInt()
+        if (cfgW > 0 && cfgW < size.x) size.x = cfgW
+        if (cfgH > 0 && cfgH < size.y) size.y = cfgH
         return size
     }
 
@@ -1695,7 +1810,7 @@ class PlayerActivity : ComponentActivity() {
             ?.let { line ->
                 TextView(this).apply {
                     text = line
-                    dpText(11.5f)
+                    dpText(11f)
                     includeFontPadding = false
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
@@ -1849,7 +1964,7 @@ class PlayerActivity : ComponentActivity() {
         if (!message.isNullOrBlank()) {
             content.addView(TextView(this).apply {
                 text = message
-                dpText(11f)
+                dpText(10.5f)
                 includeFontPadding = false
                 setLineSpacing(3f * density, 1f)
                 setTextColor(0xFF9AA5B5.toInt())
@@ -1857,8 +1972,8 @@ class PlayerActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 setMargins(
-                    (13 * density).toInt(), (6 * density).toInt(),
-                    (13 * density).toInt(), (2 * density).toInt()
+                    (11.5f * density).toInt(), (5 * density).toInt(),
+                    (11.5f * density).toInt(), (2 * density).toInt()
                 )
             })
         }
@@ -1872,13 +1987,13 @@ class PlayerActivity : ComponentActivity() {
         content.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        // Capsule rows are ~38dp tall (51dp when they carry a second line), 4dp
+        // Capsule rows are ~34dp tall (46dp when they carry a second line), 3dp
         // apart inside the list's own padding — mirrored here so the panel opens
         // at its natural height instead of always filling the screen. presentGlass
         // still caps this against the screen, and anything longer scrolls.
-        val height = options.sumOf { if (it.sub.isNullOrBlank()) 38.0 else 51.0 }.toFloat() +
-            options.size * 4f + 14f +
-            (if (!message.isNullOrBlank()) 42f else 0f)
+        val height = options.sumOf { if (it.sub.isNullOrBlank()) 34.0 else 46.0 }.toFloat() +
+            options.size * 3f + 12f +
+            (if (!message.isNullOrBlank()) 40f else 0f)
         onDialog?.invoke(dialog)
         val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHosts = listOf(list))
         if (hintView != null) onHint?.invoke(hintView)
@@ -2038,41 +2153,226 @@ class PlayerActivity : ComponentActivity() {
             resetHeaderWalk()
             triedUrls.clear()
             sources = streams.map { it.toPlayerSource() }
+            notifySourcesChanged()
             currentIndex = 0
             playSource(0)
         }
     }
 
-    private fun showSourcesDialog() {
+    /** The Source pill: the same grouped picker, dismissible without a pick. */
+    private fun showSourcesDialog() = showServerChooser()
+
+    /** The fixed section order: CloudStream servers first, then Hikari's own
+     *  providers, then Nuvio, then Stremio — with anything the repository could
+     *  not attribute last. */
+    private val serverGroupOrder = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+
+    /** Which section a server belongs to. [PlayerSource.provider] is stamped by
+     *  the repository from the provider that produced it; a blank one falls back
+     *  to the "Repo · Server" name prefix, and to "Other" when even that says
+     *  nothing. */
+    private fun serverGroup(src: PlayerSource): String {
+        src.provider.takeIf { it.isNotBlank() }?.let { return it }
+        val prefix = src.name.substringBefore(" \u00B7 ").trim()
+        return prefix.takeIf { it.isNotBlank() && prefix.length < src.name.length } ?: "Other"
+    }
+
+    /** One server's row — the same capsule the flat picker used. */
+    private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
+        label = source.name,
+        sub = when {
+            source.local -> "Saved on this device"
+            else -> hostOf(source.url)
+        },
+        badge = when {
+            source.local -> "Offline"
+            source.torrentStream || source.isTorrent -> "Torrent"
+            source.isM3u8 -> "HLS"
+            source.isMpd -> "DASH"
+            else -> null
+        },
+        selected = index == currentIndex,
+    )
+
+    /**
+     * The grouped server picker: a scrollable row of engine chips (All, then
+     * every engine that actually returned something) above a list divided into
+     * sections — "CloudStream" over its servers, then "Hikari", "Nuvio",
+     * "Stremio" — so a long merged list reads like the reference app's source
+     * sheet instead of one undifferentiated column.
+     *
+     * The list is rebuilt whenever [notifySourcesChanged] fires, so servers that
+     * land while the sheet is open (the detail screen keeps searching) appear
+     * without a re-open. [startMode] is the "don't play directly" chooser: it
+     * stays up until the user picks, and backing out of it falls back to the
+     * remembered/best server rather than leaving the player blank.
+     */
+    private fun showServerChooser(startMode: Boolean = false) {
         if (sources.isEmpty()) return
-        val options = sources.mapIndexed { i, source ->
-            GlassOption(
-                label = source.name,
-                sub = when {
-                    source.local -> "Saved on this device"
-                    else -> hostOf(source.url)
-                },
-                badge = when {
-                    source.local -> "Offline"
-                    source.torrentStream || source.isTorrent -> "Torrent"
-                    source.isM3u8 -> "HLS"
-                    source.isMpd -> "DASH"
-                    else -> null
-                },
-                selected = i == currentIndex,
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        var chip = "All"
+
+        /** Sections that actually have servers, in the fixed order above. */
+        fun groups(): List<String> {
+            val have = sources.map { serverGroup(it) }.toSet()
+            return serverGroupOrder.filter { it in have } +
+                have.filter { it !in serverGroupOrder }.sorted()
+        }
+
+        val chipRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(
+                (10 * density).toInt(), (4 * density).toInt(),
+                (10 * density).toInt(), (4 * density).toInt()
             )
         }
-        showGlassMenu(
-            "Select server",
-            options,
-            hint = "If this server stalls, try another one.",
-            iconRes = R.drawable.ic_server,
-        ) { which ->
-            if (which != currentIndex) {
-                noSubsRetry = false
-                playSource(which)
+        val chipScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chipRow)
+        }
+        // One container for headers AND rows: the panel bends a registered
+        // host's children, so a header and the rows under it follow the same
+        // curve instead of the headers sitting on a separate rectangle.
+        val list = optionList()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(chipScroll, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+            addView(list, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+
+        fun chipPill(label: String, selected: Boolean, onClick: () -> Unit): TextView {
+            val bg = if (selected) {
+                GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(
+                        withAlpha(accentStartColor, 0.34f),
+                        withAlpha(accentEndColor, 0.38f)
+                    )
+                ).apply {
+                    cornerRadius = 999f
+                    setStroke(
+                        (1.2f * density).roundToInt().coerceAtLeast(1),
+                        withAlpha(accentMidColor, 0.8f)
+                    )
+                }
+            } else {
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(0x14FFFFFF.toInt())
+                }
+            }
+            return TextView(this).apply {
+                text = label
+                dpText(10.5f)
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
+                background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
+                isClickable = true
+                setPadding(
+                    (10 * density).toInt(), (4 * density).toInt(),
+                    (10 * density).toInt(), (4 * density).toInt()
+                )
+                setOnClickListener { onClick() }
             }
         }
+
+        fun rebuildList() {
+            list.removeAllViews()
+            val all = groups()
+            val visible = if (chip == "All") all else all.filter { it == chip }
+            visible.forEach { name ->
+                val members = sources.withIndex().filter { serverGroup(it.value) == name }
+                // The header names the engine and counts its servers; it is
+                // skipped for a single-chip view (the chip already says it).
+                if (chip == "All") {
+                    val first = list.childCount == 0
+                    list.addView(TextView(this).apply {
+                        text = name.uppercase() + "  \u00B7  " + members.size
+                        dpText(10f)
+                        includeFontPadding = false
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        setTextColor(withAlpha(accentMidColor, 0.95f))
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
+                        setMargins(
+                            (4 * density).toInt(),
+                            topMargin,
+                            (4 * density).toInt(),
+                            (4 * density).toInt()
+                        )
+                    })
+                }
+                members.forEach { (i, src) ->
+                    addOptionRow(list, serverOption(src, i)) {
+                        dialog.dismiss()
+                        if (i != currentIndex) {
+                            noSubsRetry = false
+                            playSource(i)
+                        }
+                    }
+                }
+            }
+        }
+
+        fun rebuildChips() {
+            chipRow.removeAllViews()
+            (listOf("All") + groups()).forEach { name ->
+                chipRow.addView(
+                    chipPill(if (name == "All") "All" else name, name == chip) {
+                        chip = name
+                        rebuildChips()
+                        rebuildList()
+                    },
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { marginEnd = (6 * density).toInt() }
+                )
+            }
+        }
+
+        rebuildChips()
+        rebuildList()
+        val watcher: () -> Unit = {
+            // A rebuild changes the content height, so put the scroll offset
+            // back AFTER the new rows are laid out (scrollTo clamps to the new
+            // maximum) — otherwise a server landing while the user reads the
+            // list would yank them to the top.
+            val sv = content.parent as? ScrollView
+            val keepY = sv?.scrollY ?: 0
+            rebuildChips()
+            rebuildList()
+            sv?.post { sv.scrollTo(0, keepY) }
+        }
+        sourcesWatchers.add(watcher)
+        dialog.setOnDismissListener { sourcesWatchers.remove(watcher) }
+        if (startMode) {
+            // Backing out of the start chooser must not leave the player
+            // blank: fall back to the remembered/best server.
+            dialog.setOnCancelListener {
+                lifecycleScope.launch { playSource(preferredStartIndex()) }
+            }
+        }
+        presentGlass(
+            dialog,
+            "Select server",
+            content,
+            700f,
+            hint = "Grouped by the engine that found each server.",
+            iconRes = R.drawable.ic_server,
+            rowHosts = listOf(list),
+        )
     }
 
     private fun showQualityDialog() {
@@ -2223,26 +2523,26 @@ class PlayerActivity : ComponentActivity() {
             }
             return TextView(this).apply {
                 this.text = text
-                dpText(11.5f)
+                dpText(11f)
                 setTextColor(0xFFFFFFFF.toInt())
                 gravity = Gravity.CENTER
                 background = bg
                 includeFontPadding = false
-                setPadding((11 * density).toInt(), (5 * density).toInt(), (11 * density).toInt(), (5 * density).toInt())
+                setPadding((9 * density).toInt(), (4 * density).toInt(), (9 * density).toInt(), (4 * density).toInt())
                 setOnClickListener { onClick() }
             }
         }
         fun rowLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            dpText(12.5f)
+            dpText(12f)
             setTextColor(0xFFE6EAF3.toInt())
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
             this.text = text
-            dpText(11.5f)
+            dpText(11f)
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
-            minWidth = (40 * density).toInt()
+            minWidth = (38 * density).toInt()
         }
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
@@ -2309,8 +2609,8 @@ class PlayerActivity : ComponentActivity() {
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
                 setPadding(
-                    (12 * density).toInt(), (8 * density).toInt(),
-                    (12 * density).toInt(), (8 * density).toInt()
+                    (10 * density).toInt(), (6 * density).toInt(),
+                    (10 * density).toInt(), (6 * density).toInt()
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
@@ -2343,8 +2643,8 @@ class PlayerActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 setMargins(
-                    (12 * density).toInt(), (9 * density).toInt(),
-                    (12 * density).toInt(), 0
+                    (10 * density).toInt(), (7 * density).toInt(),
+                    (10 * density).toInt(), 0
                 )
             })
         }
@@ -2566,6 +2866,7 @@ class PlayerActivity : ComponentActivity() {
                 val list = sources.toMutableList()
                 list[index] = converted
                 sources = list
+                notifySourcesChanged()
                 Toast.makeText(
                     this@PlayerActivity,
                     "Torrent ready — streaming from peers",
@@ -2861,6 +3162,7 @@ class PlayerActivity : ComponentActivity() {
         val list = sources.toMutableList()
         list[index] = StreamProbe.apply(src.toStreamSource(), resolved).toPlayerSource()
         sources = list
+        notifySourcesChanged()
     }
 
     private fun playDirectInner(index: Int) {

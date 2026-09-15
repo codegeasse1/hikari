@@ -510,6 +510,12 @@ fun DetailScreen(
     val playMinServers by playMinFlow.collectAsState(initial = 2)
     val bannerFlow = remember { app.store.showLoadingBannerFlow() }
     val showLoadingCoverSetting by bannerFlow.collectAsState(initial = true)
+    // "Don't play directly — show all servers to choose": when on, the player
+    // opens on its server list (grouped by engine) and never starts a server by
+    // itself, so this screen must not hold playback back for a remembered
+    // server either — the chooser should come up the moment servers exist.
+    val askServerFlow = remember { app.store.askServerOnPlayFlow() }
+    val askServerOnPlay by askServerFlow.collectAsState(initial = false)
     // Servers the player must know about before it starts. 1 = "as soon as the
     // first server is found" (the default).
     val startAfterServers = if (playWaitServers) playMinServers else 1
@@ -579,6 +585,9 @@ fun DetailScreen(
                 )
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("startAfterServers", startAfterServers)
+                // Ask before playing: the player shows every server it found,
+                // grouped by engine, instead of starting one by itself.
+                putExtra("askServer", askServerOnPlay)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
@@ -687,7 +696,8 @@ fun DetailScreen(
             val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
             val prefUrl = last?.url.orEmpty()
             val prefName = last?.name.orEmpty()
-            val wantPreferred = prefUrl.isNotBlank() || prefName.isNotBlank()
+            val wantPreferred =
+                !askServerOnPlay && (prefUrl.isNotBlank() || prefName.isNotBlank())
             val preferredIndex = { list: List<StreamSource> ->
                 if (prefUrl.isBlank() && prefName.isBlank()) -1
                 else list.indexOfFirst { s ->
@@ -1385,6 +1395,7 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
                     .put("isM3u8", s.isM3u8)
                     .put("isMpd", s.isMpd)
                     .put("isTorrent", s.isTorrent)
+                    .put("provider", s.provider)
                     .put("infoHash", s.infoHash ?: "")
                     .put("fileIdx", s.fileIdx ?: -1)
                     .put(

@@ -63,6 +63,7 @@ class AppStore(private val ctx: Context) {
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
         val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
         val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
+        val ASK_SERVER = booleanPreferencesKey("askServerOnPlay")
         val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
         val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
@@ -104,6 +105,23 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayMinServers(n: Int) {
         store.edit { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
+    }
+
+    /**
+     * "Don't play directly — show all servers to choose": off (the default)
+     * keeps the instant-play behaviour, where the player starts on the first
+     * server it finds. On, the player opens with every server it could find,
+     * divided into one section per engine (CloudStream, Hikari, Nuvio,
+     * Stremio), and waits for the user to pick one instead of playing on its
+     * own.
+     */
+    fun askServerOnPlayFlow(): Flow<Boolean> =
+        store.data.map { it[K.ASK_SERVER] ?: false }
+
+    suspend fun askServerOnPlay(): Boolean = askServerOnPlayFlow().first()
+
+    suspend fun setAskServerOnPlay(ask: Boolean) {
+        store.edit { it[K.ASK_SERVER] = ask }
     }
 
     /** Show the full-screen title card (backdrop + breathing name) from Play
