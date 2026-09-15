@@ -256,3 +256,22 @@ The plugin's providers appear in Home/Search and play like any other source. One
 # locally:
 gradle assembleDebug
 ```
+
+## Developer notes
+
+- **Never do blocking work on the main thread.** `viewModelScope` is
+  `Dispatchers.Main`, and OkHttp's `execute()` (via `Http.get/getString`) throws
+  `NetworkOnMainThreadException` there — an exception that any surrounding
+  `runCatching` swallows, so the feature looks like it "did nothing" instead of
+  crashing. This once silently killed every detail-page TMDB lookup:
+  `TmdbMeta.extras/related/similar` were launched straight from
+  `viewModelScope`, so the "Show Details" block and the Cast / Trailers /
+  Related / Similar rows never rendered on any title. `TmdbResolver.apiGet` now
+  hops to `Dispatchers.IO` itself, so all present and future callers are safe by
+  construction — keep that property when adding new TMDB/HTTP helpers.
+- **Title matching across sources needs normalisation.** IMDb spells sequels
+  "Ramayana Part 2" where catalogs say "Ramayana: Part Two"; the artwork
+  fallback's exact/prefix test rejected those and left the cell on its
+  placeholder forever. `TmdbMeta.normalizeTitle()` folds case, punctuation and
+  numerals before comparing (see `Artwork` for the cache-miss TTL that makes a
+  bad match stick for days).
