@@ -1,3 +1,29 @@
+## 0.3.75
+
+**The real cause of "no CloudStream server shows up".** A shared log settled
+it: in the report the app asked **exactly 64 providers and all 64 of them were
+native `.hiki` repos — zero CloudStream**. The CloudStream repos were installed
+the whole time; they were never *asked*.
+
+- **The cross pass no longer stops at 64.** The pass builds one list of every
+  installed extension that gets asked for the same title, and that list was
+  capped at 64. It is ordered origin-engine-first, and the native `.hiki` family
+  alone is 64+ repos — so the cap filled the list ENTIRELY with `.hiki` repos and
+  an installed CloudStream repo was never reached. The cap is now 1024, i.e.
+  every installed repo is in the pass; the concurrency semaphore (18) and the
+  time budget — not a silent cap — bound the work. The proof from the log:
+  `cross=64 same=48 late=16` with a CloudStream origin (48 CloudStream + 16
+  `.hiki`, a straight prefix of the ranked list) and 64 distinct `.hiki` repos
+  with ZERO CloudStream when the title was opened from a Nuvio provider.
+- **The origin's own engine is asked in full, first.** Open a title from a
+  CloudStream repo and every installed CloudStream repo is asked before a single
+  slot is spent on the 64+ native repos; then the remaining engines round-robin
+  one repo per engine per round, so no engine is starved.
+- **The log now identifies its build and the installed counts.** `Search: start`
+  begins with `v=<app version>` and ends with `installed=CloudStream=48,Hikari=64,…`
+  — so a log can no longer be ambiguous about which build produced it, or about
+  whether the CloudStream repos existed to be asked.
+
 ## 0.3.74
 
 Three fixes: the last of the flat-cut text along the glass, the heading over

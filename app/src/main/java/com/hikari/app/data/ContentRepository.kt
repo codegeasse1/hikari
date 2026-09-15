@@ -146,8 +146,17 @@ class ContentRepository(private val manager: ProviderManager) {
 
     /** Effectively "every installed extension": the whole point of the pass is
      *  to find the repo that CAN play the title, so nothing is skipped up
-     *  front. The budget above — not this cap — bounds the work. */
-    private val CROSS_EXT_MAX_TARGETS = 64
+     *  front. The budget above — not this cap — bounds the work.
+     *
+     *  This was 64, and that WAS the bug behind "no CloudStream server shows
+     *  up": the list is ordered origin-family-first, and the native .hiki family
+     *  alone is 64+ repos, so a plain `take(64)` handed every slot to it and an
+     *  installed CloudStream repo was never asked at all — its servers could not
+     *  appear no matter how long you waited. A shared log proved it exactly:
+     *  64 distinct .hiki repos searched and ZERO CloudStream. The cap is now
+     *  high enough that every installed repo is in the pass; the concurrency
+     *  semaphore and the budget keep the phone from being hammered. */
+    private val CROSS_EXT_MAX_TARGETS = 1_024
 
     /** Minimum title-match score (see [titleScore]) before a search hit is
      *  trusted as "the same title on that extension". */
@@ -547,7 +556,11 @@ class ContentRepository(private val manager: ProviderManager) {
 
         com.hikari.app.data.Logs.log(
             "Search",
-            "start \"${item.title}\" (${item.type}) origin=${origin?.config?.name ?: "?"} " +
+            // The app version leads the line so a shared log identifies the
+            // build it came from without having to guess (the session-start
+            // banner can be trimmed off a shared file).
+            "start \"${item.title}\" (${item.type}) v=${com.hikari.app.BuildConfig.VERSION_NAME} " +
+                "origin=${origin?.config?.name ?: "?"} " +
                 "primary=${targets.size} nuvio=${nuvioTargets.size} " +
                 "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size} " +
                 // Which ENGINES the cross pass is about to ask, and how many
@@ -555,6 +568,16 @@ class ContentRepository(private val manager: ProviderManager) {
                 // answered here — whether that family was searched at all, and
                 // whether the repo the user has in mind even got a slot.
                 "families=" + crossTargets
+                    .groupingBy { it.config.type.groupLabel }
+                    .eachCount()
+                    .entries
+                    .sortedBy { it.key }
+                    .joinToString(",") { "${it.key}=${it.value}" } +
+                // …and how many of each are INSTALLED. `families=` says whether
+                // the CloudStream repos were asked; `installed=` says whether
+                // they existed to ask in the first place — which is the
+                // difference between "not installed" and "silently skipped".
+                " installed=" + all
                     .groupingBy { it.config.type.groupLabel }
                     .eachCount()
                     .entries
@@ -769,21 +792,27 @@ class ContentRepository(private val manager: ProviderManager) {
             .groupBy { it.config.type }
             .entries
             .sortedBy { rankOf(it.key) }
-            .map { it.value }
-        // Cycle ONE per family per round instead of taking a straight prefix of
-        // the trust-sorted list. The native .hiki family alone is two hundred
-        // repos, so a plain `take(64)` handed EVERY slot to it, and a
-        // CloudStream repo the user had installed was never even asked — its
-        // servers could not appear in the list no matter how long you waited
-        // for the other engines to finish. Round-robin keeps every family (and
-        // so every installed repo) in the pass, while the origin's own family
-        // still leads each round and each family keeps its install order.
+        // The origin's own family goes in FIRST and in FULL: if a title was
+        // opened from a CloudStream repo, every installed CloudStream repo is
+        // the most likely home of the next server (and the one the user has in
+        // mind), so every one of them is asked before any slot is spent
+        // elsewhere. Then the remaining families are cycled ONE per family per
+        // round — the native .hiki family alone is 64+ repos, so a straight
+        // prefix of the trust-sorted list handed every slot to it and an
+        // installed CloudStream repo was never even asked. Round-robin keeps
+        // every family (and so every installed repo) in the pass, while each
+        // family keeps its install order.
         val out = ArrayList<ContentProvider>(CROSS_EXT_MAX_TARGETS)
+        for (family in families) {
+            if (originType == null || family.key != originType) continue
+            out += family.value
+        }
         var round = 0
         while (out.size < CROSS_EXT_MAX_TARGETS) {
             var added = false
             for (family in families) {
-                val p = family.getOrNull(round) ?: continue
+                if (originType != null && family.key == originType) continue
+                val p = family.value.getOrNull(round) ?: continue
                 out += p
                 added = true
                 if (out.size >= CROSS_EXT_MAX_TARGETS) break
