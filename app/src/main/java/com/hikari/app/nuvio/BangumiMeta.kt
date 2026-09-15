@@ -1,5 +1,6 @@
 package com.hikari.app.nuvio
 
+import com.hikari.app.data.TmdbMeta
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -63,19 +64,33 @@ object BangumiMeta {
      * when Bangumi has no usable match. [originalTitle] (TMDB's `original_name`)
      * is searched first when it is Chinese/Japanese — Bangumi's English-title
      * index is loose, while the native title is exact.
+     *
+     * [seasonHint] handles a site item that IS one season of a franchise
+     * ("Sword of Coming Season 2"): Bangumi keeps numbering a franchise's
+     * seasons continuously (its 第二季 subject starts at sort 27), while the
+     * site lists that season from 1, so subjects are re-based to a season-local
+     * 1..n and only the ones whose name carries that season's marker are used.
+     * Without a hint the historical absolute concatenation is kept.
      */
-    suspend fun episodes(title: String, originalTitle: String?, year: Int?): List<Ep>? {
+    suspend fun episodes(
+        title: String,
+        originalTitle: String?,
+        year: Int?,
+        seasonHint: Int? = null,
+    ): List<Ep>? {
         val native = originalTitle?.trim()?.takeIf { it.isNotBlank() && it != "null" && CJK.containsMatchIn(it) }
         val base = (native ?: title).trim()
         if (base.isBlank()) return null
-        cache[base]?.let { return it }
-        val hit = fetch(base, asciiSearch = native == null, year = year) ?: return null
-        if (hit.isNotEmpty()) cache[base] = hit
+        val key = if (seasonHint == null) base else "$base|s$seasonHint"
+        cache[key]?.let { return it }
+        val hit = fetch(base, asciiSearch = native == null, year = year, seasonHint = seasonHint) ?: return null
+        if (hit.isNotEmpty()) cache[key] = hit
         return hit
     }
 
-    private suspend fun fetch(base: String, asciiSearch: Boolean, year: Int?): List<Ep>? =
+    private suspend fun fetch(base: String, asciiSearch: Boolean, year: Int?, seasonHint: Int?): List<Ep>? =
         withContext(Dispatchers.IO) {
+            val markers = seasonHint?.let { TmdbMeta.seasonMarkers(it) }
             val body = JSONObject()
                 .put("keyword", base)
                 .put("filter", JSONObject().put("type", JSONArray().put(2)))
@@ -94,8 +109,11 @@ object BangumiMeta {
                 val name = o.optString("name").trim()
                 val nameCn = o.optString("name_cn").trim()
                 val eps = o.optInt("eps")
-                if (eps <= 0 || name.isBlank()) continue
+                if (name.isBlank()) continue
                 if (NOT_MAIN.containsMatchIn(name) || NOT_MAIN.containsMatchIn(nameCn)) continue
+                if (markers != null &&
+                    markers.none { name.contains(it, true) || nameCn.contains(it, true) }
+                ) continue
                 if (asciiSearch) {
                     // Bangumi indexes English titles loosely (a search for
                     // "Battle Through the Heavens" also returns "Battle for
@@ -124,7 +142,9 @@ object BangumiMeta {
                 if (eps.isEmpty()) continue
                 used++
                 val firstSort = eps.first().sort
-                val start = maxOf(firstSort, running + 1)
+                // Season-local numbering when the caller named a season: the
+                // site's "Season 2" list starts at 1, and so must the map.
+                val start = if (seasonHint != null) running + 1 else maxOf(firstSort, running + 1)
                 for (e in eps) {
                     val n = start + (e.sort - firstSort)
                     if (n > 0 && n <= 4000) out += Ep(n, e.name, e.air)

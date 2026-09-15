@@ -4,6 +4,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.cs3.YtDlpResolver
 import com.hikari.app.net.NetTuning
+import com.hikari.app.nuvio.EpisodeTitles
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
@@ -883,7 +884,8 @@ class ContentRepository(private val manager: ProviderManager) {
             }) ?: emptyList()
             if (eps.isNotEmpty()) {
                 val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
-                val translated = translateEpisodes(item.providerId, sorted)
+                val named = withRealEpisodeNames(item, sorted)
+                val translated = translateEpisodes(item.providerId, named)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
                 return@withContext translated
             }
@@ -898,7 +900,8 @@ class ContentRepository(private val manager: ProviderManager) {
             manager.byId(item.providerId)?.config?.type == ProviderType.NUVIO
         ) {
             episodesFromExtensions(item)?.let { list ->
-                val translated = translateEpisodes(item.providerId, list)
+                val named = withRealEpisodeNames(item, list)
+                val translated = translateEpisodes(item.providerId, named)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
                 return@withContext translated
             }
@@ -936,6 +939,28 @@ class ContentRepository(private val manager: ProviderManager) {
             if (eps.size >= 2) return eps.sortedWith(compareBy({ it.season }, { it.number }))
         }
         return null
+    }
+
+    /**
+     * Swaps the mechanical labels a site-scraping extension returns ("Swallowed
+     * Star Episode 33 English Sub") for the real titles from TMDB/Bangumi while
+     * leaving the extension's own list — count, order and numbering — exactly
+     * as it is. Runs only when most of the names look mechanical (so an
+     * extension that already ships real titles is left alone), when the
+     * numbering is unambiguous (no per-season restart, which would make
+     * number → title mapping wrong), and never shortens or reorders anything.
+     */
+    private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.size < 3) return eps
+        val mechanical = eps.count { EpisodeTitles.looksMechanical(it.name, item.title) }
+        if (mechanical <= eps.size / 2) return eps
+        val numbers = eps.map { it.number }
+        if (numbers.size != numbers.toSet().size) return eps
+        val names = withTimeoutOrNull(12_000) {
+            EpisodeTitles.lookup(item.title, item.year, numbers.toSet())
+        } ?: return eps
+        if (names.isEmpty()) return eps
+        return eps.map { e -> names[e.number]?.let { n -> e.copy(name = n) } ?: e }
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

@@ -287,6 +287,26 @@ gradle assembleDebug
   `original_name` (native title) — English queries return garbage. If both TMDB
   and Bangumi come up empty, `ContentRepository.episodesFromExtensions` borrows
   the episode list from an installed site-scraping extension for the same title.
+  The extension's own labels ("Swallowed Star Episode 33 English Sub") are then
+  replaced by real titles via `EpisodeTitles.lookup()` (TMDB first, Bangumi to
+  top up) while its list — count, order and numbering — is left exactly as it
+  is. A database's generic "Episode 129" counts as a name and is preferred over
+  the site's mechanical label; the site's labels survive only when BOTH
+  databases fail outright. A title that names a season ("Sword of Coming Season
+  2") is resolved season-locally, because the site numbers that season from 1
+  while TMDB/Bangumi number the franchise continuously.
+- **A decorated title must not defeat TMDB resolution.** Site metas carry
+  decorations and translations TMDB's search index does not match: "Sword of
+  Coming Season 2" and "Battle Through The Heavens: Origin" both return ZERO
+  results for the literal query, and a franchise's English name on a site is
+  often a different translation than TMDB's ("Battle Through The Heavens" is
+  "Fights Break Sphere" there). An unresolved item silently loses the Cast,
+  Trailers, Details, Related and Similar sections. `TmdbResolver.searchByTitle`
+  therefore searches `TmdbMeta.queryVariants()` (full title, then brackets /
+  season markers / subtitle stripped) and, failing any name match, checks the
+  alternate titles of the top results. Only a NAME match is accepted — the year
+  merely breaks ties — so a franchise guess can never swap in a different
+  show's data.
 - **System back must unwind in-screen sub-views.** The Extensions and Settings
   screens hold their sub-pages in local state, not nav destinations, so without
   a `BackHandler` the system back button popped the whole destination and
