@@ -448,10 +448,21 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 } catch (e2: Throwable) {
                     if (e2 is CancellationException) throw e2
                     val why = fullCause(e2)
-                    streamErrors[config.id] = "Search failed: $why"
+                    // An extractor-only plugin (most "(Phisher)" entries) has no
+                    // search at all — it exists to turn a page URL into links.
+                    // Reporting that as a search FAILURE made the cross-pass
+                    // summary look like a wall of broken repos, so name it.
+                    val noSearch = why.contains("NotImplementedError") ||
+                        why.contains("UnsupportedOperationException") ||
+                        why.contains("not implemented", ignoreCase = true)
+                    streamErrors[config.id] = if (noSearch) {
+                        "This extension is extractor-only (no search) — it cannot be asked by title."
+                    } else {
+                        "Search failed: $why"
+                    }
                     com.hikari.app.data.Logs.log(
                         "Provider",
-                        "${config.name}: search failed — $why",
+                        "${config.name}: " + (if (noSearch) "has no search (extractor-only)" else "search failed — $why"),
                     )
                     emptyList()
                 }

@@ -3372,12 +3372,30 @@ class PlayerActivity : ComponentActivity() {
             }
         val state = if (running > 0) "$running still searching" else "all done"
         val servers = if (found > 0) ", $found with servers" else ", none with servers"
-        val why = if (running == 0 && found == 0) {
-            ContentRepository.crossVerdict.values.firstOrNull()
-                ?.let { " · e.g. " + oneLine(it).take(64) }
-                .orEmpty()
+        // When nothing came back, say WHAT the pass ran into, counted by kind —
+        // "200 no such title, 28 could not load" answers "was it even asked? did
+        // it break?" on screen, without needing a log. The single example then
+        // shows the real plugin text, preferring a repo that FAILED over one
+        // that simply did not carry the title (a failure is the actionable one).
+        val verdicts = ContentRepository.crossVerdict.values.toList()
+        val breakdown = if (found == 0 && verdicts.isNotEmpty()) {
+            val buckets = LinkedHashMap<String, Int>()
+            for (v in verdicts) {
+                val b = ContentRepository.crossReasonBucket(v.substringAfter(" — ", v))
+                buckets[b] = (buckets[b] ?: 0) + 1
+            }
+            buckets.entries.sortedByDescending { it.value }.take(3)
+                .joinToString(", ") { "${it.value} ${it.key}" }
         } else ""
-        return "Asked ${asked.size} other repos ($byEngine) — $state$servers$why"
+        val why = if (running == 0 && found == 0) {
+            val actionable = verdicts.firstOrNull {
+                val b = ContentRepository.crossReasonBucket(it)
+                b == "could not load" || b == "search error" || b == "timed out"
+            } ?: verdicts.firstOrNull()
+            actionable?.let { " · e.g. " + oneLine(it).take(56) }.orEmpty()
+        } else ""
+        return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
+            (if (breakdown.isBlank()) "" else " · $breakdown") + why
     }
 
     /** A reason can come straight from a plugin's exception text — collapse it

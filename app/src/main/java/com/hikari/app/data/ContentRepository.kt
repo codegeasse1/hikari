@@ -69,7 +69,33 @@ class ContentRepository(private val manager: ProviderManager) {
         fun bumpCrossStatus() {
             crossStatusVersion++
         }
+
+        /** Classifies one repo's verdict into a short bucket name, so the
+         *  chooser's hint and the end-of-pass log line can say what happened
+         *  ACROSS the whole pass ("40 could not load, 180 no such title")
+         *  instead of listing repos one at a time. "No server came back" has
+         *  very different fixes depending on which bucket dominates: nothing
+         *  found by any repo is a matcher/catalog story, while a pass where most
+         *  repos could not load is a broken-extension story. */
+        fun crossReasonBucket(verdict: String): String = when {
+            verdict.contains("failed to load") ||
+                verdict.contains("file is missing") ||
+                verdict.contains("did not register") ||
+                verdict.contains("Reinstall") -> "could not load"
+            verdict.contains("extractor-only") -> "no search (extractor)"
+            verdict.contains("timed out") -> "timed out"
+            verdict.contains("search failed") -> "search error"
+            verdict.contains("no matching title") ||
+                verdict.contains("search result(s)") -> "no such title"
+            verdict.contains("has the title") -> "title found, no links"
+            else -> "other"
+        }
     }
+
+    /** Messages THIS app wrote into a provider's error map (see
+     *  [recordStreamMessage]), so [crossExtensionLookup] can tell our own
+     *  "no matching title" note apart from the provider's own words. */
+    private val selfNote = ConcurrentHashMap<String, String>()
 
     // Nuvio providers share a 3-WebView pool, so only the first few to
     // acquire a view actually get to run within the search deadline. Order
@@ -133,6 +159,14 @@ class ContentRepository(private val manager: ProviderManager) {
     private val ORIGIN_HEAD_START_MS = 1_200L
     private val SAME_ENGINE_HEAD_START_MS = 2_000L
 
+    /** Ceiling on how long the other repos are held back while the provider the
+     *  title was opened from is still working (see [awaitOriginHeadStart]). The
+     *  point is that the origin gets the engines and the network to itself for
+     *  as long as it genuinely needs, without a slow/failing origin stalling
+     *  the whole list: whichever comes first — the origin finishing, or this
+     *  cap — releases the rest. */
+    private val ORIGIN_SETTLE_MAX_MS = 8_000L
+
     /** Total wall-clock budget for the whole cross-extension pass, measured
      *  from when it starts. Comfortably under the player's live-wait timeout so
      *  servers found here still reach a player that is already open and
@@ -146,14 +180,17 @@ class ContentRepository(private val manager: ProviderManager) {
      *  player as they land, so a longer tail costs nothing at play time. */
     private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(80_000L)
 
-    // 15s rather than 10s for search/episodes: a CloudStream plugin's first call
-    // has to spin up its QuickJS runtime and its own HTTP session, and a
-    // 10s cap timed that cold start out — which the pass then reported as "this
-    // repo has no matching title", i.e. exactly the case where a repo the user
-    // knows carries the show contributed nothing. Six extra seconds of a
-    // failure path is a fair price for asking it properly.
-    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(15_000L)
-    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(15_000L)
+    // 20s for search/episodes: a CloudStream/native plugin's first call has to
+    // spin up its QuickJS runtime (and, for a .hiki, load a whole dex archive —
+    // the loads serialise, so the last repo in a long queue starts late) plus
+    // its own HTTP session. The old 10s cap timed that cold start out and the
+    // pass then reported it as "this repo has no matching title", i.e. exactly
+    // the case where a repo the user knows carries the show contributed
+    // nothing. A search that still times out is retried once (see
+    // [crossExtensionLookup]) and, if it fails again, is now reported as a
+    // TIMEOUT rather than as "no matching title".
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(20_000L)
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(20_000L)
     private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(45_000L)
 
     /** Searching a title is cheap; extracting links is not, so they get their
@@ -708,6 +745,12 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 val started = System.currentTimeMillis()
+                // The job that belongs to the provider the user opened the title
+                // FROM — the one whose servers the chooser/player is actually
+                // waiting for. The other repos do not get turned loose while it
+                // is still working (see [awaitOriginHeadStart]).
+                val originJob = targets.indexOfFirst { it.config.id == item.providerId }
+                    .takeIf { it >= 0 }?.let { jobs[it] }
                 // Ceiling for the whole lookup. It only binds when providers are
                 // slow/failing — normally they finish → allDone well before it.
                 // 55s lets the trusted nuvio providers (priority order) pass
@@ -736,14 +779,14 @@ class ContentRepository(private val manager: ProviderManager) {
                     sameEngine.map { p ->
                         scope.async {
                             // The origin's own engine family waits behind the
-                            // origin (see [SAME_ENGINE_HEAD_START_MS]): with ~50
+                            // origin (see [awaitOriginHeadStart]): with ~50
                             // CloudStream repos installed, starting them all at
                             // t=0 competed with the origin for the same sites
                             // and network and buried its servers — the ones the
                             // user expects first — under the rest. The jobs are
                             // still created here, so the wait loop below still
                             // waits for them; only their work is deferred.
-                            kotlinx.coroutines.delay(SAME_ENGINE_HEAD_START_MS)
+                            awaitOriginHeadStart(originJob, SAME_ENGINE_HEAD_START_MS)
                             crossExtensionSources(p, item, episode)
                         }
                     }
@@ -759,7 +802,9 @@ class ContentRepository(private val manager: ProviderManager) {
                         onProgress(merged.values.toList())
                     }
                     val now = System.currentTimeMillis()
-                    // The origin has had its head start. Ask EVERY other
+                    // The origin has had its head start — and if it is still
+                    // working, the other ~230 repos wait a little longer for it
+                    // (bounded by ORIGIN_SETTLE_MAX_MS). Ask EVERY other
                     // installed extension for the same title and merge what
                     // they find into this same list (the progressive emission
                     // above hands each new server to the UI/player as it
@@ -767,8 +812,10 @@ class ContentRepository(private val manager: ProviderManager) {
                     // repo" true for extensions, not just Stremio/Nuvio — and
                     // it runs even when the origin DID return servers, because
                     // those may all be dead while another repo's are not.
+                    val lateGrace = if (originJob == null || originJob.isCompleted) crossGrace
+                    else ORIGIN_SETTLE_MAX_MS
                     if (lateStartedAt == 0L && lateTargets.isNotEmpty() &&
-                        now - started >= crossGrace
+                        now - started >= lateGrace
                     ) {
                         lateStartedAt = now
                         crossJobs = crossJobs + lateTargets.map { p ->
@@ -799,6 +846,35 @@ class ContentRepository(private val manager: ProviderManager) {
                 jobs.forEach { it.cancel() }
                 crossJobs.forEach { it.cancel() }
                 result = merged.values.toList()
+                // One line that answers "were the other engines even asked,
+                // and if so what happened?" — without scrolling through one
+                // line per repo. `emptyPage` counts repos that answered with
+                // nothing; `timedOut`/`failed` count repos that could not be
+                // asked at all (a cold plugin load, a dead site), which used to
+                // be indistinguishable from "no matching title".
+                val crossVerdicts = crossVerdict.values.toList()
+                val reasons = crossVerdicts.map { it.substringAfter(" — ", it) }
+                val buckets = LinkedHashMap<String, Int>()
+                for (r in reasons) {
+                    val b = crossReasonBucket(r)
+                    buckets[b] = (buckets[b] ?: 0) + 1
+                }
+                val breakdown = buckets.entries
+                    .sortedByDescending { it.value }
+                    .joinToString(", ") { "${it.value} ${it.key}" }
+                // One real example per KIND of failure (not one per repo): the
+                // pass's shape in a single line, with the actual plugin text.
+                val examples = reasons
+                    .distinctBy { crossReasonBucket(it) }
+                    .take(3)
+                    .joinToString(" · ") { it.take(90) }
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "cross done \"${item.title}\": asked=${crossAsked.size} " +
+                        "withServers=${crossFound.size} empty=${crossVerdicts.size}" +
+                        (if (breakdown.isBlank()) "" else " · $breakdown") +
+                        (if (examples.isBlank()) "" else " · e.g. $examples"),
+                )
             } finally {
                 scope.cancel()
             }
@@ -959,8 +1035,16 @@ class ContentRepository(private val manager: ProviderManager) {
         // that blew up), that change is the reason it produced nothing — and it
         // is a very different story from "this repo does not carry the show".
         val saidBefore = providerStreamMessage(p)
-        var best = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
-        if (best == null) {
+        var attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
+        // A search that THREW or TIMED OUT says nothing about the repo's
+        // catalog — a cold plugin load ("the first call has to spin up its
+        // runtime") is the usual cause, and the old code wrote that off as "no
+        // matching title". Ask once more before giving up on this repo.
+        if (attempt.best == null && attempt.why != null) {
+            attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
+        }
+        var best = attempt.best
+        if (best == null && attempt.why == null) {
             // Repos name titles their own way ("Foo: Bar Baz", "Foo - Season 2"),
             // and searching the full string can come back empty even though the
             // repo DOES carry the show. One retry with the shortest meaningful
@@ -968,14 +1052,30 @@ class ContentRepository(private val manager: ProviderManager) {
             // nothing" and leaving the user without its servers.
             val variant = titleVariant(title)
             if (variant != null && !variant.equals(title, ignoreCase = true)) {
-                best = searchBestMatch(p, variant, item, CROSS_EXT_MATCH_VARIANT)
+                val second = searchBestMatch(p, variant, item, CROSS_EXT_MATCH_VARIANT)
+                best = second.best
+                // Keep whichever attempt has something to say: a failure from
+                // the retry is more informative than "the full title missed".
+                if (second.why != null) attempt = second
             }
         }
         if (best == null) {
-            val said = providerStreamMessage(p)?.takeIf { it != saidBefore }
+            // What the extension itself said while we searched (a plugin that
+            // failed to load, a search that blew up) is the reason it produced
+            // nothing — a very different story from "this repo does not carry
+            // the show". Never mistake OUR OWN wording for the provider's: a
+            // note written here by an earlier pass made a plain "no matching
+            // title" read back as "couldn't be searched".
+            val id = p.config.id
+            val said = providerStreamMessage(p)?.takeIf { it != saidBefore && selfNote[id] != it }
             if (said != null) {
                 recordStreamMessage(p, said)
                 return emptyList<StreamSource>() to "couldn't be searched ($said)"
+            }
+            val why = attempt.why
+            if (why != null) {
+                recordStreamMessage(p, "Searched \"$title\" — $why.")
+                return emptyList<StreamSource>() to why
             }
             recordStreamMessage(p, "Searched \"$title\" — no matching title in this repo.")
             return emptyList<StreamSource>() to "no matching title for \"$title\""
@@ -989,10 +1089,28 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         var ep = episode
         if (episode != null) {
-            val eps = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
+            // "No episode S1E5 for this title" and "its episode list never
+            // answered" are very different stories: the first means the repo
+            // carries the show but not this episode, the second means it may
+            // carry both and could not be asked. Say which one it was.
+            var epFailure: String? = null
+            var epTimedOut = false
+            val eps: List<Episode> = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
                 withTimeoutOrNull(CROSS_EXT_EPISODES_TIMEOUT_MS) {
-                    cancellableCatching { p.getEpisodes(best) }.getOrNull()
-                }.orEmpty()
+                    cancellableCatching { p.getEpisodes(best) }
+                        .onFailure { e ->
+                            epFailure = e.javaClass.simpleName + ": " + (e.message ?: "no message")
+                        }
+                        .getOrNull()
+                } ?: run { epTimedOut = true; null }
+            }.orEmpty()
+            if (epTimedOut) {
+                recordStreamMessage(p, "Has the title, but its episode list timed out.")
+                return emptyList<StreamSource>() to "episode list timed out"
+            }
+            if (epFailure != null) {
+                recordStreamMessage(p, "Has the title, but its episode list failed: $epFailure")
+                return emptyList<StreamSource>() to "episode list failed: $epFailure"
             }
             val match = matchCrossEpisode(eps, episode)
             if (match == null) {
@@ -1002,14 +1120,29 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             ep = match
         }
-        val got = CROSS_EXT_EXTRACT_SEMAPHORE.withPermit {
+        // Same for extraction: a dead extractor and a page with no playable
+        // links look identical in a server list, but only one of them means the
+        // repo can be written off.
+        var gotFailure: String? = null
+        var gotTimedOut = false
+        val got: List<StreamSource> = CROSS_EXT_EXTRACT_SEMAPHORE.withPermit {
             withTimeoutOrNull(CROSS_EXT_STREAMS_TIMEOUT_MS) {
-                cancellableCatching { p.getStreams(meta, ep) }.getOrDefault(emptyList())
-            }.orEmpty()
+                cancellableCatching { p.getStreams(meta, ep) }
+                    .onFailure { e ->
+                        gotFailure = e.javaClass.simpleName + ": " + (e.message ?: "no message")
+                    }
+                    .getOrDefault(emptyList())
+            } ?: run { gotTimedOut = true; emptyList<StreamSource>() }
         }
         if (got.isEmpty()) {
-            recordStreamMessage(p, "Has the title and episode, but produced no playable links.")
-            return emptyList<StreamSource>() to "has the title and episode, but no playable links"
+            val why = when {
+                gotTimedOut ->
+                    "extraction timed out after ${CROSS_EXT_STREAMS_TIMEOUT_MS / 1000}s"
+                gotFailure != null -> "extraction failed: $gotFailure"
+                else -> "no playable links"
+            }
+            recordStreamMessage(p, "Has the title and episode, but $why.")
+            return emptyList<StreamSource>() to "has the title and episode, but $why"
         }
         // Found here: clear this repo's diagnostic, and tag each server with the
         // repo it came from so the player's server list shows its origin.
@@ -1077,6 +1210,40 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
     }
 
+    /** Minimal head start for the repos of the origin's own family — extended
+     *  while the origin is still working. It waits [minMs], then keeps waiting
+     *  while [originJob] is unfinished, up to [ORIGIN_SETTLE_MAX_MS] in total.
+     *  With ~180 native .hiki repos installed, the family's searches used to
+     *  start right beside the origin and saturate the same engines and network,
+     *  so the origin's own servers — the ones the player is actually waiting
+     *  for — landed late or not at all. Returns immediately when there is no
+     *  origin job to wait for. */
+    private suspend fun awaitOriginHeadStart(
+        originJob: kotlinx.coroutines.Deferred<List<StreamSource>>?,
+        minMs: Long,
+    ) {
+        kotlinx.coroutines.delay(minMs)
+        if (originJob == null) return
+        val began = System.currentTimeMillis()
+        while (!originJob.isCompleted &&
+            System.currentTimeMillis() - began < ORIGIN_SETTLE_MAX_MS
+        ) {
+            kotlinx.coroutines.delay(150)
+        }
+    }
+
+    /**
+     * One extension search's outcome: the best matching entry when it found
+     * one, or — when it did not — WHY it did not. The reason is what separates
+     * "this repo does not carry the show" (an empty page, or a page whose
+     * entries are all a different title) from "this repo could not be asked at
+     * all" (a search that threw or timed out — typically a cold .cs3/.hiki
+     * plugin load). Both used to be reported as one indistinguishable "no
+     * matching title", which is exactly how a repo that DOES carry the title
+     * could look like a repo that does not.
+     */
+    private class SearchAttempt(val best: MediaItem?, val why: String?)
+
     /**
      * Searches one extension and returns its best matching entry, or null when
      * nothing clears [minMatch]. Searches are the cheap half of the
@@ -1088,17 +1255,37 @@ class ContentRepository(private val manager: ProviderManager) {
         query: String,
         item: MediaItem,
         minMatch: Int,
-    ): MediaItem? = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
-        withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
-            cancellableCatching { p.search(query, 1) }.getOrDefault(emptyList())
-        }.orEmpty()
+    ): SearchAttempt = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
+        var timedOut = false
+        var failure: String? = null
+        val results: List<MediaItem> = withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
+            cancellableCatching { p.search(query, 1) }
+                .onFailure { e -> failure = e.javaClass.simpleName + ": " + (e.message ?: "no message") }
+                .getOrDefault(emptyList())
+        } ?: run { timedOut = true; emptyList<MediaItem>() }
+        if (timedOut) {
+            SearchAttempt(null, "search timed out after ${CROSS_EXT_SEARCH_TIMEOUT_MS / 1000}s")
+        } else if (failure != null) {
+            SearchAttempt(null, "search failed: $failure")
+        } else if (results.isEmpty()) {
+            // The repo answered, and the answer was an empty page: it genuinely
+            // has no title remotely like this one. Zero results and a FAILED
+            // search used to look identical in the log (see
+            // [crossExtensionLookup]).
+            SearchAttempt(null, null)
+        } else {
+            // Scored against the REAL title, never against the shortened query,
+            // so a variant can only ever confirm a genuine match.
+            val scored = results.map { it to titleScore(item.title, item.year, it) }
+            val best = scored.filter { it.second >= minMatch }.maxByOrNull { it.second }?.first
+            if (best != null) SearchAttempt(best, null)
+            else SearchAttempt(
+                null,
+                "${results.size} search result(s), none of them \"$query\" " +
+                    "(best match ${scored.maxOf { it.second }}/$minMatch)",
+            )
+        }
     }
-        // Scored against the REAL title, never against the shortened query, so
-        // a variant can only ever confirm a genuine match.
-        .map { it to titleScore(item.title, item.year, it) }
-        .filter { it.second >= minMatch }
-        .maxByOrNull { it.second }
-        ?.first
 
     /**
      * A shorter, still-specific search phrase for a title that carries a
@@ -1199,9 +1386,13 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /** Routes a provider's stream message into the right per-provider error map
-     *  so the Detail screen's "no sources" panel can explain what happened. */
+     *  so the Detail screen's "no sources" panel can explain what happened.
+     *  [origin.config.id] is remembered in [selfNote] when the message is one of
+     *  ours, so a later pass never reads our own "no matching title" note back
+     *  as the provider's own words (see [crossExtensionLookup]). */
     private fun recordStreamMessage(origin: com.hikari.app.providers.ContentProvider, message: String?) {
         val id = origin.config.id
+        if (message == null) selfNote.remove(id) else selfNote[id] = message
         val map = when (origin.config.type) {
             ProviderType.STREMIO -> StremioAddon.streamErrors
             ProviderType.CS3 -> Cs3MainApiProvider.streamErrors

@@ -1,3 +1,35 @@
+## 0.3.78
+
+**"No servers from my other repos" now says WHY — and a search that never really
+ran is retried instead of being written off.**
+
+- **Every repo's answer is now truthful.** Until now the cross pass wrote
+  "no matching title in this repo" for three completely different situations:
+  the repo really does not carry the show, the repo's search **threw**, and the
+  repo's search **timed out** (a cold `.hiki`/`.cs3` load — the first call has to
+  spin up the plugin). So a repo that DOES carry the show looked identical to one
+  that does not, and there was no way to tell from the log which had happened.
+  Each case now reports itself: "search timed out after 20s", "search failed:
+  <reason>", "N search result(s), none of them "<title>" (best match 12/40)", or
+  a plain empty page.
+- **The chooser's hint now counts the reasons across the whole pass** — e.g.
+  `Asked 231 other repos (CloudStream 49, Hikari 182) — all done, none with
+  servers · 200 no such title, 28 could not load`. A pass where most repos
+  answered "no such title" is a catalog/matching story; a pass where most
+  "could not load" is a broken-extension story. You can see which it is without
+  sending a log.
+- **A failed or timed-out search is retried once**, and the search/episode
+  timeouts went 15s → 20s (the cold plugin load of a native extension has to fit
+  inside them). A repo whose first search died is asked again rather than losing
+  its servers for the whole play.
+- **A broken extension can no longer masquerade as "this repo hasn't got the
+  show".** A `.hiki` that will not load now reports "Extension failed to load —
+  <reason>"; a CloudStream plugin that exists only to extract links says "This
+  extension is extractor-only (no search)"; a missing/unregistered plugin says
+  so too. All of it lands in the log and in the hint's `e.g.` example.
+- **The end-of-pass log line is now a full summary**: asked / with servers /
+  empty, the reason breakdown, and one real example per kind of failure.
+
 ## 0.3.77
 
 **With "Don't play directly" on, the server sheet now opens the instant you tap
