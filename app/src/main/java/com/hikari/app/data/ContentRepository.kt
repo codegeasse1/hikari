@@ -133,11 +133,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *  few seconds), while the narrow one keeps only a handful of extractors
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
-    private val CROSS_EXT_SEARCH_CONCURRENCY = 10
+    private val CROSS_EXT_SEARCH_CONCURRENCY = 18
     /** How many extensions may extract at the same time. Six was low enough
      *  that, on a phone with a dozen installed repos, most targets queued behind
-     *  the budget and never ran at all. */
-    private val CROSS_EXT_EXTRACT_CONCURRENCY = 10
+     *  the budget and never ran at all; with ~50 installed repos the searches
+     *  alone used to take the better part of a minute, which is why the one
+     *  repo that DOES carry the title (MovieBox) only landed its servers after
+     *  playback had already started. */
+    private val CROSS_EXT_EXTRACT_CONCURRENCY = 12
     private val CROSS_EXT_SEARCH_SEMAPHORE = Semaphore(CROSS_EXT_SEARCH_CONCURRENCY)
     private val CROSS_EXT_EXTRACT_SEMAPHORE = Semaphore(CROSS_EXT_EXTRACT_CONCURRENCY)
 
@@ -546,7 +549,17 @@ class ContentRepository(private val manager: ProviderManager) {
             "Search",
             "start \"${item.title}\" (${item.type}) origin=${origin?.config?.name ?: "?"} " +
                 "primary=${targets.size} nuvio=${nuvioTargets.size} " +
-                "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size}",
+                "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size} " +
+                // Which ENGINES the cross pass is about to ask, and how many
+                // repos of each: "the CloudStream servers never show up" is
+                // answered here — whether that family was searched at all, and
+                // whether the repo the user has in mind even got a slot.
+                "families=" + crossTargets
+                    .groupingBy { it.config.type.groupLabel }
+                    .eachCount()
+                    .entries
+                    .sortedBy { it.key }
+                    .joinToString(",") { "${it.key}=${it.value}" },
         )
 
             // Fresh diagnostic state for this lookup.

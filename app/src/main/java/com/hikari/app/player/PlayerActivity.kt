@@ -2510,6 +2510,12 @@ class PlayerActivity : ComponentActivity() {
             // stack's outline then IS the shape. A dialog with rows in two
             // places (track list + control rows) hands over both.
             rowHosts.forEach { bendHost(it) }
+            // …and anything else the content holds that is not part of a host:
+            // a message line above the list (the download sheet's "Episode 683
+            // · …"), which otherwise sits at the panel's full inner width and
+            // gets sliced by the bowed edge. The content is a plain view by
+            // signature; only a container can hold loose children.
+            (content as? ViewGroup)?.let { bendLoose(it) }
         }
         panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         // Rows are bent to the curve at their CURRENT height inside the panel, so
@@ -2866,10 +2872,24 @@ class PlayerActivity : ComponentActivity() {
         return false
     }
 
-    /** Heading for the origin provider's own section — blank when there is no
-     *  origin context (the chooser then just shows the engine sections). */
+    /** Heading for the origin provider's servers, named by its ENGINE — the
+     *  section the user opened the title from leads, but it reads like every
+     *  other section ("CLOUDSTREAM" over the CloudStream repos' servers, then
+     *  "HIKARI", "NUVIO"…), so the heading is a category rather than one repo's
+     *  name. The repo a server came from stays visible on the row itself
+     *  ("MovieBoxIN (Hindi Audio) 1080p"), which is where it belongs: the
+     *  heading above it groups the engine, not the one repo.
+     *
+     *  Falls back to the provider's display name when the engine was not stamped
+     *  on the source, and is blank with no origin context (the chooser then just
+     *  shows the engine sections). */
     private val originLabel: String
         get() {
+            val originRow = sources.firstOrNull { it.isFromOrigin() }
+            if (originRow != null) {
+                val engine = serverGroup(originRow)
+                if (engine.isNotBlank() && engine != "Other") return engine
+            }
             if (originProviderName.isNotBlank()) return originProviderName
             if (originProviderId.isNotBlank()) {
                 return sources.firstOrNull { it.providerId == originProviderId }
@@ -2934,23 +2954,35 @@ class PlayerActivity : ComponentActivity() {
         }
 
         /**
-         * The list's sections as (heading, source indices): the provider the
-         * user opened the title from FIRST (its own servers are the ones they
-         * expect — "on MovieBox, play MovieBox"), then each engine that found
-         * something. A server only ever appears in one section, so the counts
-         * add up to the number of servers on screen.
+         * The list's sections as (heading, source indices): the ENGINE the user
+         * opened the title from FIRST — its own servers are the ones they expect
+         * ("on MovieBox, play MovieBox") — then each other engine that found
+         * something. The heading is the engine's name (CLOUDSTREAM / HIKARI /
+         * NUVIO…), never one repo's name: the repo is on the row. A server only
+         * ever appears in one section, so the counts add up to the number of
+         * servers on screen.
          */
         fun sections(): List<Pair<String, List<Int>>> {
-            val out = ArrayList<Pair<String, List<Int>>>()
+            // Origin rows lead (they are what the user opened the title from),
+            // then every engine group. When the origin's own engine is ALSO a
+            // group — a CloudStream title plus the other installed CloudStream
+            // repos — the two are one section named after the engine: two
+            // "CLOUDSTREAM" headings (and two identical chips) would be a bug of
+            // their own, and the other repos' servers belong beside the origin's
+            // anyway.
+            val byName = LinkedHashMap<String, MutableList<Int>>()
             val origin = sources.indices.filter { sources[it].isFromOrigin() }
-            if (origin.isNotEmpty() && originLabel.isNotBlank()) out.add(originLabel to origin)
+            if (origin.isNotEmpty() && originLabel.isNotBlank()) {
+                byName.getOrPut(originLabel) { ArrayList() }.addAll(origin)
+            }
             for (name in groups()) {
                 val idx = sources.indices.filter {
                     !sources[it].isFromOrigin() && serverGroup(sources[it]) == name
                 }
-                if (idx.isNotEmpty()) out.add(name to idx)
+                if (idx.isEmpty()) continue
+                byName.getOrPut(name) { ArrayList() }.addAll(idx)
             }
-            return out
+            return byName.map { it.key to it.value.toList() }
         }
 
         val chipRow = LinearLayout(this).apply {

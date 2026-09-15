@@ -1,3 +1,57 @@
+## 0.3.74
+
+Three fixes: the last of the flat-cut text along the glass, the heading over
+the origin provider's servers, and a much faster cross-extension pass so the
+one repo that carries a title doesn't land after playback has already started.
+
+### Nothing is cut by the curve (headers, and the download sheet's line)
+
+- **The overhang allowance is now capped by the row's own padding.** The bend
+  lets a row ride the bow as far as its *content padding* reaches — that is the
+  dark space inside a pill's rounded end, which is what makes a row look like
+  it curves with the glass. But the allowance was being credited to rows that
+  have no padding and no rounded background at all: the section headers
+  ("HIKARI · 5", "ANIME4I · 2"), the "All/Hikari/Nuvio" chip strip, and a
+  dialog's message line. Those are laid out flush at their own left edge, so
+  the allowance put their first letter straight onto the bowed edge with the
+  bright rim cutting through the glyph ("H", "A"). A child with no padding on a
+  side now gets no overhang there; its margin lands at the true shape boundary
+  plus the ~13dp air gap (widened from 10dp, because text a couple of dp off a
+  bright rim reads as sliced even when it is not).
+- **Loose content is bent too.** Only containers handed over as row *hosts*
+  were bent; anything else inside the panel — notably the message line a
+  `showGlassMenu` dialog puts above its list — was laid out at the panel's full
+  inner width and then sliced by the bowed edge. The download sheet's
+  "Episode 683 · …" line lost its first four letters to the left curve and
+  wrapped the rest of the way round; it is now bent like everything else, and
+  read whole. A registered host (or a container holding one) is recognised and
+  skipped, so no row is bent twice.
+
+### The heading over your own provider's servers
+
+- The section the user opened the title from is now named after the **engine**
+  (`CLOUDSTREAM`, `HIKARI`, `NUVIO`…), not the one repo — so it reads as a
+  category, like every other section, and the repo a server came from stays
+  visible on the row itself ("MovieBoxIN (Hindi Audio) 1080p"). When the origin
+  and other installed repos share the engine (a CloudStream title plus the
+  other CloudStream repos), they now merge into **one** `CLOUDSTREAM` section
+  instead of producing a duplicate heading and a duplicate chip.
+
+### Cross-extension: the repo that carries the title answers sooner
+
+- Searching a title is cheap and extracting a link is not, so they keep
+  separate caps — but both were tight enough that, with ~50 installed repos,
+  the searches alone took the better part of a minute. The one repo that
+  actually carries the title (MovieBox, for the title in the report) only
+  landed its servers about two seconds after playback had already started on
+  the origin's own sources. Search concurrency is now 18 and extraction 12, so
+  every installed repo gets its turn sooner and the servers that do exist
+  arrive while the chooser is still open.
+- The `Search: start` log line now reports which engines the cross pass is
+  about to ask and how many repos of each (`families=CloudStream=48,Hikari=…`),
+  so "the CloudStream servers never show up" can be answered from the log: it
+  is visible whether that family was searched at all.
+
 ## 0.3.73
 
 Build fix. **0.3.72 failed to compile** in CI (the Kotlin compiler rejected

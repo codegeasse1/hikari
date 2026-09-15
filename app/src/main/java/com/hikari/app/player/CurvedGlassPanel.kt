@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.graphics.Shader
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewParent
 import android.widget.LinearLayout
 import com.hikari.app.data.Logs
 import java.util.WeakHashMap
@@ -41,7 +42,10 @@ import kotlin.math.sqrt
  *    are rows (which may be nested, e.g. a list inside a scroll view); each row
  *    is pulled in to the silhouette's own left and right edges at its own
  *    height, so the pill stack's envelope IS the shape instead of a uniform
- *    stack sitting inside a curved glass.
+ *    stack sitting inside a curved glass. [bendLoose] registers a container
+ *    whose OTHER children — a message line above the list, say — should follow
+ *    the bend too, instead of being laid out at the panel's full width and then
+ *    sliced by the bowed edge.
  *
  * Rows are positioned by adjusting their margins, measured from where they
  * actually landed (`offsetDescendantRectToMyCoords`) rather than from a guess,
@@ -69,9 +73,49 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      */
     private val hosts = ArrayList<ViewGroup>()
 
+    /** Containers whose children are bent only when they are NOT part of a
+     *  registered host — see [bendLoose]. */
+    private val looseHosts = ArrayList<ViewGroup>()
+
     /** Registers [container] as a row container: its children bend to the curve. */
     fun bendHost(container: ViewGroup) {
         if (container !== this && !hosts.contains(container)) hosts.add(container)
+    }
+
+    /**
+     * Registers a container whose children are bent UNLESS they are a registered
+     * host, or hold one deeper inside.
+     *
+     * A dialog's content container is the usual one: it may carry rows that were
+     * handed over with [bendHost] AND loose children of its own — a message line
+     * above the list, say. Those loose children used to be laid out at the
+     * panel's full inner width and then sliced by the bowed edge (the download
+     * sheet's "Episode 683 · …" line lost its first four letters to the left
+     * curve and wrapped the rest of the way round), because only the registered
+     * hosts were ever bent. Registering the container here bends everything it
+     * holds that [bendHost] does not already cover, without bending a host's
+     * rows twice.
+     */
+    fun bendLoose(container: ViewGroup) {
+        if (container === this) return
+        // A container that is ALSO a row host is already fully bent, child by
+        // child — registering it here would just bend the same children twice.
+        if (hosts.contains(container)) return
+        if (!looseHosts.contains(container)) looseHosts.add(container)
+    }
+
+    /** True when [child] is a registered host, or holds one further down the
+     *  tree — i.e. when bending it here would move a host's rows as a block on
+     *  top of the per-row bends they already get. */
+    private fun holdsHost(child: View): Boolean {
+        for (i in hosts.indices) {
+            var p: ViewParent? = hosts[i]
+            while (p != null) {
+                if (p === child) return true
+                p = (p as? View)?.parent
+            }
+        }
+        return false
     }
 
     /** How far the right edge bulges outward — see [GlassShape.BULGE_X]. */
@@ -83,8 +127,12 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     /** Room inside this view's bounds for the glow to fade into, in px. */
     var haloPx: Float = 0f
 
-    /** Air kept between a row and the silhouette's edge, at the widest point. */
-    var rowGapPx: Float = 10f * resources.displayMetrics.density
+    /** Air kept between a row and the silhouette's edge, at the widest point.
+     *  13dp rather than a hairline: the panel's edge carries a bright rim and
+     *  core line, and text sitting a couple of dp off it reads as sliced by the
+     *  curve even when it is not — which is exactly how the section headers
+     *  ("HIKARI · 5", "ANIME4I · 2") were being reported. */
+    var rowGapPx: Float = 13f * resources.displayMetrics.density
 
     /** Accent the glow is tinted with, top to bottom. */
     var startColor: Int = Color.rgb(120, 220, 255)
@@ -285,6 +333,13 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         } else {
             for (i in hosts.indices) shifted = bendHostChildren(hosts[i]) || shifted
         }
+        // Loose children of a container (see [bendLoose]) — text that sits in
+        // the panel but was never handed over as a row host, e.g. a dialog's
+        // message line. Bent AFTER the hosts so a child that holds one is
+        // recognised and skipped.
+        for (i in looseHosts.indices) {
+            shifted = bendHostChildren(looseHosts[i], skipHosts = true) || shifted
+        }
         // One extra pass to adopt the new margins; the pass after that finds
         // nothing left to change. The cap is belt-and-braces against a view
         // whose own layout keeps moving underneath us (a scrolling list).
@@ -298,8 +353,12 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     }
 
     /** Bends the visible children of one row container. Returns true if any of
-     *  them had to move. */
-    private fun bendHostChildren(host: ViewGroup): Boolean {
+     *  them had to move. [skipHosts] is set for a "loose" container (see
+     *  [bendLoose]): a child that is a registered host — or that holds one
+     *  deeper inside — is left alone, because that host's rows are already bent
+     *  individually and moving the container as a block would shift them twice.
+     */
+    private fun bendHostChildren(host: ViewGroup, skipHosts: Boolean = false): Boolean {
         val left = shapeLeft()
         val top = shapeTop()
         val w = shapeRight() - left
@@ -309,6 +368,7 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i)
             if (child.visibility != View.VISIBLE) continue
+            if (skipHosts && holdsHost(child)) continue
             if (child.width <= 0 || child.height <= 0) {
                 // A row that is VISIBLE but has no size is exactly what an empty
                 // band in the panel looks like: it holds its line open but can
@@ -375,6 +435,20 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // so the next width) a function of itself.
             val radius = min(child.height.toFloat(), baseWidth.toFloat()) / 2f
             val centerY = (rect.top + rect.bottom) / 2f
+            // How far the row's BOX may still overhang the silhouette. A pill's
+            // empty rounded cap may cross the edge — that is what lets the rows
+            // ride the bow instead of floating inside a warped rectangle — but
+            // only as far as the row's own content padding reaches, minus half
+            // the row gap, so the CONTENT (the label, the sub-line, a section
+            // header's first letter) always stays clear of the glass. A child
+            // with no padding of its own on a side (a section header, the chip
+            // strip, a dialog's message line) therefore gets NO overhang at all:
+            // it was exactly that allowance — credited to rows that have no
+            // rounded background to spend it on — that left the first letter of
+            // every "HIKARI · n" / "ANIME4I · n" header sitting on the bowed
+            // edge with the bright rim slicing through the glyph.
+            val allowLeft = max(0f, child.paddingLeft.toFloat() - rowGapPx * 0.5f)
+            val allowRight = max(0f, child.paddingRight.toFloat() - rowGapPx * 0.5f)
             var needLeft = 0f
             var needRight = 0f
             for (k in 0..8) {
@@ -399,8 +473,8 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 // the first letter off every header.
                 val boundLeft = left + GlassShape.leftEdge(w, h, dy, bulgeX, concaveX)
                 val boundRight = left + GlassShape.rightEdge(w, h, dy, bulgeX, concaveX)
-                needLeft = max(needLeft, boundLeft - baseLeft - inset)
-                needRight = max(needRight, baseRight - boundRight - inset)
+                needLeft = max(needLeft, boundLeft - baseLeft - min(inset, allowLeft))
+                needRight = max(needRight, baseRight - boundRight - min(inset, allowRight))
             }
             // With the halo counted in, the need is a real distance inside the
             // panel rather than the couple of dp the bow alone is worth, so the
