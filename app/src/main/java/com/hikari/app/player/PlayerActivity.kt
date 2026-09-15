@@ -103,6 +103,7 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.UiScale
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -2223,29 +2224,47 @@ class PlayerActivity : ComponentActivity() {
         val chipRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(
-                (10 * density).toInt(), (4 * density).toInt(),
-                (10 * density).toInt(), (4 * density).toInt()
-            )
+            // Chips with labels of different lengths all sit centred in their
+            // own pill instead of being nudged onto a shared baseline.
+            isBaselineAligned = false
         }
+        // The engine chips swipe sideways for the engines that don't fit: with
+        // four extensions installed the row is wider than the panel, and before
+        // this there was no way to reach the chips past the edge — and no hint
+        // that anything was out there. OVER_SCROLL_ALWAYS adds the stretch glow
+        // that says "this row moves".
         val chipScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
-            addView(chipRow)
+            overScrollMode = View.OVER_SCROLL_ALWAYS
+            isFillViewport = false
+            clipToPadding = false
+            addView(chipRow, HorizontalScrollView.LayoutParams(
+                HorizontalScrollView.LayoutParams.WRAP_CONTENT,
+                HorizontalScrollView.LayoutParams.WRAP_CONTENT
+            ))
         }
-        // One container for headers AND rows: the panel bends a registered
-        // host's children, so a header and the rows under it follow the same
-        // curve instead of the headers sitting on a separate rectangle.
+        // One container for the chip strip, the headers AND the rows: the panel
+        // bends a registered host's children to the glass's curve, so the strip
+        // has to be one of them. Kept outside the list it was measured against
+        // the panel's full width, so its first chip sat under the concave left
+        // edge and the bowed glass sliced it into an empty stub — the "All"
+        // button that looked collapsed and cut off. As a bent child the whole
+        // strip is pulled inside the silhouette at its own height, so the first
+        // chip always clears the curve, and the strip scrolls within that.
         val list = optionList()
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(chipScroll, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-            addView(list, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-        }
+        list.addView(chipScroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = (2 * density).roundToInt() })
 
+        /**
+         * One engine chip. Its box is measured from the TEXT rather than left to
+         * the TextView's own WRAP_CONTENT: a chip that wraps inside a
+         * HorizontalScrollView which is itself inside the panel's scroll view
+         * could be handed a zero-width measure spec somewhere up that chain and
+         * collapse to an empty sliver — which is what the first chip ("All")
+         * was doing. A width taken from the glyphs cannot collapse: the pill is
+         * always at least its label plus the side pads.
+         */
         fun chipPill(label: String, selected: Boolean, onClick: () -> Unit): TextView {
             val bg = if (selected) {
                 GradientDrawable(
@@ -2268,24 +2287,34 @@ class PlayerActivity : ComponentActivity() {
                     setColor(0x14FFFFFF.toInt())
                 }
             }
+            val padX = (11 * density).roundToInt()
+            val probe = TextView(this).apply { dpText(10.5f) }
+            val textW = ceil(probe.paint.measureText(label)).toInt()
+            val w = (textW + padX * 2).coerceAtLeast((34 * density).roundToInt())
+            val h = (25 * density).roundToInt()
             return TextView(this).apply {
                 text = label
                 dpText(10.5f)
+                isSingleLine = true
                 includeFontPadding = false
                 gravity = Gravity.CENTER
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
                 background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
                 isClickable = true
-                setPadding(
-                    (10 * density).toInt(), (4 * density).toInt(),
-                    (10 * density).toInt(), (4 * density).toInt()
-                )
+                isFocusable = false
                 setOnClickListener { onClick() }
+                layoutParams = LinearLayout.LayoutParams(w, h).apply {
+                    marginEnd = (6 * density).roundToInt()
+                }
             }
         }
 
         fun rebuildList() {
-            list.removeAllViews()
+            // The chip strip is this container's FIRST child (see above), so drop
+            // only the headers and rows — removeAllViews would take the chips
+            // with them and leave an empty strip behind.
+            while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
             val all = groups()
             val visible = if (chip == "All") all else all.filter { it == chip }
             visible.forEach { name ->
@@ -2293,7 +2322,7 @@ class PlayerActivity : ComponentActivity() {
                 // The header names the engine and counts its servers; it is
                 // skipped for a single-chip view (the chip already says it).
                 if (chip == "All") {
-                    val first = list.childCount == 0
+                    val first = list.childCount == 1
                     list.addView(TextView(this).apply {
                         text = name.uppercase() + "  \u00B7  " + members.size
                         dpText(10f)
@@ -2328,16 +2357,14 @@ class PlayerActivity : ComponentActivity() {
         fun rebuildChips() {
             chipRow.removeAllViews()
             (listOf("All") + groups()).forEach { name ->
+                // The pill carries its own measured LayoutParams (see chipPill),
+                // so it is added bare — it can neither collapse nor be squeezed.
                 chipRow.addView(
                     chipPill(if (name == "All") "All" else name, name == chip) {
                         chip = name
                         rebuildChips()
                         rebuildList()
-                    },
-                    LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { marginEnd = (6 * density).toInt() }
+                    }
                 )
             }
         }
@@ -2345,15 +2372,18 @@ class PlayerActivity : ComponentActivity() {
         rebuildChips()
         rebuildList()
         val watcher: () -> Unit = {
-            // A rebuild changes the content height, so put the scroll offset
+            // A rebuild changes the content height, so put the scroll offsets
             // back AFTER the new rows are laid out (scrollTo clamps to the new
             // maximum) — otherwise a server landing while the user reads the
-            // list would yank them to the top.
-            val sv = content.parent as? ScrollView
+            // list would yank them to the top, or a re-created chip row would
+            // throw away the chip they had scrolled to.
+            val sv = list.parent as? ScrollView
             val keepY = sv?.scrollY ?: 0
+            val keepX = chipScroll.scrollX
             rebuildChips()
             rebuildList()
             sv?.post { sv.scrollTo(0, keepY) }
+            chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
         sourcesWatchers.add(watcher)
         dialog.setOnDismissListener { sourcesWatchers.remove(watcher) }
@@ -2367,7 +2397,7 @@ class PlayerActivity : ComponentActivity() {
         presentGlass(
             dialog,
             "Select server",
-            content,
+            list,
             700f,
             hint = "Grouped by the engine that found each server.",
             iconRes = R.drawable.ic_server,

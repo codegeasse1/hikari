@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,11 +32,16 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
@@ -83,6 +91,7 @@ import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -95,7 +104,69 @@ private fun SettingsDivider() {
     )
 }
 
-private enum class SettingsFolder { ADBLOCKING, WEBVIEW }
+/**
+ * One category of settings. The Settings tab is a short INDEX of these folders
+ * instead of one long scroll of every switch the app owns, so it stays readable
+ * no matter how many options get added; opening a folder shows only what
+ * belongs to it.
+ */
+private enum class SettingsFolder(
+    val title: String,
+    val subtitle: String,
+    val blurb: String,
+    val icon: ImageVector,
+) {
+    PLAYER(
+        "Player",
+        "Playback start, loading screen, slow internet",
+        "How the player behaves when you start a video.",
+        Icons.Filled.PlayArrow,
+    ),
+    SOURCES(
+        "Sources & Extensions",
+        "yt-dlp fallback, userscripts, Continue Watching",
+        "How Hikari finds, plays and remembers videos.",
+        Icons.Filled.Extension,
+    ),
+    DOWNLOADS(
+        "Downloads",
+        "Offline copies & parallel saves",
+        "Saving videos to this device.",
+        Icons.Filled.Download,
+    ),
+    APPEARANCE(
+        "Appearance",
+        "Theme & in-app interface size",
+        "How Hikari looks on this phone.",
+        Icons.Filled.Palette,
+    ),
+    PRIVACY(
+        "Privacy & Browsing",
+        "Ad blocking, redirects & user agent",
+        "What the built-in browser is allowed to do.",
+        Icons.Filled.Shield,
+    ),
+    ABOUT(
+        "About & Updates",
+        "Version, links, roadmap & reset",
+        "What this build is, and where it comes from.",
+        Icons.Filled.Info,
+    ),
+}
+
+/** A card on a folder page, spaced like every other card there. */
+@Composable
+private fun SettingsCard(
+    top: Dp = 12.dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = top),
+        content = content,
+    )
+}
 
 @Composable
 fun SettingsScreen() {
@@ -113,375 +184,246 @@ fun SettingsScreen() {
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
     val hideContinueFlow = remember { app.store.hideContinueFlow() }
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
+    val listState = rememberLazyListState()
+
+    // A folder opens at its own top: without this, opening one from partway
+    // down the index would leave the new page scrolled by the old offset.
+    LaunchedEffect(openFolder) { listState.scrollToItem(0) }
 
     LazyColumn(
-        Modifier.fillMaxSize(),
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp)
     ) {
-        when (openFolder) {
-            SettingsFolder.ADBLOCKING -> {
-                item {
-                    FolderHeader(
-                        title = "Ad Blocking",
-                        subtitle = "Ads, trackers & blocklists",
-                        onBack = { openFolder = null }
-                    )
-                }
-                item {
-                    AdBlockingCard(app)
-                }
+        val folder = openFolder
+        if (folder != null) {
+            item {
+                FolderHeader(folder = folder, onBack = { openFolder = null })
             }
-            SettingsFolder.WEBVIEW -> {
-                item {
-                    FolderHeader(
-                        title = "WebView",
-                        subtitle = "Safety, redirects & user agent",
-                        onBack = { openFolder = null }
-                    )
+            when (folder) {
+                SettingsFolder.PLAYER -> {
+                    item { SettingsCard(top = 2.dp) { PlaybackStartCard(app) } }
+                    item { SettingsCard { LoadingBannerCard(app) } }
+                    item { SettingsCard { SlowConnectionCard(app) } }
                 }
-                item {
-                    WebViewSafetyCard(app)
+                SettingsFolder.SOURCES -> {
+                    item { SettingsCard(top = 2.dp) { UniversalExtractionCard(app) } }
+                    item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
+                    item { SettingsCard { UserscriptsCard(app) } }
                 }
-                item {
-                    WebViewUserAgentCard(app)
+                SettingsFolder.DOWNLOADS -> {
+                    item { SettingsCard(top = 2.dp) { DownloadSettingsCard(app) } }
                 }
-            }
-            null -> {
-        item {
-            Text(
-                "Settings",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(8.dp))
-        }
-        item {
-            GlassCard(Modifier.fillMaxWidth()) {
-                Column {
-                    ListItem(
-                        leadingContent = {
-                            Icon(
-                                Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        headlineContent = { Text("Version") },
-                        supportingContent = { Text(BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")") }
-                    )
-                    SettingsDivider()
-                    Box {
-                        ListItem(
-                            leadingContent = {
-                                Icon(
-                                    if (currentTheme == HikariThemeMode.LIGHT) Icons.Filled.LightMode
-                                    else Icons.Filled.DarkMode,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            },
-                            headlineContent = { Text("Theme") },
-                            supportingContent = { Text(currentTheme.label) },
-                            trailingContent = {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            },
-                            modifier = Modifier.clickable { themeMenuOpen = true }
-                        )
-                        DropdownMenu(
-                            expanded = themeMenuOpen,
-                            onDismissRequest = { themeMenuOpen = false }
-                        ) {
-                            HikariThemeMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = { Text(mode.label) },
-                                    onClick = {
-                                        themeKey = mode.key
-                                        themeMenuOpen = false
-                                        scope.launch { app.store.setTheme(mode.key) }
+                SettingsFolder.APPEARANCE -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            Box {
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            if (currentTheme == HikariThemeMode.LIGHT) Icons.Filled.LightMode
+                                            else Icons.Filled.DarkMode,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
                                     },
-                                    leadingIcon = {
-                                        if (themeKey == mode.key) {
-                                            Icon(
-                                                Icons.Filled.CheckCircle,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
+                                    headlineContent = { Text("Theme") },
+                                    supportingContent = { Text(currentTheme.label) },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable { themeMenuOpen = true }
+                                )
+                                DropdownMenu(
+                                    expanded = themeMenuOpen,
+                                    onDismissRequest = { themeMenuOpen = false }
+                                ) {
+                                    HikariThemeMode.entries.forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = { Text(mode.label) },
+                                            onClick = {
+                                                themeKey = mode.key
+                                                themeMenuOpen = false
+                                                scope.launch { app.store.setTheme(mode.key) }
+                                            },
+                                            leadingIcon = {
+                                                if (themeKey == mode.key) {
+                                                    Icon(
+                                                        Icons.Filled.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    item { SettingsCard { UiScaleCard(app) } }
+                }
+                SettingsFolder.PRIVACY -> {
+                    item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
+                    item { SettingsCard { WebViewSafetyCard(app) } }
+                    item { SettingsCard { WebViewUserAgentCard(app) } }
+                }
+                SettingsFolder.ABOUT -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            Column {
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.CheckCircle,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("Version") },
+                                    supportingContent = {
+                                        Text(BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")")
+                                    }
+                                )
+                                SettingsDivider()
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.SystemUpdate,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("Check for updates") },
+                                    supportingContent = {
+                                        if (checkingUpdates) {
+                                            Text("Checking GitHub…")
+                                        } else {
+                                            Text("Version " + Updater.currentVersion())
+                                        }
+                                    },
+                                    trailingContent = {
+                                        if (checkingUpdates) {
+                                            CircularProgressIndicator(
+                                                Modifier.size(20.dp),
+                                                strokeWidth = 2.dp
                                             )
                                         }
+                                    },
+                                    modifier = Modifier.clickable {
+                                        if (!checkingUpdates) {
+                                            checkingUpdates = true
+                                            scope.launch {
+                                                updateStatus = runCatching { Updater.checkForUpdate() }.getOrNull()
+                                                checkingUpdates = false
+                                                showUpdateDialog = true
+                                            }
+                                        }
+                                    }
+                                )
+                                SettingsDivider()
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.OpenInNew,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("GitHub") },
+                                    supportingContent = { Text("github.com/codegeasse1/hikari — releases & source") },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable {
+                                        context.startActivity(
+                                            Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse("https://github.com/codegeasse1/hikari")
+                                            )
+                                        )
+                                    }
+                                )
+                                SettingsDivider()
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.Send,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("Telegram") },
+                                    supportingContent = { Text("t.me/CodegeasseHikari — help, bugs & feature requests") },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable {
+                                        context.startActivity(
+                                            Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse("https://t.me/CodegeasseHikari")
+                                            )
+                                        )
                                     }
                                 )
                             }
                         }
                     }
-                    SettingsDivider()
-                    ListItem(
-                        leadingContent = {
-                            Icon(
-                                Icons.Filled.SystemUpdate,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        headlineContent = { Text("Check for updates") },
-                        supportingContent = {
-                            if (checkingUpdates) {
-                                Text("Checking GitHub…")
-                            } else {
-                                Text("Version " + Updater.currentVersion())
-                            }
-                        },
-                        trailingContent = {
-                            if (checkingUpdates) {
-                                CircularProgressIndicator(
-                                    Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            }
-                        },
-                        modifier = Modifier.clickable {
-                            if (!checkingUpdates) {
-                                checkingUpdates = true
-                                scope.launch {
-                                    updateStatus = runCatching { Updater.checkForUpdate() }.getOrNull()
-                                    checkingUpdates = false
-                                    showUpdateDialog = true
-                                }
-                            }
+                    item { SettingsCard { RoadmapCard() } }
+                    item { SettingsCard { AboutCard() } }
+                    item {
+                        TextButton(
+                            onClick = { scope.launch { app.store.clearAll() } },
+                            modifier = Modifier.padding(top = 14.dp)
+                        ) {
+                            Text("Clear all data", color = MaterialTheme.colorScheme.error)
                         }
-                    )
-                    SettingsDivider()
-                    ListItem(
-                        leadingContent = {
-                            Icon(
-                                Icons.Filled.OpenInNew,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        headlineContent = { Text("GitHub") },
-                        supportingContent = { Text("github.com/codegeasse1/hikari — releases & source") },
-                        trailingContent = {
-                            Icon(
-                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_VIEW,
-                                    Uri.parse("https://github.com/codegeasse1/hikari")
-                                )
-                            )
-                        }
-                    )
-                    SettingsDivider()
-                    ListItem(
-                        leadingContent = {
-                            Icon(
-                                Icons.Filled.Send,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        headlineContent = { Text("Telegram") },
-                        supportingContent = { Text("t.me/CodegeasseHikari — help, bugs & feature requests") },
-                        trailingContent = {
-                            Icon(
-                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_VIEW,
-                                    Uri.parse("https://t.me/CodegeasseHikari")
-                                )
-                            )
-                        }
-                    )
-                }
-            }
-        }
-
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                UiScaleCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                SlowConnectionCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                PlaybackStartCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                LoadingBannerCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 16.dp)
-            ) {
-                UniversalExtractionCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "Continue Watching",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                "Show the Continue Watching shelf on Home. It collects " +
-                                    "progress from every extension you've watched, so an " +
-                                    "episode started on one extension still shows up after " +
-                                    "you switch to another.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = !hideContinue,
-                            onCheckedChange = { show ->
-                                scope.launch { app.store.setHideContinue(!show) }
-                            }
-                        )
                     }
                 }
             }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                DownloadSettingsCard(app)
-            }
-        }
-        item {
-            SettingsFolderRow(
-                icon = Icons.Filled.Block,
-                title = "Ad Blocking",
-                subtitle = "Ads, trackers & blocklists",
-                onClick = { openFolder = SettingsFolder.ADBLOCKING }
-            )
-        }
-        item {
-            SettingsFolderRow(
-                icon = Icons.Filled.Public,
-                title = "WebView",
-                subtitle = "Redirect block, popups, user agent",
-                onClick = { openFolder = SettingsFolder.WEBVIEW }
-            )
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                UserscriptsCard(app)
-            }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                Column(Modifier.padding(16.dp)) {
+        } else {
+            item {
+                Column(Modifier.fillMaxWidth()) {
                     Text(
-                        "Roadmap",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        "Settings",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        "✓ Stremio addons\n" +
-                            "✓ Universal scrapers\n" +
-                            "✓ HLS/DASH player with headers + subtitles\n" +
-                            "✓ CloudStream .cs3 plugin loader\n" +
-                            "✓ Torrent engine for infoHash streams\n" +
-                            "✓ Watch history + Continue Watching (all extensions)\n" +
-                            "✓ Downloads — offline copies, export to phone storage, concurrent limit\n" +
-                            "• SkyStream extensions, scriptable scrapers (planned)",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Every option lives in a folder, so nothing is buried at the " +
+                            "bottom of one long list. Tap a folder to open it.",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(12.dp))
                 }
             }
-        }
-        item {
-            GlassCard(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp)
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "About",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Hikari (光) — a universal streaming app built from scratch. " +
-                            "One player, every extension ecosystem.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            SettingsFolder.entries.forEach { target ->
+                item {
+                    SettingsFolderRow(folder = target, onClick = { openFolder = target })
                 }
             }
-        }
-        item {
-            TextButton(
-                onClick = {
-                    scope.launch { app.store.clearAll() }
-                },
-                modifier = Modifier.padding(top = 12.dp)
-            ) {
-                Text("Clear all data", color = MaterialTheme.colorScheme.error)
-            }
-        }
+            item {
+                TextButton(
+                    onClick = { scope.launch { app.store.clearAll() } },
+                    modifier = Modifier.padding(top = 16.dp)
+                ) {
+                    Text("Clear all data", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -495,35 +437,77 @@ fun SettingsScreen() {
     }
 }
 
+/**
+ * The folder page's own header: a back button, the folder's badge and name, and
+ * a one-line explanation of what is inside, so a page always says where you are
+ * without repeating the settings tab's title.
+ */
 @Composable
-private fun FolderHeader(title: String, subtitle: String, onBack: () -> Unit) {
-    Row(
+private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(bottom = 4.dp)
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to settings",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    folder.icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    folder.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    folder.subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            folder.blurb,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
     }
 }
 
+/** One folder on the index: badge, name, what is inside, and its own chevron. */
 @Composable
-private fun SettingsFolderRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
+private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
     GlassCard(
         onClick = onClick,
         modifier = Modifier
@@ -533,38 +517,130 @@ private fun SettingsFolderRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(15.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(
+                    folder.icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(23.dp)
+                )
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    title,
+                    folder.title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    subtitle,
+                    folder.subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContinueWatchingCard(
+    app: HikariApp,
+    hideContinue: Boolean,
+    scope: CoroutineScope,
+) {
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Continue Watching",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Show the Continue Watching shelf on Home. It collects " +
+                        "progress from every extension you've watched, so an " +
+                        "episode started on one extension still shows up after " +
+                        "you switch to another.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = !hideContinue,
+                onCheckedChange = { show ->
+                    scope.launch { app.store.setHideContinue(!show) }
+                }
             )
         }
+    }
+}
+
+@Composable
+private fun RoadmapCard() {
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Roadmap",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "✓ Stremio addons\n" +
+                "✓ Universal scrapers\n" +
+                "✓ HLS/DASH player with headers + subtitles\n" +
+                "✓ CloudStream .cs3 plugin loader\n" +
+                "✓ Torrent engine for infoHash streams\n" +
+                "✓ Watch history + Continue Watching (all extensions)\n" +
+                "✓ Downloads — offline copies, export to phone storage, concurrent limit\n" +
+                "• SkyStream extensions, scriptable scrapers (planned)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun AboutCard() {
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "About",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Hikari (光) — a universal streaming app built from scratch. " +
+                "One player, every extension ecosystem.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
