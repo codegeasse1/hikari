@@ -1,3 +1,19 @@
+## 0.3.73
+
+Build fix. **0.3.72 failed to compile** in CI (the Kotlin compiler rejected
+the CloudStream episode-map rework, which is reverted here), so this release
+ships the same fixes as intended for 0.3.72:
+
+- The server list (pills, group headers, rows) no longer has its rounded ends
+  sliced flat by the glass curve — the boundary is measured from the shape,
+  halo included, with a uniform ~10dp air gap.
+- Installed CloudStream extensions are now actually queried by the
+  cross-extension pass (the 64-repo list used to be filled entirely by the
+  200+ native Hikari repos), and the chooser's hint line reports why a repo
+  came back empty.
+
+See the 0.3.72 notes below for the full detail.
+
 ## 0.3.72
 
 Fixes the server list's rounded rows and headers being sliced flat by the glass
@@ -37,12 +53,6 @@ not appearing.
   still searching it reads "Searching <repo>, <repo>"; once they are done it
   reads "No servers from: <repo> — <reason>", so it's obvious at a glance
   whether a repo is still working or came back empty and why.
-- **Better episode matching across season numbering.** A CloudStream plugin's
-  episode map is season-keyed but many plugins leave the episode's season
-  field empty; Hikari collapsed those into season 1, so a request for S2E2
-  could match the wrong episode or none. The season is now recovered from the
-  map key (by number, single-season, or position) so multi-season shows resolve
-  correctly.
 - Longer cold-start budgets (search/episodes 15s, extraction 45s) so a slow
   repo has time to answer on a phone network.
 
