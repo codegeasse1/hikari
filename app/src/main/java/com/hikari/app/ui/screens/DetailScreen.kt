@@ -169,7 +169,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun remapMissingProvider(missingId: String, title: String): String? {
         if (title.isBlank()) return null
-        withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             // 1) Watch history / library: the same title may still be recorded
             //    against a provider that exists (the user opened it there once).
             runCatching {

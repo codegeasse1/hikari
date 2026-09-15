@@ -4721,7 +4721,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                 }
                 Toast.makeText(
-                    this,
+                    this@PlayerActivity,
                     "This device can't apply video effects — turning them off.",
                     Toast.LENGTH_LONG
                 ).show()

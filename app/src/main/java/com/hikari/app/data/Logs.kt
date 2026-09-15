@@ -196,7 +196,7 @@ object Logs {
     }
 
     /** The in-memory breadcrumb snapshot, newest last. */
-    fun snapshot(): String = synchronized(lock) { snapshotLocked(RING_MAX) }
+    fun snapshot(): String = synchronized(lock) { snapshotLocked(RING_MAX).joinToString("\n") }
 
     private fun snapshotLocked(limit: Int): List<String> =
         ring.toList().takeLast(limit)
