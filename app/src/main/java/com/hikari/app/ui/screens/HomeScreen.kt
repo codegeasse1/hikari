@@ -142,6 +142,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true
             _rows.value = emptyList()
         }
+        // Keep the process alive (and awake) for the whole load: pressing Home
+        // mid-load used to freeze the app and stop every catalog dead. See
+        // [com.hikari.app.work.BackgroundWork].
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            if (key == "all") "Loading Home catalogs"
+            else "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
+        )
         loadJob = viewModelScope.launch {
             // Row key -> poster-tokenized copy, so a partial update only
             // tokenizes the rows that just arrived. MRDS/51CG catalogs carry
@@ -182,6 +189,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 _loading.value = false
             }
         }
+        loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
         loadJob?.join()
     }
 

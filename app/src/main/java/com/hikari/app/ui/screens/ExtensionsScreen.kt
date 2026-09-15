@@ -167,14 +167,22 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  and shows the busy indicator while it runs. Only the most recent task
      *  may clear the busy flag when it finishes — an older task that is
      *  superseded must not turn the spinner off while a newer one still runs. */
-    private fun startBackground(block: suspend () -> Unit): Job = viewModelScope.launch {
-        val gen = ++backgroundGeneration
-        _busy.value = true
-        try {
-            block()
-        } finally {
-            if (backgroundGeneration == gen) _busy.value = false
+    private fun startBackground(block: suspend () -> Unit): Job {
+        // Extension installs/updates are long downloads+dex loads; register
+        // them so a background trip doesn't freeze the process mid-install
+        // (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin("Updating extensions")
+        val job = viewModelScope.launch {
+            val gen = ++backgroundGeneration
+            _busy.value = true
+            try {
+                block()
+            } finally {
+                if (backgroundGeneration == gen) _busy.value = false
+            }
         }
+        job.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        return job
     }
 
     fun setSuccess(msg: String) {

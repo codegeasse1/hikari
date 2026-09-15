@@ -47,6 +47,21 @@ class ContentRepository(private val manager: ProviderManager) {
         val crossRunning = ConcurrentHashMap<String, String>()
         val crossVerdict = ConcurrentHashMap<String, String>()
 
+        /**
+         * `provider id -> engine label` for every extension the CURRENT pass has
+         * asked, `provider id -> engine label` for the ones that produced
+         * servers, and `engine label -> how many repos of that engine are
+         * installed`. With [crossRunning]/[crossVerdict] these let the chooser's
+         * hint report PROGRESS ("asked 48 of 96 · 4 with servers · 12 still
+         * searching") instead of one repo's verdict on its own — the old line
+         * was a " · "-joined list of failures, and the two-line hint cut it off
+         * after the first repo, which read as if the whole search had stopped
+         * there while the rest were still running.
+         */
+        val crossAsked = ConcurrentHashMap<String, String>()
+        val crossFound = ConcurrentHashMap<String, String>()
+        val crossInstalled = ConcurrentHashMap<String, Int>()
+
         @Volatile
         var crossStatusVersion: Long = 0L
             private set
@@ -103,6 +118,20 @@ class ContentRepository(private val manager: ProviderManager) {
      *  before the other extensions are asked, so a working repo's servers are
      *  still the first ones the player sees. */
     private val CROSS_EXT_GRACE_MS = 2_500L
+
+    /** Head start for the provider the title was opened FROM.
+     *
+     *  With ~60 installed extensions, starting every search at t=0 saturates the
+     *  phone's network and CPU, and the origin's own servers — the ones the user
+     *  expects first ("on MovieBox, play MovieBox"), and the ones a "choose a
+     *  server" sheet is waiting for before it can show anything — were landing
+     *  tens of seconds late, behind the other engines. Non-origin PRIMARY
+     *  targets (the nuvio engines) wait [ORIGIN_HEAD_START_MS]; the origin's own
+     *  engine family (the other CloudStream/… repos, which start beside it) waits
+     *  [SAME_ENGINE_HEAD_START_MS]. Their servers still stream in right after,
+     *  so this only reorders who answers first, never removes anyone. */
+    private val ORIGIN_HEAD_START_MS = 1_200L
+    private val SAME_ENGINE_HEAD_START_MS = 2_000L
 
     /** Total wall-clock budget for the whole cross-extension pass, measured
      *  from when it starts. Comfortably under the player's live-wait timeout so
@@ -317,6 +346,12 @@ class ContentRepository(private val manager: ProviderManager) {
         val catalogGate = Semaphore(12)
         val placed = ConcurrentHashMap<Int, CatalogRow>()
         val version = AtomicInteger(0)
+        // Keeps the feed loading while the user is in another app — Android
+        // freezes a backgrounded process, which used to stop every catalog
+        // mid-fetch (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            active.firstOrNull()?.let { "Loading " + it.config.name } ?: "Loading Home catalogs"
+        )
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         try {
             val jobs = active.mapIndexed { pi, p ->
@@ -384,6 +419,7 @@ class ContentRepository(private val manager: ProviderManager) {
             if (finalSnapshot != lastSnapshot) emit(finalSnapshot)
         } finally {
             scope.cancel()
+            com.hikari.app.work.BackgroundWork.end(work)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -407,6 +443,11 @@ class ContentRepository(private val manager: ProviderManager) {
             return@flow
         }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // Keeps the multi-page scan running while the user is in another app
+        // (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Searching \"${query.trim().take(60)}\""
+        )
         try {
             val aggregate = MutableStateFlow<List<MediaItem>>(emptyList())
             // Searching across MANY providers at once (search-all runs every
@@ -467,6 +508,7 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         } finally {
             scope.cancel()
+            com.hikari.app.work.BackgroundWork.end(work)
         }
     }
 
@@ -492,6 +534,23 @@ class ContentRepository(private val manager: ProviderManager) {
          *  results, so callers can show servers progressively (Stremio-style)
          *  while the slower providers are still searching. */
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+    ): List<StreamSource> {
+        // A source scan across many providers can take a minute; keep it alive
+        // if the user leaves the app (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Finding servers for \"${item.title.take(60)}\""
+        )
+        try {
+            return streamsForInner(item, episode, onProgress)
+        } finally {
+            com.hikari.app.work.BackgroundWork.end(work)
+        }
+    }
+
+    private suspend fun streamsForInner(
+        item: MediaItem,
+        episode: Episode?,
+        onProgress: (suspend (List<StreamSource>) -> Unit)?,
     ): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
@@ -590,6 +649,15 @@ class ContentRepository(private val manager: ProviderManager) {
             // every repo of this lookup starts out "searching".
             crossRunning.clear()
             crossVerdict.clear()
+            crossAsked.clear()
+            crossFound.clear()
+            crossInstalled.clear()
+            // How many repos of each engine are installed, so the hint can say
+            // "asked 32 of 48 CloudStream" — the difference between "not
+            // installed" and "silently skipped" at a glance.
+            all.groupingBy { it.config.type.groupLabel }
+                .eachCount()
+                .forEach { (label, n) -> crossInstalled[label] = n }
             bumpCrossStatus()
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
             com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
@@ -601,6 +669,13 @@ class ContentRepository(private val manager: ProviderManager) {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
                         val isNuvio = p.config.type == ProviderType.NUVIO
+                        // "First search your own provider": the origin's job
+                        // starts immediately; every other primary target (the
+                        // nuvio engines) waits a short head start, so the
+                        // origin's own requests are not queued behind a dozen
+                        // QuickJS engines on a busy phone. Servers from the
+                        // others still stream in a moment later.
+                        if (p.config.id != item.providerId) kotlinx.coroutines.delay(ORIGIN_HEAD_START_MS)
                         val startedJob = System.currentTimeMillis()
                         try {
                             if (isNuvio) {
@@ -659,7 +734,18 @@ class ContentRepository(private val manager: ProviderManager) {
                 // Same-engine repos start with the main pass (see `sameEngine`).
                 var crossJobs: List<kotlinx.coroutines.Deferred<List<StreamSource>>> =
                     sameEngine.map { p ->
-                        scope.async { crossExtensionSources(p, item, episode) }
+                        scope.async {
+                            // The origin's own engine family waits behind the
+                            // origin (see [SAME_ENGINE_HEAD_START_MS]): with ~50
+                            // CloudStream repos installed, starting them all at
+                            // t=0 competed with the origin for the same sites
+                            // and network and buried its servers — the ones the
+                            // user expects first — under the rest. The jobs are
+                            // still created here, so the wait loop below still
+                            // waits for them; only their work is deferred.
+                            kotlinx.coroutines.delay(SAME_ENGINE_HEAD_START_MS)
+                            crossExtensionSources(p, item, episode)
+                        }
                     }
                 var crossStartedAt = if (crossJobs.isEmpty()) 0L else started
                 var lateStartedAt = 0L
@@ -833,13 +919,18 @@ class ContentRepository(private val manager: ProviderManager) {
         episode: Episode?,
     ): List<StreamSource> {
         val repo = p.config.name.ifBlank { p.config.id }
+        crossAsked[p.config.id] = p.config.type.groupLabel
         crossRunning[p.config.id] = repo
         bumpCrossStatus()
         com.hikari.app.data.Logs.log("Search", "cross \"${item.title}\" → $repo: searching…")
         try {
             val (found, verdict) = crossExtensionLookup(p, item, episode)
-            if (verdict == null) crossVerdict.remove(p.config.id)
-            else crossVerdict[p.config.id] = "$repo — $verdict"
+            if (verdict == null) {
+                crossVerdict.remove(p.config.id)
+                crossFound[p.config.id] = p.config.type.groupLabel
+            } else {
+                crossVerdict[p.config.id] = "$repo — $verdict"
+            }
             com.hikari.app.data.Logs.log(
                 "Search",
                 "cross \"${item.title}\" → $repo: " +

@@ -204,6 +204,12 @@ class PlayerActivity : ComponentActivity() {
      *  instead of showing a frozen snapshot. */
     private val sourcesWatchers = ArrayList<() -> Unit>()
 
+    /** The live "Select server" sheet while it is up — the "don't play
+     *  directly" chooser can be opened before the first server has landed, so
+     *  the search-finished-with-nothing path needs a handle on it to close it
+     *  before showing the "no servers" error over it. */
+    private var serverChooserDialog: Dialog? = null
+
     private fun notifySourcesChanged() {
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
@@ -1087,14 +1093,23 @@ class PlayerActivity : ComponentActivity() {
                 // installed extension has answered, instead of waiting forever
                 // for a 3rd..5th one that does not exist.
                 val startAfter = intent.getIntExtra("startAfterServers", 1).coerceIn(1, 8)
+                // "Don't play directly": the chooser is the destination, so ONE
+                // server is already enough to put the list on screen — the
+                // "wait for N servers" setting must not hold the chooser back.
+                val askMode = shouldAskServer()
                 var searchDone = false
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
-                    if (sources.isEmpty()) showError("No playable sources received.", false)
+                    if (sources.isEmpty()) {
+                        // Give up on the search: close a still-empty chooser
+                        // first so the error isn't buried behind it.
+                        runCatching { serverChooserDialog?.dismiss() }
+                        showError("No playable sources received.", false)
+                    }
                 } else null
                 val tryStart: suspend () -> Unit = {
                     if (pendingStart && sources.isNotEmpty() &&
-                        (searchDone || sources.size >= startAfter)
+                        (searchDone || askMode || sources.size >= startAfter)
                     ) {
                         pendingStart = false
                         waitTimeout?.cancel()
@@ -1119,6 +1134,11 @@ class PlayerActivity : ComponentActivity() {
                         // Append happens before markDone, so a non-empty live
                         // flow means servers are on the way.
                         if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                            // The "don't play directly" chooser may already be
+                            // up with nothing in it (it opens the instant the
+                            // player does). Close it before showing the error,
+                            // so the message isn't buried behind an empty sheet.
+                            runCatching { serverChooserDialog?.dismiss() }
                             showError("No playable sources received.", false)
                         } else {
                             tryStart()
@@ -1173,7 +1193,13 @@ class PlayerActivity : ComponentActivity() {
         // known-good, already-resolved source. On the instant open (no servers
         // yet) the live collector above starts playback the moment the first
         // server arrives.
-        if (sources.isNotEmpty()) startOrAsk()
+        //
+        // With "don't play directly" ON, [startOrAsk] opens the server chooser
+        // instead — and it is called here for the instant open too (empty list
+        // + a live session), so the chooser comes up the moment the player does
+        // and fills in as servers are found, rather than after the first (or
+        // fifth) one finally lands.
+        if (sources.isNotEmpty() || liveId != null) startOrAsk()
     }
 
     /** Index of the server the user last played this video with — matched by
@@ -1206,9 +1232,15 @@ class PlayerActivity : ComponentActivity() {
      *  opens the grouped server chooser and waits for the user's pick. */
     private fun startOrAsk() {
         lifecycleScope.launch {
-            if (sources.isNotEmpty() && shouldAskServer()) {
+            if (shouldAskServer()) {
+                // The chooser is the destination, so open it even while the
+                // list is still empty: the player is already on screen (its own
+                // title card sits behind the sheet), and opening now means the
+                // user never waits for a slow provider before they can see —
+                // and start adding to — the server list. Every server that lands
+                // afterwards is appended live (see [sourcesWatchers]).
                 showServerChooser(startMode = true)
-            } else {
+            } else if (sources.isNotEmpty()) {
                 playSource(preferredStartIndex())
             }
         }
@@ -2826,7 +2858,15 @@ class PlayerActivity : ComponentActivity() {
             sources = streams.map { it.toPlayerSource() }
             notifySourcesChanged()
             currentIndex = 0
-            playSource(0)
+            // "Don't play directly" applies to an in-player episode switch too:
+            // this is a brand-new server list, so it gets its own chooser
+            // instead of auto-starting on the first server.
+            if (shouldAskServer()) {
+                startChooserShown = false
+                showServerChooser(startMode = true)
+            } else {
+                playSource(0)
+            }
         }
     }
 
@@ -2931,7 +2971,11 @@ class PlayerActivity : ComponentActivity() {
      * remembered/best server rather than leaving the player blank.
      */
     private fun showServerChooser(startMode: Boolean = false) {
-        if (sources.isEmpty()) return
+        // startMode is the "don't play directly" chooser, which is opened the
+        // instant the player does — before the first server has landed — so it
+        // may legitimately be empty and fill in live. The Source pill
+        // (non-startMode) only makes sense with a list, so it still no-ops.
+        if (sources.isEmpty() && !startMode) return
         if (startMode) {
             // Present the start chooser at most once per Activity: the live
             // search keeps growing the list, and re-opening the chooser after
@@ -2944,6 +2988,7 @@ class PlayerActivity : ComponentActivity() {
         }
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        serverChooserDialog = dialog
         var chip = "All"
 
         /** Sections that actually have servers, in the fixed order above. */
@@ -3165,6 +3210,49 @@ class PlayerActivity : ComponentActivity() {
                     }
                 }
             }
+            if (visible.isEmpty()) {
+                // Opened before the first server landed ("don't play directly"
+                // opens the chooser the instant the player does): show that the
+                // search is running and that this list is where the servers
+                // will appear, instead of a blank panel.
+                val stateRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(0, (26 * density).roundToInt(), 0, (12 * density).roundToInt())
+                }
+                stateRow.addView(ProgressBar(this).apply {
+                    isIndeterminate = true
+                    indeterminateTintList = ColorStateList.valueOf(
+                        withAlpha(accentMidColor, 0.95f)
+                    )
+                }, LinearLayout.LayoutParams(
+                    (22 * density).roundToInt(), (22 * density).roundToInt()
+                ))
+                val who = originProviderName.takeIf { it.isNotBlank() }
+                stateRow.addView(TextView(this).apply {
+                    text = if (who != null) "Searching $who\u2026" else "Searching your providers\u2026"
+                    dpText(11.5f)
+                    includeFontPadding = false
+                    setTextColor(0xFFD5DCE8.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (11 * density).roundToInt() })
+                stateRow.addView(TextView(this).apply {
+                    text = "Your provider is searched first. Every server shows here the moment it is found."
+                    dpText(10f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0x99FFFFFF.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (5 * density).roundToInt() })
+                list.addView(stateRow, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+            }
             builtSig = sig
             builtSelected = currentIndex
         }
@@ -3205,6 +3293,7 @@ class PlayerActivity : ComponentActivity() {
         dialog.setOnDismissListener {
             hintTicker?.cancel()
             sourcesWatchers.remove(watcher)
+            if (serverChooserDialog === dialog) serverChooserDialog = null
             // Closed without a pick (the back button, the ✕, a tap outside):
             // fall back to the remembered/best server rather than leaving the
             // player blank on the loading card. A tap on a row has already
@@ -3212,10 +3301,24 @@ class PlayerActivity : ComponentActivity() {
             // starts a *different* server than the one the user chose.
             if (startChoicePending) {
                 startChoicePending = false
-                lifecycleScope.launch { playSource(preferredStartIndex()) }
+                if (sources.isNotEmpty()) {
+                    lifecycleScope.launch { playSource(preferredStartIndex()) }
+                } else {
+                    // Backed out of the chooser before ANY server had landed —
+                    // there was nothing to pick. Don't fail the play; let the
+                    // live search keep running and re-open the chooser (once)
+                    // when the first server actually arrives.
+                    startChooserShown = false
+                }
             }
         }
-        val baseHint = "Your provider first, then every engine that found a server."
+        val baseHint = if (sources.isEmpty()) {
+            val who = originProviderName.takeIf { it.isNotBlank() }
+            if (who != null) "Searching $who \u2014 servers appear as they are found."
+            else "Searching your providers \u2014 servers appear as they are found."
+        } else {
+            "Your provider first, then every engine that found a server."
+        }
         val hintView = presentGlass(
             dialog,
             "Select server",
@@ -3247,18 +3350,34 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * One line for the hint above the server chooser describing what the other
-     * installed extensions are doing: which are still being searched, or — once
-     * they are done — which came back with nothing and why. Read from
-     * [ContentRepository]'s live cross-extension status, so "the CloudStream
-     * extension I have installed didn't show up" is answered on screen instead
-     * of being indistinguishable from "it is still loading".
+     * installed extensions are doing. It leads with NUMBERS — how many repos
+     * were asked (out of how many are installed, per engine), how many found
+     * servers, how many are still going — so the line can never look "stuck" on
+     * one repo while the rest keep working. The old version was a " · "-joined
+     * list of the failures, and the two-line hint truncated it after the first
+     * repo (a repo that said "no matching title" sat there looking like the end
+     * of the search). The per-repo detail is still in the log, and one example
+     * reason is appended when nothing at all was found.
      */
     private fun crossSearchHint(): String? {
-        val running = ContentRepository.crossRunning.values.toList()
-        if (running.isNotEmpty()) return "Searching " + running.joinToString(", ") { oneLine(it) }
-        val verdicts = ContentRepository.crossVerdict.values.toList()
-        if (verdicts.isNotEmpty()) return "No servers from: " + verdicts.joinToString(" · ") { oneLine(it) }
-        return null
+        val asked = ContentRepository.crossAsked.values.toList()
+        if (asked.isEmpty()) return null
+        val running = ContentRepository.crossRunning.size
+        val found = ContentRepository.crossFound.size
+        val byEngine = asked.groupingBy { it }.eachCount().entries
+            .sortedBy { it.key }
+            .joinToString(", ") { e ->
+                val total = ContentRepository.crossInstalled[e.key]
+                if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
+            }
+        val state = if (running > 0) "$running still searching" else "all done"
+        val servers = if (found > 0) ", $found with servers" else ", none with servers"
+        val why = if (running == 0 && found == 0) {
+            ContentRepository.crossVerdict.values.firstOrNull()
+                ?.let { " · e.g. " + oneLine(it).take(64) }
+                .orEmpty()
+        } else ""
+        return "Asked ${asked.size} other repos ($byEngine) — $state$servers$why"
     }
 
     /** A reason can come straight from a plugin's exception text — collapse it

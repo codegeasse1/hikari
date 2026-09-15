@@ -326,7 +326,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun load(providerId: String, type: MediaType, mediaId: String, title: String, posterUrl: String?, rawType: String) {
-        viewModelScope.launch {
+        // Keeps the page's meta/episode/source work alive if the user leaves the
+        // app (see [com.hikari.app.work.BackgroundWork]) — the process would
+        // otherwise be frozen mid-fetch.
+        val work = com.hikari.app.work.BackgroundWork.begin("Opening \"${title.take(60)}\"")
+        val loadJob = viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _streamsReady.value = false
@@ -405,6 +409,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             launch { loadShelves(item) }
             prefetchFirstStreams(item)
         }
+        loadJob.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
     private suspend fun loadShelves(item: MediaItem) {
@@ -552,7 +557,16 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         force: Boolean = false,
     ): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
-        return resolveStreams(m, episode, onProgress, force)
+        // The provider scan can run for a minute; keep it alive across a
+        // background trip (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Finding servers for \"${m.title.take(60)}\""
+        )
+        try {
+            return resolveStreams(m, episode, onProgress, force)
+        } finally {
+            com.hikari.app.work.BackgroundWork.end(work)
+        }
     }
 
     /** New play session (a fresh tap of Play / a new episode): clear the live

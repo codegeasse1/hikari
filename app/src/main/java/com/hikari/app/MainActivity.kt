@@ -50,6 +50,20 @@ class MainActivity : AppCompatActivity() {
         )
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // API 33+: the download and background-work notifications are how the
+        // user sees (and controls) work that keeps running while Hikari is in
+        // the background, so ask for the permission up front instead of only
+        // when the first download starts.
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                9911,
+            )
+        }
         // CloudStream plugin settings screens are often
         // BottomSheetDialogFragments whose layout wraps a plain
         // android.widget.ScrollView. Unlike NestedScrollView that is NOT a

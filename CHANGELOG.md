@@ -1,3 +1,63 @@
+## 0.3.77
+
+**With "Don't play directly" on, the server sheet now opens the instant you tap
+Play — and your own extension is searched first.**
+
+- **The chooser no longer waits 20-25s for the first server.** It used to open
+  only once a server (or the "wait for N servers" count) had arrived, so a tap
+  on Play showed the title card for up to half a minute before the list
+  appeared. It now opens the moment the player does, with a live
+  "Searching <your provider>…" state, and fills in as servers land — every
+  server is appended the second it is found.
+- **Backing out of an empty chooser no longer kills the play.** If you dismiss
+  the sheet before anything has been found, the search keeps running and the
+  chooser re-opens when the first server actually arrives, instead of showing a
+  "no servers" error.
+- **The in-player "wait for more servers" setting no longer delays the
+  chooser** — one server is already enough to put the list on screen. An
+  episode switch made from inside the player honours the setting too, so a new
+  episode gets its own chooser instead of auto-starting.
+- **Your provider is searched first.** All the other providers used to fire at
+  t=0 alongside the one you opened the title from (~60 searches at once on a
+  phone), which buried its own servers behind the pack. The origin's job now
+  starts immediately; the other primary targets (the Nuvio engines) wait a
+  1.2s head start, and the other repos of the origin's own engine (the
+  CloudStream family) wait 2s. Their servers still stream into the same sheet
+  right after — the origin's land first, which is what "if I'm on MovieBox,
+  play MovieBox" should look like.
+- **Searching keeps running in the background.** Covers, searches, catalog
+  loads, source scans and extension installs are now carried by a foreground
+  service (a quiet ongoing notification), so backing out of the app no longer
+  abandons a search or a download mid-way. Android 13+ asks for notification
+  permission on first launch.
+
+## 0.3.76
+
+**The chooser's hint no longer looks "stuck on one repo".** It used to be a
+`" · "`-joined list of every extension that came back empty, and the two-line
+hint cut that off after the first entry — so a repo saying "no matching title"
+sat there looking like the search had died, while the rest were still running.
+The line now leads with numbers and keeps updating:
+
+`Asked 48 other repos (CloudStream 48 of 48, Hikari 64) — 12 still searching, 4 with servers`
+
+and, once everything is finished and nothing was found,
+
+`Asked 96 other repos (CloudStream 48, Hikari 48) — all done, none with servers · e.g. Prmovies — no matching title`
+
+- It reports how many repos were asked **out of how many are installed**, per
+  engine, so "32 of 48 CloudStream" immediately shows when an engine's repos are
+  being skipped rather than answering empty.
+- How many found servers, and how many are still searching, so progress is
+  always visible.
+- One example reason is appended only when nothing at all was found, so the
+  "why" is still on screen without the line being truncated mid-list.
+
+Verified from the shared 0.3.74 log: the CloudStream repo that carries the
+title (`MovieBox [CS3]`, which found servers in the earlier 0.3.71 run) was
+**not among the 32 CloudStream repos that 0.3.74 asked** — the 64-slot cap gave
+it no turn. 0.3.75's uncapped list asks all of them.
+
 ## 0.3.75
 
 **The real cause of "no CloudStream server shows up".** A shared log settled

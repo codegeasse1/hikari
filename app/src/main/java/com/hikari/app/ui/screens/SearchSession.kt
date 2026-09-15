@@ -68,7 +68,13 @@ object SearchSession {
         currentKey = k
         _results.value = emptyList()
         _searching.value = true
-        job = scope.launch {
+        // Register the scan as background work: it is a long multi-page sweep,
+        // and without this Android freezes the process the moment the user
+        // leaves the app, stopping the search mid-page. See [BackgroundWork].
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Searching \"${query.trim().take(60)}\""
+        )
+        val started = scope.launch {
             try {
                 repo.searchStreaming(query, providerIds = providers).collect { raw ->
                     _results.value = raw.map { it.tokenizePoster() }
@@ -82,6 +88,10 @@ object SearchSession {
                 _searching.value = false
             }
         }
+        // Covers cancellation too (a new query replaces this job), so the
+        // service can never be left on by an aborted search.
+        started.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        job = started
     }
 
     /** Aborts the current search and clears the session (empty query box). */
