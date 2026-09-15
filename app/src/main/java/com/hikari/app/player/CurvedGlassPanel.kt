@@ -23,14 +23,15 @@ import kotlin.math.max
  *    outward and the left edge bows inward, so the panel itself is a bent sheet
  *    of glass rather than a rounded rectangle (the old `dialog_panel` drawable)
  *    or a barely-bowed superellipse.
- *  - the neon light runs along the panel's OWN two bowed sides — [shapeSides],
+ *  - the neon light runs along the panel's OWN two bowed sides — [sidesPath],
  *    stroked in [onDraw] — not along the flat top and bottom, and it fades to
  *    nothing at the ends. That is what the reference does, and it is why the
- *    panel has no "box" lines: a glow stroke on the closed outline would draw
- *    exactly the two horizontal lines the reference does not have. The light
- *    used to live in a separate ring view parked behind the panel, which is
- *    what the user kept pointing at: a box with a curve behind it, instead of
- *    one shape whose edge IS the curve.
+ *    panel has no "box" lines: the light never leaves the arcs, so there is
+ *    neither a horizontal line across the top or bottom nor a short horizontal
+ *    stub where a side meets a corner. The light used to live in a separate
+ *    ring view parked behind the panel, which is what the user kept pointing
+ *    at: a box with a curve behind it, instead of one shape whose edge IS the
+ *    curve.
  *  - its rows follow the bend. [rows] names the container holding the rows
  *    (which may be nested, e.g. a list inside a scroll view); each row is pulled
  *    in to the silhouette's own left and right edges at its own height, so the
