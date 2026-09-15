@@ -2238,9 +2238,9 @@ class PlayerActivity : ComponentActivity() {
             overScrollMode = View.OVER_SCROLL_ALWAYS
             isFillViewport = false
             clipToPadding = false
-            addView(chipRow, HorizontalScrollView.LayoutParams(
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT,
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT
+            addView(chipRow, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
             ))
         }
         // One container for the chip strip, the headers AND the rows: the panel
