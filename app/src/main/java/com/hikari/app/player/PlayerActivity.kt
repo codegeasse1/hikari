@@ -1546,7 +1546,7 @@ class PlayerActivity : ComponentActivity() {
         findViewById<TextView>(R.id.badge_quality)?.background = accentBadgeDrawable(11f)
 
         // The centre play/pause ring.
-        findViewById<View>(R.id.exo_play_pause)?.background = playRingDrawable()
+        exoView("exo_play_pause")?.background = playRingDrawable()
 
         // Gesture-HUD fills (brightness / volume).
         val fill = GradientDrawable(
@@ -1557,10 +1557,8 @@ class PlayerActivity : ComponentActivity() {
         hudVolFill?.background = fill.constantState?.newDrawable() ?: fill
 
         // Progress bar: the played portion + scrubber follow the accent.
-        runCatching {
-            findViewById<androidx.media3.ui.DefaultTimeBar>(R.id.exo_progress)
-                ?.setPlayedColor(accentMidColor)
-        }
+        (exoView("exo_progress") as? androidx.media3.ui.DefaultTimeBar)
+            ?.setPlayedColor(accentMidColor)
 
         // Labels/spinners the layout colours from @color/hikari_accent_mid, which
         // no runtime accent can reach.
@@ -1577,6 +1575,19 @@ class PlayerActivity : ComponentActivity() {
         if (v is ViewGroup) {
             for (i in 0 until v.childCount) tintProgressBars(v.getChildAt(i))
         }
+    }
+
+    /**
+     * Looks up a view by an id that media3-ui declares in ITS OWN resources
+     * (`exo_play_pause`, `exo_progress`, …). The app is built with
+     * `android.nonTransitiveRClass=true`, so `R.id` here only holds this app's
+     * own ids — the library's ids live in the merged resource table, where the
+     * name still resolves at runtime. Resolving by name therefore reaches the
+     * same view the library inflated, without hard-coding a library R class.
+     */
+    private fun exoView(name: String): View? {
+        val id = resources.getIdentifier(name, "id", packageName)
+        return if (id != 0) findViewById<View>(id) else null
     }
 
     // ---- Control layout (Settings → Player → Player controls) --------------
