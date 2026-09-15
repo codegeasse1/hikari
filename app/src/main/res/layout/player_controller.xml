@@ -126,7 +126,18 @@
 
       <!-- Round action buttons, in the mockup's right-hand slots. Each one is a
            real feature: favourite, download, picture-in-picture, player
-           options (fit/crop/rotate) and screen lock. -->
+           options (fit/crop/rotate) and screen lock. The container's id is what
+           PlayerActivity's control-layout setting moves buttons into/out of
+           (Settings -> Player -> Player controls); a pill moved up here is
+           drawn as a compact round icon button so the bar can never overflow. -->
+      <LinearLayout
+          android:id="@+id/player_top_actions"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
+
       <ImageButton
           android:id="@+id/fav_btn"
           android:layout_width="26dp"
@@ -180,6 +191,7 @@
           android:contentDescription="Lock controls"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
+      </LinearLayout>
     </LinearLayout>
   </LinearLayout>
 
@@ -240,11 +252,13 @@
         android:gravity="center_vertical"
         android:layoutDirection="ltr">
 
-      <!-- Mirrors the footprint of @id/resize_btn (26dp + 3dp start margin +
-           2dp end margin). Without it the scroll view ends at the resize
-           button, so a centred pill row would still sit ~15dp left of the
-           screen's centre line; with it, the row's centre is the screen's. -->
+      <!-- Mirrors the width of the right-hand action container (see
+           @id/player_right_actions), so a centred pill row still sits on the
+           screen's centre line. PlayerActivity re-measures it at runtime,
+           because the right container changes size as buttons are moved into or
+           out of it by the control-layout setting. -->
       <View
+          android:id="@+id/player_left_spacer"
           android:layout_width="31dp"
           android:layout_height="1dp" />
 
@@ -329,8 +343,23 @@
       </HorizontalScrollView>
 
       <!-- Pinned at the right edge (doesn't scroll with the pills): the
-           fit/crop toggle, drawn as a round button like the mockup's far-right
-           expand control. -->
+           fit/crop toggle and the video-enhance preset, drawn as a pill plus a
+           round button like the mockup's far-right expand control. This
+           container is the control-layout setting's "Bottom right" slot. -->
+      <LinearLayout
+          android:id="@+id/player_right_actions"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
+
+      <TextView
+          android:id="@+id/enhance_btn"
+          style="@style/HikariPill.Accent"
+          android:drawableStart="@drawable/ic_enhance"
+          android:text="Enhance" />
+
       <ImageButton
           android:id="@+id/resize_btn"
           android:layout_width="26dp"
@@ -342,6 +371,7 @@
           android:contentDescription="Fit or crop video"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
+      </LinearLayout>
     </LinearLayout>
 
     <!-- media3's own bottom buttons. All hidden (and all zero-width), and

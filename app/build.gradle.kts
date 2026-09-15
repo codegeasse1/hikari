@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 92
-        versionName = "0.3.68"
+        versionCode = 93
+        versionName = "0.3.69"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -143,6 +143,12 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer.dash)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.ui)
+    // media3-effect — the GPU video-effects pipeline (GlEffect / HslAdjustment /
+    // RgbAdjustment / Brightness / Contrast). ExoPlayer.setVideoEffects() is
+    // inert without it: the classes are loaded reflectively by the frame
+    // processor, so the dependency has to be on the classpath even though no
+    // source file names it. Used by the player's "Video enhance" presets.
+    implementation(libs.androidx.media3.effect)
     // nextlib-media3ext — prebuilt FFmpeg software decoders for Media3. Many
     // provider streams (e.g. 4kHDHub MKVs) carry EAC-3/AC-3/DTS/TrueHD audio
     // that the device's MediaCodec can't decode, so the video plays silently.

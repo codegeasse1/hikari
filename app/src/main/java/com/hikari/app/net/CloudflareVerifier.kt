@@ -262,6 +262,21 @@ object CloudflareVerifier {
                         }
                         return null
                     }
+
+                    override fun onRenderProcessGone(
+                        view: WebView?,
+                        detail: android.webkit.RenderProcessGoneDetail?
+                    ): Boolean {
+                        // Claim the crash: returning false here lets the
+                        // platform kill the whole app process (which is what
+                        // produced the "app crashed on a previous launch"
+                        // banner). The solve loop's own timeout ends the wait,
+                        // so nothing hangs while we keep the app alive.
+                        android.util.Log.w(
+                            "CloudflareVerifier", "renderer gone for $host — keeping app alive"
+                        )
+                        return true
+                    }
                 }
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)

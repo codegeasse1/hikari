@@ -261,6 +261,18 @@ class WebViewResolver(
                     ) {
                         handler?.proceed()
                     }
+
+                    override fun onRenderProcessGone(
+                        view: WebView?,
+                        detail: android.webkit.RenderProcessGoneDetail?
+                    ): Boolean {
+                        // A crashed renderer (heavy/obfuscated player pages do
+                        // this) would otherwise take the whole app down with
+                        // it. Claim the crash and release the waiter so the
+                        // plugin gets an empty result instead of a dead app.
+                        runCatching { finished.countDown() }
+                        return true
+                    }
                 }
                 webView = wv
                 wv.loadUrl(url, request.headers.toMap())

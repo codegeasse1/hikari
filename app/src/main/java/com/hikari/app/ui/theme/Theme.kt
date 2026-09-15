@@ -23,9 +23,9 @@ enum class HikariThemeMode(val key: String, val label: String) {
     }
 }
 
-private val DarkColors = darkColorScheme(
-    primary = HikariPrimary,
-    onPrimary = HikariOnPrimary,
+private fun darkColors(accent: HikariAccent) = darkColorScheme(
+    primary = accent.start,
+    onPrimary = inkOn(accent.start),
     primaryContainer = HikariSurfaceVariant,
     onPrimaryContainer = HikariText,
     secondary = HikariSecondary,
@@ -42,9 +42,9 @@ private val DarkColors = darkColorScheme(
     scrim = Color.Black,
 )
 
-private val LightColors = lightColorScheme(
-    primary = HikariLightPrimary,
-    onPrimary = HikariLightOnPrimary,
+private fun lightColors(accent: HikariAccent) = lightColorScheme(
+    primary = accent.light,
+    onPrimary = Color.White,
     primaryContainer = HikariLightSurfaceVariant,
     onPrimaryContainer = HikariLightText,
     secondary = HikariLightSecondary,
@@ -61,9 +61,9 @@ private val LightColors = lightColorScheme(
     scrim = Color.Black,
 )
 
-private val GlassColors = darkColorScheme(
-    primary = HikariPrimary,
-    onPrimary = HikariOnPrimary,
+private fun glassColors(accent: HikariAccent) = darkColorScheme(
+    primary = accent.start,
+    onPrimary = inkOn(accent.start),
     primaryContainer = GlassSurfaceVariant,
     onPrimaryContainer = HikariText,
     secondary = HikariSecondary,
@@ -83,6 +83,7 @@ private val GlassColors = darkColorScheme(
 @Composable
 fun HikariTheme(
     mode: HikariThemeMode = HikariThemeMode.DARK,
+    accent: HikariAccent = HikariAccent.DEFAULT_APP,
     uiScaleEnabled: Boolean = false,
     uiScale: Float = 1f,
     content: @Composable () -> Unit,
@@ -111,9 +112,9 @@ fun HikariTheme(
     CompositionLocalProvider(LocalDensity provides density) {
         MaterialTheme(
             colorScheme = when (mode) {
-                HikariThemeMode.DARK -> DarkColors
-                HikariThemeMode.LIGHT -> LightColors
-                HikariThemeMode.GLASS -> GlassColors
+                HikariThemeMode.DARK -> darkColors(accent)
+                HikariThemeMode.LIGHT -> lightColors(accent)
+                HikariThemeMode.GLASS -> glassColors(accent)
             },
             typography = Typography,
             content = content,

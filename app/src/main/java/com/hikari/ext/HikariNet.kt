@@ -154,6 +154,17 @@ object HikariNet {
                             // keep waiting — the main frame may still finish, or
                             // the safety timeout below fires
                         }
+
+                        override fun onRenderProcessGone(
+                            view: WebView?,
+                            detail: android.webkit.RenderProcessGoneDetail?
+                        ): Boolean {
+                            // Don't let a dead renderer kill the app process;
+                            // release the waiter so the caller just gets null.
+                            result.set(null)
+                            latch.countDown()
+                            return true
+                        }
                     }
                     webView = wv
                     wv.loadUrl(url)

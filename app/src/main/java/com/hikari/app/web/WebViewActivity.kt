@@ -677,6 +677,17 @@ class WebViewActivity : ComponentActivity() {
                         override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
                             relay(url)
                         }
+
+                        override fun onRenderProcessGone(
+                            view: WebView?,
+                            detail: RenderProcessGoneDetail?
+                        ): Boolean {
+                            // The throwaway popup renderer died — reclaim it and
+                            // keep the browsing activity (and the app) alive.
+                            runCatching { if (popupChild === view) popupChild = null }
+                            runCatching { view?.destroy() }
+                            return true
+                        }
                     }
                 }
                 popupChild = child
@@ -1173,31 +1184,58 @@ class WebViewActivity : ComponentActivity() {
      * page as Referer + shared cookies) and let it play there instead.
      */
     private inner class HikariJsBridge {
+        /**
+         * Every bridge call is routed through here. A `@JavascriptInterface`
+         * method is Java code invoked FROM Chromium's native layer, so an
+         * exception escaping it is rethrown into native as
+         * `JniAndroid$UncaughtException` and reaches our default uncaught
+         * handler — which records a crash and kills the process. The user then
+         * sees the "app crashed on a previous launch" banner on Home for what
+         * was, from their point of view, an ordinary WebView page. Swallowing
+         * (and logging) bridge failures keeps a broken userscript or a null
+         * WebView from taking the whole app down.
+         */
+        private inline fun <T> safe(tag: String, block: () -> T): T? =
+            runCatching { block() }.onFailure {
+                android.util.Log.w("HikariBridge", "$tag failed (swallowed)", it)
+            }.getOrNull()
+
         @android.webkit.JavascriptInterface
         fun stuckVideo(url: String) {
-            // Verification view exists only to pass the challenge — never
-            // hand a video off to the external player from it.
-            if (autoCloseWhenCloudflarePassed) return
-            if (autoLaunched || url.isBlank()) return
-            autoLaunched = true
-            runOnUiThread {
-                detectedVideos.add(url)
-                videoChip.text = "\u25B6 Opening external player…"
-                videoChip.visibility = View.VISIBLE
-                launchPlayer(listOf(url), pageUrl ?: webView.url)
+            safe("stuckVideo") {
+                // Verification view exists only to pass the challenge — never
+                // hand a video off to the external player from it.
+                if (autoCloseWhenCloudflarePassed) return@safe
+                if (autoLaunched || url.isBlank()) return@safe
+                autoLaunched = true
+                runOnUiThread {
+                    safe("stuckVideo.ui") {
+                        detectedVideos.add(url)
+                        videoChip.text = "\u25B6 Opening external player…"
+                        videoChip.visibility = View.VISIBLE
+                        launchPlayer(listOf(url), pageUrl ?: webView.url)
+                    }
+                }
             }
         }
 
         // ---- Element blocker bridge ----
         @android.webkit.JavascriptInterface
         fun blockElement(selector: String) {
-            if (selector.isBlank()) return
-            runOnUiThread {
-                blockedSelectors.add(selector)
-                (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
-                Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT).show()
-                lifecycleScope.launch(Dispatchers.IO) {
-                    runCatching { (applicationContext as HikariApp).store.addElementBlock(selector) }
+            safe("blockElement") {
+                if (selector.isBlank()) return@safe
+                runOnUiThread {
+                    safe("blockElement.ui") {
+                        blockedSelectors.add(selector)
+                        (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
+                        Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT)
+                            .show()
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                (applicationContext as HikariApp).store.addElementBlock(selector)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1205,21 +1243,28 @@ class WebViewActivity : ComponentActivity() {
         // ---- Userscript GM_* value storage (WebView only) ----
         @android.webkit.JavascriptInterface
         fun userscriptGet(scriptId: String, key: String): String? =
-            UserscriptManager.getValue(applicationContext, scriptId, key)
+            safe("userscriptGet") {
+                UserscriptManager.getValue(applicationContext, scriptId, key)
+            }
 
         @android.webkit.JavascriptInterface
         fun userscriptSet(scriptId: String, key: String, valueJson: String) {
-            UserscriptManager.setValue(applicationContext, scriptId, key, valueJson)
+            safe("userscriptSet") {
+                UserscriptManager.setValue(applicationContext, scriptId, key, valueJson)
+            }
         }
 
         @android.webkit.JavascriptInterface
         fun userscriptDelete(scriptId: String, key: String) {
-            UserscriptManager.deleteValue(applicationContext, scriptId, key)
+            safe("userscriptDelete") {
+                UserscriptManager.deleteValue(applicationContext, scriptId, key)
+            }
         }
 
         @android.webkit.JavascriptInterface
         fun userscriptList(scriptId: String): String =
-            UserscriptManager.listValues(applicationContext, scriptId)
+            safe("userscriptList") { UserscriptManager.listValues(applicationContext, scriptId) }
+                ?: "{}"
 
         // ---- Auto-translate bridge ----
         // The page's TRANSLATE_JS calls this with a batch of unique text
@@ -1227,31 +1272,35 @@ class WebViewActivity : ComponentActivity() {
         // no key needed) and hand them back via window.__hikariTransResult.
         @android.webkit.JavascriptInterface
         fun translate(id: String, textsJson: String) {
-            val arr = runCatching { JSONArray(textsJson) }.getOrNull() ?: return
-            val texts = (0 until arr.length()).map { arr.optString(it) }
-            if (texts.isEmpty()) return
-            lifecycleScope.launch {
-                val sem = java.util.concurrent.Semaphore(6)
-                val results = arrayOfNulls<String>(texts.size)
-                coroutineScope {
-                    for (i in texts.indices) {
-                        launch(Dispatchers.IO) {
-                            sem.acquire()
-                            try {
-                                results[i] = fetchTranslation(texts[i])
-                            } catch (e: Exception) {
-                                results[i] = ""
-                            } finally {
-                                sem.release()
+            safe("translate") {
+                val arr = runCatching { JSONArray(textsJson) }.getOrNull() ?: return@safe
+                val texts = (0 until arr.length()).map { arr.optString(it) }
+                if (texts.isEmpty()) return@safe
+                lifecycleScope.launch {
+                    safe("translate.worker") {
+                        val sem = java.util.concurrent.Semaphore(6)
+                        val results = arrayOfNulls<String>(texts.size)
+                        coroutineScope {
+                            for (i in texts.indices) {
+                                launch(Dispatchers.IO) {
+                                    sem.acquire()
+                                    try {
+                                        results[i] = fetchTranslation(texts[i])
+                                    } catch (e: Exception) {
+                                        results[i] = ""
+                                    } finally {
+                                        sem.release()
+                                    }
+                                }
                             }
                         }
+                        val out = JSONArray()
+                        results.forEach { out.put(it ?: "") }
+                        val js = "window.__hikariTransResult?window.__hikariTransResult(" +
+                            jsString(id) + "," + out.toString() + "):null"
+                        runOnUiThread { runCatching { webView.evaluateJavascript(js, null) } }
                     }
                 }
-                val out = JSONArray()
-                results.forEach { out.put(it ?: "") }
-                val js = "window.__hikariTransResult?window.__hikariTransResult(" +
-                    jsString(id) + "," + out.toString() + "):null"
-                runOnUiThread { runCatching { webView.evaluateJavascript(js, null) } }
             }
         }
     }

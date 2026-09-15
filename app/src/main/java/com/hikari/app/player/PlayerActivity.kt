@@ -14,6 +14,7 @@ import android.content.res.Configuration
 import android.graphics.Point
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
@@ -45,6 +46,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -98,8 +100,10 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
+import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.UiScale
+import com.hikari.app.ui.theme.HikariAccent
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -724,6 +728,37 @@ class PlayerActivity : ComponentActivity() {
         unlockBtn?.background = ContextCompat.getDrawable(this, R.drawable.ic_unlock)
         unlockBtn?.setPadding(0, 0, 0, 0)
 
+        // ---- Player accent, control layout, video enhance ------------------
+        // The accent comes from the AccentStore mirror (Settings → Appearance →
+        // Player color, or the app accent while the two are linked). It is read
+        // SYNCHRONOUSLY so the very first frame is already the right colour —
+        // no flash of the default violet. Everything else in the player that is
+        // accent-coloured derives from it already; applyAccentPalette covers the
+        // pieces that were baked into XML drawables.
+        runCatching { setAccent(AccentStore.player(this)) }
+        applyAccentPalette()
+
+        // The Enhance pill: realtime colour grading of the video itself.
+        findViewById<TextView>(R.id.enhance_btn)?.setOnClickListener { showEnhanceMenu() }
+
+        // Both remaining preferences are read asynchronously and applied as soon
+        // as they land. Until then the player keeps the layout it shipped with
+        // and applies no enhancement, so nothing here can delay first playback.
+        lifecycleScope.launch {
+            controlLayout = PlayerControlsConfig.decode(
+                runCatching { (applicationContext as HikariApp).store.playerControls() }
+                    .getOrNull()
+            )
+            applyControlLayout()
+        }
+        lifecycleScope.launch {
+            enhancePresetKey = EnhancePreset.fromKey(
+                runCatching { (applicationContext as HikariApp).store.enhancePreset() }
+                    .getOrNull()
+            ).key
+            applyVideoEnhance(force = true)
+        }
+
         // Picture-in-picture: explicit pip button (top bar) plus YouTube-style
         // auto-enter when the user leaves the player with video playing (12+).
         // minSdk is 24, so the whole feature is gated on SDK >= 26 (API 26
@@ -1250,7 +1285,7 @@ class PlayerActivity : ComponentActivity() {
     /** White = off, the player accent = on. Used by the mute-style state icons
      *  (resize, favourite) so a toggled control is readable at a glance. */
     private fun tintOf(on: Boolean) = ColorStateList.valueOf(
-        if (on) android.graphics.Color.parseColor("#7B5CFF") else android.graphics.Color.WHITE
+        if (on) accentMidColor else android.graphics.Color.WHITE
     )
 
     /** Top-bar heart: add/remove this title from the app's Library. */
@@ -1415,10 +1450,35 @@ class PlayerActivity : ComponentActivity() {
         else -> "${height}p"
     }
 
-    /** The player palette (mirrors colors.xml) driving the redesigned menus. */
-    private val accentStartColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_start) }
-    private val accentEndColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_end) }
-    private val accentMidColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_mid) }
+    /** The accent the player is drawn with: Settings → Appearance → Player
+     *  color, or the app accent while "Match app & player theme" is on. Read
+     *  synchronously from the [AccentStore] mirror at the top of onCreate,
+     *  BEFORE anything is coloured, so the first frame is already right
+     *  (no flash of the default violet). */
+    private var accent = HikariAccent.DEFAULT_PLAYER
+
+    /** Cached ARGB ints for [accent]. These are read from layout/draw paths, so
+     *  they must be plain fields rather than re-derived on every access. Their
+     *  names are the ones the whole player already colours itself from
+     *  (spinners, the loading banner, gesture HUD fills, glass-menu chips,
+     *  subtitle highlight, error panel) — so changing [accent] recolours all of
+     *  it at once. */
+    private var accentStartColor: Int = HikariAccent.DEFAULT_PLAYER.start.toArgb()
+    private var accentEndColor: Int = HikariAccent.DEFAULT_PLAYER.end.toArgb()
+    private var accentMidColor: Int = HikariAccent.DEFAULT_PLAYER.mid.toArgb()
+
+    private fun setAccent(next: HikariAccent) {
+        accent = next
+        accentStartColor = next.start.toArgb()
+        accentEndColor = next.end.toArgb()
+        accentMidColor = next.mid.toArgb()
+    }
+
+    /** The pill controls whose fill is the accent gradient (recoloured at
+     *  runtime, so they follow the picked accent instead of the old XML one). */
+    private val accentPillIds = intArrayOf(
+        R.id.sources_btn, R.id.skip_btn, R.id.enhance_btn
+    )
 
     /** The cyan -> violet player gradient as a shape (the signature accent). */
     private fun accentShape(radiusDp: Float): GradientDrawable = GradientDrawable(
@@ -1429,6 +1489,355 @@ class PlayerActivity : ComponentActivity() {
     /** [color] with its alpha replaced by [fraction] — for translucent accents. */
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
+
+    // ---- Accent palette (Settings → Appearance) ----------------------------
+
+    /** The accent gradient as a shape (the player's signature fill). */
+    private fun accentBadgeDrawable(radiusDp: Float): Drawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(accentStartColor, accentEndColor)
+    ).apply { cornerRadius = radiusDp * resources.displayMetrics.density }
+
+    /** A ripple over the accent gradient — the accent pill (sources/skip/enhance). */
+    private fun accentPillRipple(): Drawable = RippleDrawable(
+        ColorStateList.valueOf(0x4DFFFFFF.toInt()),
+        accentShape(22f),
+        null
+    )
+
+    /** The big centre play button: accent gradient ring around a dark disc. */
+    private fun playRingDrawable(): Drawable {
+        val d = resources.displayMetrics.density
+        val ring = GradientDrawable(
+            GradientDrawable.Orientation.BL_TR,
+            intArrayOf(accentStartColor, accentEndColor)
+        ).apply { shape = GradientDrawable.OVAL }
+        val disc = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0x66060A14.toInt())
+        }
+        val layers = LayerDrawable(arrayOf(ring, disc))
+        val inset = (3f * d).roundToInt()
+        layers.setLayerInset(1, inset, inset, inset, inset)
+        return RippleDrawable(ColorStateList.valueOf(0x4DFFFFFF.toInt()), layers, null)
+    }
+
+    /**
+     * Repaints the parts of the player that are coloured by the accent but could
+     * not be derived from [accentStartColor] automatically, because they are
+     * drawables baked into XML (@drawable/pill_accent, /badge_accent,
+     * /player_play_ring, /hud_fill and the @color/hikari_accent_mid labels,
+     * spinners and progress bar). Called once the preference has been read, and
+     * again after any control-layout change (a pill moved out of the top bar
+     * gets its accent fill back).
+     */
+    private fun applyAccentPalette() {
+        val d = resources.displayMetrics.density
+
+        // Accent pills — skipped while compacted into the top bar, where they
+        // are drawn as plain glass round buttons like their neighbours.
+        for (id in accentPillIds) {
+            val v = findViewById<TextView>(id) ?: continue
+            if ((v.parent as? View)?.id == R.id.player_top_actions) continue
+            v.background = accentPillRipple()
+        }
+
+        // The highlighted metadata badge (video quality).
+        findViewById<TextView>(R.id.badge_quality)?.background = accentBadgeDrawable(11f)
+
+        // The centre play/pause ring.
+        findViewById<View>(R.id.exo_play_pause)?.background = playRingDrawable()
+
+        // Gesture-HUD fills (brightness / volume).
+        val fill = GradientDrawable(
+            GradientDrawable.Orientation.BOTTOM_TOP,
+            intArrayOf(accentStartColor, accentEndColor)
+        ).apply { cornerRadius = 5f * d }
+        hudBrightFill?.background = fill
+        hudVolFill?.background = fill.constantState?.newDrawable() ?: fill
+
+        // Progress bar: the played portion + scrubber follow the accent.
+        runCatching {
+            findViewById<androidx.media3.ui.DefaultTimeBar>(R.id.exo_progress)
+                ?.setPlayedColor(accentMidColor)
+        }
+
+        // Labels/spinners the layout colours from @color/hikari_accent_mid, which
+        // no runtime accent can reach.
+        loadingEpisode?.setTextColor(accentMidColor)
+        seekText?.setTextColor(withAlpha(accentMidColor, 0.95f))
+        findViewById<View>(R.id.loading_banner)?.let { tintProgressBars(it) }
+        findViewById<View>(R.id.loading_spinner)?.let { tintProgressBars(it) }
+    }
+
+    private fun tintProgressBars(v: View) {
+        if (v is ProgressBar) {
+            v.indeterminateTintList = ColorStateList.valueOf(accentMidColor)
+        }
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) tintProgressBars(v.getChildAt(i))
+        }
+    }
+
+    // ---- Control layout (Settings → Player → Player controls) --------------
+
+    /** Where each movable button goes. Defaults reproduce the shipped layout, so
+     *  an install that never opens the editor is unchanged. */
+    private var controlLayout: Map<PlayerControl, PlayerControlSlot> =
+        PlayerControlsConfig.defaults()
+
+    /** Original look of a pill, stashed the first time it is compacted for the
+     *  top bar, so moving it back to a bottom row restores it exactly. */
+    private class PillOriginal(
+        val text: CharSequence,
+        val start: Drawable?,
+        val end: Drawable?,
+        val background: Drawable?,
+        val padStart: Int,
+        val padTop: Int,
+        val padEnd: Int,
+        val padBottom: Int,
+        val params: ViewGroup.LayoutParams,
+    )
+
+    private val pillOriginals = HashMap<Int, PillOriginal>()
+
+    /** The layout order inside each slot. Matches the XML order, so the default
+     *  layout comes out exactly as shipped (and the resize button stays pinned
+     *  at the far right, after the enhance pill). */
+    private val controlOrder = listOf(
+        PlayerControl.FAVORITE, PlayerControl.DOWNLOAD, PlayerControl.PIP,
+        PlayerControl.OPTIONS, PlayerControl.LOCK,
+        PlayerControl.SPEED, PlayerControl.EPISODES, PlayerControl.SOURCES,
+        PlayerControl.QUALITY, PlayerControl.AUDIO, PlayerControl.SUBS,
+        PlayerControl.ROTATE, PlayerControl.SKIP,
+        PlayerControl.ENHANCE, PlayerControl.RESIZE,
+    )
+
+    private fun controlView(c: PlayerControl): View? = when (c) {
+        PlayerControl.FAVORITE -> findViewById(R.id.fav_btn)
+        PlayerControl.DOWNLOAD -> findViewById(R.id.download_btn)
+        PlayerControl.PIP -> findViewById(R.id.pip_btn)
+        PlayerControl.OPTIONS -> findViewById(R.id.options_btn)
+        PlayerControl.LOCK -> findViewById(R.id.lock_btn)
+        PlayerControl.SPEED -> findViewById(R.id.speed_btn)
+        PlayerControl.EPISODES -> findViewById(R.id.episodes_btn)
+        PlayerControl.SOURCES -> findViewById(R.id.sources_btn)
+        PlayerControl.QUALITY -> findViewById(R.id.quality_btn)
+        PlayerControl.AUDIO -> findViewById(R.id.audio_btn)
+        PlayerControl.SUBS -> findViewById(R.id.subs_btn)
+        PlayerControl.ROTATE -> findViewById(R.id.rotate_btn)
+        PlayerControl.SKIP -> findViewById(R.id.skip_btn)
+        PlayerControl.RESIZE -> findViewById(R.id.resize_btn)
+        PlayerControl.ENHANCE -> findViewById(R.id.enhance_btn)
+    }
+
+    /**
+     * Puts every button in its configured slot. Buttons the player itself hides
+     * (Episodes on a movie, PiP below API 26) stay hidden whatever the layout
+     * says — the setting can never resurrect a dead button.
+     */
+    private fun applyControlLayout() {
+        val top = findViewById<ViewGroup>(R.id.player_top_actions) ?: return
+        val left = findViewById<ViewGroup>(R.id.player_pills) ?: return
+        val right = findViewById<ViewGroup>(R.id.player_right_actions) ?: return
+
+        val managedHidden = listOf(R.id.episodes_btn, R.id.pip_btn).filter {
+            findViewById<View>(it)?.visibility == View.GONE
+        }
+
+        for (c in controlOrder) {
+            val v = controlView(c) ?: continue
+            (v.parent as? ViewGroup)?.removeView(v)
+            when (controlLayout[c] ?: c.defaultSlot) {
+                PlayerControlSlot.TOP_BAR -> {
+                    top.addView(v)
+                    compactForTopBar(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.BOTTOM_LEFT -> {
+                    left.addView(v)
+                    restorePill(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.BOTTOM_RIGHT -> {
+                    right.addView(v)
+                    restorePill(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.HIDDEN -> {
+                    // Kept in the pill row (GONE) so the view tree stays stable
+                    // and unhiding it later is a plain visibility flip.
+                    left.addView(v)
+                    restorePill(v)
+                    v.visibility = View.GONE
+                }
+            }
+        }
+        for (id in managedHidden) findViewById<View>(id)?.visibility = View.GONE
+
+        // Keep the pill row centred: its left spacer mirrors the width of the
+        // right container, which the loop above may have resized.
+        right.post { syncLeftSpacer() }
+
+        // A pill that just moved out of the top bar needs its accent fill back.
+        applyAccentPalette()
+    }
+
+    private fun syncLeftSpacer() {
+        val right = findViewById<View>(R.id.player_right_actions) ?: return
+        val spacer = findViewById<View>(R.id.player_left_spacer) ?: return
+        val w = right.measuredWidth
+        if (w <= 0) return
+        val lp = spacer.layoutParams
+        if (lp.width != w) {
+            lp.width = w
+            spacer.layoutParams = lp
+        }
+    }
+
+    /**
+     * A pill drawn in the top bar becomes a compact round icon button: the top
+     * bar is a single non-scrolling row, so a wide labelled pill there could
+     * push the buttons off the screen. The original look is stashed and restored
+     * by [restorePill] when the button leaves the top bar.
+     */
+    private fun compactForTopBar(v: View) {
+        if (v !is TextView) return
+        val orig = pillOriginals.getOrPut(v.id) {
+            PillOriginal(
+                text = v.text,
+                start = v.compoundDrawablesRelative.getOrNull(0),
+                end = v.compoundDrawablesRelative.getOrNull(2),
+                background = v.background,
+                padStart = v.paddingStart,
+                padTop = v.paddingTop,
+                padEnd = v.paddingEnd,
+                padBottom = v.paddingBottom,
+                params = ViewGroup.LayoutParams(v.layoutParams),
+            )
+        }
+        val d = resources.displayMetrics.density
+        val side = (26f * d).roundToInt()
+        v.text = ""
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(orig.start, null, null, null)
+        v.background = ContextCompat.getDrawable(this, R.drawable.circle_glass_ripple)
+        v.setPadding(0, 0, 0, 0)
+        v.gravity = android.view.Gravity.CENTER
+        v.visibility = View.VISIBLE
+        val lp = v.layoutParams
+        lp.width = side
+        lp.height = side
+        if (lp is ViewGroup.MarginLayoutParams) {
+            lp.marginStart = (3f * d).roundToInt()
+            lp.marginEnd = 0
+        }
+        v.layoutParams = lp
+    }
+
+    private fun restorePill(v: View) {
+        if (v !is TextView) return
+        val orig = pillOriginals[v.id] ?: return
+        v.text = orig.text
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(orig.start, null, orig.end, null)
+        v.background = orig.background
+        v.setPadding(orig.padStart, orig.padTop, orig.padEnd, orig.padBottom)
+        v.layoutParams = orig.params
+    }
+
+    // ---- Video enhance (Settings → Player → Video enhance) -----------------
+
+    private var enhancePresetKey: String = EnhancePreset.DEFAULT.key
+    private var appliedEnhanceKey: String? = null
+    private var appliedEnhanceHdr: Boolean? = null
+
+    /** Set when the device/stream refused the effects pipeline, so the menu can
+     *  say so instead of silently doing nothing. */
+    private var enhanceUnsupported = false
+
+    /**
+     * Hands the chosen preset to media3's video-effects pipeline. Idempotent:
+     * it only talks to the player when the preset or the video's HDR-ness really
+     * changed, so it is safe to call from onTracksChanged.
+     *
+     * Colour grading is applied to the decoded frames on the GPU, and the
+     * matrix-based effects cannot touch HDR video at all (media3 asserts on
+     * it), so the HDR part of a preset is dropped automatically — a 4K HDR
+     * stream can never be broken by picking a preset.
+     */
+    private fun applyVideoEnhance(force: Boolean = false) {
+        val p = player ?: return
+        val preset = EnhancePreset.fromKey(enhancePresetKey)
+        val hdr = isCurrentVideoHdr()
+        if (!force && preset.key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
+        appliedEnhanceKey = preset.key
+        appliedEnhanceHdr = hdr
+        runCatching { p.setVideoEffects(preset.effects(hdr)) }
+            .onFailure {
+                enhanceUnsupported = true
+                android.util.Log.w("HikariPlayer", "video effects unavailable", it)
+            }
+    }
+
+    /** True while the stream on screen is HDR (PQ/HLG, or BT.2020 primaries). */
+    private fun isCurrentVideoHdr(): Boolean {
+        val tracks = player?.currentTracks ?: return false
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val ci = mediaGroup.getFormat(i).colorInfo ?: continue
+                if (ci.colorTransfer == C.COLOR_TRANSFER_ST2084 ||
+                    ci.colorTransfer == C.COLOR_TRANSFER_HLG ||
+                    ci.colorSpace == C.COLOR_SPACE_BT2020
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun setEnhancePreset(preset: EnhancePreset) {
+        enhancePresetKey = preset.key
+        applyVideoEnhance(force = true)
+        if (enhanceUnsupported && preset != EnhancePreset.NATURAL) {
+            Toast.makeText(
+                this,
+                "This device can't apply video effects — the preset was skipped.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        lifecycleScope.launch {
+            runCatching {
+                (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+            }
+        }
+    }
+
+    /** The Enhance button's menu: every preset, with the active one ticked. */
+    private fun showEnhanceMenu() {
+        val presets = EnhancePreset.entries
+        val current = EnhancePreset.fromKey(enhancePresetKey)
+        showGlassMenu(
+            "Video enhance",
+            presets.map { p ->
+                GlassOption(
+                    label = p.label,
+                    sub = p.desc,
+                    iconRes = R.drawable.ic_enhance,
+                    marker = RowMarker.ICON,
+                    selected = p == current,
+                )
+            },
+            hint = "Realtime colour grading of the video itself. " +
+                "Natural applies nothing at all.",
+            iconRes = R.drawable.ic_enhance,
+        ) { which ->
+            val picked = presets.getOrNull(which) ?: return@showGlassMenu
+            setEnhancePreset(picked)
+        }
+    }
 
     /**
      * Sets a [TextView]'s size in dp — deliberately NOT sp — so the player's
@@ -3988,6 +4397,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            applyVideoEnhance()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
             val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)

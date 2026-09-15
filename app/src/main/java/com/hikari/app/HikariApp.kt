@@ -224,7 +224,19 @@ class HikariApp : Application() {
             // trace, terminate the process like the platform default would, so
             // Android shows the crash dialog and relaunches cleanly — the Home
             // banner still reports the cause next launch.
-            runCatching { android.os.Process.killProcess(android.os.Process.myPid()) }
+            //
+            // A BACKGROUND thread is a different story. A dead helper thread
+            // hurts nobody, and the exception that most often lands here is a
+            // WebView one (Chromium rethrows an escaping @JavascriptInterface
+            // call as JniAndroid$UncaughtException, and a crashed renderer used
+            // to surface here too) — killing the whole app for that turned an
+            // ordinary page glitch into a full crash. Record it so the Home
+            // banner still explains what happened, then let the app keep
+            // running.
+            val onMain = thread === android.os.Looper.getMainLooper().thread
+            if (onMain) {
+                runCatching { android.os.Process.killProcess(android.os.Process.myPid()) }
+            }
         }
     }
 

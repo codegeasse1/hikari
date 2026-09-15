@@ -334,15 +334,24 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         val key = cacheKey(item, ep)
         val cached = streamCache[key]
         if (cached != null) {
-            _liveStreams.value = cached.list
             // Fresh enough to trust: serve it with no network at all (this is
             // what makes a Play tap instant right after the detail page opened).
+            // A fresh list is safe to mirror onto the live feed, because those
+            // signed links still work.
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
-            if (!force && (cached.list.isEmpty() || fresh)) return cached.list
-            // Stale (or forced): the signed links in there are very likely
-            // dead, but keeping them on the live feed costs nothing — an
-            // already-open player can still try them while the fresh extraction
-            // below runs, and the new servers get appended as they arrive.
+            if (!force && (cached.list.isEmpty() || fresh)) {
+                _liveStreams.value = cached.list
+                return cached.list
+            }
+            // Stale or forced: the signed links in there are very likely dead.
+            // They are deliberately NOT put on the live feed — whatever lands
+            // on the feed first is what an instant-play tap starts on, so
+            // seeding the feed with expired links is exactly the "server
+            // failed, trying next … every server failed, tap Play again and it
+            // works" bug. The fresh extraction below streams the new servers to
+            // the feed instead, and the player's title card covers the wait.
+            // Callers that track their own "ready" state are still told what we
+            // are holding, so the Play button never stalls on a stale entry.
             if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
         }
         val existing = inflight[key]
