@@ -11,7 +11,10 @@ import android.graphics.Shader
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * The player's dialog glass: ONE curved surface that carries its own light.
@@ -282,15 +285,36 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // to the corner width. Evaluate the curve a little inside.
             val yTop = if (rect.top <= top) top + h * 0.06f else rect.top.toFloat()
             val yBottom = if (rect.bottom >= top + h) top + h * 0.94f else rect.bottom.toFloat()
-            // The row has to clear the curve at EVERY height it covers, so ask
-            // for the worst case: the deepest left bow and the widest right
-            // inset anywhere in the span (mid-height is the extreme for both).
+            // The row has to clear the curve at EVERY height it covers, but only
+            // where its BACKGROUND actually reaches. A row is a stadium (a
+            // 999px corner radius clamps to half its height), so at a distance
+            // |off| from the row's own middle its edge is already inset by
+            // r - sqrt(r^2 - off^2). Charging that inset against the curve is
+            // what lets the rows FOLLOW the bend: each row is pushed in only as
+            // far as its visible background needs, so the top and bottom rows
+            // sit out wide near the glass's narrow ends while the middle ones
+            // ride the bow. Asking instead for the plain worst case — every row
+            // clamped to the deepest point of the curve inside its own height,
+            // which for a 51dp row is very nearly the panel's mid-height —
+            // flattened the whole stack into one uniform column, i.e. a
+            // rectangle floating inside a warped panel.
+            val radius = min(child.height, child.width) / 2f
+            val centerY = (rect.top + rect.bottom) / 2f
             var needLeft = 0f
             var needRight = 0f
-            for (k in 0..4) {
-                val dy = yTop + (yBottom - yTop) * (k / 4f) - top
-                needLeft = max(needLeft, GlassShape.leftEdge(w, h, dy, bulgeX, concaveX))
-                needRight = max(needRight, w - GlassShape.rightEdge(w, h, dy, bulgeX, concaveX))
+            for (k in 0..8) {
+                val y = yTop + (yBottom - yTop) * (k / 8f)
+                val off = abs(y - centerY)
+                val inset = if (radius <= 0f) {
+                    0f
+                } else if (off >= radius) {
+                    radius
+                } else {
+                    radius - sqrt(radius * radius - off * off)
+                }
+                val dy = y - top
+                needLeft = max(needLeft, GlassShape.leftEdge(w, h, dy, bulgeX, concaveX) - inset)
+                needRight = max(needRight, w - GlassShape.rightEdge(w, h, dy, bulgeX, concaveX) - inset)
             }
             val targetLeft = (left + needLeft + rowGapPx).toInt()
             val targetRight = (left + w - needRight - rowGapPx).toInt()
