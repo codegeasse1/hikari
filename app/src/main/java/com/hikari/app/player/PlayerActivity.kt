@@ -25,7 +25,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
-import android.util.Base64
 import android.util.Rational
 import android.util.TypedValue
 import android.view.GestureDetector
@@ -341,6 +340,21 @@ class PlayerActivity : ComponentActivity() {
     /** True once the user has explicitly picked a subtitle/audio setting; while
      *  set, onTracksChanged must NOT re-assert the default (first) track. */
     private var userPickedSubs = false
+
+    /** The user's explicit subtitle / audio choice, remembered as a descriptor
+     *  rather than as a Tracks.Group reference. Attaching provider subtitles —
+     *  and pressing Sync — REBUILDS the media item, and a rebuilt source
+     *  exposes brand-new TrackGroup instances; an override keyed on the old
+     *  group then matches nothing, so the pick silently stopped having any
+     *  effect (the classic "I selected a subtitle and nothing ever appears",
+     *  and the same reason a second audio track never switched language).
+     *  [applyStickyPicks] re-applies these to whatever groups exist after every
+     *  rebuild. */
+    private var pickText: TrackPick? = null
+    private var pickAudio: TrackPick? = null
+
+    /** The user chose "Off" in the subtitle sheet. */
+    private var textOff = false
 
     /** 0 = fit, 1 = crop. Mirrors the Resize chip label. */
     private var resizeIndex = 0
@@ -1445,6 +1459,22 @@ class PlayerActivity : ComponentActivity() {
         val index: Int,
     )
 
+    /** A remembered subtitle/audio choice: the track's own identity (the format
+     *  language/label the provider or manifest declared), plus the position it
+     *  had in the list, so it can be found again on a rebuilt track list. */
+    private data class TrackPick(
+        val type: Int,
+        val lang: String?,
+        val label: String?,
+        val index: Int,
+    ) {
+        fun matches(format: androidx.media3.common.Format, i: Int): Boolean {
+            if (!lang.isNullOrBlank() && format.language == lang) return true
+            if (!label.isNullOrBlank() && format.label == label) return true
+            return lang.isNullOrBlank() && label.isNullOrBlank() && i == index
+        }
+    }
+
     /** "~2.6 Mbps" / "~759 kbps" — the data-use badge on a quality row. */
     private fun bitrateBadge(bitsPerSecond: Long): String? = when {
         bitsPerSecond <= 0L -> null
@@ -2476,9 +2506,18 @@ class PlayerActivity : ComponentActivity() {
 
     /** True when [group]'s track [index] is the one explicitly selected. */
     private fun isTrackSelected(player: ExoPlayer, group: Tracks.Group, index: Int): Boolean {
-        val override = player.trackSelectionParameters.overrides[group.mediaTrackGroup]
-            ?: return false
-        return override.trackIndices.any { it == index }
+        val mediaGroup = group.mediaTrackGroup
+        val override = player.trackSelectionParameters.overrides[mediaGroup]
+        if (override != null && override.trackIndices.any { it == index }) return true
+        // A rebuilt media item invalidates the override until [applyStickyPicks]
+        // re-applies it a moment later — read the remembered pick as well, so
+        // the sheet never claims the user's choice was forgotten.
+        val pick = when (group.type) {
+            C.TRACK_TYPE_TEXT -> pickText
+            C.TRACK_TYPE_AUDIO -> pickAudio
+            else -> null
+        } ?: return false
+        return pick.matches(mediaGroup.getFormat(index), index)
     }
 
     /**
@@ -2586,15 +2625,29 @@ class PlayerActivity : ComponentActivity() {
             addOptionRow(trackList, option) {
                 userPickedSubs = true
                 when (idx) {
-                    0 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                        .build()
-                    1 -> p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                        .build()
+                    0 -> {
+                        textOff = true
+                        pickText = null
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .build()
+                    }
+                    1 -> {
+                        textOff = false
+                        pickText = null
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .build()
+                    }
                     else -> {
                         val (group, ti) = indexMap[idx] ?: return@addOptionRow
+                        val format = group.mediaTrackGroup.getFormat(ti)
+                        textOff = false
+                        // Remember WHAT was picked (language/label), not the
+                        // TrackGroup object — the group dies with the next
+                        // re-prepare, the language does not.
+                        pickText = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, ti)
                         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -2731,14 +2784,37 @@ class PlayerActivity : ComponentActivity() {
      * Audio track switcher — for dual-audio releases (Hindi/Tamil/Telugu audio
      * on the same video, etc). Lists every audio group the current source
      * exposes, plus Default, and switches with an ExoPlayer track override.
+     *
+     * A language an extension delivers as its OWN stream rather than as an
+     * extra rendition inside one manifest ("MovieBox (Hindi Audio) 1080p",
+     * "… (Original Audio) 1080p") is offered here too, as a server row: the
+     * track list alone shows a single track on a release that plainly has two
+     * audio languages, and reaching the other language otherwise meant going
+     * through the server sheet and losing your place in the film.
+     *
      * The button sits in the SAME bottom chip row as Quality/Sub so it never
      * overlaps any other control.
      */
-    private fun showAudioDialog() {
+    private fun showAudioDialog(waitedForTracks: Boolean = false) {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        if (groups.isEmpty()) {
-            Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
+        // A manifest's audio renditions are only known once it has been parsed,
+        // so opening this sheet during the first buffer used to report a single
+        // track — or none at all — on a stream that really carries two. Give
+        // the player a moment to finish parsing before answering.
+        if (groups.isEmpty() && !waitedForTracks && p.playbackState != Player.STATE_READY) {
+            lifecycleScope.launch {
+                for (i in 0 until 12) {
+                    val done = player?.let { pl ->
+                        pl.playbackState == Player.STATE_READY ||
+                            pl.currentTracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }
+                    } ?: true
+                    if (done) break
+                    delay(200)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                showAudioDialog(waitedForTracks = true)
+            }
             return
         }
         val rows = mutableListOf<TrackRow>()
@@ -2780,18 +2856,45 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
         }
+        // Audio languages the extension ships as separate servers, so the
+        // language can be switched from HERE and the position kept.
+        val variantMap = HashMap<Int, Int>()
+        audioVariantsFor(currentIndex).forEach { (tag, index) ->
+            variantMap[options.size] = index
+            options.add(
+                GlassOption(
+                    label = tag,
+                    sub = if (index == currentIndex) "Playing now \u2014 " + sources[index].name
+                    else sources[index].name,
+                    badge = "Server",
+                    selected = index == currentIndex,
+                )
+            )
+        }
+        if (groups.isEmpty() && variantMap.isEmpty()) {
+            Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
+            return
+        }
         showGlassMenu(
             "Audio",
             options,
-            hint = "Some releases ship more than one audio track.",
+            hint = if (variantMap.isEmpty()) "Some releases ship more than one audio track."
+            else "Pick a language \u2014 some servers carry the audio.",
             iconRes = R.drawable.ic_audio,
         ) { which ->
+            variantMap[which]?.let { switchAudioVariant(it); return@showGlassMenu }
             if (which == 0) {
+                pickAudio = null
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                     .build()
             } else {
                 val (group, ti) = indexMap[which] ?: return@showGlassMenu
+                val format = group.mediaTrackGroup.getFormat(ti)
+                // Remember the LANGUAGE, not the TrackGroup: the group is
+                // replaced when the provider subtitles are attached, the
+                // language survives.
+                pickAudio = TrackPick(C.TRACK_TYPE_AUDIO, format.language, format.label, ti)
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
@@ -2799,6 +2902,89 @@ class PlayerActivity : ComponentActivity() {
                     .build()
             }
         }
+    }
+
+    /** Language words an extension bakes into a server name when it ships a
+     *  release in several audio languages as separate streams. */
+    private val audioLangWords = listOf(
+        "hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "marathi",
+        "punjabi", "gujarati", "bhojpuri", "urdu", "english", "original", "multi",
+    )
+
+    /** Tokens a name may carry after its audio marker ("1080p", "Dub") — skipped
+     *  when looking for a bare language word at the end of a name. */
+    private val audioTrailerWords = setOf(
+        "audio", "dub", "dubbed", "dual", "1080p", "720p", "480p", "2160p", "4k",
+        "hd", "fhd", "sd", "uhd",
+    )
+
+    /** The audio language a server name advertises ("MovieBox (Hindi Audio)
+     *  1080p" -> "Hindi Audio"), or null when the name says nothing about it.
+     *  A bracketed marker is taken as-is; a bare language word only counts as
+     *  the last meaningful token, so a title that merely CONTAINS the word
+     *  "Hindi" — or a server named "TamilBlasters · Server 1" — never reads as
+     *  an audio variant. */
+    private fun audioTagOf(name: String): String? {
+        Regex("""[\(\[]([^\)\]]*?(?:audio|dub)[^\)\]]*?)[\)\]]""", RegexOption.IGNORE_CASE)
+            .find(name)?.let { return it.groupValues[1].trim() }
+        val tokens = name.split(Regex("[\\s\u00B7|\\-_/]+")).filter { it.isNotBlank() }
+        for (i in tokens.indices.reversed()) {
+            val token = tokens[i].trim(',', ':', '.')
+            val low = token.lowercase()
+            if (low in audioTrailerWords) continue
+            if (low in audioLangWords) return token
+            break
+        }
+        return null
+    }
+
+    /** A server name with its audio marker, brackets and resolution suffix
+     *  stripped — two servers of one film in different languages reduce to the
+     *  same string, which is how the variants are matched. */
+    private fun audioBaseName(name: String, tag: String): String {
+        val at = name.indexOf(tag, ignoreCase = true)
+        val stripped = if (at >= 0) name.removeRange(at, at + tag.length) else name
+        return stripped
+            .replace(Regex("""[\(\)\[\]]"""), " ")
+            .replace(Regex("(?i)\\b\\d{3,4}p\\b"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+    }
+
+    /** Servers for the CURRENT title that differ from each other only by audio
+     *  language — the "(Hindi Audio)" / "(Original Audio)" pair an extension
+     *  emits when it delivers a multi-audio film as several streams. Kept
+     *  deliberately conservative: a candidate only counts when at least two
+     *  servers reduce to the same base name, so a stray language word can never
+     *  invent a row. Returns (display tag, source index) pairs. */
+    private fun audioVariantsFor(activeIndex: Int): List<Pair<String, Int>> {
+        val activeTag = sources.getOrNull(activeIndex)?.let { audioTagOf(it.name) }
+        val activeBase = if (activeTag != null) audioBaseName(sources[activeIndex].name, activeTag) else null
+        val candidates = sources.mapIndexedNotNull { i, s ->
+            val tag = audioTagOf(s.name) ?: return@mapIndexedNotNull null
+            val base = audioBaseName(s.name, tag)
+            if (base.length < 3) return@mapIndexedNotNull null
+            Triple(i, tag, base)
+        }.filter { activeBase == null || it.third == activeBase }
+        if (candidates.size < 2) return emptyList()
+        return candidates.map { (i, tag, _) -> tag.replaceFirstChar { it.uppercase() } to i }
+    }
+
+    /** Switches to a sibling server that carries a different audio language,
+     *  keeping the position in the film (and the remembered subtitle pick). */
+    private fun switchAudioVariant(index: Int) {
+        if (index == currentIndex || index !in sources.indices) return
+        val position = player?.currentPosition ?: 0L
+        if (position > 2_000L) {
+            // Same film, same place: an audio change must not restart it.
+            startPositionMs = position
+            seekPending = true
+        }
+        noSubsRetry = false
+        val name = sources[index].name
+        playSource(index)
+        Toast.makeText(this, "Switching audio \u2014 $name", Toast.LENGTH_SHORT).show()
     }
 
     /** Resets the per-server header walk, so the next attempt starts from the
@@ -3252,13 +3438,18 @@ class PlayerActivity : ComponentActivity() {
         // Local downloads read off the filesystem through DefaultDataSource
         // (which handles file:// and any local .m3u8's relative segment paths);
         // network sources keep the header-aware OkHttp factory.
-        val dataSourceFactory: DataSource.Factory = if (src.local) {
-            DefaultDataSource.Factory(this)
-        } else {
-            OkHttpDataSource.Factory(client)
-                .setUserAgent(ua)
-                .setDefaultRequestProperties(sourceHeaders)
-        }
+        val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(client)
+            .setUserAgent(ua)
+            .setDefaultRequestProperties(sourceHeaders)
+        // DefaultDataSource sits IN FRONT of the OkHttp factory, and that is
+        // what makes the provider subtitles work at all: they are handed to
+        // ExoPlayer as local (file://) URIs, and OkHttpDataSource alone only
+        // speaks http(s) — it throws on any other scheme, so every subtitle
+        // listed in the picker failed to load and drew nothing. DefaultDataSource
+        // routes file:/data:/content: locally and hands everything else to
+        // OkHttp, so the network behaviour (UA, headers, retry policy) is
+        // unchanged.
+        val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(this, networkFactory)
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest
@@ -3323,12 +3514,7 @@ class PlayerActivity : ComponentActivity() {
         // URLs that return junk like "1", which media3 treats as a fatal parse
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
-        val mime = when {
-            src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
-                MimeTypes.APPLICATION_M3U8
-            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
-            else -> null
-        }
+        val mime = mainMimeOf(src)
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
 
@@ -3375,27 +3561,15 @@ class PlayerActivity : ComponentActivity() {
         val playedIndex = index
         lifecycleScope.launch {
             try {
-                val valid = withContext(Dispatchers.IO) {
-                    src.subtitles.mapNotNull { s ->
-                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
-                        s to encodeSubtitle(shiftSubtitleText(raw, subtitleOffsetMs, s.url))
-                    }
-                }
-                if (valid.isEmpty()) return@launch
+                val configs = buildSubtitleConfigs(src)
+                if (configs.isEmpty()) return@launch
                 if (currentIndex != playedIndex) return@launch
                 val p = player ?: return@launch
-                val configs = valid.map { (s, data) ->
-                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(data))
-                        .setMimeType(mimeFor(s.url))
-                        .setLanguage(s.lang)
-                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                        .build()
-                }
-                val item = MediaItem.Builder()
-                    .setUri(src.url)
-                    .setSubtitleConfigurations(configs)
-                if (mime != null) item.setMimeType(mime)
-                p.setMediaItem(item.build(), false)
+                // Re-prepare with the validated subtitle tracks. This rebuilds
+                // the media item, so the track groups are brand new — the
+                // user's remembered audio/subtitle pick is re-applied to them
+                // by applyStickyPicks from onTracksChanged.
+                p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle attach failed", t)
@@ -3540,10 +3714,6 @@ class PlayerActivity : ComponentActivity() {
         return text
     }
 
-    private fun encodeSubtitle(text: String): String =
-        "data:text/plain;base64," +
-            Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-
     /** Shifts every cue timestamp in an SRT/VTT/ASS subtitle by offsetMs
      *  (negative = earlier / "slow" the subtitles, positive = later / "fast"),
      *  clamped to ≥ 0. Unrecognised formats are returned unchanged. */
@@ -3608,35 +3778,98 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val playedIndex = currentIndex
-        val mime = when {
-            src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
-                MimeTypes.APPLICATION_M3U8
-            src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
-            else -> null
-        }
         lifecycleScope.launch {
             try {
-                val configs = withContext(Dispatchers.IO) {
-                    src.subtitles.mapNotNull { s ->
-                        val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
-                        val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
-                        MediaItem.SubtitleConfiguration.Builder(Uri.parse(encodeSubtitle(shifted)))
-                            .setMimeType(mimeFor(s.url))
-                            .setLanguage(s.lang)
-                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                            .build()
-                    }
-                }
+                val configs = buildSubtitleConfigs(src)
                 if (configs.isEmpty() || currentIndex != playedIndex) return@launch
-                val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
-                if (mime != null) item.setMimeType(mime)
-                p.setMediaItem(item.build(), false)
+                p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle sync attach failed", t)
             }
         }
     }
+
+    /** The main-media mime for [src] (HLS/DASH), or null to let media3 sniff the
+     *  container itself. */
+    private fun mainMimeOf(src: PlayerSource): String? = when {
+        src.isM3u8 || src.url.contains(".m3u8", true) || src.url.contains("master.txt", true) ->
+            MimeTypes.APPLICATION_M3U8
+        src.isMpd || src.url.contains(".mpd", true) -> MimeTypes.APPLICATION_MPD
+        else -> null
+    }
+
+    /** The playback item for [src] with [configs] attached as side-loaded
+     *  subtitles (and the source's own mime preserved). */
+    private fun mediaItemWithSubtitles(
+        src: PlayerSource,
+        configs: List<MediaItem.SubtitleConfiguration>,
+    ): MediaItem {
+        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
+        mainMimeOf(src)?.let { item.setMimeType(it) }
+        return item.build()
+    }
+
+    /** Fetches, validates, re-times and caches this source's provider subtitles,
+     *  returning the configurations to hand ExoPlayer. Runs on an IO thread. */
+    private suspend fun buildSubtitleConfigs(src: PlayerSource): List<MediaItem.SubtitleConfiguration> =
+        withContext(Dispatchers.IO) {
+            src.subtitles.mapNotNull { s ->
+                val raw = fetchSubtitleText(s, src.headers) ?: return@mapNotNull null
+                val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
+                val mime = subtitleMimeOf(shifted, s.url)
+                val uri = writeSubtitleFile(shifted, s.url, mime) ?: return@mapNotNull null
+                MediaItem.SubtitleConfiguration.Builder(uri)
+                    .setMimeType(mime)
+                    .setLanguage(s.lang)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+            }
+        }
+
+    /** Which subtitle mime to hand ExoPlayer, sniffed from the CONTENT first and
+     *  the URL second. The URL is not trustworthy: providers serve .srt behind
+     *  extension-less API paths and .vtt behind "?format=srt" query strings, and
+     *  media3 picks its subtitle parser from this mime — a wrong one makes the
+     *  track parse to zero cues, which is exactly "the subtitle is selected but
+     *  nothing ever appears". */
+    private fun subtitleMimeOf(text: String, url: String): String {
+        val head = text.take(4000)
+        return when {
+            head.contains("WEBVTT", true) -> MimeTypes.TEXT_VTT
+            head.contains("Script Info", true) || head.contains("Dialogue:", true) -> MimeTypes.TEXT_SSA
+            head.contains("<tt", true) && head.contains("<p", true) -> MimeTypes.APPLICATION_TTML
+            Regex("\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3}\\s*-->").containsMatchIn(head) ->
+                if (url.contains(".vtt", true)) MimeTypes.TEXT_VTT else MimeTypes.APPLICATION_SUBRIP
+            else -> mimeFor(url)
+        }
+    }
+
+    /** Writes a validated subtitle into the app's subtitle cache and returns its
+     *  file:// URI — a local file is what DefaultDataSource can read, and unlike
+     *  a huge base64 data: URI it costs no extra copy of the subtitle inside the
+     *  MediaItem. Returns null when the file cannot be written. */
+    private fun writeSubtitleFile(text: String, url: String, mime: String): Uri? = runCatching {
+        val ext = when (mime) {
+            MimeTypes.TEXT_VTT -> "vtt"
+            MimeTypes.TEXT_SSA -> "ass"
+            MimeTypes.APPLICATION_TTML -> "ttml"
+            else -> "srt"
+        }
+        val dir = java.io.File(cacheDir, "subs").apply { mkdirs() }
+        // The sync offset is part of the name so a re-timed subtitle gets a
+        // fresh URI and can never be served from a stale read.
+        val stamp = Integer.toHexString((url + "|" + subtitleOffsetMs + "|" + text.length).hashCode())
+        val file = java.io.File(dir, "sub_$stamp.$ext")
+        file.writeText(text, Charsets.UTF_8)
+        // Yesterday's session leftovers are dead weight — clear them out as we
+        // write today's.
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        dir.listFiles()?.forEach { f ->
+            if (f != file && f.lastModified() < cutoff) runCatching { f.delete() }
+        }
+        Uri.fromFile(file)
+    }.getOrNull()
 
     private val listener = object : Player.Listener {
         // Auto-rotate to match the video: landscape videos play landscape,
@@ -3662,8 +3895,10 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
-            selectFirstTextTrack(player ?: return, tracks)
+            val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)
+            selectFirstTextTrack(player ?: return, tracks, textApplied)
         }
 
         override fun onRenderedFirstFrame() {
@@ -4291,18 +4526,66 @@ class PlayerActivity : ComponentActivity() {
         errorPanel?.visibility = View.VISIBLE
     }
 
-    private fun selectFirstTextTrack(player: ExoPlayer, tracks: Tracks) {
+    private fun selectFirstTextTrack(player: ExoPlayer, tracks: Tracks, pickApplied: Boolean = false) {
         if (userPickedSubs) return
+        // A remembered pick that IS present on this source outranks the default
+        // — without this, the auto-select re-asserts itself on the rebuilt
+        // track list and wipes the subtitle the user just chose. When the pick
+        // isn't available here (a failover to a server without that language),
+        // the source's own best track is shown instead of nothing.
+        if (pickApplied || textOff) return
         for (group in tracks.groups) {
-            if (group.type == C.TRACK_TYPE_TEXT) {
-                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                    .setOverrideForType(
-                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(0))
-                    )
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            val mediaGroup = group.mediaTrackGroup
+            // Prefer an English track when the stream offers several: the first
+            // one is often a forced/foreign track that only captions a line or
+            // two of the whole film.
+            val best = (0 until mediaGroup.length).firstOrNull { i ->
+                val f = mediaGroup.getFormat(i)
+                (f.language ?: "").startsWith("en", true) ||
+                    (f.language ?: "").contains("english", true) ||
+                    (f.label ?: "").contains("english", true)
+            } ?: 0
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setOverrideForType(
+                    TrackSelectionOverride(mediaGroup, ImmutableList.of(best))
+                )
+                .build()
+            return
+        }
+    }
+
+    /** Re-applies the user's remembered subtitle / audio pick to the CURRENT
+     *  track list, returning whether the pick is in effect afterwards.
+     *  Attaching provider subtitles — and pressing Sync — rebuilds the media
+     *  item, and a rebuilt source exposes brand-new TrackGroup instances; an
+     *  override keyed on the old group matches nothing, which is exactly how a
+     *  chosen subtitle stopped having any effect and a second audio track never
+     *  switched. Never fights a pick that is already in effect, so it is safe
+     *  to call on every track change. */
+    private fun applyStickyPicks(type: Int): Boolean {
+        val p = player ?: return false
+        val pick = if (type == C.TRACK_TYPE_TEXT) pickText else pickAudio
+        if (pick == null) return false
+        if (type == C.TRACK_TYPE_TEXT && textOff) return false
+        val groups = p.currentTracks.groups.filter { it.type == type }
+        if (groups.isEmpty()) return false
+        for (group in groups) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                if (!pick.matches(mediaGroup.getFormat(i), i)) continue
+                val params = p.trackSelectionParameters
+                if (params.overrides[mediaGroup]?.trackIndices?.contains(i) == true) return true
+                p.trackSelectionParameters = params.buildUpon()
+                    .setTrackTypeDisabled(type, false)
+                    .clearOverridesOfType(type)
+                    .setOverrideForType(TrackSelectionOverride(mediaGroup, ImmutableList.of(i)))
                     .build()
-                return
+                return true
             }
         }
+        return false
     }
 
     private fun mimeFor(url: String): String = when {
