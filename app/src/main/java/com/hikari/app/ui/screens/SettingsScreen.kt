@@ -77,6 +77,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Userscript
@@ -88,6 +89,7 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.UpdateDialog
+import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
@@ -169,7 +171,7 @@ private fun SettingsCard(
 }
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
@@ -184,6 +186,7 @@ fun SettingsScreen() {
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
     val hideContinueFlow = remember { app.store.hideContinueFlow() }
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
+    val installedProviders by app.providers.providers.collectAsState()
     val listState = rememberLazyListState()
 
     // A folder opens at its own top: without this, opening one from partway
@@ -207,7 +210,14 @@ fun SettingsScreen() {
                     item { SettingsCard { SlowConnectionCard(app) } }
                 }
                 SettingsFolder.SOURCES -> {
-                    item { SettingsCard(top = 2.dp) { UniversalExtractionCard(app) } }
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            ExtensionsShortcutCard(installedProviders.size) {
+                                Routes.navigateTab(nav, Routes.EXTENSIONS)
+                            }
+                        }
+                    }
+                    item { SettingsCard { UniversalExtractionCard(app) } }
                     item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
                     item { SettingsCard { UserscriptsCard(app) } }
                 }
@@ -544,6 +554,75 @@ private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     folder.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The door to the Extensions tab, put in the folder where the user asks "where
+ * do I add extensions?". This folder explains how sources are found; the
+ * installing/browsing itself lives on the Extensions tab, so this card hands
+ * the user over to it instead of describing it from a distance.
+ */
+@Composable
+private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
+    GlassCard(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Extension,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Extensions",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    if (installed > 0) {
+                        "$installed installed — browse repos, install or remove extensions."
+                    } else {
+                        "Browse repos and install .hiki / CloudStream extensions."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

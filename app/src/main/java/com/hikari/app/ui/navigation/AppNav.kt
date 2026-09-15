@@ -359,7 +359,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             composable(Routes.LIBRARY) { LibraryScreen(nav) }
             composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
-            composable(Routes.SETTINGS) { SettingsScreen() }
+            composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(
                 route = Routes.CATALOG,
                 arguments = listOf(
