@@ -1,11 +1,3 @@
-# Changelog
-
-Notable changes to **Hikari**, newest first. Every version here is published on
-the [releases page](https://github.com/codegeasse1/hikari/releases) with a signed
-APK attached (`hikari.apk`).
-
----
-
 ## 0.3.68
 
 The big one: a new look everywhere, a real download system, server sections, a
@@ -146,14 +138,3 @@ where they open, so nothing surprises you.
   (`第2季`).
 - In-app fullscreen no longer leaves a blank band under the status bar after
   coming back from the background.
-
----
-
-## 0.3.67 and earlier
-
-- Stremio addons, universal scrapers (HTML selector rules + JSON-API mode), and
-  CloudStream `.cs3` plugins.
-- Media3 player with per-source headers, subtitles, HLS/DASH and seek controls.
-- Search across every installed extension, with multi-page results.
-- Library (favourites), History, and Continue Watching.
-- Glass UI for Extensions and Settings, extension folder views, repo browsing.
