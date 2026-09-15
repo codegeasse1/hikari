@@ -264,6 +264,7 @@ class PlayerActivity : ComponentActivity() {
     private var favBtn: ImageButton? = null
     private var resizeBtn: ImageButton? = null
     private var skipBtn: TextView? = null
+    private var rotateBtn: TextView? = null
     private var unlockBtn: TextView? = null
     private var playHint: TextView? = null
 
@@ -482,6 +483,7 @@ class PlayerActivity : ComponentActivity() {
         lockBtn = findViewById(R.id.lock_btn)
         resizeBtn = findViewById(R.id.resize_btn)
         skipBtn = findViewById(R.id.skip_btn)
+        rotateBtn = findViewById(R.id.rotate_btn)
         unlockBtn = findViewById(R.id.unlock_btn)
         errorPanel = findViewById(R.id.error_panel)
         errorText = findViewById(R.id.error_text)
@@ -614,6 +616,9 @@ class PlayerActivity : ComponentActivity() {
 
         lockBtn?.setOnClickListener { lockControls() }
         resizeBtn?.setOnClickListener { cycleResize() }
+        // Rotate is the same action as the gear menu's "Rotate screen" row, so
+        // it is reachable without opening a dialog.
+        rotateBtn?.setOnClickListener { cycleRotation() }
         skipBtn?.setOnClickListener {
             val p = player ?: return@setOnClickListener
             val target = (p.currentPosition + 85_000L).coerceIn(
@@ -1648,10 +1653,13 @@ class PlayerActivity : ComponentActivity() {
      * into. The panel paints that glow along its own silhouette (see
      * [CurvedGlassPanel]), so a dialog is just the panel plus this much space
      * around it — there is no separate ring view parked behind it. Wide enough
-     * for the widest glow stroke (44dp) to fade out before the view edge.
+     * for the widest glow stroke (44dp) to fade out before the view edge: its
+     * half-width is 22dp, so 26dp covers it with a little to spare. It is also
+     * the visible gap between the hint line above the panel and the panel's own
+     * top edge, so it is kept as tight as the glow allows.
      */
     private val glassHaloPx: Int
-        get() = (30 * resources.displayMetrics.density).toInt()
+        get() = (26 * resources.displayMetrics.density).toInt()
 
     /**
      * Presents the rounded glass panel that shells every player dialog. Above
@@ -1675,7 +1683,7 @@ class PlayerActivity : ComponentActivity() {
         hint: String? = null,
         iconRes: Int = 0,
         cancelable: Boolean = true,
-        rowHost: ViewGroup? = null,
+        rowHosts: List<ViewGroup> = emptyList(),
     ): TextView? {
         val density = resources.displayMetrics.density
         val halo = glassHaloPx
@@ -1698,8 +1706,10 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             // Start the line in from the panel's own left edge (the halo is
-            // where the panel's glow lives), not from the window's.
-            setPadding(halo + (8 * density).toInt(), 0, halo, (8 * density).toInt())
+            // where the panel's glow lives), not from the window's. No bottom
+            // padding: the halo alone is the gap to the panel, so the hint sits
+            // right on top of the glass instead of floating well above it.
+            setPadding(halo + (8 * density).toInt(), 0, halo, 0)
             if (hintView != null) {
                 if (iconRes != 0) {
                     addView(ImageView(this@PlayerActivity).apply {
@@ -1734,26 +1744,35 @@ class PlayerActivity : ComponentActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        // A permanent thin scrollbar makes it obvious the panel scrolls — the
+        // old fixed-height panel hid its last rows with no affordance at all.
+        val scroll = ScrollView(this).apply {
+            addView(content)
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+        }
+
         val panel = CurvedGlassPanel(this).apply {
             haloPx = halo.toFloat()
             startColor = accentStartColor
             midColor = accentMidColor
             endColor = accentEndColor
             // The rows bend to the panel's curve (see CurvedGlassPanel). The
-            // caller passes the container that actually holds them when the
-            // whole list fits; otherwise the panel bends its own child (the
-            // scroll view) as one block, which is the only stable thing to do
-            // for a list that scrolls.
-            this.rows = rowHost
+            // caller hands over the containers that actually hold them — when
+            // the whole list fits that is the row container itself, and the row
+            // stack's outline then IS the shape. A dialog with rows in two
+            // places (track list + control rows) hands over both.
+            rowHosts.forEach { bendHost(it) }
         }
-        panel.addView(ScrollView(this).apply {
-            addView(content)
-            // A permanent thin scrollbar makes it obvious the panel scrolls — the
-            // old fixed-height panel hid its last rows with no affordance at all.
-            isVerticalScrollBarEnabled = true
-            isScrollbarFadingEnabled = false
-            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        // Rows are bent to the curve at their CURRENT height inside the panel, so
+        // a scroll changes which part of the curve each one sits on. Re-bend on
+        // every scroll: without this a row that scrolls up into the panel keeps
+        // the (wider) margins it was given while it was still off-screen, and
+        // the bowed edges slice it — which is what cut the lower quality rows
+        // ("1080p" -> "0p") in a list long enough to scroll.
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> panel.rebend() }
 
         val win = windowSize()
         // Width of the PANEL's own silhouette (the halo is added around it), so
@@ -1861,7 +1880,7 @@ class PlayerActivity : ComponentActivity() {
             options.size * 4f + 14f +
             (if (!message.isNullOrBlank()) 42f else 0f)
         onDialog?.invoke(dialog)
-        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHost = list)
+        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHosts = listOf(list))
         if (hintView != null) onHint?.invoke(hintView)
         return dialog
     }
@@ -2303,15 +2322,24 @@ class PlayerActivity : ComponentActivity() {
                 controls.forEach { addView(it) }
             }
 
+        // The three control rows live in their own container so the panel can
+        // bend them to the curve independently of the track list above them
+        // (see CurvedGlassPanel.bendHost). Registering a container AND one of
+        // its ancestors would bend the same rows twice.
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(trackList, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ))
+            addView(controls, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
         }
         fun addControl(row: LinearLayout) {
-            root.addView(row, LinearLayout.LayoutParams(
+            controls.addView(row, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 setMargins(
@@ -2351,7 +2379,7 @@ class PlayerActivity : ComponentActivity() {
             1000f,
             hint = "Applies while captions are on.",
             iconRes = R.drawable.ic_subtitles,
-            rowHost = root,
+            rowHosts = listOf(trackList, controls),
         )
     }
 

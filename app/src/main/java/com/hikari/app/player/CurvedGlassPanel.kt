@@ -32,11 +32,11 @@ import kotlin.math.max
  *    ring view parked behind the panel, which is what the user kept pointing
  *    at: a box with a curve behind it, instead of one shape whose edge IS the
  *    curve.
- *  - its rows follow the bend. [rows] names the container holding the rows
- *    (which may be nested, e.g. a list inside a scroll view); each row is pulled
- *    in to the silhouette's own left and right edges at its own height, so the
- *    pill stack's envelope IS the shape instead of a uniform stack sitting
- *    inside a curved glass.
+ *  - its rows follow the bend. [bendHost] names each container whose children
+ *    are rows (which may be nested, e.g. a list inside a scroll view); each row
+ *    is pulled in to the silhouette's own left and right edges at its own
+ *    height, so the pill stack's envelope IS the shape instead of a uniform
+ *    stack sitting inside a curved glass.
  *
  * Rows are positioned by adjusting their margins, measured from where they
  * actually landed (`offsetDescendantRectToMyCoords`) rather than from a guess,
@@ -52,14 +52,22 @@ import kotlin.math.max
 class CurvedGlassPanel(context: Context) : LinearLayout(context) {
 
     /**
-     * The container whose CHILDREN are the visible rows. Defaults to this panel
-     * itself, which is right when the panel holds the rows directly (the
-     * progress panel). When the rows are inside a scroll view, this should name
-     * the row container (so its rows bend individually), never the scroll view
-     * (which would bake in the insets for scroll position 0 and be wrong for
-     * every scrolled row).
+     * The containers whose CHILDREN are the visible rows. Each is bent
+     * independently, so a dialog whose rows live in two places (a track list
+     * plus a stack of control rows) can hand both over and every row follows the
+     * curve. When empty, the panel bends its own children, which is right for a
+     * panel that holds its content directly (the progress panel) or one whose
+     * single child is a scroll view.
+     *
+     * Never register a container AND one of its ancestors: the ancestor would be
+     * bent as one block and could clip the rows the inner container then moves.
      */
-    var rows: ViewGroup? = null
+    private val hosts = ArrayList<ViewGroup>()
+
+    /** Registers [container] as a row container: its children bend to the curve. */
+    fun bendHost(container: ViewGroup) {
+        if (container !== this && !hosts.contains(container)) hosts.add(container)
+    }
 
     /** How far the right edge bulges outward — see [GlassShape.BULGE_X]. */
     var bulgeX: Float = GlassShape.BULGE_X
@@ -211,6 +219,17 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     }
 
     /**
+     * Re-bends the rows after something other than a size change moved them —
+     * in practice a scroll, which changes the height inside the panel that each
+     * row sits at, and therefore which part of the curve it has to clear. The
+     * pass cap is reset so a long scroll can never exhaust it.
+     */
+    fun rebend() {
+        passes = 0
+        bendRows()
+    }
+
+    /**
      * Pulls every row's edges in to the silhouette at that row's own height.
      * The pane is asymmetric — the left boundary moves with height in the
      * opposite direction to the right one — so each side is measured from its
@@ -218,16 +237,43 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      * scrolling list) are simply left alone.
      */
     private fun bendRows() {
-        val host = rows ?: this
+        var shifted = false
+        if (hosts.isEmpty()) {
+            shifted = bendHostChildren(this)
+        } else {
+            for (i in hosts.indices) shifted = bendHostChildren(hosts[i]) || shifted
+        }
+        // One extra pass to adopt the new margins; the pass after that finds
+        // nothing left to change. The cap is belt-and-braces against a view
+        // whose own layout keeps moving underneath us (a scrolling list).
+        if (shifted && passes < PASS_LIMIT) {
+            passes++
+            requestLayout()
+        }
+    }
+
+    /** Bends the visible children of one row container. Returns true if any of
+     *  them had to move. */
+    private fun bendHostChildren(host: ViewGroup): Boolean {
         val left = shapeLeft()
         val top = shapeTop()
         val w = shapeRight() - left
         val h = shapeBottom() - top
-        if (w <= 0f || h <= 0f || host.childCount == 0) return
+        if (w <= 0f || h <= 0f || host.childCount == 0) return false
         var shifted = false
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i)
             if (child.visibility != View.VISIBLE) continue
+            if (child.width <= 0 || child.height <= 0) continue
+            // offsetDescendantRectToMyCoords ADDS the descendant's own offset to
+            // the rect it is handed, so the rect has to be reseeded with the
+            // child's bounds every single time. Reusing it across iterations
+            // (as this used to) compounds row 1's offset into row 2, row 2's into
+            // row 3 and so on, so only the first row of each container ended up
+            // on the curve — every later row kept the container's full width and
+            // was sliced off by the bowed left and right edges, which is exactly
+            // the "the curve is cutting the text" the panel kept showing.
+            rect.set(0, 0, child.width, child.height)
             offsetDescendantRectToMyCoords(child, rect)
             if (rect.bottom <= top || rect.top >= top + h) continue
             // A block that spans the panel's full height IS the scrolling
@@ -239,11 +285,10 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // The row has to clear the curve at EVERY height it covers, so ask
             // for the worst case: the deepest left bow and the widest right
             // inset anywhere in the span (mid-height is the extreme for both).
-            val cy = (yTop + yBottom) / 2f
             var needLeft = 0f
             var needRight = 0f
-            for (yy in floatArrayOf(yTop, cy, yBottom)) {
-                val dy = yy - top
+            for (k in 0..4) {
+                val dy = yTop + (yBottom - yTop) * (k / 4f) - top
                 needLeft = max(needLeft, GlassShape.leftEdge(w, h, dy, bulgeX, concaveX))
                 needRight = max(needRight, w - GlassShape.rightEdge(w, h, dy, bulgeX, concaveX))
             }
@@ -272,13 +317,7 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 shifted = true
             }
         }
-        // One extra pass to adopt the new margins; the pass after that finds
-        // nothing left to change. The cap is belt-and-braces against a view
-        // whose own layout keeps moving underneath us (a scrolling list).
-        if (shifted && passes < 4) {
-            passes++
-            requestLayout()
-        }
+        return shifted
     }
 
     private fun withAlpha(color: Int, fraction: Float): Int {
@@ -293,6 +332,10 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         val ALPHA = floatArrayOf(0.09f, 0.14f, 0.22f, 0.35f, 0.53f, 0.75f, 0.93f)
         const val CORE_STROKE_DP = 1.6f
         const val CORE_ALPHA = 0.9f
+        /** How many extra layout passes a bend is allowed to ask for before it
+         *  gives up (each pass should settle, this only bounds a view whose own
+         *  layout keeps moving underneath us). */
+        const val PASS_LIMIT = 4
         val CORE_TOP = Color.rgb(215, 248, 255)
         val CORE_MID = Color.rgb(205, 195, 255)
         val CORE_BOTTOM = Color.rgb(245, 205, 255)

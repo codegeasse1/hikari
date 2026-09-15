@@ -258,16 +258,22 @@
           android:scrollbars="none"
           android:overScrollMode="never"
           android:clipToPadding="false"
+          android:fillViewport="true"
           android:paddingStart="2dp"
           android:paddingEnd="2dp">
 
+        <!-- No layout_gravity here: with fillViewport the row is stretched to
+             the viewport when it fits, and gravity=center inside it centres the
+             pills on the screen's centre line. A layout_gravity of center would
+             instead park an over-wide row at a NEGATIVE x (its left end clipped
+             and unreachable), which is what made the bar look like it led to the
+             right. -->
         <LinearLayout
             android:id="@+id/player_pills"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_gravity="center"
+            android:gravity="center"
             android:layoutDirection="ltr">
 
           <TextView
@@ -307,6 +313,12 @@
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_subtitles"
               android:text="Subtitles" />
+
+          <TextView
+              android:id="@+id/rotate_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_rotate"
+              android:text="Rotate" />
 
           <TextView
               android:id="@+id/skip_btn"
