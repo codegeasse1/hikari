@@ -144,7 +144,7 @@ object TmdbMeta {
         return listOf(
             "season $n", "season$n", "$ordinal season",
             "part $n", "part$n",
-            "第$cn季", "第$n季", "第$cn部", "第$n部", "第$cn篇", "第$n篇",
+            "第${cn}季", "第${n}季", "第${cn}部", "第${n}部", "第${cn}篇", "第${n}篇",
         )
     }
 
