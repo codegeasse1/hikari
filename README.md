@@ -333,9 +333,9 @@ gradle assembleDebug
   `https://www.youtube.com/watch?v=<key>` link (the YouTube app again when its
   App Links are verified, otherwise a browser), and Hikari's own
   `WebViewActivity` only as a last resort — `ui/ExternalLinks.openYouTubeVideo`.
-  The WebView used to be the target, but YouTube redirects `www.youtube.com` to
-  `m.youtube.com`, and the WebView's redirect protection (Settings → WebView
-  safety) blocks that hop, so the trailer page just sat on a black screen. The
+  Keep it that way: Hikari's WebView is for pages Hikari renders itself, whereas
+  a trailer belongs in the user's own YouTube app, with their account, full
+  quality and their familiar player gestures. The
   resolver never probes with `resolveActivity`: on API 30+ package visibility
   would report YouTube as missing unless it is declared in `<queries>`, while
   starting the implicit intent works regardless. YouTube-hosted STREAM sources
@@ -349,8 +349,8 @@ gradle assembleDebug
   the `TELEGRAM_CHANNEL_URL` constant: `tg://resolve?domain=<handle>` first,
   then the plain `https://t.me/...` link (the Telegram app again when its App
   Links are verified, otherwise the user's browser). It never falls back to
-  Hikari's WebView — Telegram's t.me pages hand off to the app, and the
-  WebView's redirect protection turns that into a dead end. The Settings
+  Hikari's WebView — Telegram is a native messaging app, so handing the user
+  straight to it is both nicer and the intended path. The Settings
   Telegram row uses the same helper.
 - **System back must unwind in-screen sub-views.** The Extensions and Settings
   screens hold their sub-pages in local state, not nav destinations, so without

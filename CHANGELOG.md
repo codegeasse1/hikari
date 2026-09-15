@@ -11,13 +11,30 @@ APK attached (`hikari.apk`).
 The big one: a new look everywhere, a real download system, server sections, a
 much smarter detail page, and a place to talk to us.
 
-### Join us on Telegram
+Here's what's new — and, for the two new things that *open other apps*, exactly
+where they open, so nothing surprises you.
 
-- **Telegram group:** <https://t.me/CodegeasseHikari> — for support, bug reports,
-  feature requests, title requests, or just to say hi. It lives in
-  *Settings → About → Telegram*, and the app invites you **once** on launch.
-  Tick **"Don't show this again"** and it never comes back. Joining opens the
-  Telegram app (or your browser) — never Hikari's built-in browser.
+### Trailers open in the real YouTube app
+
+- The new **Trailers** row on a title shows the actual YouTube trailers and
+  teasers for it, official ones first.
+- Tap one and it opens the **YouTube app** — the real one, with your account,
+  full quality, and the controls and gestures you already know.
+- If YouTube isn't installed, it goes to your browser instead. Hikari's own
+  in-app browser is the very last fallback and, in practice, never gets used —
+  so you always get a real trailer, not a stripped-down web page.
+
+### Telegram opens in Telegram
+
+- **Telegram group:** <https://t.me/CodegeasseHikari> — for support, bug
+  reports, feature requests, title requests, or just to say hi.
+- Two ways in: **Settings → About → Telegram**, and a one-time invitation the
+  first time you open the app.
+- Join opens the **Telegram app** directly — and if Telegram isn't installed,
+  your browser. It deliberately never opens inside Hikari's own in-app browser:
+  Telegram is an app, so we hand you straight to it.
+- The invitation shows **once**. Tick **"Don't show this again"** and it never
+  comes back.
 
 ### New Home screen
 
@@ -35,8 +52,7 @@ much smarter detail page, and a place to talk to us.
 - **Show Details block** — status, runtime, certification, rating, country,
   language, director and writers, from TMDB.
 - **Cast row** — tap any actor to search for them.
-- **Trailers row** — real YouTube trailers/teasers ranked (official trailers
-  first). Tapping one opens the **YouTube app**, not the in-app browser.
+- **Trailers row** — see *Trailers open in the real YouTube app* above.
 - **Related** and **Similar** shelves.
 - **Add to Library** (the heart) right on the page, mirroring the player's heart.
 - **Season picker** and 30-episode pages, so a 200-episode show is navigable.
