@@ -3169,7 +3169,9 @@ class PlayerActivity : ComponentActivity() {
             chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
         sourcesWatchers.add(watcher)
+        var hintTicker: Job? = null
         dialog.setOnDismissListener {
+            hintTicker?.cancel()
             sourcesWatchers.remove(watcher)
             // Closed without a pick (the back button, the ✕, a tap outside):
             // fall back to the remembered/best server rather than leaving the
@@ -3181,16 +3183,55 @@ class PlayerActivity : ComponentActivity() {
                 lifecycleScope.launch { playSource(preferredStartIndex()) }
             }
         }
-        presentGlass(
+        val baseHint = "Your provider first, then every engine that found a server."
+        val hintView = presentGlass(
             dialog,
             "Select server",
             list,
             700f,
-            hint = "Your provider first, then every engine that found a server.",
+            hint = baseHint,
             iconRes = R.drawable.ic_server,
             rowHosts = listOf(list),
         )
+        if (hintView != null) {
+            // The hint doubles as the live status of the OTHER extensions: which
+            // ones are still being asked right now, and which came back without a
+            // single server (and why). A repo that carries the title but cannot be
+            // searched — or one that is simply slower than the Hikari/Nuvio pass
+            // the user waited for — used to leave no trace at all in this sheet.
+            hintTicker = lifecycleScope.launch {
+                var shown = ""
+                while (dialog.isShowing) {
+                    val text = crossSearchHint() ?: baseHint
+                    if (text != shown) {
+                        shown = text
+                        hintView.text = text
+                    }
+                    delay(600)
+                }
+            }
+        }
     }
+
+    /**
+     * One line for the hint above the server chooser describing what the other
+     * installed extensions are doing: which are still being searched, or — once
+     * they are done — which came back with nothing and why. Read from
+     * [ContentRepository]'s live cross-extension status, so "the CloudStream
+     * extension I have installed didn't show up" is answered on screen instead
+     * of being indistinguishable from "it is still loading".
+     */
+    private fun crossSearchHint(): String? {
+        val running = ContentRepository.crossRunning.values.toList()
+        if (running.isNotEmpty()) return "Searching " + running.joinToString(", ") { oneLine(it) }
+        val verdicts = ContentRepository.crossVerdict.values.toList()
+        if (verdicts.isNotEmpty()) return "No servers from: " + verdicts.joinToString(" · ") { oneLine(it) }
+        return null
+    }
+
+    /** A reason can come straight from a plugin's exception text — collapse it
+     *  onto one line so the two-line hint above the panel cannot be blown up. */
+    private fun oneLine(s: String): String = s.replace(Regex("\\s+"), " ").trim()
 
     private fun showQualityDialog() {
         val p = player ?: return

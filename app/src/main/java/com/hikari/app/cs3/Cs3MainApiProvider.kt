@@ -422,7 +422,21 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            val a = api ?: return@withContext emptyList()
+            val a = api
+            if (a == null) {
+                // Say WHY this extension cannot be searched instead of returning
+                // a bare empty list: the cross-extension pass reported that as
+                // "no matching title in this repo", so a plugin that failed to
+                // load and a repo that genuinely does not carry the show looked
+                // identical — and the repo the user KNEW had the title stayed
+                // missing with no way to tell why.
+                streamErrors[config.id] = apiFailureReason()
+                com.hikari.app.data.Logs.log(
+                    "Provider",
+                    "${config.name}: search skipped — ${apiFailureReason()}",
+                )
+                return@withContext emptyList()
+            }
             val found = try {
                 searchItems(a, query, page)
             } catch (e: Throwable) {
@@ -433,6 +447,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     searchItems(a, query, page)
                 } catch (e2: Throwable) {
                     if (e2 is CancellationException) throw e2
+                    val why = fullCause(e2)
+                    streamErrors[config.id] = "Search failed: $why"
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        "${config.name}: search failed — $why",
+                    )
                     emptyList()
                 }
             }
@@ -532,25 +552,41 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
         val resp = loadResponse(item.id) ?: return@withContext null
+        // CloudStream's TvSeriesLoadResponse/AnimeLoadResponse keep episodes
+        // in a season-keyed map ("Season 1", "1", "Specials", …). Many plugins
+        // leave Episode.season null, so flattening the map threw that season
+        // away and collapsed EVERY season into season 1 — a request for S2E2
+        // then matched the wrong episode, or none at all. Carry the map key's
+        // season number through as the fallback.
+        fun fromMap(
+            eps: Map<String, List<com.lagradost.cloudstream3.Episode>>,
+            headers: Map<String, String>?,
+        ): List<Episode>? {
+            val rows = eps.entries.flatMap { (key, list) ->
+                val keySeason = seasonFromKey(key)
+                list.map { ep ->
+                    val season = ep.season?.takeIf { it > 0 } ?: keySeason?.takeIf { it > 0 } ?: 1
+                    Triple(ep, keySeason, season)
+                }
+            }
+            if (rows.isEmpty()) return null
+            return rows
+                .sortedWith(compareBy({ it.third }, { it.first.episode ?: Int.MAX_VALUE }))
+                .distinctBy { it.first.data ?: "${it.third}:${it.first.episode ?: 0}" }
+                .map { (ep, keySeason, _) -> ep.toHikari(headers, keySeason) }
+        }
         when (resp) {
-            is AnimeLoadResponse -> {
-                val eps = resp.episodes.values.flatten()
-                if (eps.isEmpty()) null
-                else eps
-                    .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: Int.MAX_VALUE }))
-                    .distinctBy { it.data ?: "${it.season ?: 1}:${it.episode ?: 0}" }
-                    .map { it.toHikari(resp.posterHeaders) }
-            }
-            is TvSeriesLoadResponse -> {
-                if (resp.episodes.isEmpty()) null
-                else resp.episodes
-                    .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: Int.MAX_VALUE }))
-                    .distinctBy { it.data ?: "${it.season ?: 1}:${it.episode ?: 0}" }
-                    .map { it.toHikari(resp.posterHeaders) }
-            }
+            is AnimeLoadResponse -> fromMap(resp.episodes, resp.posterHeaders)
+            is TvSeriesLoadResponse -> fromMap(resp.episodes, resp.posterHeaders)
             else -> null
         }
     }
+
+    // The season-label part of a CloudStream episode map key ("Season 2" → 2,
+    // "S2" → 2, "Specials" → null). Used when the plugin's Episode.season is
+    // null and the only place the season lives is the map key.
+    private fun seasonFromKey(key: String?): Int? =
+        key?.let { Regex("(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
@@ -1066,14 +1102,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         ).also { recordPosterHeaders(posterUrl, posterHeaders) }
     }
 
-    private fun com.lagradost.cloudstream3.Episode.toHikari(respHeaders: Map<String, String>?): Episode {
+    private fun com.lagradost.cloudstream3.Episode.toHikari(
+        respHeaders: Map<String, String>?,
+        fallbackSeason: Int? = null,
+    ): Episode {
         val num = episode ?: data?.substringAfterLast("|")?.toIntOrNull() ?: 1
         return Episode(
             number = num,
             id = data ?: num.toString(),
             name = name ?: "Episode $num",
             image = posterUrl,
-            season = season?.takeIf { it > 0 } ?: 1,
+            season = season?.takeIf { it > 0 } ?: fallbackSeason?.takeIf { it > 0 } ?: 1,
         ).also { recordPosterHeaders(posterUrl, respHeaders) }
     }
 }

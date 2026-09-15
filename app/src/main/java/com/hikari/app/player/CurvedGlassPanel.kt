@@ -388,17 +388,29 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                     radius - sqrt(radius * radius - off * off)
                 }
                 val dy = y - top
-                needLeft = max(needLeft, GlassShape.leftEdge(w, h, dy, bulgeX, concaveX) - inset)
-                needRight = max(needRight, w - GlassShape.rightEdge(w, h, dy, bulgeX, concaveX) - inset)
+                // The silhouette does NOT start at this view's own edge: the
+                // halo (0..shapeLeft() on the left, shapeRight()..width on the
+                // right) is where the glow lives, and the glass edge is
+                // [left]/[top] plus the curve. Measuring the boundary from the
+                // view's edge instead is why the rows — and, with a section
+                // header's text sitting flush at its own left edge, every
+                // "HIKARI · n" / "NUVIO · n" header — ended up ON the glass:
+                // the bowed edge cut the rounded cap off every row and sliced
+                // the first letter off every header.
+                val boundLeft = left + GlassShape.leftEdge(w, h, dy, bulgeX, concaveX)
+                val boundRight = left + GlassShape.rightEdge(w, h, dy, bulgeX, concaveX)
+                needLeft = max(needLeft, boundLeft - baseLeft - inset)
+                needRight = max(needRight, baseRight - boundRight - inset)
             }
-            // The two curves are shallow (a few px at the ends, a couple of dp
-            // mid-panel), so a need beyond a fifth of the row means the rect the
-            // curve was sampled against is stale — a row mid-layout, or a rect
-            // measured during a scroll. Cap it rather than let a bad frame pull
-            // a row out of existence.
+            // With the halo counted in, the need is a real distance inside the
+            // panel rather than the couple of dp the bow alone is worth, so the
+            // cap is what stops a stale rect (a row mid-layout, or one measured
+            // during a scroll) from pulling a row out of existence. Coerced at
+            // zero too: a child that already sits inside the glass is left
+            // where it is instead of being pushed back out over the edge.
             val cap = baseWidth * 0.22f
-            needLeft = needLeft.coerceAtMost(cap)
-            needRight = needRight.coerceAtMost(cap)
+            needLeft = needLeft.coerceIn(0f, cap)
+            needRight = needRight.coerceIn(0f, cap)
             val targetLeft = (baseLeft + needLeft + rowGapPx).toInt()
             val targetRight = (baseRight - needRight - rowGapPx).toInt()
             if (targetRight <= targetLeft) continue

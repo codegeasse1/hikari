@@ -32,6 +32,30 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ContentRepository(private val manager: ProviderManager) {
 
+    /**
+     * Live status of the cross-extension pass, for the player's "Select server"
+     * sheet: [crossRunning] holds `provider id -> repo name` for every extension
+     * still being searched, and [crossVerdict] holds
+     * `provider id -> "Repo name — why it found nothing"` for the ones that came
+     * back empty. The sheet shows this above the panel, so "my other repo's
+     * servers never showed up" has an answer on screen (still searching / no
+     * matching title / the plugin failed to load / no playable links) instead of
+     * being indistinguishable from "that repo is simply still loading".
+     * [crossStatusVersion] bumps on every change so the UI can poll cheaply.
+     */
+    companion object {
+        val crossRunning = ConcurrentHashMap<String, String>()
+        val crossVerdict = ConcurrentHashMap<String, String>()
+
+        @Volatile
+        var crossStatusVersion: Long = 0L
+            private set
+
+        fun bumpCrossStatus() {
+            crossStatusVersion++
+        }
+    }
+
     // Nuvio providers share a 3-WebView pool, so only the first few to
     // acquire a view actually get to run within the search deadline. Order
     // the queue by trust: a provider the user has seen work (4KHDHub) must
@@ -93,9 +117,15 @@ class ContentRepository(private val manager: ProviderManager) {
      *  player as they land, so a longer tail costs nothing at play time. */
     private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(80_000L)
 
-    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
-    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(10_000L)
-    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(40_000L)
+    // 15s rather than 10s for search/episodes: a CloudStream plugin's first call
+    // has to spin up its QuickJS runtime and its own HTTP session, and a
+    // 10s cap timed that cold start out — which the pass then reported as "this
+    // repo has no matching title", i.e. exactly the case where a repo the user
+    // knows carries the show contributed nothing. Six extra seconds of a
+    // failure path is a fair price for asking it properly.
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(15_000L)
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(15_000L)
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(45_000L)
 
     /** Searching a title is cheap; extracting links is not, so they get their
      *  own caps. The wider one lets every installed extension be SEARCHED in
@@ -520,6 +550,11 @@ class ContentRepository(private val manager: ProviderManager) {
         )
 
             // Fresh diagnostic state for this lookup.
+            // Same for the cross-extension status the chooser's hint shows:
+            // every repo of this lookup starts out "searching".
+            crossRunning.clear()
+            crossVerdict.clear()
+            bumpCrossStatus()
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
             com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
             com.hikari.app.nuvio.NuvioRuntime.resetRunTracking()
@@ -692,8 +727,21 @@ class ContentRepository(private val manager: ProviderManager) {
      *   - nuvio providers entirely, since the main pass already searched them
      *     by TMDB id (they resolve without the title at all). */
     private fun crossExtensionTargets(item: MediaItem, origin: ContentProvider?): List<ContentProvider> {
-        val originIsStremio = origin?.config?.type == ProviderType.STREMIO
-        return manager.providers.value
+        val originType = origin?.config?.type
+        val originIsStremio = originType == ProviderType.STREMIO
+        // Trust rank: the origin's OWN engine first (other repos of the same
+        // plugin family are the ones the user expects right after the origin —
+        // the CloudStream repos next to the CloudStream title), then native
+        // .hiki extensions, then the rest of the CloudStream plugins, then
+        // universal scrapers, then Stremio addons.
+        fun rankOf(t: ProviderType): Int = when {
+            originType != null && t == originType -> 0
+            t == ProviderType.HIKARI -> 1
+            t == ProviderType.CS3 -> 2
+            t == ProviderType.UNIVERSAL -> 3
+            else -> 4
+        }
+        val families = manager.providers.value
             .filter { p ->
                 if (!p.config.enabled || p.config.id == item.providerId) return@filter false
                 when (p.config.type) {
@@ -705,40 +753,79 @@ class ContentRepository(private val manager: ProviderManager) {
                     else -> false
                 }
             }
-            .sortedBy { p ->
-                // Trust order: the origin's OWN engine first (other repos of
-                // the same plugin family are the ones the user expects right
-                // after the origin — the CloudStream repos next to the
-                // CloudStream title), then native .hiki extensions, then the
-                // rest of the CloudStream plugins, then universal scrapers,
-                // then Stremio addons. Within a group the install order is
-                // preserved (stable sort), and the earlier a target is listed
-                // the earlier it can grab a (throttled) extractor slot — so the
-                // repos most likely to answer quickly get their chance before
-                // the budget runs out.
-                when {
-                    origin != null && p.config.type == origin.config.type -> 0
-                    p.config.type == ProviderType.HIKARI -> 1
-                    p.config.type == ProviderType.CS3 -> 2
-                    p.config.type == ProviderType.UNIVERSAL -> 3
-                    else -> 4
-                }
+            .groupBy { it.config.type }
+            .entries
+            .sortedBy { rankOf(it.key) }
+            .map { it.value }
+        // Cycle ONE per family per round instead of taking a straight prefix of
+        // the trust-sorted list. The native .hiki family alone is two hundred
+        // repos, so a plain `take(64)` handed EVERY slot to it, and a
+        // CloudStream repo the user had installed was never even asked — its
+        // servers could not appear in the list no matter how long you waited
+        // for the other engines to finish. Round-robin keeps every family (and
+        // so every installed repo) in the pass, while the origin's own family
+        // still leads each round and each family keeps its install order.
+        val out = ArrayList<ContentProvider>(CROSS_EXT_MAX_TARGETS)
+        var round = 0
+        while (out.size < CROSS_EXT_MAX_TARGETS) {
+            var added = false
+            for (family in families) {
+                val p = family.getOrNull(round) ?: continue
+                out += p
+                added = true
+                if (out.size >= CROSS_EXT_MAX_TARGETS) break
             }
-            .take(CROSS_EXT_MAX_TARGETS)
+            if (!added) break
+            round++
+        }
+        return out
     }
 
-    /** Asks ONE extension for the same title: search it, pick the best-matching
-     *  entry, map the played episode onto that extension's own episode list, and
-     *  extract. Empty when this extension doesn't carry the title or that
-     *  episode — with a line recorded for the "no sources" panel, so each repo's
-     *  verdict is visible instead of a bare "nothing found". */
+    /** Asks ONE extension for the same title, publishing its live status for the
+     *  chooser's hint (see the companion object) and logging the verdict — so a
+     *  repo the user KNOWS carries the title can never go missing without a
+     *  trace. */
     private suspend fun crossExtensionSources(
         p: ContentProvider,
         item: MediaItem,
         episode: Episode?,
     ): List<StreamSource> {
+        val repo = p.config.name.ifBlank { p.config.id }
+        crossRunning[p.config.id] = repo
+        bumpCrossStatus()
+        com.hikari.app.data.Logs.log("Search", "cross \"${item.title}\" → $repo: searching…")
+        try {
+            val (found, verdict) = crossExtensionLookup(p, item, episode)
+            if (verdict == null) crossVerdict.remove(p.config.id)
+            else crossVerdict[p.config.id] = "$repo — $verdict"
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "cross \"${item.title}\" → $repo: " +
+                    (verdict?.let { "nothing ($it)" } ?: "${found.size} servers"),
+            )
+            return found
+        } finally {
+            crossRunning.remove(p.config.id)
+            bumpCrossStatus()
+        }
+    }
+
+    /** The lookup behind [crossExtensionSources]: search this extension, pick the
+     *  best-matching entry, map the played episode onto ITS episode list, and
+     *  extract. Returns the servers it produced plus — when it produced none — a
+     *  one-line reason, which the chooser's hint and the log both show. */
+    private suspend fun crossExtensionLookup(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+    ): Pair<List<StreamSource>, String?> {
         val title = item.title.trim()
-        if (title.isBlank()) return emptyList()
+        if (title.isBlank()) return emptyList<StreamSource>() to null
+        // What this extension had to say BEFORE we asked it anything: if its own
+        // words change while we search (a plugin that failed to load, a search
+        // that blew up), that change is the reason it produced nothing — and it
+        // is a very different story from "this repo does not carry the show".
+        val saidBefore = providerStreamMessage(p)
         var best = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
         if (best == null) {
             // Repos name titles their own way ("Foo: Bar Baz", "Foo - Season 2"),
@@ -752,8 +839,13 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
         if (best == null) {
+            val said = providerStreamMessage(p)?.takeIf { it != saidBefore }
+            if (said != null) {
+                recordStreamMessage(p, said)
+                return emptyList<StreamSource>() to "couldn't be searched ($said)"
+            }
             recordStreamMessage(p, "Searched \"$title\" — no matching title in this repo.")
-            return emptyList()
+            return emptyList<StreamSource>() to "no matching title for \"$title\""
         }
         // The provider's own load() also rewrites the id to its canonical form,
         // which is what its loadLinks() expects.
@@ -769,11 +861,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     cancellableCatching { p.getEpisodes(best) }.getOrNull()
                 }.orEmpty()
             }
-            val match = eps.firstOrNull { it.season == episode.season && it.number == episode.number }
-                ?: eps.firstOrNull { it.number == episode.number }
+            val match = matchCrossEpisode(eps, episode)
             if (match == null) {
                 recordStreamMessage(p, "Has the title, but not S${episode.season}E${episode.number}.")
-                return emptyList()
+                return emptyList<StreamSource>() to
+                    "has the title, but not S${episode.season}E${episode.number}"
             }
             ep = match
         }
@@ -784,7 +876,7 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         if (got.isEmpty()) {
             recordStreamMessage(p, "Has the title and episode, but produced no playable links.")
-            return emptyList()
+            return emptyList<StreamSource>() to "has the title and episode, but no playable links"
         }
         // Found here: clear this repo's diagnostic, and tag each server with the
         // repo it came from so the player's server list shows its origin.
@@ -795,7 +887,61 @@ class ContentRepository(private val manager: ProviderManager) {
                 else s.copy(name = "${p.config.name} · ${s.name}")
             },
             p,
-        )
+        ) to null
+    }
+
+    /**
+     * Maps the episode being played onto the extension's own episode list.
+     *
+     * Extensions number their seasons their own way: several leave the season
+     * unset (so every episode lands in "season 1"), some label a season by a
+     * year or start at 0, some keep one flat list for the whole show. The old
+     * exact `(season, number)` match — with a bare `number` retry — therefore
+     * reported a repo that plainly HAS the episode as "has the title, but not
+     * S2E2", which is why a repo the user knew carried the title contributed no
+     * servers to the list at all. Tried in order: the same episode of the same
+     * season; the same episode number in a repo that keeps only one season; the
+     * season in the wanted POSITION (its 2nd season is our S2 even if it is
+     * labelled otherwise); the episode at the flat position it would occupy in a
+     * single list of the whole show; and finally that number in any season.
+     */
+    private fun matchCrossEpisode(eps: List<Episode>, wanted: Episode): Episode? {
+        if (eps.isEmpty()) return null
+        eps.firstOrNull { it.season == wanted.season && it.number == wanted.number }
+            ?.let { return it }
+        if (wanted.number <= 0) return null
+        val seasons = eps.map { it.season }.distinct().sorted()
+        // One season only: its "episode N" IS the wanted episode (the extension
+        // either has a single season or never labels them at all).
+        if (seasons.size <= 1) return eps.firstOrNull { it.number == wanted.number }
+        // Same season by position — an extension that labels seasons 0-based, by
+        // year, or "Season 1"/"Season 2" as a name.
+        seasons.getOrNull(wanted.season - 1)?.let { season ->
+            eps.firstOrNull { it.season == season && it.number == wanted.number }?.let { return it }
+        }
+        // Flat/absolute numbering: the episode sitting where ours would if the
+        // whole show were numbered straight through.
+        var before = 0
+        for (season in seasons) {
+            if (season == wanted.season) break
+            before += eps.count { it.season == season }
+        }
+        eps.getOrNull(before + wanted.number - 1)?.let { return it }
+        // Last resort: that number in whatever season carries it, rather than
+        // telling the user this repo has nothing for the episode.
+        return eps.firstOrNull { it.number == wanted.number }
+    }
+
+    /** Whatever this provider last said about itself — its plugin failing to
+     *  load, a search error, a yt-dlp retry — or null when it has nothing on
+     *  record. Read by the cross pass to tell "this repo does not have the show"
+     *  apart from "this repo could not be asked at all". */
+    private fun providerStreamMessage(p: ContentProvider): String? = when (p.config.type) {
+        ProviderType.STREMIO -> StremioAddon.streamErrors[p.config.id]
+        ProviderType.CS3 -> Cs3MainApiProvider.streamErrors[p.config.id]
+        ProviderType.HIKARI -> HikariProviderAdapter.streamErrors[p.config.id]
+        ProviderType.UNIVERSAL -> UniversalScraper.streamErrors[p.config.id]
+        ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
     }
 
     /**

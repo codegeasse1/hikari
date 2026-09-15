@@ -1,3 +1,51 @@
+## 0.3.72
+
+Fixes the server list's rounded rows and headers being sliced flat by the glass
+curve, and makes a missing CloudStream extension explain itself instead of just
+not appearing.
+
+### The server list (rows, headers and pills cut by the glow)
+
+- **Nothing is cut by the curve any more.** The glass silhouette includes its
+  soft halo, but the rows/headers/pills were bent against the *view's* edge
+  rather than the visible curve — so on a portrait panel the first pill's cap,
+  the section header's leading letter, and every row's rounded ends were sliced
+  flat by the glow. The boundary is now measured from the shape itself (halo
+  included), so the header, the pills and every row sit **inside** the curve
+  with a uniform ~10dp air gap on both sides.
+- Applies to both portrait and landscape, and to the "All/Hikari/Nuvio" chip
+  strip, the group headers and the server rows equally.
+
+### CloudStream extensions that never show up
+
+- **The real fix: every installed extension is now actually asked.** The
+  cross-extension pass picks at most 64 repos, and it sorted them
+  "origin's engine, then 200+ native Hikari repos, then CloudStream". With the
+  native Hikari family alone numbering two hundred, that list was filled
+  ENTIRELY by Hikari repos — a CloudStream (`.cs3`) repo the user had installed
+  was never in it, so its servers could not appear no matter how long you
+  waited for the other engines to finish. The pass now cycles one repo per
+  engine family per round, so every family keeps its seat (your CloudStream
+  repos are asked right after the origin's own family) while each family still
+  keeps its install order.
+- **A cross-extension that could not be searched now says so.** If a CloudStream
+  repo's plugin fails to load, or its search call throws, Hikari used to report
+  it as "no matching title" — indistinguishable from "this repo simply doesn't
+  have the show". It now reports the real reason (plugin failed to load /
+  search failed: …), logs it, and surfaces it live in the chooser.
+- **The chooser's hint line is now live status.** While the other engines are
+  still searching it reads "Searching <repo>, <repo>"; once they are done it
+  reads "No servers from: <repo> — <reason>", so it's obvious at a glance
+  whether a repo is still working or came back empty and why.
+- **Better episode matching across season numbering.** A CloudStream plugin's
+  episode map is season-keyed but many plugins leave the episode's season
+  field empty; Hikari collapsed those into season 1, so a request for S2E2
+  could match the wrong episode or none. The season is now recovered from the
+  map key (by number, single-season, or position) so multi-season shows resolve
+  correctly.
+- Longer cold-start budgets (search/episodes 15s, extraction 45s) so a slow
+  repo has time to answer on a phone network.
+
 ## 0.3.71
 
 Fixes for the "don't play directly" server list, the video's missing quality
