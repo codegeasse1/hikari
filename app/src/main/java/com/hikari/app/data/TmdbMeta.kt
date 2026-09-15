@@ -67,6 +67,24 @@ object TmdbMeta {
         return imdbArtwork(item)
     }
 
+    /** Title shape for matching across sources: lowercase, punctuation dropped,
+     *  word/digit forms unified. IMDb spells a sequel "Ramayana Part 2" while the
+     *  catalog says "Ramayana: Part Two"; without this the suggestion result was
+     *  rejected by the `startsWith` test below and the cell kept its placeholder
+     *  icon forever. */
+    private val NUMERALS = mapOf(
+        "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5",
+        "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9", "ten" to "10",
+    )
+
+    private fun normalizeTitle(raw: String): String =
+        raw.lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { NUMERALS[it] ?: it }
+
     /**
      * IMDb's suggestion endpoint (`/suggestion/h/<query>.json`) needs no API
      * key and answers with `d: [{ l: title, y: year, i: { imageUrl } }]`. The
@@ -85,16 +103,16 @@ object TmdbMeta {
         val arr = runCatching {
             JSONObject(text).optJSONArray("d")
         }.getOrNull() ?: return null
-        val wanted = title.lowercase()
+        val wanted = normalizeTitle(title)
         var best: String? = null
         var bestScore = 0
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val label = o.optString("l").lowercase()
+            val label = normalizeTitle(o.optString("l"))
             if (label.isBlank()) continue
             var score = 0
             if (label == wanted) score += 50
-            else if (label.startsWith(wanted) || wanted.startsWith(label)) score += 20
+            else if (wanted.length >= 5 && (label.startsWith(wanted) || wanted.startsWith(label))) score += 20
             else continue
             if (item.year != null && o.optString("y") == item.year.toString()) score += 30
             val img = o.optJSONObject("i")?.optString("imageUrl").orEmpty()

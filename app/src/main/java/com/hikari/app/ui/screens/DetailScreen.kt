@@ -300,11 +300,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadShelves(item: MediaItem) {
-        // Extras first: they are ONE TMDB call (credits+videos+certifications)
-        // and carry the details block, so the page fills in fastest this way.
-        _extras.value = runCatching { TmdbMeta.extras(item) }.getOrNull()
-        _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
-        _similar.value = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
+        // Everything here is blocking network + file IO, so it runs off the main
+        // thread. Without this the TMDB lookups below were killed by Android's
+        // NetworkOnMainThreadException (viewModelScope is the main dispatcher) and
+        // silently swallowed by the runCatching calls — which is exactly why the
+        // Details block and the Cast/Trailers/Related/Similar rows never showed up.
+        withContext(Dispatchers.IO) {
+            // Extras first: they are ONE TMDB call (credits+videos+certifications)
+            // and carry the details block, so the page fills in fastest this way.
+            _extras.value = runCatching { TmdbMeta.extras(item) }.getOrNull()
+            _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
+            _similar.value = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
+        }
     }
 
     /** Streams currently being resolved, keyed the same as [streamCache]. A
@@ -1130,6 +1137,39 @@ fun DetailScreen(
                 extras?.details?.let { det ->
                     item { DetailsBlock(det) }
                 }
+                // Cast + Trailers sit ABOVE the episode list — the order the
+                // Nuvio/Stremio detail page uses. Below it they were buried under
+                // a 30-episode season (or below the fold of a long overview) and
+                // read as "the sections are missing". Both come from the same
+                // background TMDB call, and each row is skipped entirely when
+                // that lookup found nothing.
+                extras?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
+                    item {
+                        CastRow(cast) { member ->
+                            Routes.safeNavigate(nav, Routes.searchQuery(member.name))
+                        }
+                    }
+                }
+                extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
+                    item {
+                        TrailerRow(trailers) { trailer ->
+                            // Trailers open in the app's ad-free web view, the
+                            // same path Stremio-style YouTube sources use.
+                            context.startActivity(
+                                Intent(context, WebViewActivity::class.java).apply {
+                                    putExtra(
+                                        "url",
+                                        "https://www.youtube.com/watch?v=${trailer.youtubeKey}"
+                                    )
+                                    putExtra(
+                                        "title",
+                                        (m?.title ?: title) + " — " + trailer.name
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
                 if (isSeries) {
                     item {
                         Row(
@@ -1235,36 +1275,6 @@ fun DetailScreen(
                             item(key = "ep-$index") {
                                 EpisodeRow(ep) { tryPlay(ep) }
                             }
-                        }
-                    }
-                }
-                // Cast + Trailers: the two rows Nuvio/Stremio put under the
-                // details block. Both come from the same background TMDB call,
-                // and each row is skipped entirely when it found nothing.
-                extras?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
-                    item {
-                        CastRow(cast) { member ->
-                            Routes.safeNavigate(nav, Routes.searchQuery(member.name))
-                        }
-                    }
-                }
-                extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
-                    item {
-                        TrailerRow(trailers) { trailer ->
-                            // Trailers open in the app's ad-free web view, the
-                            // same path Stremio-style YouTube sources use.
-                            context.startActivity(
-                                Intent(context, WebViewActivity::class.java).apply {
-                                    putExtra(
-                                        "url",
-                                        "https://www.youtube.com/watch?v=${trailer.youtubeKey}"
-                                    )
-                                    putExtra(
-                                        "title",
-                                        (m?.title ?: title) + " — " + trailer.name
-                                    )
-                                }
-                            )
                         }
                     }
                 }

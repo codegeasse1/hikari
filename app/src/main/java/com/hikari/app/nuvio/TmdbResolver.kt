@@ -4,6 +4,8 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.net.Http
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -176,21 +178,30 @@ object TmdbResolver {
         return listOfNotNull(best)
     }
 
-    /** GETs a TMDB endpoint, rotating the API key on auth/rate errors. */
-    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? {
-        for (key in API_KEYS) {
-            val params = query + ("api_key" to key)
-            val qs = params.entries.joinToString("&") { (k, v) ->
-                "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+    /** GETs a TMDB endpoint, rotating the API key on auth/rate errors.
+     *
+     *  ALWAYS hops to [Dispatchers.IO] first: OkHttp's `execute()` is blocking,
+     *  and every caller of this used to inherit ITS thread — the detail screen's
+     *  background shelf/extras lookup ran on `viewModelScope` (the main thread),
+     *  so the call was killed by NetworkOnMainThreadException and swallowed by
+     *  its `runCatching`, leaving the Cast/Trailers/Details/Related/Similar
+     *  sections silently missing on every title. Suspending on IO here makes
+     *  every present and future caller safe by construction. */
+    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? =
+        withContext(Dispatchers.IO) {
+            for (key in API_KEYS) {
+                val params = query + ("api_key" to key)
+                val qs = params.entries.joinToString("&") { (k, v) ->
+                    "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+                }
+                val url = "$API_BASE$path?$qs"
+                val text = Http.getString(url, mapOf("Accept" to "application/json")) ?: continue
+                val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
+                if (obj.optString("status_message").contains("Invalid API key", true)) continue
+                return@withContext obj
             }
-            val url = "$API_BASE$path?$qs"
-            val text = Http.getString(url, mapOf("Accept" to "application/json")) ?: continue
-            val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
-            if (obj.optString("status_message").contains("Invalid API key", true)) continue
-            return obj
+            null
         }
-        return null
-    }
 
     // ---- tiny disk cache (survives restarts; bounded) ----
 
