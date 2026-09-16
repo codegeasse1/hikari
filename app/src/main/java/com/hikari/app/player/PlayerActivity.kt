@@ -698,34 +698,34 @@ class PlayerActivity : ComponentActivity() {
             // need a live flow just to move one checkmark).
             fun openOptions() {
                 showGlassMenu(
-                    "Player options",
+                    getString(R.string.player_options),
                     listOf(
                         GlassOption(
-                            "Fit video", "Show the whole frame",
+                            getString(R.string.player_fit_video), getString(R.string.player_fit_video_desc),
                             iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
                             selected = resizeIndex == 0,
                         ),
                         GlassOption(
-                            "Crop to fill", "Zoom until the frame is filled",
+                            getString(R.string.player_crop_to_fill), getString(R.string.player_crop_to_fill_desc),
                             iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
                             selected = resizeIndex == 1,
                         ),
                         GlassOption(
-                            "Rotate screen", "Turn the video 90\u00B0 at a time",
+                            getString(R.string.player_rotate_screen), getString(R.string.player_rotate_screen_desc),
                             iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
                         ),
                         GlassOption(
-                            "Server chooser",
+                            getString(R.string.player_server_chooser),
                             if (askServerOnPlay) {
-                                "On \u2014 pick a server every time"
+                                getString(R.string.player_server_on)
                             } else {
-                                "Off \u2014 start on the best server"
+                                getString(R.string.player_server_off)
                             },
                             iconRes = R.drawable.ic_server, marker = RowMarker.ICON,
                             selected = askServerOnPlay,
                         ),
                     ),
-                    hint = "Video fit, rotation, and whether servers start on their own.",
+                    hint = getString(R.string.player_options_hint),
                     iconRes = R.drawable.ic_settings,
                 ) { which ->
                     when (which) {

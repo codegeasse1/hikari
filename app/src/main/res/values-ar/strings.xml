@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">لغة التطبيق</string>
+    <string name="settings_language_subtitle">يغيّر نصوص التطبيق وعناصر تحكم المشغّل</string>
+    <string name="settings_language_system">افتراضي النظام</string>
+    <string name="player_options">خيارات المشغّل</string>
+    <string name="player_fit_video">ملاءمة الفيديو</string>
+    <string name="player_fit_video_desc">إظهار الإطار كاملًا</string>
+    <string name="player_crop_to_fill">قص لملء الشاشة</string>
+    <string name="player_crop_to_fill_desc">تكبير حتى ملء الإطار</string>
+    <string name="player_rotate_screen">تدوير الشاشة</string>
+    <string name="player_rotate_screen_desc">تدوير الفيديو 90° في كل مرة</string>
+    <string name="player_server_chooser">اختيار الخادم</string>
+    <string name="player_server_on">مفعّل — اختر خادمًا في كل مرة</string>
+    <string name="player_server_off">معطّل — ابدأ بأفضل خادم</string>
+    <string name="player_options_hint">ملاءمة الفيديو والتدوير وبدء الخوادم تلقائيًا.</string>
+    <string name="player_episodes">الحلقات</string>
+    <string name="player_source">المصدر</string>
+    <string name="player_quality">الجودة</string>
+    <string name="player_audio">الصوت</string>
+    <string name="player_subtitles">الترجمات</string>
+    <string name="player_rotate">تدوير</string>
+    <string name="player_skip_intro">تخطي المقدمة</string>
+    <string name="player_enhance">تحسين</string>
+    <string name="player_tap_to_play">اضغط للتشغيل</string>
+    <string name="cd_back">رجوع</string>
+    <string name="cd_add_to_library">إضافة إلى المكتبة</string>
+    <string name="cd_download">تنزيل</string>
+    <string name="cd_pip">صورة داخل صورة</string>
+    <string name="cd_player_options">خيارات المشغّل</string>
+    <string name="cd_lock_controls">قفل عناصر التحكم</string>
+    <string name="cd_fit_or_crop">ملاءمة أو قص الفيديو</string>
+</resources>

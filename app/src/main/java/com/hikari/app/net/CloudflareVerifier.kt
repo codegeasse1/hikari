@@ -1,6 +1,5 @@
 package com.hikari.app.net
 
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -32,14 +31,14 @@ import java.util.concurrent.TimeUnit
  * the fingerprint the clearance was minted for) and retry; otherwise we solve
  * it in a hidden off-screen WebView (nothing ever pops over the player) — wait
  * for the clearance to appear, then retry. A challenge the hidden solver cannot
- * pass is handled by context: during a bulk provider SEARCH the view is never
- * popped (a search must not throw windows over whatever the user is doing) —
- * the host is only recorded so the UI can say "Cloudflare check needed on X"
- * instead of the misleading "no matching title" — while a single site the user
- * is actually waiting on (play/extract) opens the visible verify view so the
- * check can be passed by hand, which is what the human-clickable challenges
- * need. A per-host in-flight guard keeps concurrent requests from stacking
- * WebViews,
+ * pass is NEVER auto-opened in a visible view: doing that threw the ad-filled
+ * site page over whatever the user was doing — and because a clearance we
+ * already held can't be minted again, it re-launched the site for every
+ * challenged host and every challenged request. The host is only recorded so
+ * the UI can say "Cloudflare check needed on X" instead of the misleading
+ * "no matching title"; the user opens the verify view deliberately with the
+ * Home globe button. A per-host in-flight guard keeps concurrent requests from
+ * stacking WebViews,
  * and a short cooldown stops a just-failed solve from being retried in a tight
  * loop by the next request to the same host.
  */
@@ -58,10 +57,6 @@ object CloudflareVerifier {
     // installed extension can hit a dozen challenged hosts simultaneously, and
     // one WebView each would melt the phone and starve the searches themselves.
     private const val MAX_CONCURRENT_SOLVES = 2
-    // A host we already failed to clear is not worth popping the verify view
-    // for again this soon.
-    private const val VERIFY_VIEW_COOLDOWN_MS = 5 * 60_000L
-
     /** Wall-clock budget for one hidden solve. Shortened while a bulk search
      *  pass is running (see [bulkSearchActive]): a repo stuck behind a challenge
      *  used to hold its search slot for the full 20s, and because the wait is a
@@ -72,10 +67,10 @@ object CloudflareVerifier {
     @Volatile
     var hiddenSolveBudgetMs: Long = HIDDEN_SOLVE_TIMEOUT_MS
 
-    /** True while a bulk provider-search pass is running. During a pass a failed
-     *  hidden solve only RECORDS the host; outside a pass it opens the visible
-     *  verify view, because the user is then waiting on one specific site and a
-     *  human-clickable challenge has to be shown to them. */
+    /** True while a bulk provider-search pass is running. A failed hidden solve
+     *  never opens a view — a pass must not throw windows over whatever the user
+     *  is doing — the flag just shortens the hidden solver's budget so one
+     *  challenged repo can't starve the repos still waiting to be asked. */
     @Volatile
     var bulkSearchActive = false
 
@@ -84,10 +79,6 @@ object CloudflareVerifier {
      *  needed on <host>") instead of letting the block read as "this repo does
      *  not carry the title". */
     private val blockedHosts = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    /** When the visible verify view was last auto-opened for a host, so a burst
-     *  of challenged requests cannot pop dialog after dialog. */
-    private val verifyViewOpened = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private val solveSlots = Semaphore(MAX_CONCURRENT_SOLVES)
 
@@ -206,7 +197,7 @@ object CloudflareVerifier {
         if (clearanceFor(url) == null && autoOpenEnabled && solvable && cooled &&
             Looper.myLooper() != Looper.getMainLooper()
         ) {
-            solve(host, url, solvable)
+            solve(host, url)
         }
 
         val cookie = clearanceFor(url)
@@ -229,11 +220,12 @@ object CloudflareVerifier {
     /** Blocking CF solve for [host]/[url]. Runs the hidden off-screen solver —
      *  nothing pops over the player; if it can't mint a clearance (an
      *  interactive challenge that needs a human click, a hard WAF block, or
-     *  another solve already occupies the solver slots), the host is recorded
-     *  and — outside a bulk search — the visible verify view is opened so the
-     *  user can pass the check by hand instead of the request failing with no
-     *  explanation. Only ever called from background threads — it blocks. */
-    private fun solve(host: String, url: String, solvable: Boolean) {
+     *  another solve already occupies the solver slots), the host is only
+     *  recorded so the UI can say "Cloudflare check needed on X". This NEVER
+     *  opens a visible verify view (see the class doc) — the user does that
+     *  deliberately with the Home globe button. Only ever called from
+     *  background threads — it blocks. */
+    private fun solve(host: String, url: String) {
         val latch: CountDownLatch = synchronized(lock) {
             inFlight.getOrPut(host) { CountDownLatch(1) }
         }
@@ -252,10 +244,7 @@ object CloudflareVerifier {
                     solveSlots.release()
                 }
             } else false
-            if (!solved) {
-                noteBlocked(host)
-                maybeOpenVerifyView(host, url, solvable)
-            }
+            if (!solved) noteBlocked(host)
             // Whether the hidden solve minted a clearance or not, wake every
             // waiter so the retry runs right away instead of sitting out the
             // 90s solve deadline.
@@ -303,34 +292,6 @@ object CloudflareVerifier {
     /** Drops a host's blocked record (called once its clearance is in hand). */
     fun clearBlocked(host: String?) {
         if (host != null) blockedHosts.remove(host)
-    }
-
-    /**
-     * Opens the visible verification WebView for [host] — the dialog the user
-     * expects when a site needs a human click. Suppressed during a bulk search
-     * pass (a pass must never throw windows over what the user is doing; the
-     * host is recorded instead), rate-limited per host so a burst of challenged
-     * requests can't pop dialog after dialog.
-     */
-    private fun maybeOpenVerifyView(host: String, url: String, solvable: Boolean) {
-        if (!autoOpenEnabled || !solvable || bulkSearchActive) return
-        val now = System.currentTimeMillis()
-        if (now - (verifyViewOpened[host] ?: 0L) < VERIFY_VIEW_COOLDOWN_MS) return
-        verifyViewOpened[host] = now
-        runCatching {
-            val app = HikariApp.instance
-            app.startActivity(
-                Intent(app, com.hikari.app.web.WebViewActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    putExtra("url", url)
-                    putExtra("title", "Verify: $host")
-                    putExtra("autoCloseWhenCloudflarePassed", true)
-                    putExtra("verifyHost", host)
-                }
-            )
-        }.onFailure {
-            android.util.Log.w("CloudflareVerifier", "could not open verify view for $host", it)
-        }
     }
 
     /** Hidden off-screen solver: loads the challenged URL in an INVISIBLE

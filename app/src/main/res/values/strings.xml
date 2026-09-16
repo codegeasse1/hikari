@@ -1,3 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hikari</string>
+    <string name="settings_language_title">App language</string>
+    <string name="settings_language_subtitle">Changes the app\'s words and the player controls</string>
+    <string name="settings_language_system">System default</string>
+    <string name="player_options">Player options</string>
+    <string name="player_fit_video">Fit video</string>
+    <string name="player_fit_video_desc">Show the whole frame</string>
+    <string name="player_crop_to_fill">Crop to fill</string>
+    <string name="player_crop_to_fill_desc">Zoom until the frame is filled</string>
+    <string name="player_rotate_screen">Rotate screen</string>
+    <string name="player_rotate_screen_desc">Turn the video 90° at a time</string>
+    <string name="player_server_chooser">Server chooser</string>
+    <string name="player_server_on">On — pick a server every time</string>
+    <string name="player_server_off">Off — start on the best server</string>
+    <string name="player_options_hint">Video fit, rotation, and whether servers start on their own.</string>
+    <string name="player_episodes">Episodes</string>
+    <string name="player_source">Source</string>
+    <string name="player_quality">Quality</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Subtitles</string>
+    <string name="player_rotate">Rotate</string>
+    <string name="player_skip_intro">Skip Intro</string>
+    <string name="player_enhance">Enhance</string>
+    <string name="player_tap_to_play">Tap to play</string>
+    <string name="cd_back">Back</string>
+    <string name="cd_add_to_library">Add to library</string>
+    <string name="cd_download">Download</string>
+    <string name="cd_pip">Picture-in-picture</string>
+    <string name="cd_player_options">Player options</string>
+    <string name="cd_lock_controls">Lock controls</string>
+    <string name="cd_fit_or_crop">Fit or crop video</string>
 </resources>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">App-Sprache</string>
+    <string name="settings_language_subtitle">Ändert die Texte der App und die Player-Steuerung</string>
+    <string name="settings_language_system">Systemstandard</string>
+    <string name="player_options">Player-Optionen</string>
+    <string name="player_fit_video">Video einpassen</string>
+    <string name="player_fit_video_desc">Das ganze Bild anzeigen</string>
+    <string name="player_crop_to_fill">Zuschneiden und füllen</string>
+    <string name="player_crop_to_fill_desc">Zoomen, bis der Rahmen gefüllt ist</string>
+    <string name="player_rotate_screen">Bildschirm drehen</string>
+    <string name="player_rotate_screen_desc">Video jeweils um 90° drehen</string>
+    <string name="player_server_chooser">Server-Auswahl</string>
+    <string name="player_server_on">An — jedes Mal einen Server wählen</string>
+    <string name="player_server_off">Aus — mit dem besten Server starten</string>
+    <string name="player_options_hint">Videoanpassung, Drehung und ob Server automatisch starten.</string>
+    <string name="player_episodes">Folgen</string>
+    <string name="player_source">Quelle</string>
+    <string name="player_quality">Qualität</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Untertitel</string>
+    <string name="player_rotate">Drehen</string>
+    <string name="player_skip_intro">Intro überspringen</string>
+    <string name="player_enhance">Verbessern</string>
+    <string name="player_tap_to_play">Zum Abspielen tippen</string>
+    <string name="cd_back">Zurück</string>
+    <string name="cd_add_to_library">Zur Bibliothek hinzufügen</string>
+    <string name="cd_download">Herunterladen</string>
+    <string name="cd_pip">Bild-in-Bild</string>
+    <string name="cd_player_options">Player-Optionen</string>
+    <string name="cd_lock_controls">Steuerung sperren</string>
+    <string name="cd_fit_or_crop">Video einpassen oder zuschneiden</string>
+</resources>

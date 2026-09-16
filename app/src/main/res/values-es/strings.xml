@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Idioma de la aplicación</string>
+    <string name="settings_language_subtitle">Cambia los textos de la app y los controles del reproductor</string>
+    <string name="settings_language_system">Predeterminado del sistema</string>
+    <string name="player_options">Opciones del reproductor</string>
+    <string name="player_fit_video">Ajustar vídeo</string>
+    <string name="player_fit_video_desc">Mostrar el fotograma completo</string>
+    <string name="player_crop_to_fill">Recortar y llenar</string>
+    <string name="player_crop_to_fill_desc">Ampliar hasta llenar el marco</string>
+    <string name="player_rotate_screen">Girar pantalla</string>
+    <string name="player_rotate_screen_desc">Girar el vídeo 90° cada vez</string>
+    <string name="player_server_chooser">Selector de servidor</string>
+    <string name="player_server_on">Activado — elegir servidor siempre</string>
+    <string name="player_server_off">Desactivado — empezar en el mejor servidor</string>
+    <string name="player_options_hint">Ajuste del vídeo, rotación y si los servidores arrancan solos.</string>
+    <string name="player_episodes">Episodios</string>
+    <string name="player_source">Fuente</string>
+    <string name="player_quality">Calidad</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Subtítulos</string>
+    <string name="player_rotate">Girar</string>
+    <string name="player_skip_intro">Saltar intro</string>
+    <string name="player_enhance">Mejorar</string>
+    <string name="player_tap_to_play">Toca para reproducir</string>
+    <string name="cd_back">Atrás</string>
+    <string name="cd_add_to_library">Añadir a la biblioteca</string>
+    <string name="cd_download">Descargar</string>
+    <string name="cd_pip">Imagen en imagen</string>
+    <string name="cd_player_options">Opciones del reproductor</string>
+    <string name="cd_lock_controls">Bloquear controles</string>
+    <string name="cd_fit_or_crop">Ajustar o recortar el vídeo</string>
+</resources>

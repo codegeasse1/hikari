@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -77,12 +78,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
+import com.hikari.app.R
 import com.hikari.app.data.Userscript
 import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
@@ -92,6 +95,7 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
@@ -144,8 +148,8 @@ private enum class SettingsFolder(
     ),
     APPEARANCE(
         "Appearance",
-        "Theme & in-app interface size",
-        "How Hikari looks on this phone.",
+        "Language, theme & in-app interface size",
+        "How Hikari looks and speaks on this phone.",
         Icons.Filled.Palette,
     ),
     PRIVACY(
@@ -212,6 +216,8 @@ fun SettingsScreen(nav: NavHostController) {
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
     val hideContinueFlow = remember { app.store.hideContinueFlow() }
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
+    val languageFlow = remember { app.store.languageFlow() }
+    val appLanguage by languageFlow.collectAsState(initial = "")
     val installedProviders by app.providers.providers.collectAsState()
     val listState = rememberLazyListState()
 
@@ -275,6 +281,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { DownloadSettingsCard(app) } }
                 }
                 SettingsFolder.APPEARANCE -> {
+                    item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
                     item {
                         SettingsCard(top = 2.dp) {
                             Box {
@@ -1333,6 +1340,87 @@ private fun UniversalExtractionCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setYtdlpEnabled(it) } }
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun LanguageCard(app: HikariApp, current: String) {
+    val scope = rememberCoroutineScope()
+    var menuOpen by remember { mutableStateOf(false) }
+    val selected = LanguageManager.ALL.firstOrNull { it.tag == current } ?: LanguageManager.SYSTEM
+    val selectedName = if (selected.tag.isBlank()) {
+        stringResource(R.string.settings_language_system)
+    } else {
+        selected.name
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            stringResource(R.string.settings_language_title),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.settings_language_subtitle),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Box {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { menuOpen = true }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Translate,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    selected.flag,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    selectedName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                LanguageManager.ALL.forEach { lang ->
+                    DropdownMenuItem(
+                        text = { Text("${lang.flag}  ${if (lang.tag.isBlank()) stringResource(R.string.settings_language_system) else lang.name}") },
+                        onClick = {
+                            menuOpen = false
+                            LanguageManager.apply(lang.tag)
+                            scope.launch { runCatching { app.store.setLanguage(lang.tag) } }
+                        },
+                        leadingIcon = {
+                            if (lang.tag == selected.tag) {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 }

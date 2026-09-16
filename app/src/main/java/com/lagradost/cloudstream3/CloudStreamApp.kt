@@ -140,14 +140,30 @@ class CloudStreamApp : Application() {
             }.forEach { p.edit().remove(it).apply() }
         }
 
-        fun removeKeys(key: String): Int {
+        /**
+         * Boxed return type ON PURPOSE: the jar's `CloudStreamApp$Companion`
+         * declares `removeKeys(String): Integer` (verified from the jar's own
+         * class file), and plugins are compiled against that descriptor. A
+         * Kotlin `Int` return would emit `()I` and any plugin calling it would
+         * die with `NoSuchMethodError`. `Int?` emits `Ljava/lang/Integer;`.
+         */
+        fun removeKeys(key: String): Int? {
             val p = prefs ?: return 0
             val toRemove = p.all.keys.filter { it == key || it.startsWith("$key.") || it.startsWith("$key$") }
             toRemove.forEach { p.edit().remove(it).apply() }
             return toRemove.size
         }
 
-        fun openBrowser(url: String, newTab: Boolean, fragment: Fragment) {
+        /**
+         * Default value on [newTab] ON PURPOSE: the jar declares
+         * `openBrowser(url: String, newTab: Boolean = false, fragment: Fragment)`
+         * and therefore has a synthetic `openBrowser$default(...)` that plugins
+         * call. Without a default parameter Kotlin emits no `$default` bridge,
+         * so those plugin calls failed with `NoSuchMethodError`. The
+         * three-argument `openBrowser(String, Fragment)` overload below stays
+         * for the jar's own second declaration.
+         */
+        fun openBrowser(url: String, newTab: Boolean = false, fragment: Fragment) {
             openBrowser(url, fragment.activity)
         }
 

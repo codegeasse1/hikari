@@ -119,6 +119,14 @@ class HikariApp : Application() {
         installCrashHandler()
         initCloudStream(this)
         store = AppStore(this)
+        // Restore the saved app language BEFORE any Activity is created, so the
+        // whole UI (player overlay labels, content descriptions, settings)
+        // comes up in the chosen language instead of flashing English first.
+        runCatching {
+            com.hikari.app.ui.LanguageManager.apply(
+                kotlinx.coroutines.runBlocking { store.language() }
+            )
+        }
         providers = ProviderManager(store)
         // "Your connection looks slow?" tip: measures in the background while a
         // play is starting and only speaks up with real evidence (see SlowNetTip).
@@ -479,6 +487,25 @@ class HikariApp : Application() {
                     Class.forName("com.lagradost.cloudstream3.utils.ExtractorApiKt")
                 } catch (t: Throwable) {
                     android.util.Log.e("HikariApp", "extractor registry init failed", t)
+                }
+            }
+
+            // Pre-warm the sync-providers class that some plugins touch at load
+            // time (StreamPlay's video captcha flow references AccountManager).
+            // Loading it here turns what used to be a bare, cause-less
+            // NoClassDefFoundError thrown from deep inside a plugin into a clear,
+            // logged cause chain (a missing transitive class, a bad static
+            // initializer, etc.).
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    Class.forName("com.lagradost.cloudstream3.syncproviders.AccountManager")
+                    Logs.log("CloudStream", "AccountManager pre-warm ok")
+                } catch (t: Throwable) {
+                    Logs.log(
+                        "CloudStream",
+                        "AccountManager pre-warm failed: ${t.javaClass.name}: ${t.message}" +
+                            (t.cause?.let { " (cause ${it.javaClass.name}: ${it.message})" } ?: ""),
+                    )
                 }
             }
         } catch (t: Throwable) {

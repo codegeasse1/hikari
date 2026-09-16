@@ -662,8 +662,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private fun repoUrlVariants(raw: String, file: String = "repo.json"): List<String> {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
-        // Already a direct raw URL — fetch as-is, no variant guessing.
-        if (t.contains("raw.githubusercontent.com") || t.endsWith("/$file")) return emptyList()
+        // Already a direct raw URL — fetch as-is, no variant guessing. A raw
+        // link pasted with GitHub's web-style "/refs/heads/<branch>/" segment
+        // is normalised to the canonical "/<branch>/" form and tried FIRST:
+        // some repos' build branches answer the web-style path with a 404 HTML
+        // page (phisher98's "builds", several entries in the official
+        // CloudStream repos-db.json), which used to surface as "returned an
+        // HTML page instead of a repo.json". Both forms are tried so either
+        // paste shape works.
+        if (t.contains("raw.githubusercontent.com")) {
+            val refsHeads = t.replace("/refs/heads/", "/")
+            return if (refsHeads != t) listOf(refsHeads, t) else emptyList()
+        }
+        if (t.endsWith("/$file")) return emptyList()
         val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
         if (gh != null) {
             val owner = gh.groupValues[1]
@@ -692,11 +703,163 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return emptyList()
     }
 
+    /**
+     * Short names the "Add repository" dialog accepts in place of a full URL —
+     * e.g. "megarepo" (every CloudStream repo), "hikari", or the Nuvio repos
+     * listed on nuvioplugin.com. Each name maps to one or more real repo URLs,
+     * and the alias carries its own kind so the name works from any tab.
+     */
+    private data class RepoAlias(val url: String, val kind: RepoKind)
+
+    private val REPO_ALIASES: Map<String, List<RepoAlias>> = buildMap<String, List<RepoAlias>> {
+        val mega = RepoAlias(
+            "https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json",
+            RepoKind.CS3,
+        )
+        val hikari = RepoAlias(
+            "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json",
+            RepoKind.HIKARI,
+        )
+        fun cs3(url: String) = RepoAlias(url, RepoKind.CS3)
+        // CloudStream extension repos, mirroring the official repos-db.json
+        // (https://github.com/recloudstream/cs-repos) plus the popular ones.
+        // Each short name adds ONE repo; the mnemonic is usually the maintainer.
+        val csOfficial = cs3("https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json")
+        val phisherCs3 = cs3("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json")
+        val hexated = cs3("https://raw.githubusercontent.com/hexated/cloudstream-extensions-hexated/master/repo.json")
+        val csx = cs3("https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json")
+        val cnc = cs3("https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/CNC.json")
+        val aniyomi = cs3("https://raw.githubusercontent.com/CranberrySoup/AniyomiCompatExtension/master/repo.json")
+        val uk = cs3("https://raw.githubusercontent.com/CakesTwix/cloudstream-extensions-uk/master/repo.json")
+        val italian = cs3("https://raw.githubusercontent.com/Gian-Fr/ItalianProvider/builds/repo.json")
+        val italiaInStreaming = cs3("https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json")
+        val german = cs3("https://raw.githubusercontent.com/Bnyro/GermanProviders/refs/heads/master/repo.json")
+        val turkish = cs3("https://raw.githubusercontent.com/keyiflerolsun/Kekik-cloudstream/master/repo.json")
+        val indo = cs3("https://raw.githubusercontent.com/TeKuma25/IndoStream/builds/repo.json")
+        val skillshare = cs3("https://raw.githubusercontent.com/techtanic/SkillShare-Repo/builds/repo.json")
+        val luna = cs3("https://raw.githubusercontent.com/Luna712/Luna712-CloudStream-Extensions/master/repo.json")
+        val redowan = cs3("https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json")
+        val dogior = cs3("https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/builds/repo.json")
+        val karma = cs3("https://raw.githubusercontent.com/Kraptor123/cs-Karma/refs/heads/master/repo.json")
+        val storm = cs3("https://raw.githubusercontent.com/redblacker8/storm-ext/refs/heads/builds/repo.json")
+        val cinephile = cs3("https://raw.githubusercontent.com/rockhero1234/cinephile/refs/heads/builds/repo.json")
+        val saimuelRepo = cs3("https://raw.githubusercontent.com/saimuelbr/saimuelrepo/refs/heads/main/builds/repo.json")
+        val fstream = cs3("https://git.disroot.org/ayza/FStream/raw/branch/main/repo.json")
+        fun nuvio(url: String) = RepoAlias(url, RepoKind.NUVIO)
+        val yoru = nuvio("https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json")
+        val gowaru = nuvio("https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json")
+        val phisher = nuvio("https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/main/manifest.json")
+        val allInOne = nuvio("https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/refs/heads/main/manifest.json")
+        val michat = nuvio("https://raw.githubusercontent.com/michat88/nuvio-providers/refs/heads/main/manifest.json")
+        val spidey = nuvio("https://raw.githubusercontent.com/Abinanthankv/NuvioRepo/refs/heads/master/manifest.json")
+        val saimuel = nuvio("https://raw.githubusercontent.com/saimuelbr/saimuel-nuvio-repo/refs/heads/main/manifest.json")
+        val mooncrown = nuvio("https://raw.githubusercontent.com/mooncrown04/nuviotr/refs/heads/main/manifest.json")
+        val kenneth = nuvio("https://raw.githubusercontent.com/KennethJYS/Nuvio-Providers-Latino/refs/heads/main/manifest.json")
+        val eclipsia = nuvio("https://plugin.eclipsia.dpdns.org/manifest.json")
+        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
+        put("megarepo", listOf(mega))
+        put("mega", listOf(mega))
+        put("csrepos", listOf(mega))
+        put("hikari", listOf(hikari))
+        put("hikariextensions", listOf(hikari))
+        put("csofficial", listOf(csOfficial))
+        put("official", listOf(csOfficial))
+        put("recloudstream", listOf(csOfficial))
+        put("cloudstream", listOf(csOfficial))
+        put("phisher", listOf(phisherCs3))
+        put("phisherrepo", listOf(phisherCs3))
+        put("phisher98", listOf(phisherCs3))
+        put("phishercs3", listOf(phisherCs3))
+        put("hexated", listOf(hexated))
+        put("csx", listOf(csx))
+        put("megix", listOf(csx))
+        put("cnc", listOf(cnc))
+        put("cncverse", listOf(cnc))
+        put("aniyomi", listOf(aniyomi))
+        put("aniyomicompat", listOf(aniyomi))
+        put("uk", listOf(uk))
+        put("italian", listOf(italian))
+        put("italianprovider", listOf(italian))
+        put("italiainstreaming", listOf(italiaInStreaming))
+        put("diegon", listOf(italiaInStreaming))
+        put("german", listOf(german))
+        put("germanproviders", listOf(german))
+        put("bnyro", listOf(german))
+        put("turkish", listOf(turkish))
+        put("kekik", listOf(turkish))
+        put("indostream", listOf(indo))
+        put("indo", listOf(indo))
+        put("skillshare", listOf(skillshare))
+        put("luna", listOf(luna))
+        put("luna712", listOf(luna))
+        put("redowan", listOf(redowan))
+        put("bdix", listOf(redowan))
+        put("dogior", listOf(dogior))
+        put("karma", listOf(karma))
+        put("cskarma", listOf(karma))
+        put("storm", listOf(storm))
+        put("stormext", listOf(storm))
+        put("cinephile", listOf(cinephile))
+        put("saimuelrepo", listOf(saimuelRepo))
+        put("saimuelcs3", listOf(saimuelRepo))
+        put("fstream", listOf(fstream))
+        put("ayza", listOf(fstream))
+        put("nuvio", everyNuvio)
+        put("nuvioall", everyNuvio)
+        put("yoru", listOf(yoru))
+        put("yoruix", listOf(yoru))
+        put("gowaru", listOf(gowaru))
+        put("phishernuvio", listOf(phisher))
+        put("allinone", listOf(allInOne))
+        put("d3adlyrocket", listOf(allInOne))
+        put("michat", listOf(michat))
+        put("michat88", listOf(michat))
+        put("spidey", listOf(spidey))
+        put("saimuel", listOf(saimuel))
+        put("saimuelbr", listOf(saimuel))
+        put("mooncrown", listOf(mooncrown))
+        put("kenneth", listOf(kenneth))
+        put("kennethjys", listOf(kenneth))
+        put("latino", listOf(kenneth))
+        put("eclipsia", listOf(eclipsia))
+    }
+
+    /** A pasted short name (case-insensitive) resolved to its repo(s), or null
+     *  when the input is a real URL / unknown name. */
+    private fun resolveRepoAlias(raw: String): List<RepoAlias>? {
+        val key = raw.trim().lowercase()
+            .removePrefix("@")
+            .removeSuffix(".json")
+            .trimEnd('/')
+        return REPO_ALIASES[key]
+    }
+
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
-        val url = rawUrl.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            return Result.failure(Exception("Must start with http(s)://"))
+        val trimmed = rawUrl.trim()
+        resolveRepoAlias(trimmed)?.let { aliases ->
+            var first: Cs3Repo? = null
+            var lastError: Throwable? = null
+            for (alias in aliases) {
+                val result = addRepoUrl(alias.url, alias.kind)
+                val added = result.getOrNull()
+                if (added != null) {
+                    if (first == null) first = added
+                } else {
+                    lastError = result.exceptionOrNull()
+                }
+            }
+            return first?.let { Result.success(it) }
+                ?: Result.failure(lastError ?: Exception("Could not add \"$trimmed\""))
         }
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            return Result.failure(
+                Exception("Must start with http(s):// — or a short name (megarepo, hikari, nuvio, …)")
+            )
+        }
+        return addRepoUrl(trimmed, kind)
+    }
+
+    private suspend fun addRepoUrl(url: String, kind: RepoKind): Result<Cs3Repo> {
         val file = if (kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
         return withContext(Dispatchers.IO) {
             runCatching {
@@ -1352,6 +1515,18 @@ fun ExtensionsScreen() {
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
                         }
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Short names work too — CloudStream repos: megarepo (every " +
+                            "CloudStream repo), csofficial, phisher, hexated, csx, cnc, " +
+                            "aniyomi, uk, italian, italiaInStreaming, german, turkish, " +
+                            "indostream, skillshare, luna712, redowan, dogior, cskarma, " +
+                            "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
+                            "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
+                            "mooncrown, kennethjys, eclipsia.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(

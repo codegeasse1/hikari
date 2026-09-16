@@ -90,8 +90,36 @@ object Cs3PluginManager {
 
     private const val LOAD_TIMEOUT_S = 45L
 
+    /**
+     * Unwraps `ExecutionException`/`InvocationTargetException`-style wrappers so
+     * the message names the REAL failure. Plugin loads run inside a
+     * `Future.get()`, so a plugin that fails to link reported only
+     * "ExecutionException: java.lang.NoClassDefFoundError: ..." and the actual
+     * missing/duplicate class was hidden one level down. The report is worthless
+     * without it, so the whole cause chain is walked.
+     */
+    private fun rootCause(e: Throwable): Throwable {
+        var t = e
+        var guard = 0
+        while (guard++ < 8) {
+            val c = t.cause ?: break
+            if (c === t) break
+            t = c
+        }
+        return t
+    }
+
     private fun record(what: String, e: Throwable) {
-        val line = "$what: ${e.javaClass.simpleName}: ${e.message}"
+        val root = rootCause(e)
+        val line = buildString {
+            append("$what: ${e.javaClass.simpleName}: ${e.message}")
+            if (root !== e) {
+                append(" — caused by ${root.javaClass.name}: ${root.message}")
+                // A linking failure's own cause (e.g. the class that could not
+                // be resolved) is the actionable part; keep a couple of frames.
+                root.cause?.let { append(" (cause: ${it.javaClass.name}: ${it.message})") }
+            }
+        }
         if (errorDetails.length < 4000) {
             errorDetails.append(line).append("\n")
         }

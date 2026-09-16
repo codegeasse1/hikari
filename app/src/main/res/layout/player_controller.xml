@@ -62,7 +62,7 @@
           android:layout_height="30dp"
           android:src="@drawable/ic_back"
           android:tint="#FFFFFF"
-          android:contentDescription="Back"
+          android:contentDescription="@string/cd_back"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
@@ -144,7 +144,7 @@
           android:layout_height="26dp"
           android:src="@drawable/ic_heart"
           android:tint="#FFFFFF"
-          android:contentDescription="Add to library"
+          android:contentDescription="@string/cd_add_to_library"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
@@ -155,7 +155,7 @@
           android:layout_marginStart="3dp"
           android:src="@drawable/ic_download"
           android:tint="#FFFFFF"
-          android:contentDescription="Download"
+          android:contentDescription="@string/cd_download"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
@@ -166,7 +166,7 @@
           android:layout_marginStart="3dp"
           android:src="@drawable/ic_pip"
           android:tint="#FFFFFF"
-          android:contentDescription="Picture-in-picture"
+          android:contentDescription="@string/cd_pip"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
@@ -177,7 +177,7 @@
           android:layout_marginStart="3dp"
           android:src="@drawable/ic_settings"
           android:tint="#FFFFFF"
-          android:contentDescription="Player options"
+          android:contentDescription="@string/cd_player_options"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
 
@@ -188,7 +188,7 @@
           android:layout_marginStart="3dp"
           android:src="@drawable/ic_lock"
           android:tint="#FFFFFF"
-          android:contentDescription="Lock controls"
+          android:contentDescription="@string/cd_lock_controls"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
       </LinearLayout>
@@ -303,44 +303,44 @@
               android:id="@+id/episodes_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_episodes"
-              android:text="Episodes" />
+              android:text="@string/player_episodes" />
 
           <TextView
               android:id="@+id/sources_btn"
               style="@style/HikariPill.Accent"
               android:drawableStart="@drawable/ic_server"
               android:maxWidth="200dp"
-              android:text="Source" />
+              android:text="@string/player_source" />
 
           <TextView
               android:id="@+id/quality_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_quality"
-              android:text="Quality" />
+              android:text="@string/player_quality" />
 
           <TextView
               android:id="@+id/audio_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_audio"
-              android:text="Audio" />
+              android:text="@string/player_audio" />
 
           <TextView
               android:id="@+id/subs_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_subtitles"
-              android:text="Subtitles" />
+              android:text="@string/player_subtitles" />
 
           <TextView
               android:id="@+id/rotate_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_rotate"
-              android:text="Rotate" />
+              android:text="@string/player_rotate" />
 
           <TextView
               android:id="@+id/skip_btn"
               style="@style/HikariPill.Accent"
               android:drawableStart="@drawable/ic_skip"
-              android:text="Skip Intro" />
+              android:text="@string/player_skip_intro" />
         </LinearLayout>
       </HorizontalScrollView>
 
@@ -360,7 +360,7 @@
           android:id="@+id/enhance_btn"
           style="@style/HikariPill.Accent"
           android:drawableStart="@drawable/ic_enhance"
-          android:text="Enhance" />
+          android:text="@string/player_enhance" />
 
       <ImageButton
           android:id="@+id/resize_btn"
@@ -370,7 +370,7 @@
           android:layout_marginEnd="2dp"
           android:src="@drawable/ic_resize"
           android:tint="#FFFFFF"
-          android:contentDescription="Fit or crop video"
+          android:contentDescription="@string/cd_fit_or_crop"
           android:background="@drawable/circle_glass_ripple"
           android:scaleType="centerInside" />
       </LinearLayout>
@@ -526,7 +526,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="Tap to play"
+        android:text="@string/player_tap_to_play"
         android:textSize="10dp"
         android:textStyle="bold"
         android:textColor="#DDFFFFFF"

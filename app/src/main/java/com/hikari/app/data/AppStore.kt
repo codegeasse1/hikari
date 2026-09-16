@@ -63,6 +63,7 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
+        val LANGUAGE = stringPreferencesKey("appLanguage")
         val YTDLP_ENABLED = booleanPreferencesKey("ytdlpEnabled")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
@@ -468,6 +469,21 @@ class AppStore(private val ctx: Context) {
             it[K.WEBVIEW_DEFAULT_UA] = useDefault
             it[K.WEBVIEW_CUSTOM_UA] = customUa
         }
+    }
+
+    // ---- App language ----
+
+    /** The app language as a BCP-47 tag ("" = follow the device). Applied to
+     *  the whole app — and therefore to the player's overlay words, which are
+     *  resource strings — via AppCompatDelegate.setApplicationLocales (see
+     *  com.hikari.app.ui.LanguageManager). */
+    fun languageFlow(): Flow<String> =
+        store.data.map { it[K.LANGUAGE] ?: "" }
+
+    suspend fun language(): String = languageFlow().first()
+
+    suspend fun setLanguage(tag: String) {
+        store.edit { it[K.LANGUAGE] = tag }
     }
 
     // ---- Universal extractor (yt-dlp fallback) ----

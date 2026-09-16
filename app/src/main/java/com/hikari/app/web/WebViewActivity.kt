@@ -202,6 +202,13 @@ class WebViewActivity : ComponentActivity() {
         verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
         providerId = intent.getStringExtra("providerId")
         val forceTranslate = intent.getBooleanExtra("translate", false)
+        // Record every open (and why) so a "the site opened by itself" report
+        // can be traced in Settings › Logs & diagnostics.
+        com.hikari.app.data.Logs.log(
+            "WebView",
+            "open \"$startUrl\" (title=\"$pageTitle\", verifyHost=${verifyHost ?: "-"}, " +
+                "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"})"
+        )
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -624,6 +631,16 @@ class WebViewActivity : ComponentActivity() {
                 // open to pass the challenge, and these streaming pages' players
                 // use window.open to pop ads the moment you click the video.
                 if (autoCloseWhenCloudflarePassed) return false
+                // Popup protection: a window.open that is NOT backed by a user
+                // gesture is an auto-popunder — site scripts fire these on page
+                // load and on the first stray tap, which is exactly the "popup
+                // ad appears after the site loads" report. Only a
+                // gesture-driven window.open (a real click, e.g. a player's
+                // "open in new window") is relayed.
+                if (popupProtection && !isUserGesture) {
+                    showBlockedToast("Blocked popup")
+                    return false
+                }
                 // While a video is actively playing, a window.open popup is an
                 // ad (players pop them on click) — relaying it into the main
                 // view would replace the playing video with the ad page.
@@ -1350,7 +1367,12 @@ class WebViewActivity : ComponentActivity() {
                 '[class*="ad-banner"]','[id*="ad-banner"]','div[data-ad]','[class*="sponsored"]','[class*="ad-placeholder"]',
                 'iframe[src*="doubleclick"]','iframe[src*="googlesyndication"]','iframe[src*="googleads"]',
                 'iframe[src*="advertising"]','iframe[src*="adserver"]','iframe[src*="2mdn"]',
-                '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]'
+                '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]',
+                '[id*="popup"]','[class*="interstitial"]','[class*="overlay-ad"]','[id*="overlay-ad"]',
+                '[class*="ad-overlay"]','[id*="ad-overlay"]','[class*="ad_container"]','[id*="ad_container"]',
+                '[class*="ad-slot"]','[id*="ad-slot"]','[class*="ads-container"]','[id*="ads-container"]',
+                'iframe[src*="popads"]','iframe[src*="popcash"]','iframe[src*="propellerads"]','iframe[src*="adnxs"]',
+                'iframe[src*="exoclick"]','iframe[src*="juicyads"]','iframe[src*="trafficjunky"]'
               ];
               function clean(){
                 for(var i=0;i<SEL.length;i++){

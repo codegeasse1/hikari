@@ -1,3 +1,44 @@
+## 0.3.81
+
+**The downloads/build branch is now separate, WebView popups are tamed, the app
+speaks 21 languages, the server chooser's repo short names work again, and the
+StreamPlay crash now explains itself.**
+
+- **Popups are blocked, not just redirected.** Hikari's built-in browser already
+  stopped cross-site redirects, but a site could still open an ad window as a new
+  tab (`window.open` / a target=_blank link) and the popup opened full-screen over
+  the video. Popups that are NOT triggered by a real tap are now dropped, and the
+  ad-cleanup script hides the usual popup/interstitial/overlay-ad containers and
+  the common pop/ad iframes (popads, popcash, propellerads, adnxs, exoclick,
+  juicyads, trafficjunky).
+- **The Cloudflare verification WebView no longer throws itself open.** With the
+  hidden (off-screen) solve doing the work, the visible verify view only appears
+  when you ask for it (the globe button), never automatically mid-browse.
+- **App language.** Settings → Appearance → App language offers 21 languages plus
+  "System default". Choosing one switches the app's resource-backed text — the
+  player overlay's Episodes/Source/Quality/Audio/Subtitles/Rotate/Skip
+  Intro/Enhance pills and the "Tap to play" hint, every content description, and
+  the language card itself — and it is remembered across launches. There is also a
+  fun extra: `mmmm... monke` (🙈). The choice is applied through Android's per-app
+  locale API and Android 13+ also lists it in the system settings screen.
+- **Repo short names work again.** "Add repository" now normalises a URL that
+  points at a branch head (`…/refs/heads/builds/repo.json`) to the canonical raw
+  form and tries both, so repos whose URL is stored the long way (phisher98's
+  builds branch, the mega-repo bundles) import instead of failing with "an HTML
+  page instead of repo.json". `phisher` and a batch of new CS3 short names
+  (csOfficial, csx, cnc, aniyomi, german, italian, turkish, indo, skillshare,
+  luna, redowan, dogior, storm, cinephile, saimuelRepo, fstream, …) resolve to
+  working repo.json URLs; the nuvio manifest for phisher is under
+  `phishernuvio`.
+- **StreamPlay's NoClassDefFoundError now shows its cause.** The plugin load error
+  log recorded only "NoClassDefFoundError:
+  com.lagradost.cloudstream3.syncproviders.AccountManager" with no reason. The
+  recorder now unwraps the cause chain, and the sync-providers class the plugin
+  touches is pre-warmed at startup, so the log line names the real missing
+  class/initializer instead of the symptom. CloudStreamApp also gains the boxed
+  `removeKeys` return type and the `openBrowser` default-argument bridge some
+  plugins call.
+
 ## 0.3.80
 
 **Every row in the server chooser is now the same small capsule.**
