@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 105
-        versionName = "0.3.81"
+        versionCode = 106
+        versionName = "0.3.82"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -67,15 +67,31 @@ android {
 // every namespace it touches (androidx/activity/compose/R.class,
 // com.fleeksoft.charset.R, ...). Those collide with the real dependencies' R
 // classes during release dex merging ("Type ...R is defined multiple times").
-// Strip ALL R classes before the jar reaches the classpath — a bare jar has no
-// resource table, so its R classes are dead scaffolding; the real libraries
-// provide the R classes at runtime.
+// Strip those before the jar reaches the classpath — the real libraries provide
+// their R classes at runtime.
+//
+// EXCEPT com/lagradost/cloudstream3/R*: the CloudStream jar's OWN R classes.
+// Plugins are compiled against them (e.g. syncproviders/AccountManager
+// references com.lagradost.cloudstream3.R$string) and NOTHING else on the
+// classpath defines that namespace, so stripping them made every class that
+// touches them die with
+//   NoClassDefFoundError: ...AccountManager
+//   caused by ClassNotFoundException: com.lagradost.cloudstream3.R$string
+// which surfaced as "No CloudStream plugin loaded" for whole repos (the
+// Phisher repo's 85 plugins, StreamPlay, …). They must survive the clean.
 val cloudstreamRawJar = file("libs/cloudstream3.jar")
 val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("cloudstreamJarClean") {
     archiveFileName.set("cloudstream3-clean.jar")
     destinationDirectory.set(layout.buildDirectory.dir("intermediates/cloudstream-clean"))
     from(zipTree(cloudstreamRawJar)) {
-        exclude("**/R.class", "**/R$*.class")
+        exclude { element ->
+            val path = element.path
+            val name = path.substringAfterLast('/')
+            val isRClass = name == "R.class" || (name.startsWith("R$") && name.endsWith(".class"))
+            val isCloudStreamR = path == "com/lagradost/cloudstream3/R.class" ||
+                (path.startsWith("com/lagradost/cloudstream3/R$") && name.endsWith(".class"))
+            isRClass && !isCloudStreamR
+        }
         // The jar ships the JVM (desktop) artifact of CloudStream, whose
         // network/WebViewResolver is a no-op stub (`intercept` passes through,
         // resolveUsingWebView returns nothing). Plugins that resolve embeds
@@ -94,6 +110,16 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt and
         // drop the jar classes to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/CloudStreamApp*.class")
+        // The jar's ToastBinding is a generated ViewBinding class that
+        // (a) cannot be linked without the androidx.viewbinding runtime and
+        // (b) inflates by a resource id baked into the jar's own R$layout,
+        // which Hikari's resource table does not share. Shadow it with
+        // app/src/main/java/com/lagradost/cloudstream3/databinding/ToastBinding.java
+        // (same class name + the three members CommonActivity.showToast uses),
+        // so plugin toasts render Hikari's own layout instead of dying with
+        // NoClassDefFoundError. CommonActivity is the only class in the jar
+        // that references it.
+        exclude("com/lagradost/cloudstream3/databinding/ToastBinding.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }
@@ -175,6 +201,17 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.atomicfu)
     implementation(libs.newpipeextractor)
+    // Required to LINK the CloudStream jar's generated ViewBinding classes
+    // (ToastBinding et al.) — they implement androidx.viewbinding.ViewBinding
+    // and call ViewBindings.findChildViewById. Without the viewbinding runtime
+    // ART fails the class link and surfaces it as
+    // NoClassDefFoundError: Lcom/lagradost/cloudstream3/databinding/ToastBinding;
+    // which killed the app whenever a plugin called CommonActivity.showToast.
+    implementation(libs.androidx.viewbinding)
+    // CardView is the declared type of ToastBinding.getRoot() (and the root of
+    // res/layout/hikari_toast.xml), so the class must be on the compile+runtime
+    // classpath too.
+    implementation(libs.androidx.cardview)
     implementation(libs.yt.dlp.android)
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)

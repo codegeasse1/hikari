@@ -5,6 +5,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -100,6 +101,19 @@ class MainActivity : AppCompatActivity() {
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
+            // App language (Settings → Appearance → App language). The map is
+            // handed to the whole tree through I18n.LocalMap, so every screen
+            // that wraps a literal with tr(...) re-renders in the new language
+            // the moment the choice changes — app-wide, live, no restart.
+            val languageFlow = remember { store.languageFlow() }
+            val languageTag by languageFlow.collectAsState(initial = "")
+            val i18nMap = remember(languageTag) {
+                com.hikari.app.i18n.I18n.mapFor(this@MainActivity, languageTag)
+            }
+            LaunchedEffect(i18nMap) {
+                com.hikari.app.i18n.I18n.setCurrent(i18nMap)
+            }
+
             // Accent colours (Settings → Appearance). The app accent repaints
             // the whole Compose UI; the player accent is for the View-based
             // player, which reads it synchronously via AccentStore.
@@ -166,6 +180,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            CompositionLocalProvider(
+                com.hikari.app.i18n.I18n.LocalMap provides i18nMap
+            ) {
             HikariTheme(
                 mode = themeMode,
                 accent = appAccent,
@@ -189,6 +206,7 @@ class MainActivity : AppCompatActivity() {
                         },
                     )
                 }
+            }
             }
         }
     }

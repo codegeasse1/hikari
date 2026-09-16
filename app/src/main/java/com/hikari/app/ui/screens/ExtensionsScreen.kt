@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.I18n
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import android.content.Context
@@ -131,6 +133,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val pluginsByRepo = MutableStateFlow<Map<String, List<Cs3RepoPlugin>>>(emptyMap())
     val installedUrls = MutableStateFlow<Set<String>>(emptySet())
     val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
+    /** Repo URLs that turned out to be "bundle" repos (the Mega repo and
+     *  friends): they hold no plugins of their own, they only list other
+     *  repos, which get imported into the store. The UI shows a short
+     *  explanation instead of a bare "0 plugins". */
+    val bundleRepos = MutableStateFlow<Set<String>>(emptySet())
     val sites = MutableStateFlow<List<Site>>(emptyList())
 
     // Install/uninstall/busy status lives in the ViewModel (not the
@@ -624,27 +631,45 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // desktop-Chrome UA but serves the nuvio app's own UA fine — override
         // for nuvio repos (mirrors the real nuvio app's client).
         val headers = if (ua != null) mapOf("User-Agent" to ua) else emptyMap()
-        val variants = repoUrlVariants(url, file)
-        if (variants.isEmpty()) {
-            lastGoodRepoUrl = url
-            return Http.fetchStringRobust(url, headers).map { text ->
-                if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
-            }
+        val variants = repoUrlVariants(url, file).ifEmpty { listOf(url) }
+        // Try every variant, then the jsDelivr CDN mirror of each (a different
+        // host, so it survives an ISP/DNS block on raw.githubusercontent.com),
+        // and finally the pasted URL as-is. A candidate whose body is an HTML
+        // page (an ISP "blocked" notice served with HTTP 200, a GitHub web
+        // page, …) is skipped rather than treated as a repo — that 200-with-HTML
+        // case is what produced the bogus "returned an HTML page instead of a
+        // repo.json" error and made the Mega bundle add 0 repos.
+        val candidates = LinkedHashSet<String>()
+        for (v in variants) {
+            candidates += v
+            jsDelivrMirror(v)?.let { candidates += it }
         }
-        for (candidate in variants) {
+        candidates += url
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
             val r = Http.fetchStringRobust(candidate, headers)
-            if (r.isSuccess) {
-                val text = r.getOrNull() ?: continue
-                if (looksLikeHtml(text)) continue
-                lastGoodRepoUrl = candidate
-                return r
+            val text = r.getOrNull()
+            if (text == null) {
+                lastError = r.exceptionOrNull() ?: lastError
+                continue
             }
+            if (looksLikeHtml(text)) {
+                lastError = friendlyRepoError(file)
+                continue
+            }
+            lastGoodRepoUrl = candidate
+            return Result.success(text)
         }
-        // last resort: the pasted URL as-is (a non-main/mixed-branch manifest)
-        lastGoodRepoUrl = url
-        return Http.fetchStringRobust(url, headers).map { text ->
-            if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
-        }
+        return Result.failure(lastError ?: friendlyRepoError(file))
+    }
+
+    /** The jsDelivr CDN equivalent of a raw.githubusercontent.com URL, or null
+     *  when [url] isn't one. jsDelivr is a separate domain/IP from GitHub, so it
+     *  still answers when raw.githubusercontent.com is blocked or rate-limited. */
+    private fun jsDelivrMirror(url: String): String? {
+        val m = Regex("^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$")
+            .find(url.trim()) ?: return null
+        return "https://cdn.jsdelivr.net/gh/${m.groupValues[1]}/${m.groupValues[2]}@${m.groupValues[3]}/${m.groupValues[4]}"
     }
 
     private fun looksLikeHtml(text: String): Boolean {
@@ -880,7 +905,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // canonical repos-db.json (and relies on the real CloudStream
                 // RepositoryManager, which Hikari doesn't run). Import the
                 // repos natively instead so they all show up and install.
-                if (isMegaBundle(obj)) importMegaRepos()
+                if (isMegaBundle(obj)) {
+                    markBundle(repo.url)
+                    importMegaRepos()
+                }
                 repos.value = store.repos()
                 repo
             }
@@ -979,6 +1007,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // repos natively (they land in the repo list, installable as usual)
         // and hide the useless bundle plugin instead of offering it.
         if (isMegaBundle(root) || out.values.any { it.name == "MegaProvider" }) {
+            markBundle(repo.url)
             importMegaRepos()
             return emptyList<Cs3RepoPlugin>() to null
         }
@@ -993,50 +1022,109 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private val MEGA_REPOS_DB =
         "https://raw.githubusercontent.com/recloudstream/cs-repos/master/repos-db.json"
 
+    /** Fired when [url] is discovered to be a bundle repo (see [isMegaBundle]). */
+    private fun markBundle(url: String) {
+        if (url.isBlank()) return
+        bundleRepos.value = bundleRepos.value + url
+    }
+
     /** True for the self-similarity/MegaRepo style "add every repo" bundle. */
     private fun isMegaBundle(root: JSONObject): Boolean {
         val name = root.optString("name")
         return name.contains("mega", true) && name.contains("repo", true)
     }
 
-    /** Imports every repo URL from the canonical CS repos-db.json (deduped),
-     *  naming each folder with its repo.json's own name when it can be fetched
-     *  (bounded + parallel) so the list reads "Phisher", "MRDS", "CNC" …
-     *  instead of a raw URL — the URL-only derivation the old code produced
-     *  for every mega-imported repo. */
-    private suspend fun importMegaRepos(): Int {
-        val text = Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull() ?: return 0
-        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return 0
-        data class Entry(val url: String, val name: String)
-        val entries = buildList {
-            for (i in 0 until arr.length()) {
-                val entry = arr.opt(i)
-                val repoUrl = when (entry) {
-                    is String -> entry
-                    is JSONObject -> entry.optString("url")
-                    else -> null
-                } ?: continue
-                if (!repoUrl.startsWith("http")) continue
-                val entryName = (entry as? JSONObject)?.optString("name")
-                    ?.takeIf { it.isNotBlank() } ?: ""
-                add(Entry(repoUrl, entryName))
-            }
+    /** The repos the "Mega repo" bundles — a mirror of recloudstream's
+     *  repos-db.json, used only when that database can't be fetched at all
+     *  (blocked network, an ISP HTML notice served as HTTP 200, …). Without a
+     *  fallback a blocked fetch left the bundle import at exactly 0 repos,
+     *  which is the other half of the "Mega repo shows nothing" bug. */
+    private val MEGA_FALLBACK_REPOS: List<String> = listOf(
+        "https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json",
+        "https://raw.githubusercontent.com/CranberrySoup/AniyomiCompatExtension/master/repo.json",
+        "https://raw.githubusercontent.com/Gian-Fr/ItalianProvider/builds/repo.json",
+        "https://raw.githubusercontent.com/CakesTwix/cloudstream-extensions-uk/master/repo.json",
+        "https://raw.githubusercontent.com/techtanic/SkillShare-Repo/builds/repo.json",
+        "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json",
+        "https://git.disroot.org/ayza/FStream/raw/branch/main/repo.json",
+        "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/CNC.json",
+        "https://raw.githubusercontent.com/Luna712/Luna712-CloudStream-Extensions/master/repo.json",
+        "https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json",
+        "https://raw.githubusercontent.com/Abodabodd/re-3arabi/refs/heads/main/repo",
+        "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json",
+        "https://gitlab.com/tearrs/cloudstream-vietnamese/-/raw/main/repo.json",
+        "https://raw.githubusercontent.com/Bnyro/GermanProviders/refs/heads/master/repo.json",
+        "https://raw.githubusercontent.com/TeKuma25/IndoStream/builds/repo.json",
+        "https://raw.githubusercontent.com/saimuelbr/saimuelrepo/refs/heads/main/builds/repo.json",
+        "https://raw.githubusercontent.com/Kraptor123/cs-Karma/refs/heads/master/repo.json",
+        "https://raw.githubusercontent.com/redblacker8/storm-ext/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/rockhero1234/cinephile/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/med1245/cartoonyrepo/builds/repo.json",
+        "https://raw.githubusercontent.com/Reflex755/ReflexRepo/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/KSHITIJ8473/raghav/builds/repo.json",
+        "https://raw.githubusercontent.com/mouradchaouche/cloudstream-frenchrepo/main/repo.json",
+        "https://raw.githubusercontent.com/yorik100/Cloudstream/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/RVRBEAST76/allforu-repo/builds/repo.json",
+    )
+
+    /** Parses repos-db.json (or an equivalent array of URL strings / {url}
+     *  objects) into (url, name) pairs. */
+    private fun parseMegaRepoEntries(text: String): List<Pair<String, String>> {
+        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Pair<String, String>>()
+        for (i in 0 until arr.length()) {
+            val entry = arr.opt(i)
+            val repoUrl = when (entry) {
+                is String -> entry
+                is JSONObject -> entry.optString("url")
+                else -> null
+            } ?: continue
+            if (!repoUrl.startsWith("http")) continue
+            val name = (entry as? JSONObject)?.optString("name")
+                ?.takeIf { it.isNotBlank() } ?: ""
+            out += repoUrl to name
         }
+        return out
+    }
+
+    /** True when [url] is a bundle repo rather than a real plugin repo — used
+     *  so a bundle listing another bundle never re-imports itself. */
+    private fun isMegaBundleUrl(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("megarepo") || u.contains("mega-repo") ||
+            (u.contains("mega") && u.contains("repo"))
+    }
+
+    /** Imports every repo URL a bundle lists (deduped, bundles skipped), naming
+     *  each folder with its repo.json's own name when it can be fetched
+     *  (bounded + parallel) so the list reads "Phisher", "CNC", "CSX" … instead
+     *  of a raw URL. Falls back to the bundled list above when the canonical
+     *  repos-db.json can't be fetched. Returns the number of repos added. */
+    private suspend fun importMegaRepos(): Int {
+        val dbText = listOfNotNull(
+            Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull(),
+            jsDelivrMirror(MEGA_REPOS_DB)?.let { Http.fetchStringRobust(it).getOrNull() },
+        ).firstOrNull { it.isNotBlank() && !looksLikeHtml(it) }
+        val entries = (dbText?.let { parseMegaRepoEntries(it) } ?: emptyList())
+            .ifEmpty { MEGA_FALLBACK_REPOS.map { it to "" } }
+            .filterNot { (url, _) -> isMegaBundleUrl(url) }
         val existing = store.repos().map { it.url }.toSet()
-        val fresh = entries.filter { it.url !in existing }
+        val fresh = entries.filter { (url, _) -> url !in existing }
         val names = coroutineScope {
-            fresh.map { e ->
+            fresh.map { (url, name) ->
                 async(Dispatchers.IO) {
-                    if (e.name.isNotBlank()) e.name else fetchRepoDisplayName(e.url)
+                    if (name.isNotBlank()) name else fetchRepoDisplayName(url)
                 }
             }.awaitAll()
         }
         var added = 0
-        for ((entry, name) in fresh.zip(names)) {
-            runCatching {
-                store.addCs3Repo(Cs3Repo(url = entry.url, name = name, kind = RepoKind.CS3))
-            }
-            added++
+        for (((url, _), name) in fresh.zip(names)) {
+            val ok = runCatching {
+                store.addCs3Repo(Cs3Repo(url = url, name = name, kind = RepoKind.CS3))
+            }.isSuccess
+            if (ok) added++
         }
         return added
     }
@@ -1237,6 +1325,7 @@ fun ExtensionsScreen() {
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
     val repoState by vm.repoState.collectAsState()
+    val bundleRepos by vm.bundleRepos.collectAsState()
     val sites by vm.sites.collectAsState()
     val openRepo = repos.firstOrNull { it.url == openRepoUrl }
     val context = LocalContext.current
@@ -1314,6 +1403,7 @@ fun ExtensionsScreen() {
             repo = openRepo,
             plugins = pluginsByRepo[openRepo.url] ?: emptyList(),
             state = repoState[openRepo.url] ?: RepoLoadState(loading = true),
+            isBundle = openRepo.url in bundleRepos,
             providers = providers,
             installedUrls = installed,
             busy = busy,
@@ -1518,13 +1608,15 @@ fun ExtensionsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Short names work too — CloudStream repos: megarepo (every " +
-                            "CloudStream repo), csofficial, phisher, hexated, csx, cnc, " +
-                            "aniyomi, uk, italian, italiaInStreaming, german, turkish, " +
-                            "indostream, skillshare, luna712, redowan, dogior, cskarma, " +
-                            "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
-                            "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
-                            "mooncrown, kennethjys, eclipsia.",
+                        tr(
+                            "Short names work too — CloudStream repos: megarepo (every " +
+                                "CloudStream repo), csofficial, phisher, hexated, csx, cnc, " +
+                                "aniyomi, uk, italian, italiaInStreaming, german, turkish, " +
+                                "indostream, skillshare, luna712, redowan, dogior, cskarma, " +
+                                "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
+                                "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
+                                "mooncrown, kennethjys, eclipsia."
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1532,7 +1624,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = repoUrl,
                         onValueChange = { repoUrl = it },
-                        placeholder = { Text("https://…/repo.json") },
+                        placeholder = { Text(tr("https://…/repo.json")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1567,10 +1659,10 @@ fun ExtensionsScreen() {
                             },
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1578,15 +1670,15 @@ fun ExtensionsScreen() {
     if (showStremio) {
         AlertDialog(
             onDismissRequest = { if (!busy) showStremio = false },
-            title = { Text("Add Stremio addon") },
+            title = { Text(tr("Add Stremio addon")) },
             text = {
                 Column {
-                    Text("Paste the addon URL — it must serve a manifest.json.")
+                    Text(tr("Paste the addon URL — it must serve a manifest.json."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = stremioUrl,
                         onValueChange = { stremioUrl = it },
-                        placeholder = { Text("https://addon.example.com") },
+                        placeholder = { Text(tr("https://addon.example.com")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1611,13 +1703,13 @@ fun ExtensionsScreen() {
                                 showStremio = false
                                 stremioUrl = ""
                             },
-                            successMsg = "Added Stremio addon",
+                            successMsg = I18n.t("Added Stremio addon"),
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showStremio = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showStremio = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1625,15 +1717,15 @@ fun ExtensionsScreen() {
     if (showScraper) {
         AlertDialog(
             onDismissRequest = { if (!busy) showScraper = false },
-            title = { Text("Add universal scraper") },
+            title = { Text(tr("Add universal scraper")) },
             text = {
                 Column {
-                    Text("Paste the JSON config (name + baseUrl + search/episodes/streams rules).")
+                    Text(tr("Paste the JSON config (name + baseUrl + search/episodes/streams rules)."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = scraperJson,
                         onValueChange = { scraperJson = it },
-                        placeholder = { Text("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}") },
+                        placeholder = { Text(tr("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}")) },
                         minLines = 6,
                         maxLines = 12,
                         modifier = Modifier.fillMaxWidth()
@@ -1659,13 +1751,13 @@ fun ExtensionsScreen() {
                                 showScraper = false
                                 scraperJson = ""
                             },
-                            successMsg = "Added scraper",
+                            successMsg = I18n.t("Added scraper"),
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showScraper = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showScraper = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1673,15 +1765,15 @@ fun ExtensionsScreen() {
     if (showCs3Url) {
         AlertDialog(
             onDismissRequest = { if (!busy) showCs3Url = false },
-            title = { Text("Install .cs3 plugin") },
+            title = { Text(tr("Install .cs3 plugin")) },
             text = {
                 Column {
-                    Text("Paste a direct link to a compiled CloudStream .cs3 file.")
+                    Text(tr("Paste a direct link to a compiled CloudStream .cs3 file."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = cs3Url,
                         onValueChange = { cs3Url = it },
-                        placeholder = { Text("https://…/JustAnimeProvider.cs3") },
+                        placeholder = { Text(tr("https://…/JustAnimeProvider.cs3")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1707,10 +1799,10 @@ fun ExtensionsScreen() {
                             },
                         ) { vm.installCs3FromUrl(cs3Url) }
                     }
-                ) { Text("Install") }
+                ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showCs3Url = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showCs3Url = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1718,20 +1810,22 @@ fun ExtensionsScreen() {
     if (showHikiUrl) {
         AlertDialog(
             onDismissRequest = { if (!busy) showHikiUrl = false },
-            title = { Text("Install .hiki extension") },
+            title = { Text(tr("Install .hiki extension")) },
             text = {
                 Column {
                     Text(
-                        "Paste a direct link to a compiled Hikari extension (.hiki). " +
-                            "Extensions run against Hikari's own SDK — no CloudStream " +
-                            "dependencies, Cloudflare solvers and WebView stream capture " +
-                            "built in. See docs/HIKARI_EXTENSIONS.md."
+                        tr(
+                            "Paste a direct link to a compiled Hikari extension (.hiki). " +
+                                "Extensions run against Hikari's own SDK — no CloudStream " +
+                                "dependencies, Cloudflare solvers and WebView stream capture " +
+                                "built in. See docs/HIKARI_EXTENSIONS.md."
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = hikiUrl,
                         onValueChange = { hikiUrl = it },
-                        placeholder = { Text("https://…/MyExtension.hiki") },
+                        placeholder = { Text(tr("https://…/MyExtension.hiki")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1757,10 +1851,10 @@ fun ExtensionsScreen() {
                             },
                         ) { vm.installHikiFromUrl(hikiUrl) }
                     }
-                ) { Text("Install") }
+                ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1768,19 +1862,21 @@ fun ExtensionsScreen() {
     if (showSite) {
         AlertDialog(
             onDismissRequest = { if (!busy) showSite = false },
-            title = { Text("Add website") },
+            title = { Text(tr("Add website")) },
             text = {
                 Column {
                     Text(
-                        "Paste the URL of any movie/streaming website. It opens in an " +
-                            "ad-free web view — ads, trackers and popups are blocked, " +
-                            "and videos can be handed to the built-in player."
+                        tr(
+                            "Paste the URL of any movie/streaming website. It opens in an " +
+                                "ad-free web view — ads, trackers and popups are blocked, " +
+                                "and videos can be handed to the built-in player."
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = siteName,
                         onValueChange = { siteName = it },
-                        placeholder = { Text("Name (optional)") },
+                        placeholder = { Text(tr("Name (optional)")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1788,7 +1884,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = siteUrl,
                         onValueChange = { siteUrl = it },
-                        placeholder = { Text("https://example.com") },
+                        placeholder = { Text(tr("https://example.com")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1822,14 +1918,14 @@ fun ExtensionsScreen() {
                                     siteUrl = ""
                                     siteName = ""
                                 },
-                                successMsg = "Website added",
+                                successMsg = I18n.t("Website added"),
                             )
                         }
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showSite = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showSite = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1979,12 +2075,12 @@ private fun RepoBrowserView(
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp)) {
                 Text(
-                    "Extensions",
+                    tr("Extensions"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "Sources, repos & providers",
+                    tr("Sources, repos & providers"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1994,7 +2090,7 @@ private fun RepoBrowserView(
             GlassSearchField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = "Search extensions & sources…",
+                placeholder = tr("Search extensions & sources…"),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -2110,43 +2206,43 @@ private fun RepoBrowserView(
                 Column {
                     SourceActionRow(
                         icon = Icons.Filled.Public,
-                        title = "CloudStream repos",
-                        subtitle = "repo.json · CloudStream extensions",
+                        title = tr("CloudStream repos"),
+                        subtitle = tr("repo.json · CloudStream extensions"),
                         onClick = { onOpenFolder(SourceFolder.CLOUDSTREAM) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Extension,
-                        title = "Hikari repos",
-                        subtitle = "repo.json · Hikari extensions",
+                        title = tr("Hikari repos"),
+                        subtitle = tr("repo.json · Hikari extensions"),
                         onClick = { onOpenFolder(SourceFolder.HIKARI) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.FolderOpen,
-                        title = "Nuvio repos",
-                        subtitle = "manifest.json · Nuvio providers",
+                        title = tr("Nuvio repos"),
+                        subtitle = tr("manifest.json · Nuvio providers"),
                         onClick = { onOpenFolder(SourceFolder.NUVIO) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.PlayArrow,
-                        title = "Stremio addons",
-                        subtitle = "manifest.json · Stremio addons",
+                        title = tr("Stremio addons"),
+                        subtitle = tr("manifest.json · Stremio addons"),
                         onClick = { onOpenFolder(SourceFolder.STREMIO) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Build,
-                        title = "Add universal scraper",
-                        subtitle = "JSON config · scriptable scraper",
+                        title = tr("Add universal scraper"),
+                        subtitle = tr("JSON config · scriptable scraper"),
                         onClick = onAddScraper
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Download,
-                        title = "Install .cs3 plugin",
-                        subtitle = "From a URL or a local file",
+                        title = tr("Install .cs3 plugin"),
+                        subtitle = tr("From a URL or a local file"),
                         onClick = onAddCs3Url,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickCs3File
@@ -2154,8 +2250,8 @@ private fun RepoBrowserView(
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Add,
-                        title = "Install .hiki extension",
-                        subtitle = "From a URL or a local file",
+                        title = tr("Install .hiki extension"),
+                        subtitle = tr("From a URL or a local file"),
                         onClick = onAddHikiUrl,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickHikiFile
@@ -2163,22 +2259,22 @@ private fun RepoBrowserView(
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Public,
-                        title = "Add website",
-                        subtitle = "Opens in the ad-free web view",
+                        title = tr("Add website"),
+                        subtitle = tr("Opens in the ad-free web view"),
                         onClick = onAddSite
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Folder,
-                        title = "All installed repos",
-                        subtitle = "All repos you've added · " + repos.size + " total",
+                        title = tr("All installed repos"),
+                        subtitle = tr("All repos you've added · ") + repos.size + " total",
                         onClick = onOpenAllRepos
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Extension,
-                        title = "Installed extensions",
-                        subtitle = "Manage, toggle & uninstall · " + providers.size + " installed",
+                        title = tr("Installed extensions"),
+                        subtitle = tr("Manage, toggle & uninstall · ") + providers.size + " installed",
                         onClick = onOpenInstalled
                     )
                 }
@@ -2345,7 +2441,7 @@ private fun LazyListScope.repoStatusItems(
                 )
             }
             if (err != null) {
-                TextButton(onClick = { onRefreshRepo(repo) }) { Text("Retry") }
+                TextButton(onClick = { onRefreshRepo(repo) }) { Text(tr("Retry")) }
             } else {
                 CircularProgressIndicator(
                     Modifier.size(18.dp),
@@ -2361,6 +2457,7 @@ private fun RepoPluginsView(
     repo: Cs3Repo,
     plugins: List<Cs3RepoPlugin>,
     state: RepoLoadState,
+    isBundle: Boolean = false,
     providers: List<ContentProvider>,
     installedUrls: Set<String>,
     busy: Boolean,
@@ -2388,7 +2485,7 @@ private fun RepoPluginsView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
                 Text(
@@ -2415,7 +2512,7 @@ private fun RepoPluginsView(
             IconButton(onClick = onRefresh) {
                 Icon(
                     Icons.Filled.Refresh,
-                    contentDescription = "Refresh repo",
+                    contentDescription = tr("Refresh repo"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -2491,7 +2588,17 @@ private fun RepoPluginsView(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
-                    TextButton(onClick = onRefresh) { Text("Retry") }
+                    TextButton(onClick = onRefresh) { Text(tr("Retry")) }
+                }
+                plugins.isEmpty() && isBundle -> item {
+                    Text(
+                        "This is a bundle repo — it holds no ${unit}s of its own. " +
+                            "Its repos were added to your repo list: open Phisher, CNC, CSX… " +
+                            "and install ${unit}s from there.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
                 }
                 plugins.isEmpty() -> item {
                     Text(
@@ -2685,7 +2792,7 @@ private fun ProviderCard(
                 IconButton(onClick = onSettings) {
                     Icon(
                         Icons.Filled.Settings,
-                        contentDescription = "Provider settings",
+                        contentDescription = tr("Provider settings"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -2693,7 +2800,7 @@ private fun ProviderCard(
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove",
+                    contentDescription = tr("Remove"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -2719,7 +2826,7 @@ private fun NuvioSettingsDialog(
     LaunchedEffect(provider.config.id) {
         val source = runCatching { File(provider.config.url).readText() }.getOrNull()
         if (source.isNullOrBlank()) {
-            loadError = "Provider file missing — reinstall this extension"
+            loadError = I18n.t("Provider file missing — reinstall this extension")
             loading = false
             return@LaunchedEffect
         }
@@ -2769,7 +2876,7 @@ private fun NuvioSettingsDialog(
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
-                    Text("Loading settings…")
+                    Text(tr("Loading settings…"))
                 }
                 loadError != null -> Text(
                     loadError!!,
@@ -2790,7 +2897,7 @@ private fun NuvioSettingsDialog(
                         )
                     }
                 }
-                else -> Text("No settings available")
+                else -> Text(tr("No settings available"))
             }
         },
         confirmButton = {
@@ -2812,10 +2919,10 @@ private fun NuvioSettingsDialog(
                     com.hikari.app.nuvio.NuvioRuntime.saveSettings(provider.config.id, out.toString())
                     onDismiss()
                 }
-            ) { Text("Save") }
+            ) { Text(tr("Save")) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
         }
     )
 }
@@ -3028,14 +3135,14 @@ private fun RepoCard(
             IconButton(onClick = onRefresh) {
                 Icon(
                     Icons.Filled.Refresh,
-                    contentDescription = "Refresh repo",
+                    contentDescription = tr("Refresh repo"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             IconButton(onClick = onRemoveRepo) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove repo",
+                    contentDescription = tr("Remove repo"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -3095,7 +3202,7 @@ private fun PluginRow(
             IconButton(onClick = onSettings) {
                 Icon(
                     Icons.Filled.Settings,
-                    contentDescription = "Plugin settings",
+                    contentDescription = tr("Plugin settings"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -3103,13 +3210,13 @@ private fun PluginRow(
         Spacer(Modifier.width(8.dp))
         if (installed) {
             TextButton(onClick = onUninstall) {
-                Text("Uninstall", color = MaterialTheme.colorScheme.error)
+                Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
             }
         } else {
             Button(onClick = onInstall) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Install")
+                Text(tr("Install"))
             }
         }
     }
@@ -3185,7 +3292,7 @@ private fun SitesFolder(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Webview sites",
+                        tr("Webview sites"),
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -3207,7 +3314,7 @@ private fun SitesFolder(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 if (sites.isEmpty()) {
                     Text(
-                        "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
+                        tr("Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp)
@@ -3270,12 +3377,12 @@ private fun SiteRow(
             Button(onClick = onOpen) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Open")
+                Text(tr("Open"))
             }
             IconButton(onClick = onRemove) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove website",
+                    contentDescription = tr("Remove website"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -3337,7 +3444,7 @@ private fun SourceFolderView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
                 Text(
@@ -3419,8 +3526,8 @@ private fun SourceFolderView(
                 if (stremioProviders.isEmpty()) {
                     item {
                         EmptyState(
-                            title = "No Stremio addons yet",
-                            subtitle = "Tap \"Add Stremio addon\" below to add your first addon.",
+                            title = tr("No Stremio addons yet"),
+                            subtitle = tr("Tap \"Add Stremio addon\" below to add your first addon."),
                             actionLabel = null,
                             action = null
                         )
@@ -3476,10 +3583,10 @@ private fun SourcesOverviewView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("All sources", style = MaterialTheme.typography.titleMedium)
+                Text(tr("All sources"), style = MaterialTheme.typography.titleMedium)
                 Text(
                     "${providers.size} extensions · ${repos.size} repos",
                     style = MaterialTheme.typography.labelSmall,
@@ -3519,7 +3626,7 @@ private fun SourcesOverviewView(
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             repoGroup(
-                title = "CloudStream",
+                title = tr("CloudStream"),
                 groupRepos = repos.filter { it.kind == RepoKind.CS3 },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3529,7 +3636,7 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = "Hikari",
+                title = tr("Hikari"),
                 groupRepos = repos.filter { it.kind == RepoKind.HIKARI },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3539,7 +3646,7 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = "Nuvio",
+                title = tr("Nuvio"),
                 groupRepos = repos.filter { it.kind == RepoKind.NUVIO },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3556,7 +3663,7 @@ private fun SourcesOverviewView(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "STREMIO ADDONS",
+                        tr("STREMIO ADDONS"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.2.sp,
@@ -3566,7 +3673,7 @@ private fun SourcesOverviewView(
                     TextButton(onClick = onAddStremio) {
                         Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Add")
+                        Text(tr("Add"))
                     }
                 }
             }
@@ -3574,7 +3681,7 @@ private fun SourcesOverviewView(
             if (stremioProviders.isEmpty()) {
                 item {
                     Text(
-                        "No Stremio addons yet",
+                        tr("No Stremio addons yet"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -3595,7 +3702,7 @@ private fun SourcesOverviewView(
                 GlassSearchField(
                     value = extFilter,
                     onValueChange = { extFilter = it },
-                    placeholder = "Search installed extensions…",
+                    placeholder = tr("Search installed extensions…"),
                     height = 48.dp,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3663,7 +3770,7 @@ private fun LazyListScope.repoGroup(
             TextButton(onClick = onAdd) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Add")
+                Text(tr("Add"))
             }
         }
     }
@@ -3728,10 +3835,10 @@ private fun AllReposView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("All installed repos", style = MaterialTheme.typography.titleMedium)
+                Text(tr("All installed repos"), style = MaterialTheme.typography.titleMedium)
                 Text(
                     "${repos.size} repo${if (repos.size == 1) "" else "s"} added",
                     style = MaterialTheme.typography.labelSmall,
@@ -3773,8 +3880,8 @@ private fun AllReposView(
             if (repos.isEmpty()) {
                 item {
                     EmptyState(
-                        title = "No repos added yet",
-                        subtitle = "Tap \"Add repo\" below to add a CloudStream, Hikari or Nuvio repo.",
+                        title = tr("No repos added yet"),
+                        subtitle = tr("Tap \"Add repo\" below to add a CloudStream, Hikari or Nuvio repo."),
                         actionLabel = null,
                         action = null
                     )
@@ -3791,7 +3898,7 @@ private fun AllReposView(
                 )
             }
         }
-        AddRepoButton(label = "Add repo", onClick = onAddRepo)
+        AddRepoButton(label = tr("Add repo"), onClick = onAddRepo)
     }
 }
 
@@ -3822,10 +3929,10 @@ private fun InstalledExtensionsView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("Installed extensions", style = MaterialTheme.typography.titleMedium)
+                Text(tr("Installed extensions"), style = MaterialTheme.typography.titleMedium)
                 Text(
                     "${providers.size} extension${if (providers.size == 1) "" else "s"} installed",
                     style = MaterialTheme.typography.labelSmall,
@@ -3868,7 +3975,7 @@ private fun InstalledExtensionsView(
                 GlassSearchField(
                     value = extFilter,
                     onValueChange = { extFilter = it },
-                    placeholder = "Search installed extensions…",
+                    placeholder = tr("Search installed extensions…"),
                     height = 48.dp,
                     modifier = Modifier
                         .fillMaxWidth()

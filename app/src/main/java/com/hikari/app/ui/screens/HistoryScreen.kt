@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -77,13 +78,13 @@ fun HistoryScreen(nav: NavHostController) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "History",
+                    tr("History"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    "Pause history",
+                    tr("Pause history"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -95,7 +96,7 @@ fun HistoryScreen(nav: NavHostController) {
             }
             if (paused) {
                 Text(
-                    "History is paused — new videos won't be added.",
+                    tr("History is paused — new videos won't be added."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
@@ -106,10 +107,10 @@ fun HistoryScreen(nav: NavHostController) {
         if (shownEntries.isEmpty()) {
             item {
                 EmptyState(
-                    title = "No watch history yet",
-                    subtitle = "Videos you play will show up here so you can pick up where you left off. " +
+                    title = tr("No watch history yet"),
+                    subtitle = tr("Videos you play will show up here so you can pick up where you left off. ") +
                         (if (paused) "History is currently paused — flip the switch above to start tracking." else "Tap any entry to resume it."),
-                    actionLabel = "Browse",
+                    actionLabel = tr("Browse"),
                     action = { Routes.navigateTab(nav, Routes.HOME) }
                 )
             }
@@ -119,7 +120,7 @@ fun HistoryScreen(nav: NavHostController) {
                     onClick = { scope.launch { app.store.clearHistory() } },
                     modifier = Modifier.padding(bottom = 4.dp)
                 ) {
-                    Text("Clear history", color = MaterialTheme.colorScheme.error)
+                    Text(tr("Clear history"), color = MaterialTheme.colorScheme.error)
                 }
             }
             items(shownEntries, key = { it.uniqueKey }) { h ->
@@ -215,7 +216,7 @@ private fun HistoryRow(h: HistoryEntry, onClick: () -> Unit, onDelete: () -> Uni
         IconButton(onClick = onDelete) {
             Icon(
                 Icons.Filled.Delete,
-                contentDescription = "Delete from history",
+                contentDescription = tr("Delete from history"),
                 tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(20.dp)
             )

@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import androidx.compose.foundation.background
@@ -200,7 +201,7 @@ fun CatalogScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = { nav.popBackStack() }) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
                 Text(
@@ -226,7 +227,7 @@ fun CatalogScreen(
         } else if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "Nothing here right now — the site may be blocking or down.",
+                    tr("Nothing here right now — the site may be blocking or down."),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -265,7 +266,7 @@ fun CatalogScreen(
                         if (loading) CircularProgressIndicator(Modifier.width(28.dp))
                         else if (done && items.isNotEmpty()) {
                             Text(
-                                "That's everything",
+                                tr("That's everything"),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

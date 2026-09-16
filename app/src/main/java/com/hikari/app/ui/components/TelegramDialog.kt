@@ -1,4 +1,5 @@
 package com.hikari.app.ui.components
+import com.hikari.app.i18n.tr
 
 import android.content.Context
 import androidx.compose.foundation.clickable
@@ -49,12 +50,11 @@ fun TelegramDialog(
                 modifier = Modifier.size(28.dp),
             )
         },
-        title = { Text("Join the Hikari Telegram") },
+        title = { Text(tr("Join the Hikari Telegram")) },
         text = {
             Column {
                 Text(
-                    "For any query, support, bug reports, title requests or feature " +
-                        "ideas — or just to keep up with new releases — join the Hikari " +
+                    tr("For any query, support, bug reports, title requests or feature " + "ideas — or just to keep up with new releases — join the Hikari ") +
                         "group on Telegram. It's the fastest way to reach me."
                 )
                 Row(
@@ -64,7 +64,7 @@ fun TelegramDialog(
                         .clickable { dontShow = !dontShow },
                 ) {
                     Checkbox(checked = dontShow, onCheckedChange = { dontShow = it })
-                    Text("Don't show this again")
+                    Text(tr("Don't show this again"))
                 }
             }
         },
@@ -72,12 +72,12 @@ fun TelegramDialog(
             TextButton(onClick = {
                 openTelegram(context, TELEGRAM_CHANNEL_URL)
                 if (dontShow) onDontShowAgain() else onDismiss()
-            }) { Text("Join") }
+            }) { Text(tr("Join")) }
         },
         dismissButton = {
             TextButton(onClick = {
                 if (dontShow) onDontShowAgain() else onDismiss()
-            }) { Text("Close") }
+            }) { Text(tr("Close")) }
         },
     )
 }

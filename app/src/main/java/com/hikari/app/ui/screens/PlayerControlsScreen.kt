@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -116,7 +117,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back to settings",
+                            contentDescription = tr("Back to settings"),
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(20.dp),
                         )
@@ -124,12 +125,12 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "Player controls",
+                            tr("Player controls"),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "Move or hide the player buttons",
+                            tr("Move or hide the player buttons"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -146,12 +147,11 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                                 }
                             }
                         }
-                    ) { Text("Reset") }
+                    ) { Text(tr("Reset")) }
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "Pick where each button lives in the player. Buttons you never " +
-                        "use can be hidden completely — the layout below shows the " +
+                    tr("Pick where each button lives in the player. Buttons you never " + "use can be hidden completely — the layout below shows the ") +
                         "result. The back button, the play/pause circle and the " +
                         "title are always shown.",
                     style = MaterialTheme.typography.bodySmall,
@@ -167,7 +167,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                 Column(Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Preview",
+                            tr("Preview"),
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -206,7 +206,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                 item(key = "empty_${slot.key}") {
                     GlassCard(Modifier.fillMaxWidth()) {
                         Text(
-                            "Nothing here",
+                            tr("Nothing here"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(14.dp),
@@ -259,7 +259,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
                                     Text(
-                                        "Move",
+                                        tr("Move"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -304,8 +304,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
 
         item(key = "footer") {
             Text(
-                "Changes apply the next time the player opens. Anything hidden " +
-                    "can be brought back here at any time.",
+                tr("Changes apply the next time the player opens. Anything hidden " + "can be brought back here at any time."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 20.dp),
@@ -408,7 +407,7 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>, icons: 
         if (hidden.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             Text(
-                "Hidden: " + hidden.joinToString(", ") { it.label },
+                tr("Hidden: ") + hidden.joinToString(", ") { it.label },
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF8A90A8),
             )

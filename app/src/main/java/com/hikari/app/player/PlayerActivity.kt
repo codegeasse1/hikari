@@ -264,6 +264,18 @@ class PlayerActivity : ComponentActivity() {
      *  happened before the episode list had finished loading. */
     private var liveEpisodeJob: Job? = null
 
+    /** Subscription to the detail screen's live search-progress text, shown
+     *  under the loading cover's "Finding the best server…" line. */
+    private var liveStatusJob: Job? = null
+
+    /** Ticking elapsed-seconds suffix on the loading cover, so a long search
+     *  visibly is still running instead of looking frozen. */
+    private var loadingTickerJob: Job? = null
+
+    /** Latest text received from the detail screen's search (without the
+     *  elapsed-seconds suffix the ticker adds). */
+    private var loadingStatusBase: String? = null
+
     /** API 33+ notification permission prompt for the download notification.
      *  Registered in onCreate (the only place an Activity may register a
      *  launcher). */
@@ -387,6 +399,8 @@ class PlayerActivity : ComponentActivity() {
     private var loadingTitle: TextView? = null
     private var loadingEpisode: TextView? = null
     private var loadingDetail: TextView? = null
+    private var loadingStatus: TextView? = null
+    private var loadingSpinnerStatus: TextView? = null
     private var bannerAnimators: List<android.animation.Animator> = emptyList()
 
     /** True while playback should be covered by the loading banner until the
@@ -657,6 +671,8 @@ class PlayerActivity : ComponentActivity() {
         loadingTitle = findViewById(R.id.loading_title)
         loadingEpisode = findViewById(R.id.loading_episode)
         loadingDetail = findViewById(R.id.loading_detail)
+        loadingStatus = findViewById(R.id.loading_status)
+        loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
 
         // The cover stays up by design until real video is on screen, so tapping
@@ -1160,6 +1176,31 @@ class PlayerActivity : ComponentActivity() {
                         runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
                     }
                     tryStart()
+                }
+            }
+            // Live search progress for the loading cover. Playback is launched
+            // before a single server exists, so this is the only thing telling
+            // the user *what* the search is doing (and, when nothing is found,
+            // *why* nothing played) instead of one frozen sentence.
+            liveStatusJob = lifecycleScope.launch {
+                StreamsLive.statusFlow(liveId).collect { s ->
+                    loadingStatusBase = s
+                    val line = s ?: DEFAULT_LOADING_STATUS
+                    loadingStatus?.text = line
+                    loadingSpinnerStatus?.text = line
+                    // Belt-and-braces: the detail screen reports "found nothing"
+                    // as a status line a beat before it signals completion. If
+                    // that signal ever goes missing (its search coroutine is
+                    // cancelled — the exact case that used to leave this cover
+                    // spinning for the full safety timeout), the text alone is
+                    // enough to fail here in the same second, WITH the reason.
+                    if (awaitLive && !liveSearchDone && s != null &&
+                        s.startsWith(NO_RESULT_PREFIX)
+                    ) {
+                        liveSearchDone = true
+                        runCatching { serverChooserDialog?.dismiss() }
+                        showError("No playable sources received.", false)
+                    }
                 }
             }
             // A Play tap made before the origin addon finished listing episodes:
@@ -2852,6 +2893,8 @@ class PlayerActivity : ComponentActivity() {
             // stop appending them, and stop restoring its remembered server.
             liveStreamsJob?.cancel()
             liveStreamsJob = null
+            liveStatusJob?.cancel()
+            liveStatusJob = null
             liveSessionId = null
             // Adopt the new episode (top-bar episode line + watch-history key).
             applyLiveEpisode(ep)
@@ -5327,7 +5370,37 @@ class PlayerActivity : ComponentActivity() {
      *  title card, or — when the user turned it off in Settings — just a round
      *  spinner on black. */
     private fun showLoadingCover() {
+        // Restore whatever the search last reported (or the default line) so a
+        // cover re-shown mid-session (failover, second attempt) doesn't look
+        // like the app went back to square one.
+        val line = loadingStatusBase ?: DEFAULT_LOADING_STATUS
+        loadingStatus?.text = line
+        loadingSpinnerStatus?.text = line
+        startLoadingTicker()
         if (bannerMode) showLoadingBanner() else showLoadingSpinner()
+    }
+
+    /** Re-renders the cover's status line once a second with the number of
+     *  seconds the search has been running. Without it a slow provider leaves
+     *  "Finding the best server…" frozen on screen, which is indistinguishable
+     *  from a hung app. */
+    private fun startLoadingTicker() {
+        stopLoadingTicker()
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        loadingTickerJob = lifecycleScope.launch {
+            while (true) {
+                delay(1000L)
+                val secs = (android.os.SystemClock.elapsedRealtime() - startedAt) / 1000
+                val line = (loadingStatusBase ?: DEFAULT_LOADING_STATUS) + "  ($secs" + "s)"
+                loadingStatus?.text = line
+                loadingSpinnerStatus?.text = line
+            }
+        }
+    }
+
+    private fun stopLoadingTicker() {
+        loadingTickerJob?.cancel()
+        loadingTickerJob = null
     }
 
     /** Spinner-only cover (Settings: "Show banner until servers load" = off). */
@@ -5406,6 +5479,7 @@ class PlayerActivity : ComponentActivity() {
     /** Fades the title card away (or removes it instantly) once real video is
      *  on screen. Safe to call repeatedly and from any state. */
     private fun hideLoadingBanner(immediate: Boolean = false) {
+        stopLoadingTicker()
         hideLoadingSpinner(immediate)
         val banner = loadingBanner ?: return
         if (banner.visibility != View.VISIBLE) return
@@ -5431,6 +5505,7 @@ class PlayerActivity : ComponentActivity() {
     private fun hideLoadingSpinner(immediate: Boolean = false) {
         val spin = loadingSpinner ?: return
         if (spin.visibility != View.VISIBLE) return
+        stopLoadingTicker()
         spin.animate().cancel()
         if (immediate || isFinishing || isDestroyed) {
             spin.alpha = 0f
@@ -5761,6 +5836,18 @@ class PlayerActivity : ComponentActivity() {
     private fun showError(message: String, hasNext: Boolean) {
         hideLoadingBanner(immediate = true)
         var text = message
+        // Why nothing played. The detail screen's search reports how many
+        // extensions were actually asked and what the providers answered; read
+        // it straight off the session (the status collector may not have
+        // delivered yet). This is the difference between "the app is broken"
+        // and "the only extension you have enabled doesn't carry this title".
+        if (message.contains("No playable sources", true)) {
+            val why = intent.getStringExtra("streamsLiveId")
+                ?.let { StreamsLive.statusFlow(it).value }
+                ?.trim()
+                ?: loadingStatusBase?.trim()
+            if (!why.isNullOrBlank() && !text.contains(why)) text += "\n\n" + why
+        }
         // px.* / tracker domains that resolve to 0.0.0.0 are the signature of
         // a system-level ad-blocker or DNS filter — tell the user, since it
         // isn't something Hikari can fix from inside the app. Only match real
@@ -6026,6 +6113,9 @@ class PlayerActivity : ComponentActivity() {
         liveStreamsJob = null
         liveEpisodeJob?.cancel()
         liveEpisodeJob = null
+        liveStatusJob?.cancel()
+        liveStatusJob = null
+        stopLoadingTicker()
         intent.getStringExtra("streamsLiveId")?.let { StreamsLive.remove(it) }
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
@@ -6056,6 +6146,15 @@ class PlayerActivity : ComponentActivity() {
          *  normally signals completion ([StreamsLive.markDone]) long before
          *  this; the timeout only covers the search never reporting back. */
         private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
+
+        /** The cover's default line while the detail screen hasn't reported any
+         *  search progress yet (matches the layout's initial text). */
+        private const val DEFAULT_LOADING_STATUS = "Finding the best server…"
+
+        /** Prefix the detail screen gives a search that ended with nothing to
+         *  play (see DetailScreen's "no playable server" note). Kept in sync
+         *  with that string so the player can fail fast on the text alone. */
+        private const val NO_RESULT_PREFIX = "No playable server found"
 
         /** How many times a player whose every server died may ask the detail
          *  screen for a fresh extraction before finally reporting failure.

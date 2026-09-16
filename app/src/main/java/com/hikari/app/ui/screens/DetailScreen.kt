@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import android.content.Intent
@@ -939,136 +940,195 @@ fun DetailScreen(
                 .sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
         scope.launch {
-            // Which episode the search runs for: the tapped one, or episode 1
-            // when the origin addon was still listing episodes. The player is
-            // already open on its title card during this wait, so it opens and
-            // starts playing the instant episode 1 resolves.
-            val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
-            if (ep == null && epForSearch != null) {
-                selectedEp = epForSearch
-                // Hand the already-open player the episode it ended up on, so
-                // its title card, resume key and watch history are per-episode
-                // rather than the movie-level entry.
-                StreamsLive.setEpisode(sessionId, epForSearch)
-            }
-            // The server this video was last played with, remembered by the
-            // player under the same key as the watch-history entry. When it
-            // exists we hold playback until that exact server shows up (up to
-            // [PREFERRED_GRACE_MS]) instead of jumping onto whichever provider
-            // answers first.
-            val historyKey = "${livePid}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
-            val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
-            val prefUrl = last?.url.orEmpty()
-            val prefName = last?.name.orEmpty()
-            val wantPreferred =
-                !askServerOnPlay && (prefUrl.isNotBlank() || prefName.isNotBlank())
-            val preferredIndex = { list: List<StreamSource> ->
-                if (prefUrl.isBlank() && prefName.isBlank()) -1
-                else list.indexOfFirst { s ->
-                    (prefUrl.isNotBlank() && s.url == prefUrl) ||
-                        (prefName.isNotBlank() && s.name.equals(prefName, ignoreCase = true))
+            try {
+                // Live progress for the player's loading cover. The player
+                // opened the instant Play was tapped, so this line is the
+                // only thing on screen saying that anything is happening at
+                // all (and, in the log, the only record of it).
+                val searchable = providers.count { it.config.enabled }
+                StreamsLive.setStatus(
+                    sessionId,
+                    "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…",
+                )
+                // Which episode the search runs for: the tapped one, or episode 1
+                // when the origin addon was still listing episodes. The player is
+                // already open on its title card during this wait, so it opens and
+                // starts playing the instant episode 1 resolves.
+                val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
+                if (ep == null && epForSearch != null) {
+                    selectedEp = epForSearch
+                    // Hand the already-open player the episode it ended up on, so
+                    // its title card, resume key and watch history are per-episode
+                    // rather than the movie-level entry.
+                    StreamsLive.setEpisode(sessionId, epForSearch)
                 }
-            }
-            // Remembered server first, everything else in arrival order, so the
-            // player's own preferredStartIndex() (which matches against the list
-            // it was handed) lands on it too.
-            val ordered = { list: List<StreamSource> ->
-                val i = preferredIndex(list)
-                if (i <= 0) list else listOf(list[i]) + list.filterIndexed { idx, _ -> idx != i }
-            }
-            // Live re-extraction. A play session can have all of its servers
-            // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
-            // and the mirror that served them can go away. The player (still
-            // attached via [sessionId]) then requests fresh sources by bumping
-            // the session's refresh counter instead of replaying a dead link
-            // forever — we re-run the providers ignoring the cache and stream
-            // the new servers straight to the player, which retries with them.
-            var lastRefresh = StreamsLive.refreshFlow(sessionId).value
-            launch {
-                StreamsLive.refreshFlow(sessionId).collect { n ->
-                    if (n == lastRefresh) return@collect
-                    lastRefresh = n
-                    val fresh = vm.getStreams(epForSearch, force = true)
-                    if (fresh.isNotEmpty()) {
-                        streams = fresh
-                        val freshPlayable = playableEvery(fresh)
-                        StreamProbe.warmAsync(freshPlayable)
-                        StreamsLive.append(sessionId, freshPlayable)
+                // The server this video was last played with, remembered by the
+                // player under the same key as the watch-history entry. When it
+                // exists we hold playback until that exact server shows up (up to
+                // [PREFERRED_GRACE_MS]) instead of jumping onto whichever provider
+                // answers first.
+                val historyKey = "${livePid}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
+                val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
+                val prefUrl = last?.url.orEmpty()
+                val prefName = last?.name.orEmpty()
+                val wantPreferred =
+                    !askServerOnPlay && (prefUrl.isNotBlank() || prefName.isNotBlank())
+                val preferredIndex = { list: List<StreamSource> ->
+                    if (prefUrl.isBlank() && prefName.isBlank()) -1
+                    else list.indexOfFirst { s ->
+                        (prefUrl.isNotBlank() && s.url == prefUrl) ||
+                            (prefName.isNotBlank() && s.name.equals(prefName, ignoreCase = true))
                     }
                 }
-            }
-            val startNow = startNow@{
-                if (launched || playerLaunched) return@startNow
-                val playable = playableEvery(streams)
-                if (playable.isEmpty()) return@startNow
-                if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
-                    launched = true
+                // Remembered server first, everything else in arrival order, so the
+                // player's own preferredStartIndex() (which matches against the list
+                // it was handed) lands on it too.
+                val ordered = { list: List<StreamSource> ->
+                    val i = preferredIndex(list)
+                    if (i <= 0) list else listOf(list[i]) + list.filterIndexed { idx, _ -> idx != i }
+                }
+                // Live re-extraction. A play session can have all of its servers
+                // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
+                // and the mirror that served them can go away. The player (still
+                // attached via [sessionId]) then requests fresh sources by bumping
+                // the session's refresh counter instead of replaying a dead link
+                // forever — we re-run the providers ignoring the cache and stream
+                // the new servers straight to the player, which retries with them.
+                var lastRefresh = StreamsLive.refreshFlow(sessionId).value
+                launch {
+                    StreamsLive.refreshFlow(sessionId).collect { n ->
+                        if (n == lastRefresh) return@collect
+                        lastRefresh = n
+                        StreamsLive.setStatus(sessionId, "Re-extracting expired links…")
+                        val fresh = vm.getStreams(epForSearch, force = true)
+                        if (fresh.isNotEmpty()) {
+                            streams = fresh
+                            val freshPlayable = playableEvery(fresh)
+                            StreamProbe.warmAsync(freshPlayable)
+                            StreamsLive.setStatus(
+                                sessionId,
+                                "Found " + freshPlayable.size + " fresh server" +
+                                    (if (freshPlayable.size == 1) "" else "s") + " — retrying…",
+                            )
+                            StreamsLive.append(sessionId, freshPlayable)
+                        }
+                    }
+                }
+                val startNow = startNow@{
+                    if (launched || playerLaunched) return@startNow
+                    val playable = playableEvery(streams)
+                    if (playable.isEmpty()) return@startNow
+                    if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
+                        launched = true
+                        showSheet = false
+                        loadingStreams = false
+                    } else {
+                        // Player could not be opened (bad payload / launch failure)
+                        // — leave the source sheet up with its per-extension
+                        // diagnostics so the user can still pick a server.
+                        loadingStreams = false
+                        showLoadingBanner = false
+                        showSheet = true
+                    }
+                }
+                // Live feed: start the instant a playable server appears — unless a
+                // preferred server is remembered, in which case keep waiting for it.
+                val feed = launch {
+                    vm.liveStreams.collect { current ->
+                        val playable = playableEvery(current)
+                        if (playable.isEmpty()) return@collect
+                        streams = current
+                        // Resolve wrapper URLs ahead of playback so "Select server"
+                        // and any failover are instant.
+                        StreamProbe.warmAsync(playable)
+                        StreamsLive.setStatus(
+                            sessionId,
+                            if (launched || playerLaunched) {
+                                "Found " + playable.size + " server" +
+                                    (if (playable.size == 1) "" else "s") + " — still searching…"
+                            } else {
+                                "Found " + playable.size + " server" +
+                                    (if (playable.size == 1) "" else "s") +
+                                    " — starting playback…"
+                            },
+                        )
+                        if (launched || playerLaunched) {
+                            // Player already up — hand it the newly found servers.
+                            StreamsLive.append(sessionId, playable)
+                        } else if (!wantPreferred || preferredIndex(playable) >= 0) {
+                            startNow()
+                        }
+                    }
+                }
+                // Give a slow-but-remembered provider a bounded head start, then
+                // fall back to whatever has been found so the tap never hangs.
+                val grace = launch {
+                    delay(PREFERRED_GRACE_MS)
+                    startNow()
+                }
+                val final = vm.getStreams(epForSearch)
+                feed.cancel()
+                grace.cancel()
+                loadingStreams = false
+                streams = final
+                val playable = playableEvery(final)
+                StreamProbe.warmAsync(playable)
+                if (launched || playerLaunched) {
+                    // Player is up (or already was) — close the sheet and hand it the
+                    // complete list.
                     showSheet = false
-                    loadingStreams = false
+                    StreamsLive.append(sessionId, playable)
+                } else if (playable.isNotEmpty()) {
+                    // Cached/instant result arrived before the feed attached.
+                    if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
+                        launched = true
+                        showSheet = false
+                    } else {
+                        showLoadingBanner = false
+                        showSheet = true
+                    }
                 } else {
-                    // Player could not be opened (bad payload / launch failure)
-                    // — leave the source sheet up with its per-extension
-                    // diagnostics so the user can still pick a server.
-                    loadingStreams = false
+                    // Nothing playable anywhere — keep the source sheet up, with the
+                    // per-extension diagnostics explaining what failed.
                     showLoadingBanner = false
                     showSheet = true
                 }
-            }
-            // Live feed: start the instant a playable server appears — unless a
-            // preferred server is remembered, in which case keep waiting for it.
-            val feed = launch {
-                vm.liveStreams.collect { current ->
-                    val playable = playableEvery(current)
-                    if (playable.isEmpty()) return@collect
-                    streams = current
-                    // Resolve wrapper URLs ahead of playback so "Select server"
-                    // and any failover are instant.
-                    StreamProbe.warmAsync(playable)
-                    if (launched || playerLaunched) {
-                        // Player already up — hand it the newly found servers.
-                        StreamsLive.append(sessionId, playable)
-                    } else if (!wantPreferred || preferredIndex(playable) >= 0) {
-                        startNow()
+                // The whole source search is over. The player (which opened the
+                // moment Play was tapped) uses this to fail fast when nothing was
+                // found, instead of waiting out its safety timeout.
+            } catch (t: Throwable) {
+                // A throw here (a provider blowing up, a cancelled child
+                // collector) used to skip markDone entirely, so the player
+                // kept spinning on an empty session until its 90s safety
+                // timeout. Say what happened instead.
+                StreamsLive.setStatus(
+                    sessionId,
+                    "The search stopped early (" + t.javaClass.simpleName + ").",
+                )
+            } finally {
+                // ALWAYS declare the search over. The player only leaves its
+                // "Finding the best server…" cover when a server arrives or
+                // the search is declared finished, so this is what turns an
+                // empty result into a clear message within a second instead
+                // of a minute and a half of nothing.
+                val found = playableEvery(streams).size
+                if (found == 0) {
+                    val enabledN = providers.count { it.config.enabled }
+                    val installedN = providers.size
+                    val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
+                        ?: com.hikari.app.data.ContentRepository.crossNote?.takeIf { it.isNotBlank() }
+                    val note = buildString {
+                        append("No playable server found after searching $enabledN ")
+                        append(if (enabledN == 1) "extension" else "extensions")
+                        if (enabledN < installedN) {
+                            append(" — only $enabledN of your $installedN installed extensions are enabled")
+                        }
+                        if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
+                    StreamsLive.setStatus(sessionId, note)
                 }
+                StreamsLive.markDone(sessionId)
             }
-            // Give a slow-but-remembered provider a bounded head start, then
-            // fall back to whatever has been found so the tap never hangs.
-            val grace = launch {
-                delay(PREFERRED_GRACE_MS)
-                startNow()
-            }
-            val final = vm.getStreams(epForSearch)
-            feed.cancel()
-            grace.cancel()
-            loadingStreams = false
-            streams = final
-            val playable = playableEvery(final)
-            StreamProbe.warmAsync(playable)
-            if (launched || playerLaunched) {
-                // Player is up (or already was) — close the sheet and hand it the
-                // complete list.
-                showSheet = false
-                StreamsLive.append(sessionId, playable)
-            } else if (playable.isNotEmpty()) {
-                // Cached/instant result arrived before the feed attached.
-                if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
-                    launched = true
-                    showSheet = false
-                } else {
-                    showLoadingBanner = false
-                    showSheet = true
-                }
-            } else {
-                // Nothing playable anywhere — keep the source sheet up, with the
-                // per-extension diagnostics explaining what failed.
-                showLoadingBanner = false
-                showSheet = true
-            }
-            // The whole source search is over. The player (which opened the
-            // moment Play was tapped) uses this to fail fast when nothing was
-            // found, instead of waiting out its safety timeout.
-            StreamsLive.markDone(sessionId)
         }
     }
 
@@ -1218,7 +1278,7 @@ fun DetailScreen(
                                             onDismissRequest = { tagOpen = false }
                                         ) {
                                             DropdownMenuItem(
-                                                text = { Text("Search") },
+                                                text = { Text(tr("Search")) },
                                                 leadingIcon = {
                                                     Icon(Icons.Filled.Search, contentDescription = null)
                                                 },
@@ -1231,7 +1291,7 @@ fun DetailScreen(
                                                 }
                                             )
                                             DropdownMenuItem(
-                                                text = { Text("Global search") },
+                                                text = { Text(tr("Global search")) },
                                                 leadingIcon = {
                                                     Icon(Icons.Filled.Public, contentDescription = null)
                                                 },
@@ -1314,7 +1374,7 @@ fun DetailScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text("Saved")
+                                Text(tr("Saved"))
                             }
                         } else {
                             OutlinedButton(onClick = toggleSaved) {
@@ -1324,7 +1384,7 @@ fun DetailScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text("Library")
+                                Text(tr("Library"))
                             }
                         }
                     }
@@ -1447,14 +1507,14 @@ fun DetailScreen(
                                         strokeWidth = 2.dp
                                     )
                                     Text(
-                                        "Loading episodes…",
+                                        tr("Loading episodes…"),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             } else {
                                 Text(
-                                    "No episode list available.",
+                                    tr("No episode list available."),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -1479,7 +1539,7 @@ fun DetailScreen(
                 if (related.isNotEmpty()) {
                     item {
                         ShelfRow(
-                            heading = "Related",
+                            heading = tr("Related"),
                             shelf = related,
                             onClick = { openShelfItem(it) },
                             onSearchHere = {
@@ -1494,7 +1554,7 @@ fun DetailScreen(
                 if (similar.isNotEmpty()) {
                     item {
                         ShelfRow(
-                            heading = "Similar",
+                            heading = tr("Similar"),
                             shelf = similar,
                             onClick = { openShelfItem(it) },
                             onSearchHere = {
@@ -1577,14 +1637,13 @@ fun DetailScreen(
                         .verticalScroll(rememberScrollState())
                 ) {
                     Text(
-                        "No playable sources found.",
+                        tr("No playable sources found."),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (!com.hikari.app.net.NetTuning.slowConnection) {
                         Text(
-                            "On mobile data or a slow connection? Turn on " +
-                                "\"Slow connection mode\" in Settings, then search again.",
+                            tr("On mobile data or a slow connection? Turn on " + "\"Slow connection mode\" in Settings, then search again."),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 6.dp)
@@ -1613,7 +1672,7 @@ fun DetailScreen(
                         .take(20)
                     if (diagLines.isNotEmpty()) {
                         Text(
-                            "Per-extension results:",
+                            tr("Per-extension results:"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 12.dp)
@@ -1630,7 +1689,7 @@ fun DetailScreen(
                     val fLog = com.hikari.app.nuvio.NuvioRuntime.fetchLogSnapshot().takeLast(24)
                     if (fLog.isNotEmpty()) {
                         Text(
-                            "Fetch log:",
+                            tr("Fetch log:"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 12.dp)
@@ -1729,7 +1788,7 @@ fun DetailScreen(
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "Searching for more servers…",
+                                tr("Searching for more servers…"),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1849,7 +1908,7 @@ private fun PlayLoadingBanner(
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "Finding the best server…",
+                tr("Finding the best server…"),
                 style = MaterialTheme.typography.labelMedium,
                 color = Color(0xCCFFFFFF)
             )
@@ -1948,7 +2007,7 @@ private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) 
         IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
+                contentDescription = tr("Back"),
                 tint = Color.White
             )
         }
@@ -2018,7 +2077,7 @@ private fun ShelfRow(
                             ) {
                                 Icon(
                                     Icons.Filled.MoreVert,
-                                    contentDescription = "Search options",
+                                    contentDescription = tr("Search options"),
                                     tint = Color.White,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -2028,7 +2087,7 @@ private fun ShelfRow(
                                 onDismissRequest = { menuOpen = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("Search") },
+                                    text = { Text(tr("Search")) },
                                     leadingIcon = {
                                         Icon(Icons.Filled.Search, contentDescription = null)
                                     },
@@ -2038,7 +2097,7 @@ private fun ShelfRow(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Global search") },
+                                    text = { Text(tr("Global search")) },
                                     leadingIcon = {
                                         Icon(Icons.Filled.Public, contentDescription = null)
                                     },
@@ -2132,7 +2191,7 @@ private fun DetailsBlock(d: TitleDetails) {
 private fun CastRow(cast: List<CastMember>, onClick: (CastMember) -> Unit) {
     Column(Modifier.padding(top = 14.dp)) {
         Text(
-            "Cast",
+            tr("Cast"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -2205,7 +2264,7 @@ private fun CastRow(cast: List<CastMember>, onClick: (CastMember) -> Unit) {
 private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
     Column(Modifier.padding(top = 14.dp)) {
         Text(
-            "Trailers",
+            tr("Trailers"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

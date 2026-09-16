@@ -67,10 +67,26 @@ object StreamsLive {
         flow.value = flow.value + 1
     }
 
+    private val statuses = ConcurrentHashMap<String, MutableStateFlow<String?>>()
+
+    /** One human-readable line describing what the search is doing right now,
+     *  written by the detail screen and read by the player's loading cover.
+     *  The player opens BEFORE any server is found, so without this its
+     *  "Finding the best server…" line is the only thing on screen for the
+     *  whole search — with no sign of whether anything is even being asked, and
+     *  no explanation at the end when nothing was found. */
+    fun statusFlow(id: String): MutableStateFlow<String?> =
+        statuses.computeIfAbsent(id) { MutableStateFlow(null) }
+
+    fun setStatus(id: String, text: String?) {
+        statusFlow(id).value = text
+    }
+
     fun remove(id: String) {
         sessions.remove(id)
         episodes.remove(id)
         dones.remove(id)
         refreshes.remove(id)
+        statuses.remove(id)
     }
 }

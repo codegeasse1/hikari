@@ -1,4 +1,5 @@
 package com.hikari.app.ui.navigation
+import com.hikari.app.i18n.tr
 
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -245,7 +246,7 @@ private fun AppBottomBar(
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            tab.label,
+                            tr(tab.label),
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,

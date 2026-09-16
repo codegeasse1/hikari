@@ -32,6 +32,24 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Hikari">
 
+        <!-- Play Services version metadata. NOT a Play Services dependency — the
+             app never talks to GMS — but the System WebView's own bundled
+             Play-Services shim READS this tag the moment a page touches the
+             Shape Detection APIs (BarcodeDetector/FaceDetector, which several
+             streaming/Cloudflare pages do). Without the tag its availability
+             check throws GooglePlayServicesMissingManifestValueException on
+             Chromium's in-proc GPU thread, rethrows through JNI, and kills the
+             whole process — the recurring crash on a realme 5i running
+             Android 16 (see crash reports: bindBarcodeDetectionProvider →
+             GooglePlayServicesMissingManifestValueException). With a value
+             present, that same check answers normally ("Play Services not
+             available") and WebView simply skips the feature instead of dying.
+             The number is the standard GMS version int; it only has to be a
+             plausible integer, nothing else reads it. -->
+        <meta-data
+            android:name="com.google.android.gms.version"
+            android:value="12451000" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

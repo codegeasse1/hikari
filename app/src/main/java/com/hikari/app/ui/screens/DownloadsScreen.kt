@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.content.Context
 import android.content.Intent
@@ -72,7 +73,7 @@ fun DownloadsScreen(nav: NavHostController) {
     ) {
         item {
             Text(
-                "Downloads",
+                tr("Downloads"),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 12.dp)
@@ -81,10 +82,9 @@ fun DownloadsScreen(nav: NavHostController) {
         if (tasks.isEmpty()) {
             item {
                 EmptyState(
-                    title = "No downloads yet",
-                    subtitle = "Tap the Download button while watching a video to save it for " +
-                        "offline viewing inside Hikari, or into your phone's Downloads folder.",
-                    actionLabel = "Browse",
+                    title = tr("No downloads yet"),
+                    subtitle = tr("Tap the Download button while watching a video to save it for " + "offline viewing inside Hikari, or into your phone's Downloads folder."),
+                    actionLabel = tr("Browse"),
                     action = { Routes.navigateTab(nav, Routes.HOME) }
                 )
             }
@@ -92,7 +92,7 @@ fun DownloadsScreen(nav: NavHostController) {
             if (active.isNotEmpty()) {
                 item {
                     Text(
-                        "In progress",
+                        tr("In progress"),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(bottom = 4.dp)
@@ -105,7 +105,7 @@ fun DownloadsScreen(nav: NavHostController) {
             if (done.isNotEmpty()) {
                 item {
                     Text(
-                        "Completed",
+                        tr("Completed"),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(
@@ -212,7 +212,7 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
             when (t.status) {
                 DownloadStatus.RUNNING, DownloadStatus.QUEUED -> {
                     IconButton(onClick = { DownloadsRepository.pause(context, t.id) }) {
-                        Icon(Icons.Filled.Pause, contentDescription = "Pause")
+                        Icon(Icons.Filled.Pause, contentDescription = tr("Pause"))
                     }
                 }
                 DownloadStatus.CONVERTING -> {
@@ -228,12 +228,12 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                 }
                 DownloadStatus.PAUSED -> {
                     IconButton(onClick = { DownloadsRepository.resume(context, t.id) }) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "Resume")
+                        Icon(Icons.Filled.PlayArrow, contentDescription = tr("Resume"))
                     }
                 }
                 DownloadStatus.FAILED -> {
                     IconButton(onClick = { DownloadsRepository.resume(context, t.id) }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Retry")
+                        Icon(Icons.Filled.Refresh, contentDescription = tr("Retry"))
                     }
                 }
                 DownloadStatus.DONE -> {
@@ -241,7 +241,7 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                         IconButton(onClick = { playOffline(context, t) }) {
                             Icon(
                                 Icons.Filled.PlayArrow,
-                                contentDescription = "Play offline",
+                                contentDescription = tr("Play offline"),
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -249,7 +249,7 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
                         IconButton(onClick = { playSaved(context, t) }) {
                             Icon(
                                 Icons.Filled.PlayArrow,
-                                contentDescription = "Play",
+                                contentDescription = tr("Play"),
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -266,7 +266,7 @@ private fun DownloadRow(t: DownloadTask, onDelete: () -> Unit) {
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Delete",
+                    contentDescription = tr("Delete"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }

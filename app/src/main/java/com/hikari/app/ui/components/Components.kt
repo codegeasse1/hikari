@@ -1,4 +1,5 @@
 package com.hikari.app.ui.components
+import com.hikari.app.i18n.tr
 
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -109,7 +110,7 @@ fun MediaRow(
             }
             if (onShowAll != null) {
                 TextButton(onClick = onShowAll) {
-                    Text("Show All", fontWeight = FontWeight.SemiBold)
+                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -272,7 +273,7 @@ fun ShimmerRow() {
         initialValue = 0.35f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
-        label = "alpha"
+        label = tr("alpha")
     )
     val tint = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha)
     Column(Modifier.padding(top = 20.dp)) {
@@ -393,7 +394,7 @@ fun GlassSearchField(
                 IconButton(onClick = { onValueChange("") }) {
                     Icon(
                         Icons.Filled.Close,
-                        contentDescription = "Clear",
+                        contentDescription = tr("Clear"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -521,7 +522,7 @@ fun HeroBanner(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "View Details",
+                            tr("View Details"),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                         )
@@ -567,7 +568,7 @@ fun ContinueWatchingRow(
     val unique = remember(entries) { entries.distinctBy { it.uniqueKey } }
     Column(Modifier.padding(top = 16.dp)) {
         Text(
-            "Continue Watching",
+            tr("Continue Watching"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 16.dp)
@@ -667,7 +668,7 @@ private fun ContinueWatchingCard(
                 ) {
                     Icon(
                         Icons.Filled.Close,
-                        contentDescription = "Remove from Continue Watching",
+                        contentDescription = tr("Remove from Continue Watching"),
                         tint = Color.White,
                         modifier = Modifier.size(15.dp),
                     )

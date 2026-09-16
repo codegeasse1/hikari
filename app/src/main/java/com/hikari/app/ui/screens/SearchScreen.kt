@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import androidx.compose.foundation.clickable
@@ -271,7 +272,7 @@ fun SearchScreen(
                     GlassSearchField(
                         value = providerFilter,
                         onValueChange = { providerFilter = it },
-                        placeholder = "Filter providers…",
+                        placeholder = tr("Filter providers…"),
                         height = 44.dp,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -286,7 +287,7 @@ fun SearchScreen(
                         FilterChip(
                             selected = selected.isEmpty(),
                             onClick = { vm.selectAll() },
-                            label = { Text("All") },
+                            label = { Text(tr("All")) },
                             shape = RoundedCornerShape(24.dp),
                             colors = FilterChipDefaults.filterChipColors(
                                 containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
@@ -325,14 +326,14 @@ fun SearchScreen(
         }
         if (query.isBlank() && results.isEmpty()) {
             EmptyState(
-                title = "Search",
-                subtitle = "Type something to search across every provider.",
+                title = tr("Search"),
+                subtitle = tr("Type something to search across every provider."),
                 actionLabel = null,
                 action = null
             )
         } else if (!searching && results.isEmpty()) {
             EmptyState(
-                title = "No results",
+                title = tr("No results"),
                 subtitle = "Nothing matched \"$query\". Try a different title, or deselect providers in the row above.",
                 actionLabel = null,
                 action = null

@@ -1,3 +1,50 @@
+## 0.3.82
+
+**Three crashes/never-ends are gone: plugin toasts no longer kill the app, the
+WebView's barcode-scan check no longer kills the app, and "Finding the best
+server…" now tells you what is happening instead of spinning forever.**
+
+- **Fixed the crash when a plugin shows a toast or a login/notice message.**
+  `CommonActivity.showToast` (CloudStream's own toast — every plugin login
+  dialog, "login succeeded", "stream not found" runs through it) inflates a
+  generated ViewBinding class, `databinding/ToastBinding`. Hikari ships the
+  CloudStream jar but not the `androidx.viewbinding` runtime, so the class could
+  not be *linked* and ART reported it as
+  `NoClassDefFoundError: Failed resolution of: …databinding/ToastBinding;` —
+  killing the app on the main thread (seen on a Xiaomi 2109119DI). The jar's
+  class is now excluded and replaced by Hikari's own `ToastBinding.java` (same
+  name, same three members `CommonActivity` uses) which inflates a Hikari
+  layout, and `androidx.databinding:viewbinding` + `androidx.cardview` are on
+  the classpath so the class links. Startup also pre-warms it, so a future
+  break shows up as a logged cause chain instead of a mystery crash.
+- **Fixed the WebView GMS crash (repeated process death on a realme 5i).** The
+  System WebView's bundled Play-Services shim reads
+  `com.google.android.gms.version` from the manifest the moment a page touches
+  the Shape Detection APIs (BarcodeDetector/FaceDetector — several
+  streaming/Cloudflare pages do). Hikari never declared it, so its availability
+  check threw `GooglePlayServicesMissingManifestValueException` on Chromium's
+  in-proc GPU thread, rethrew through JNI and killed the process 5–40s after
+  launch. The standard meta-data tag is now declared; the same check then answers
+  normally and WebView simply skips the feature.
+- **"Finding the best server…" no longer spins forever.** Two things were wrong.
+  First, the search coroutine only signalled completion on its happy path — a
+  throw or a cancelled collector skipped `markDone`, so the player sat on its
+  cover until its 90-second safety timeout, with no text ever explaining
+  anything. The signal is now in a `finally`, and the player fails fast the
+  moment it receives a "nothing found" result *with the reason attached*.
+  Second, the cover showed one frozen sentence for the whole search. It now
+  shows live progress from the detail screen ("Searching 4 extensions…", "Found
+  2 servers — starting playback…", "Re-extracting expired links…") plus a
+  ticking elapsed-seconds counter, and when the search ends empty it says why:
+  *"No playable server found after searching 4 extensions — only 4 of your 227
+  installed extensions are enabled"*, followed by the provider/network note when
+  there is one. The same reason is repeated on the player's error card.
+  Note that this also explains the other half of the report: with only a handful
+  of extensions installed, a title like "Gandhari" genuinely has no servers —
+  the search log showed `Search: done "Gandhari" → 0 servers`, so there was
+  nothing to play. The toggle only decides *when* playback starts, not whether
+  any server exists.
+
 ## 0.3.81
 
 **The downloads/build branch is now separate, WebView popups are tamed, the app

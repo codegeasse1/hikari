@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import android.content.Intent
@@ -369,13 +370,13 @@ fun HomeScreen(nav: NavHostController) {
                                 shareFiles(context, files.map { it.file }, "Hikari crash log")
                             }
                         }) {
-                            Text("Share log")
+                            Text(tr("Share log"))
                         }
                         TextButton(onClick = {
                             showCrash = false
                             HikariApp.instance.clearCrash()
                         }) {
-                            Text("Dismiss")
+                            Text(tr("Dismiss"))
                         }
                     }
                 }
@@ -475,10 +476,9 @@ fun HomeScreen(nav: NavHostController) {
                         if (streamOnly) {
                             EmptyState(
                                 title = "No catalog from ${selectedName ?: "this addon"}",
-                                subtitle = "This addon doesn't provide a catalog to browse — it only " +
-                                    "adds playback sources to titles opened from other addons. " +
+                                subtitle = tr("This addon doesn't provide a catalog to browse — it only " + "adds playback sources to titles opened from other addons. ") +
                                     "Pick any movie or series and its streams will show up.",
-                                actionLabel = "Browse all",
+                                actionLabel = tr("Browse all"),
                                 action = { vm.selectProvider(null) }
                             )
                         } else {
@@ -489,15 +489,15 @@ fun HomeScreen(nav: NavHostController) {
                                         "a Cloudflare check, tap the globe button at the top to verify — " +
                                         "the catalog reloads by itself when you're done. Otherwise the " +
                                         "site may be down — retry or browse another extension.",
-                                actionLabel = "Retry",
+                                actionLabel = tr("Retry"),
                                 action = { vm.refresh() }
                             )
                         }
                     } else {
                         EmptyState(
-                            title = "No content yet",
-                            subtitle = "Add a Stremio addon or a universal scraper to start watching.",
-                            actionLabel = "Add extensions",
+                            title = tr("No content yet"),
+                            subtitle = tr("Add a Stremio addon or a universal scraper to start watching."),
+                            actionLabel = tr("Add extensions"),
                             action = { Routes.navigateTab(nav, Routes.EXTENSIONS) }
                         )
                     }
@@ -577,7 +577,7 @@ fun HomeScreen(nav: NavHostController) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showTranslate = false }) { Text("Cancel") }
+                TextButton(onClick = { showTranslate = false }) { Text(tr("Cancel")) }
             },
         )
     }
@@ -589,14 +589,14 @@ fun HomeScreen(nav: NavHostController) {
         val pname = selectedName ?: "this extension"
         AlertDialog(
             onDismissRequest = { showSearchDialog = false },
-            title = { Text("Search") },
+            title = { Text(tr("Search")) },
             text = { Text("Search across every provider, or only inside $pname?") },
             confirmButton = {
                 TextButton(onClick = {
                     showSearchDialog = false
                     openGlobalSearch()
                 }) {
-                    Text("Global search")
+                    Text(tr("Global search"))
                 }
             },
             dismissButton = {
@@ -629,12 +629,12 @@ private fun ProviderPickerSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text(
-                "Choose an extension",
+                tr("Choose an extension"),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "Only the selected extension's catalog is shown on Home.",
+                tr("Only the selected extension's catalog is shown on Home."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
@@ -643,7 +643,7 @@ private fun ProviderPickerSheet(
                 value = query,
                 onValueChange = { query = it },
                 singleLine = true,
-                placeholder = { Text("Search extensions…") },
+                placeholder = { Text(tr("Search extensions…")) },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 modifier = Modifier.fillMaxWidth()
             )
@@ -753,21 +753,21 @@ private fun HomeHeader(
     ) {
         Column(Modifier.weight(1f)) {
             Text(
-                "Hikari",
+                tr("Hikari"),
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
                 color = accent,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
             Text(
-                "Every stream, one place.",
+                tr("Every stream, one place."),
                 style = MaterialTheme.typography.bodyMedium,
                 color = subtitleColor,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
         }
         IconButton(onClick = onSearch) {
-            Icon(Icons.Filled.Search, contentDescription = "Search", tint = iconTint)
+            Icon(Icons.Filled.Search, contentDescription = tr("Search"), tint = iconTint)
         }
         // Translate: per-extension toggle — turns this extension's titles/text
         // into English inside the app. Shown whenever a provider is selected.
@@ -775,7 +775,7 @@ private fun HomeHeader(
             val translateOn = com.hikari.app.data.Translator.isOn(pid)
             IconButton(onClick = onTranslate) {
                 Text(
-                    "A\u3042",
+                    tr("A\u3042"),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = when {
@@ -793,7 +793,7 @@ private fun HomeHeader(
             IconButton(onClick = onVerify) {
                 Icon(
                     Icons.Filled.Public,
-                    contentDescription = "Open site in web view (Cloudflare verification)",
+                    contentDescription = tr("Open site in web view (Cloudflare verification)"),
                     tint = iconTint
                 )
             }

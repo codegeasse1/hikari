@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.content.Intent
 import android.net.Uri
@@ -294,7 +295,7 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("Theme") },
+                                    headlineContent = { Text(tr("Theme")) },
                                     supportingContent = { Text(currentTheme.label) },
                                     trailingContent = {
                                         Icon(
@@ -371,11 +372,10 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("App logs & crash reports") },
+                                    headlineContent = { Text(tr("App logs & crash reports")) },
                                     supportingContent = {
                                         Text(
-                                            "Two rolling app logs and the last crash " +
-                                                "log. Share them directly instead of " +
+                                            tr("Two rolling app logs and the last crash " + "log. Share them directly instead of ") +
                                                 "sending screenshots."
                                         )
                                     },
@@ -393,8 +393,7 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item {
                         Text(
-                            "Logs stay on this device and are only sent when you " +
-                                "tap Share or Save on the logs page.",
+                            tr("Logs stay on this device and are only sent when you " + "tap Share or Save on the logs page."),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 10.dp, start = 4.dp),
@@ -413,7 +412,7 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("Version") },
+                                    headlineContent = { Text(tr("Version")) },
                                     supportingContent = {
                                         Text(BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")")
                                     }
@@ -427,12 +426,12 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("Check for updates") },
+                                    headlineContent = { Text(tr("Check for updates")) },
                                     supportingContent = {
                                         if (checkingUpdates) {
-                                            Text("Checking GitHub…")
+                                            Text(tr("Checking GitHub…"))
                                         } else {
-                                            Text("Version " + Updater.currentVersion())
+                                            Text(tr("Version ") + Updater.currentVersion())
                                         }
                                     },
                                     trailingContent = {
@@ -463,8 +462,8 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("GitHub") },
-                                    supportingContent = { Text("github.com/codegeasse1/hikari — releases & source") },
+                                    headlineContent = { Text(tr("GitHub")) },
+                                    supportingContent = { Text(tr("github.com/codegeasse1/hikari — releases & source")) },
                                     trailingContent = {
                                         Icon(
                                             Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -490,8 +489,8 @@ fun SettingsScreen(nav: NavHostController) {
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     },
-                                    headlineContent = { Text("Telegram") },
-                                    supportingContent = { Text("t.me/CodegeasseHikari — help, bugs & feature requests") },
+                                    headlineContent = { Text(tr("Telegram")) },
+                                    supportingContent = { Text(tr("t.me/CodegeasseHikari — help, bugs & feature requests")) },
                                     trailingContent = {
                                         Icon(
                                             Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -513,7 +512,7 @@ fun SettingsScreen(nav: NavHostController) {
                             onClick = { scope.launch { app.store.clearAll() } },
                             modifier = Modifier.padding(top = 14.dp)
                         ) {
-                            Text("Clear all data", color = MaterialTheme.colorScheme.error)
+                            Text(tr("Clear all data"), color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
@@ -522,14 +521,13 @@ fun SettingsScreen(nav: NavHostController) {
             item {
                 Column(Modifier.fillMaxWidth()) {
                     Text(
-                        "Settings",
+                        tr("Settings"),
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Every option lives in a folder, so nothing is buried at the " +
-                            "bottom of one long list. Tap a folder to open it.",
+                        tr("Every option lives in a folder, so nothing is buried at the " + "bottom of one long list. Tap a folder to open it."),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -546,7 +544,7 @@ fun SettingsScreen(nav: NavHostController) {
                     onClick = { scope.launch { app.store.clearAll() } },
                     modifier = Modifier.padding(top = 16.dp)
                 ) {
-                    Text("Clear all data", color = MaterialTheme.colorScheme.error)
+                    Text(tr("Clear all data"), color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -584,7 +582,7 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back to settings",
+                    contentDescription = tr("Back to settings"),
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(20.dp)
                 )
@@ -726,7 +724,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Extensions",
+                    tr("Extensions"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -770,14 +768,13 @@ private fun ContinueWatchingCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Continue Watching",
+                    tr("Continue Watching"),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Show the Continue Watching shelf on Home. It collects " +
-                        "progress from every extension you've watched, so an " +
+                    tr("Show the Continue Watching shelf on Home. It collects " + "progress from every extension you've watched, so an ") +
                         "episode started on one extension still shows up after " +
                         "you switch to another.",
                     style = MaterialTheme.typography.bodySmall,
@@ -799,14 +796,13 @@ private fun ContinueWatchingCard(
 private fun RoadmapCard() {
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Roadmap",
+            tr("Roadmap"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "✓ Stremio addons\n" +
-                "✓ Universal scrapers\n" +
+            tr("✓ Stremio addons\n" + "✓ Universal scrapers\n") +
                 "✓ HLS/DASH player with headers + subtitles\n" +
                 "✓ CloudStream .cs3 plugin loader\n" +
                 "✓ Torrent engine for infoHash streams\n" +
@@ -823,14 +819,13 @@ private fun RoadmapCard() {
 private fun AboutCard() {
     Column(Modifier.padding(16.dp)) {
         Text(
-            "About",
+            tr("About"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Hikari (光) — a universal streaming app built from scratch. " +
-                "One player, every extension ecosystem.",
+            tr("Hikari (光) — a universal streaming app built from scratch. " + "One player, every extension ecosystem."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -866,12 +861,12 @@ private fun DownloadSettingsCard(app: HikariApp) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Simultaneous downloads",
+                    tr("Simultaneous downloads"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "How many videos may save at the same time",
+                    tr("How many videos may save at the same time"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -914,8 +909,7 @@ private fun DownloadSettingsCard(app: HikariApp) {
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            "Slide to 3 to run three downloads at once, 4 for four, and so on (max 10). " +
-                "Videos beyond the limit stay queued and start automatically as slots free up.",
+            tr("Slide to 3 to run three downloads at once, 4 for four, and so on (max 10). " + "Videos beyond the limit stay queued and start automatically as slots free up."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -937,12 +931,12 @@ private fun UiScaleCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "In-app UI scale",
+                    tr("In-app UI scale"),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "Force one interface size on every phone",
+                    tr("Force one interface size on every phone"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -956,8 +950,7 @@ private fun UiScaleCard(app: HikariApp) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "Turning OFF applies your phone's Font size and Display size settings " +
-                "to the app. Turning ON ignores those two phone settings and follows " +
+            tr("Turning OFF applies your phone's Font size and Display size settings " + "to the app. Turning ON ignores those two phone settings and follows ") +
                 "the in-app UI scale size below instead, so the app looks the same on " +
                 "every device.",
             style = MaterialTheme.typography.bodySmall,
@@ -967,7 +960,7 @@ private fun UiScaleCard(app: HikariApp) {
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "UI scale size",
+                    tr("UI scale size"),
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f)
                 )
@@ -1002,17 +995,17 @@ private fun UiScaleCard(app: HikariApp) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    "Smaller",
+                    tr("Smaller"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "Default",
+                    tr("Default"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "Bigger",
+                    tr("Bigger"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1034,14 +1027,13 @@ private fun SlowConnectionCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Mobile data / slow internet",
+            tr("Mobile data / slow internet"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Gives every source search much more time and retries extensions " +
-                "that time out, so a weak connection doesn't end in " +
+            tr("Gives every source search much more time and retries extensions " + "that time out, so a weak connection doesn't end in ") +
                 "\"No playable sources found\". Only turn it on if you need it — " +
                 "fast connections stay quick with it off.",
             style = MaterialTheme.typography.bodySmall,
@@ -1051,12 +1043,12 @@ private fun SlowConnectionCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Slow connection mode",
+                    tr("Slow connection mode"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Enable this if your internet is slow.",
+                    tr("Enable this if your internet is slow."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1076,13 +1068,12 @@ private fun SlowConnectionCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Slow internet suggestion",
+                    tr("Slow internet suggestion"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "When a video looks slow to start, the player offers to switch " +
-                        "Slow connection mode on. Turn this off if it keeps guessing " +
+                    tr("When a video looks slow to start, the player offers to switch " + "Slow connection mode on. Turn this off if it keeps guessing ") +
                         "wrong on a connection that is actually fine.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1119,13 +1110,13 @@ private fun PlaybackStartCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Playback start",
+            tr("Playback start"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Choose when the player starts after you tap Play.",
+            tr("Choose when the player starts after you tap Play."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1134,12 +1125,11 @@ private fun PlaybackStartCard(app: HikariApp) {
             RadioButton(selected = !waitServers, onClick = { persist(false) })
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Play as soon as the first server is found",
+                    tr("Play as soon as the first server is found"),
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    "Instant playback — the fastest option. If that server turns out " +
-                        "to be dead, the player moves to the next one automatically.",
+                    tr("Instant playback — the fastest option. If that server turns out " + "to be dead, the player moves to the next one automatically."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1149,12 +1139,11 @@ private fun PlaybackStartCard(app: HikariApp) {
             RadioButton(selected = waitServers, onClick = { persist(true) })
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Wait for more servers first",
+                    tr("Wait for more servers first"),
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    "Playback starts once the number chosen below has been found — or " +
-                        "when every installed extension has finished searching, " +
+                    tr("Playback starts once the number chosen below has been found — or " + "when every installed extension has finished searching, ") +
                         "whichever happens first.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1166,7 +1155,7 @@ private fun PlaybackStartCard(app: HikariApp) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Servers to wait for",
+                    tr("Servers to wait for"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -1198,8 +1187,7 @@ private fun PlaybackStartCard(app: HikariApp) {
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
-                "Slide to 3 to start once three servers are ready. If the whole " +
-                    "search finds fewer than that (say only 2), playback starts with " +
+                tr("Slide to 3 to start once three servers are ready. If the whole " + "search finds fewer than that (say only 2), playback starts with ") +
                     "everything that was found the moment every extension has " +
                     "finished — it never waits forever for a server that doesn't exist.",
                 style = MaterialTheme.typography.labelSmall,
@@ -1211,7 +1199,7 @@ private fun PlaybackStartCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Don't play directly — show all servers to choose",
+                    tr("Don't play directly — show all servers to choose"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -1253,14 +1241,13 @@ private fun LoadingBannerCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Loading screen",
+            tr("Loading screen"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "What covers the player while it finds a server and buffers the first " +
-                "frame of video.",
+            tr("What covers the player while it finds a server and buffers the first " + "frame of video."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1268,7 +1255,7 @@ private fun LoadingBannerCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Show banner until servers load",
+                    tr("Show banner until servers load"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -1307,14 +1294,13 @@ private fun UniversalExtractionCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Universal extraction (yt-dlp)",
+            tr("Universal extraction (yt-dlp)"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "When a provider's own extractors find no playable source, the " +
-                "built-in yt-dlp engine takes over and tries to pull a direct " +
+            tr("When a provider's own extractors find no playable source, the " + "built-in yt-dlp engine takes over and tries to pull a direct ") +
                 "stream from the page. Adds ~60 MB to the APK.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1323,12 +1309,12 @@ private fun UniversalExtractionCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Fall back to yt-dlp when no sources found",
+                    tr("Fall back to yt-dlp when no sources found"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Only kicks in on pages the built-in extractors can't resolve.",
+                    tr("Only kicks in on pages the built-in extractors can't resolve."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1441,14 +1427,13 @@ private fun WebViewSafetyCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "WebView safety",
+            tr("WebView safety"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Stops sites from redirecting or popping you out to ad pages. " +
-                "Only pages/popups that belong to the site itself are allowed. " +
+            tr("Stops sites from redirecting or popping you out to ad pages. " + "Only pages/popups that belong to the site itself are allowed. ") +
                 "Turn off if a site's player opens in another tab on a different domain.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1457,12 +1442,12 @@ private fun WebViewSafetyCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Block redirects to other sites",
+                    tr("Block redirects to other sites"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Same-site pages & subdomains still load normally.",
+                    tr("Same-site pages & subdomains still load normally."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1479,12 +1464,12 @@ private fun WebViewSafetyCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Block popups from other sites",
+                    tr("Block popups from other sites"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Only popups opened by the site itself can appear.",
+                    tr("Only popups opened by the site itself can appear."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1502,14 +1487,13 @@ private fun WebViewSafetyCard(app: HikariApp) {
         Spacer(Modifier.height(10.dp))
 
         Text(
-            "Allowed redirect links",
+            tr("Allowed redirect links"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "Redirects to these hosts are never blocked, even though they're a " +
-                "different site (e.g. a player or CDN a site must send you to).",
+            tr("Redirects to these hosts are never blocked, even though they're a " + "different site (e.g. a player or CDN a site must send you to)."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1518,7 +1502,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
             OutlinedTextField(
                 value = newAllowedDomain,
                 onValueChange = { newAllowedDomain = it },
-                placeholder = { Text("player.example.com") },
+                placeholder = { Text(tr("player.example.com")) },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -1530,7 +1514,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
                     newAllowedDomain = ""
                     scope.launch { app.store.setWebviewRedirectAllow(next) }
                 }
-            }) { Text("Add") }
+            }) { Text(tr("Add")) }
         }
         allowedRedirects.forEach { domain ->
             Row(
@@ -1583,14 +1567,13 @@ private fun WebViewUserAgentCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "WebView user agent",
+            tr("WebView user agent"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Some sites (Cloudflare) block the WebView when it advertises a " +
-                "desktop browser it doesn't match. The stock Android user agent " +
+            tr("Some sites (Cloudflare) block the WebView when it advertises a " + "desktop browser it doesn't match. The stock Android user agent ") +
                 "passes verification on most sites; a custom one is for sites " +
                 "that need a specific desktop/mobile UA.",
             style = MaterialTheme.typography.bodySmall,
@@ -1600,12 +1583,12 @@ private fun WebViewUserAgentCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Use Android default user agent",
+                    tr("Use Android default user agent"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "Stock Android WebView UA — passes Cloudflare checks.",
+                    tr("Stock Android WebView UA — passes Cloudflare checks."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1621,15 +1604,15 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("Mozilla/5.0 …") },
+                    placeholder = { Text(tr("Mozilla/5.0 …")) },
                     singleLine = true,
-                    label = { Text("Custom user agent") },
+                    label = { Text(tr("Custom user agent")) },
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(
                     onClick = { persist(false, draft) },
                     enabled = draft.trim().isNotEmpty() && draft.trim() != customUa
-                ) { Text("Save") }
+                ) { Text(tr("Save")) }
             }
             Text(
                 "Currently used: ${app.effectiveWebViewUa().take(70)}…",
@@ -1659,21 +1642,20 @@ private fun UserscriptsCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Userscripts",
+            tr("Userscripts"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Tampermonkey-style scripts that run ONLY inside the app's WebView " +
-                "(@match/@include/@run-at + GM_getValue/setValue). Add as many as you like.",
+            tr("Tampermonkey-style scripts that run ONLY inside the app's WebView " + "(@match/@include/@run-at + GM_getValue/setValue). Add as many as you like."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
         if (scripts.isEmpty()) {
             Text(
-                "No userscripts yet.",
+                tr("No userscripts yet."),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1702,11 +1684,11 @@ private fun UserscriptsCard(app: HikariApp) {
                             })
                         }
                     )
-                    TextButton(onClick = { draft = s.code; editing = s }) { Text("Edit") }
+                    TextButton(onClick = { draft = s.code; editing = s }) { Text(tr("Edit")) }
                     IconButton(onClick = { persist(scripts.filterNot { it.id == s.id }) }) {
                         Icon(
                             Icons.Filled.Delete,
-                            contentDescription = "Delete",
+                            contentDescription = tr("Delete"),
                             tint = MaterialTheme.colorScheme.error
                         )
                     }
@@ -1717,7 +1699,7 @@ private fun UserscriptsCard(app: HikariApp) {
         OutlinedButton(onClick = { draft = ""; adding = true }) {
             Icon(Icons.Filled.Add, contentDescription = null)
             Spacer(Modifier.width(6.dp))
-            Text("Add userscript")
+            Text(tr("Add userscript"))
         }
     }
 
@@ -1728,8 +1710,7 @@ private fun UserscriptsCard(app: HikariApp) {
             text = {
                 Column {
                     Text(
-                        "Paste a userscript with a // ==UserScript== header " +
-                            "(name, @match, @run-at…). It runs only in the WebView.",
+                        tr("Paste a userscript with a // ==UserScript== header " + "(name, @match, @run-at…). It runs only in the WebView."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1741,7 +1722,7 @@ private fun UserscriptsCard(app: HikariApp) {
                             .fillMaxWidth()
                             .heightIn(min = 200.dp),
                         textStyle = MaterialTheme.typography.bodySmall,
-                        placeholder = { Text("// ==UserScript==\n// @name   My Script\n// @match  https://example.com/*\n// @run-at document-start\n// ==/UserScript==\n\nconsole.log('hello');") }
+                        placeholder = { Text(tr("// ==UserScript==\n// @name   My Script\n// @match  https://example.com/*\n// @run-at document-start\n// ==/UserScript==\n\nconsole.log('hello');")) }
                     )
                 }
             },
@@ -1767,10 +1748,10 @@ private fun UserscriptsCard(app: HikariApp) {
                     }
                     adding = false
                     editing = null
-                }) { Text("Save") }
+                }) { Text(tr("Save")) }
             },
             dismissButton = {
-                TextButton(onClick = { adding = false; editing = null }) { Text("Cancel") }
+                TextButton(onClick = { adding = false; editing = null }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1801,14 +1782,14 @@ private fun AdBlockingCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Ad Blocking",
+            tr("Ad Blocking"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Block ads & trackers in websites opened in the browser tab",
+                tr("Block ads & trackers in websites opened in the browser tab"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
@@ -1823,7 +1804,7 @@ private fun AdBlockingCard(app: HikariApp) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Applies only to WebView sites — the video player is never affected.",
+            tr("Applies only to WebView sites — the video player is never affected."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1834,7 +1815,7 @@ private fun AdBlockingCard(app: HikariApp) {
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Blocklists (ad hosts)",
+                tr("Blocklists (ad hosts)"),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -1874,7 +1855,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("Add custom list URL")
+                Text(tr("Add custom list URL"))
             }
             lists.forEach { list ->
                 Row(
@@ -1931,7 +1912,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             strokeWidth = 2.dp
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Updating…")
+                        Text(tr("Updating…"))
                     } else {
                         Icon(
                             Icons.Filled.Refresh,
@@ -1939,7 +1920,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(4.dp))
-                        Text("Update lists")
+                        Text(tr("Update lists"))
                     }
                 }
             }
@@ -1956,13 +1937,13 @@ private fun AdBlockingCard(app: HikariApp) {
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Manual blocklist",
+                tr("Manual blocklist"),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Add a domain to always block in the browser tab",
+                tr("Add a domain to always block in the browser tab"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1971,7 +1952,7 @@ private fun AdBlockingCard(app: HikariApp) {
                 OutlinedTextField(
                     value = newBlockDomain,
                     onValueChange = { newBlockDomain = it },
-                    placeholder = { Text("ads.example.com") },
+                    placeholder = { Text(tr("ads.example.com")) },
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -1983,7 +1964,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         newBlockDomain = ""
                         scope.launch { app.store.setAdBlock(next) }
                     }
-                }) { Text("Add") }
+                }) { Text(tr("Add")) }
             }
             blockList.forEach { domain ->
                 Row(
@@ -2015,13 +1996,13 @@ private fun AdBlockingCard(app: HikariApp) {
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Whitelist",
+                tr("Whitelist"),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "If a site or video is wrongly blocked, whitelist its domain",
+                tr("If a site or video is wrongly blocked, whitelist its domain"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2030,7 +2011,7 @@ private fun AdBlockingCard(app: HikariApp) {
                 OutlinedTextField(
                     value = newWhiteDomain,
                     onValueChange = { newWhiteDomain = it },
-                    placeholder = { Text("video-site.example.com") },
+                    placeholder = { Text(tr("video-site.example.com")) },
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -2042,7 +2023,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         newWhiteDomain = ""
                         scope.launch { app.store.setAdWhite(next) }
                     }
-                }) { Text("Add") }
+                }) { Text(tr("Add")) }
             }
             whiteList.forEach { domain ->
                 Row(
@@ -2077,20 +2058,20 @@ private fun AdBlockingCard(app: HikariApp) {
         var url by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showAddListDialog = false },
-            title = { Text("Add blocklist") },
+            title = { Text(tr("Add blocklist")) },
             text = {
                 Column {
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("Name") },
+                        label = { Text(tr("Name")) },
                         singleLine = true
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = url,
                         onValueChange = { url = it },
-                        label = { Text("Hosts file URL") },
+                        label = { Text(tr("Hosts file URL")) },
                         singleLine = true
                     )
                 }
@@ -2110,10 +2091,10 @@ private fun AdBlockingCard(app: HikariApp) {
                     } else {
                         showAddListDialog = false
                     }
-                }) { Text("Add") }
+                }) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { showAddListDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showAddListDialog = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -2127,19 +2108,18 @@ private fun AdBlockingCard(app: HikariApp) {
 private fun PlayerControlsCard(onOpen: () -> Unit) {
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Player controls",
+            tr("Player controls"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Choose where each button sits in the player — top bar, the left or " +
-                "right end of the bottom row — or hide the ones you never use.",
+            tr("Choose where each button sits in the player — top bar, the left or " + "right end of the bottom row — or hide the ones you never use."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = onOpen) { Text("Edit control layout") }
+        OutlinedButton(onClick = onOpen) { Text(tr("Edit control layout")) }
     }
 }
 
@@ -2154,14 +2134,13 @@ private fun VideoEnhanceCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Video enhance",
+            tr("Video enhance"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Realtime colour grading applied to the video itself (not an overlay), " +
-                "here and from the Enhance button in the player.",
+            tr("Realtime colour grading applied to the video itself (not an overlay), " + "here and from the Enhance button in the player."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2177,7 +2156,7 @@ private fun VideoEnhanceCard(app: HikariApp) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Preset", style = MaterialTheme.typography.titleSmall)
+                    Text(tr("Preset"), style = MaterialTheme.typography.titleSmall)
                     Text(
                         preset.desc,
                         style = MaterialTheme.typography.bodySmall,
@@ -2232,8 +2211,7 @@ private fun VideoEnhanceCard(app: HikariApp) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "Natural applies nothing at all — enhancement only runs while a preset " +
-                "is picked. HDR videos ignore the tint part of a preset, and effects " +
+            tr("Natural applies nothing at all — enhancement only runs while a preset " + "is picked. HDR videos ignore the tint part of a preset, and effects ") +
                 "are applied with no quality loss to the source.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2258,14 +2236,13 @@ private fun AccentCard(
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            "Accent color",
+            tr("Accent color"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "The colour of buttons, selected tabs, sliders and highlights " +
-                "throughout the app.",
+            tr("The colour of buttons, selected tabs, sliders and highlights " + "throughout the app."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2280,22 +2257,20 @@ private fun AccentCard(
         if (linked) {
             Spacer(Modifier.height(12.dp))
             Text(
-                "The player is following this colour — see \"Match app & player " +
-                    "theme\" below to give it its own.",
+                tr("The player is following this colour — see \"Match app & player " + "theme\" below to give it its own."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             Spacer(Modifier.height(20.dp))
             Text(
-                "Player color",
+                tr("Player color"),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "The glow behind the player's pills, badges, play ring and " +
-                    "progress bar.",
+                tr("The glow behind the player's pills, badges, play ring and " + "progress bar."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2381,9 +2356,9 @@ private fun MatchThemeCard(
     Column(Modifier.padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Match app & player theme", style = MaterialTheme.typography.titleSmall)
+                Text(tr("Match app & player theme"), style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Use one colour everywhere",
+                    tr("Use one colour everywhere"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2425,13 +2400,13 @@ private fun MatchThemeCard(
                     scope.launch { runCatching { app.store.setPlayerAccent(appAccentKey) } }
                 },
                 enabled = playerAccentKey != appAccentKey
-            ) { Text("App \u2192 player") }
+            ) { Text(tr("App \u2192 player")) }
             OutlinedButton(
                 onClick = {
                     scope.launch { runCatching { app.store.setAppAccent(playerAccentKey) } }
                 },
                 enabled = playerAccentKey != appAccentKey
-            ) { Text("Player \u2192 app") }
+            ) { Text(tr("Player \u2192 app")) }
         }
     }
 }

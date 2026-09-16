@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -77,7 +78,7 @@ fun LibraryScreen(nav: NavHostController) {
         item(key = "library-header", span = { GridItemSpan(maxLineSpan) }) {
             Column(Modifier.padding(bottom = 2.dp)) {
                 Text(
-                    "Library",
+                    tr("Library"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -92,10 +93,9 @@ fun LibraryScreen(nav: NavHostController) {
         if (saved.isEmpty()) {
             item(key = "library-empty", span = { GridItemSpan(maxLineSpan) }) {
                 EmptyState(
-                    title = "Your library is empty",
-                    subtitle = "Tap the heart in the player while watching a movie or series " +
-                        "and it will be saved here for later.",
-                    actionLabel = "Browse",
+                    title = tr("Your library is empty"),
+                    subtitle = tr("Tap the heart in the player while watching a movie or series " + "and it will be saved here for later."),
+                    actionLabel = tr("Browse"),
                     action = { Routes.navigateTab(nav, Routes.HOME) },
                 )
             }
@@ -164,7 +164,7 @@ private fun LibraryCard(item: MediaItem, onClick: () -> Unit, onRemove: () -> Un
             ) {
                 Icon(
                     Icons.Filled.Favorite,
-                    contentDescription = "Remove from library",
+                    contentDescription = tr("Remove from library"),
                     tint = Color.White,
                     modifier = Modifier.size(16.dp),
                 )

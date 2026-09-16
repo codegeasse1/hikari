@@ -106,9 +106,12 @@
                 android:indeterminateTint="@color/hikari_accent_mid" />
 
             <TextView
+                android:id="@+id/loading_status"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="10dp"
+                android:maxLines="3"
+                android:ellipsize="end"
                 android:text="Finding the best server…"
                 android:textColor="#CCFFFFFF"
                 android:textSize="13sp" />
@@ -128,11 +131,32 @@
         android:focusable="true"
         android:visibility="gone">
 
-        <ProgressBar
-            android:layout_width="52dp"
-            android:layout_height="52dp"
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:indeterminateTint="@color/hikari_accent_mid" />
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <ProgressBar
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:indeterminateTint="@color/hikari_accent_mid" />
+
+            <TextView
+                android:id="@+id/loading_spinner_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center"
+                android:maxLines="4"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:ellipsize="end"
+                android:text="Finding the best server…"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large

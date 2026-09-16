@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.content.ContentValues
 import android.content.Context
@@ -99,7 +100,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back to settings",
+                            contentDescription = tr("Back to settings"),
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(20.dp),
                         )
@@ -107,12 +108,12 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "Logs & diagnostics",
+                            tr("Logs & diagnostics"),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "Share what the app recorded",
+                            tr("Share what the app recorded"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -120,8 +121,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "Hikari keeps two rolling app logs and one crash log on this " +
-                        "device. If something goes wrong, share these files here " +
+                    tr("Hikari keeps two rolling app logs and one crash log on this " + "device. If something goes wrong, share these files here ") +
                         "instead of a screenshot — they contain the exact error and " +
                         "what happened just before it.",
                     style = MaterialTheme.typography.bodySmall,
@@ -136,13 +136,13 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
             GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "All logs",
+                        tr("All logs"),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Share or save the app logs and the crash log together.",
+                        tr("Share or save the app logs and the crash log together."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -150,7 +150,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ActionPill(
                             icon = Icons.Filled.Share,
-                            label = "Share all",
+                            label = tr("Share all"),
                             primary = true,
                         ) {
                             val existing = Logs.existingFiles(context)
@@ -162,7 +162,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                         }
                         ActionPill(
                             icon = Icons.Filled.Save,
-                            label = "Save all",
+                            label = tr("Save all"),
                             primary = false,
                         ) {
                             val existing = Logs.existingFiles(context)
@@ -185,13 +185,13 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
         item {
             Column(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 6.dp)) {
                 Text(
-                    "Log files",
+                    tr("Log files"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
-                    "Tap Share to send a file, or Save to keep it in Downloads.",
+                    tr("Tap Share to send a file, or Save to keep it in Downloads."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -242,14 +242,14 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 ActionPill(
                                     icon = Icons.Filled.Share,
-                                    label = "Share",
+                                    label = tr("Share"),
                                     primary = true,
                                 ) {
                                     shareFiles(context, listOf(entry.file), "Hikari ${entry.title}")
                                 }
                                 ActionPill(
                                     icon = Icons.Filled.Save,
-                                    label = "Save",
+                                    label = tr("Save"),
                                     primary = false,
                                 ) {
                                     val saved = saveToDownloads(context, entry.file)
@@ -268,8 +268,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
         item {
             Column(Modifier.fillMaxWidth().padding(top = 14.dp)) {
                 Text(
-                    "Logs live only on this device and are never uploaded " +
-                        "automatically — nothing leaves your phone until you tap " +
+                    tr("Logs live only on this device and are never uploaded " + "automatically — nothing leaves your phone until you tap ") +
                         "Share or Save.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -283,7 +282,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Clear all logs", color = MaterialTheme.colorScheme.error)
+                    Text(tr("Clear all logs"), color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -292,18 +291,18 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
-            title = { Text("Clear all logs?") },
-            text = { Text("The two app logs and the crash log will be deleted from this device.") },
+            title = { Text(tr("Clear all logs?")) },
+            text = { Text(tr("The two app logs and the crash log will be deleted from this device.")) },
             confirmButton = {
                 TextButton(onClick = {
                     Logs.clear(context)
                     showClearDialog = false
                     refreshTick++
                     toast("Logs cleared")
-                }) { Text("Clear", color = MaterialTheme.colorScheme.error) }
+                }) { Text(tr("Clear"), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showClearDialog = false }) { Text(tr("Cancel")) }
             },
         )
     }

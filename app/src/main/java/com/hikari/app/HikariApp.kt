@@ -490,22 +490,30 @@ class HikariApp : Application() {
                 }
             }
 
-            // Pre-warm the sync-providers class that some plugins touch at load
-            // time (StreamPlay's video captcha flow references AccountManager).
-            // Loading it here turns what used to be a bare, cause-less
-            // NoClassDefFoundError thrown from deep inside a plugin into a clear,
-            // logged cause chain (a missing transitive class, a bad static
-            // initializer, etc.).
+            // Pre-warm the classes the plugin path is known to touch, so a
+            // missing/broken one shows up as a clear, logged cause chain at
+            // startup instead of a bare NoClassDefFoundError thrown from deep
+            // inside a plugin (or — worse — a plugin settings dialog, which is
+            // where CloudStream's own CommonActivity.showToast died on
+            // `databinding/ToastBinding` and took the app down with it).
             CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    Class.forName("com.lagradost.cloudstream3.syncproviders.AccountManager")
-                    Logs.log("CloudStream", "AccountManager pre-warm ok")
-                } catch (t: Throwable) {
-                    Logs.log(
-                        "CloudStream",
-                        "AccountManager pre-warm failed: ${t.javaClass.name}: ${t.message}" +
-                            (t.cause?.let { " (cause ${it.javaClass.name}: ${it.message})" } ?: ""),
-                    )
+                val probes = listOf(
+                    "com.lagradost.cloudstream3.syncproviders.AccountManager",
+                    "com.lagradost.cloudstream3.databinding.ToastBinding",
+                    "com.lagradost.cloudstream3.CommonActivity",
+                    "com.lagradost.cloudstream3.R${'$'}string",
+                )
+                for (name in probes) {
+                    try {
+                        Class.forName(name)
+                        Logs.log("CloudStream", "pre-warm ok: $name")
+                    } catch (t: Throwable) {
+                        Logs.log(
+                            "CloudStream",
+                            "pre-warm FAILED: $name — ${t.javaClass.name}: ${t.message}" +
+                                (t.cause?.let { " (cause ${it.javaClass.name}: ${it.message})" } ?: ""),
+                        )
+                    }
                 }
             }
         } catch (t: Throwable) {
