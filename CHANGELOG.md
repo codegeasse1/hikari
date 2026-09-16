@@ -1,3 +1,29 @@
+## 0.3.69
+
+### Added
+
+- **Player controls editor** — Settings › Player › Player controls. Move any player button (favourite, download, PiP, gear, lock, speed, episodes, servers, quality, audio, subtitles, rotate, skip intro, resize, enhance) to the top bar, to the left or right end of the bottom row, or hide it. Schematic preview on top, switchable between Words and Icons, and a Reset. Back, play/pause and the title stay fixed.
+- **Video enhance** — a real GPU colour grade on the video itself, not an overlay on the UI. Presets: Natural, Vibrant, Movie, Cinematic, Warm, Cool, Anime, Bright. Pick it in Settings › Player › Video enhance or from the Enhance button in the player. Natural costs nothing, the tint is skipped on HDR streams, and devices that can't run it turn the feature off instead of showing a black screen.
+- **Accent colours** — eleven app accents (Amber, Violet, Blue, Cyan, Teal, Green, Red, Orange, Pink, Purple, Mono) and a separate player accent for the glow, pills, badges, play ring, progress bar and gesture HUD, with Match app & player and one-tap App → player / Player → app copy.
+- **Logs & diagnostics** — Settings › Logs & diagnostics: two rolling app logs and one crash log (the most recent uncaught exception with its stack trace and the last 300 log lines), each with Share and Save to Downloads, plus Share all / Save all / Clear all. The "crashed on a previous launch" banner got a Share log button. Logs never leave the device by themselves.
+- **Background work** — covers, searches, catalog loads, source scans and extension installs now run in a foreground service (quiet ongoing notification), so leaving the app no longer abandons a search or a download. Android 13+ asks for notification permission on first launch.
+- **Instant server chooser** — with "Don't play directly" on, the sheet opens the moment you tap Play, shows "Searching <provider>…" and fills in as servers land, instead of waiting for the first server. Backing out of an empty sheet no longer kills the play.
+- **Shared stream cache** — the extracted server list is cached app-wide, and a Play tap made while a search is running joins that search instead of starting a second one. Reopening a title is instant now.
+- **Provider remap** — extension ids are not stable, so a page that hit "Provider not found" looks the title up again (History first, then the installed providers, same engine first) and carries on. Library, last-used server and search-in-provider use the provider the page ended up on.
+
+### Fixed
+
+- **Hikari extension installation** — a `.cs3` plugin listed in a Hikari repo was fetched and loaded as a `.hiki`, which needs a `mainClass` in manifest.json and so failed with "manifest.json has no mainClass". Install and uninstall now go by the file's own extension, not the repo's kind.
+- **Crashing bugs** — the crash right after opening a title or tapping Play (`ForegroundServiceDidNotStartInTimeException`: the work service stopped itself before going to the foreground), a native WebView failure rethrown into the app, WebView renderer deaths, and background-thread crashes no longer take the app down.
+- **Sources problem: the tail of the installed repos was never asked.** The cross pass built one list capped at 64, and the native `.hiki` family alone is 64+ repos, so an installed CloudStream repo was never reached while the hint still said it had been asked. The cap is gone (1024 = every installed repo) and the pass is two-phase: search slots and extraction slots are separate, so a repo that matched can't hold up the rest.
+- **Sources: the engine you opened the title from is asked first and in full.** All the other providers used to fire at t=0 (~60 searches at once), which buried the origin's own servers. The origin now starts immediately, the Nuvio engines wait 1.2s and the origin engine's other repos 2s, and the origin's servers land at the top of the list.
+- **Sources: honest progress.** The hint reports "Asked N of M" per engine, how many are still searching and how many found servers, names the repos that were never reached, and gives one reason when a repo came back with nothing (no matching title / no servers / Cloudflare / timed out). A failed search is retried with a shortened title ("Foo: Bar (2023)" → "Foo").
+- **Cloudflare** — a blocked host is named ("Cloudflare check needed on <host> — open the globe on Home, then search again") instead of being reported as "no sources", and the verify WebView opens when that one site is what you're waiting on.
+- **Server chooser** — no row is marked as current before playback, a tap plays the row you tapped (rows are appended in place, so the tap is no longer cancelled mid-gesture), and the chooser opens at most once per play.
+- **Server rows** — one label line plus one host line per row, so every capsule is the same size. The long Hikari names used to wrap onto a second line and make a fatter, rounder pill than the CloudStream rows.
+- **Player** — video size and landscape rotation when the enhancer swallowed `onVideoSizeChanged` (the quality badge is back), the rotate button no longer fights auto-rotate, and the glass panels are fitted to their content with the rows seated inside the bend (no jitter on Android 12+, no flat-cut text along the curve, no overhang, and the pill row resets to its left edge).
+- **Player menus** — media3's own view ids are resolved by name, and a stale cached server list no longer seeds the live list on the first Play.
+
 ## 0.3.68
 
 The big one: a new look everywhere, a real download system, server sections, a

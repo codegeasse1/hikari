@@ -166,14 +166,26 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           TAG="v${VERSION:-0.1.0}"
           cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          # The release body is that version's own CHANGELOG.md section, so the
+          # releases page and the changelog can never drift apart.
+          NOTES=""
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(awk -v v="$VERSION" '$0 == "## " v {p=1; next} /^## / {p=0} p' CHANGELOG.md | sed -e 's/[[:space:]]*$//' | cat -s)
+          fi
+          if [ -z "$NOTES" ]; then
+            NOTES="Signed release APK."
+            echo "No CHANGELOG.md section found for $VERSION; using the default notes."
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             for i in 1 2 3; do
               gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber && break
               echo "release upload attempt $i failed (often a transient race with a concurrent build), retrying..."
               sleep 5
             done
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Hikari $VERSION" --notes "$NOTES" || true
           else
             gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
               --title "Hikari $VERSION" \
-              --notes "Signed release APK." || true
+              --notes "$NOTES" || true
           fi

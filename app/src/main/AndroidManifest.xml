@@ -60,7 +60,16 @@ android:name=".player.PlayerActivity"
         <service
             android:name=".download.DownloadService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
+        <!-- Keeps catalog loads, searches and provider scans running while the
+             user is in another app (see BackgroundWork / WorkService). -->
+        <service
+            android:name=".work.WorkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

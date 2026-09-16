@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
@@ -72,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -88,10 +90,12 @@ import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
+import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
+import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
@@ -150,6 +154,12 @@ private enum class SettingsFolder(
         "What the built-in browser is allowed to do.",
         Icons.Filled.Shield,
     ),
+    LOGS(
+        "Logs & Diagnostics",
+        "App logs & crash reports",
+        "Share what the app recorded, so a bug needs no screenshot.",
+        Icons.Filled.BugReport,
+    ),
     ABOUT(
         "About & Updates",
         "Version, links, roadmap & reset",
@@ -184,6 +194,20 @@ fun SettingsScreen(nav: NavHostController) {
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
+    var showPlayerControls by remember { mutableStateOf(false) }
+    var showLogs by remember { mutableStateOf(false) }
+
+    // Accent colours: the app accent repaints this whole screen live; the
+    // player accent (and the "match app & player" switch) decide what the
+    // View-based player will use.
+    val appAccentFlow = remember { app.store.appAccentFlow() }
+    val appAccentKey by appAccentFlow.collectAsState(initial = HikariAccent.DEFAULT_APP.key)
+    val playerAccentFlow = remember { app.store.playerAccentFlow() }
+    val playerAccentKey by playerAccentFlow.collectAsState(
+        initial = HikariAccent.DEFAULT_PLAYER.key
+    )
+    val themeLinkedFlow = remember { app.store.themeLinkedFlow() }
+    val themeLinked by themeLinkedFlow.collectAsState(initial = false)
 
     val currentTheme = remember(themeKey) { HikariThemeMode.fromKey(themeKey) }
     val hideContinueFlow = remember { app.store.hideContinueFlow() }
@@ -194,6 +218,20 @@ fun SettingsScreen(nav: NavHostController) {
     // System back steps out of the open settings folder (Player, Sources…)
     // instead of popping the whole Settings destination and landing on Home.
     BackHandler(enabled = openFolder != null) { openFolder = null }
+
+    // The Player controls editor is its own full screen (fifteen controls × a
+    // four-way placement each does not fit in one card).
+    if (showPlayerControls) {
+        PlayerControlsPage(app, onBack = { showPlayerControls = false })
+        return
+    }
+
+    // The logs page is its own full screen too: three files, each with two
+    // actions, plus the share-all row.
+    if (showLogs) {
+        LogsPage(app, onBack = { showLogs = false })
+        return
+    }
 
     // A folder opens at its own top: without this, opening one from partway
     // down the index would leave the new page scrolled by the old offset.
@@ -211,7 +249,13 @@ fun SettingsScreen(nav: NavHostController) {
             }
             when (folder) {
                 SettingsFolder.PLAYER -> {
-                    item { SettingsCard(top = 2.dp) { PlaybackStartCard(app) } }
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            PlayerControlsCard(onOpen = { showPlayerControls = true })
+                        }
+                    }
+                    item { SettingsCard { VideoEnhanceCard(app) } }
+                    item { SettingsCard { PlaybackStartCard(app) } }
                     item { SettingsCard { LoadingBannerCard(app) } }
                     item { SettingsCard { SlowConnectionCard(app) } }
                 }
@@ -282,11 +326,73 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UiScaleCard(app) } }
+                    item {
+                        SettingsCard {
+                            AccentCard(
+                                app = app,
+                                appAccentKey = appAccentKey,
+                                playerAccentKey = playerAccentKey,
+                                linked = themeLinked,
+                            )
+                        }
+                    }
+                    item {
+                        SettingsCard {
+                            MatchThemeCard(
+                                app = app,
+                                linked = themeLinked,
+                                appAccentKey = appAccentKey,
+                                playerAccentKey = playerAccentKey,
+                            )
+                        }
+                    }
                 }
                 SettingsFolder.PRIVACY -> {
                     item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
+                }
+                SettingsFolder.LOGS -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            Column {
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.BugReport,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text("App logs & crash reports") },
+                                    supportingContent = {
+                                        Text(
+                                            "Two rolling app logs and the last crash " +
+                                                "log. Share them directly instead of " +
+                                                "sending screenshots."
+                                        )
+                                    },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable { showLogs = true }
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        Text(
+                            "Logs stay on this device and are only sent when you " +
+                                "tap Share or Save on the logs page.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp, start = 4.dp),
+                        )
+                    }
                 }
                 SettingsFolder.ABOUT -> {
                     item {
@@ -1922,5 +2028,322 @@ private fun AdBlockingCard(app: HikariApp) {
                 TextButton(onClick = { showAddListDialog = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+
+// ---- Player controls & video enhance (Player folder) ----
+
+/** Opens the full-screen Player controls editor. */
+@Composable
+private fun PlayerControlsCard(onOpen: () -> Unit) {
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Player controls",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Choose where each button sits in the player — top bar, the left or " +
+                "right end of the bottom row — or hide the ones you never use.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onOpen) { Text("Edit control layout") }
+    }
+}
+
+/** Video enhance preset picker — real GPU colour grading of the video itself. */
+@Composable
+private fun VideoEnhanceCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val presetFlow = remember { app.store.enhancePresetFlow() }
+    val presetKey by presetFlow.collectAsState(initial = EnhancePreset.DEFAULT.key)
+    var menuOpen by remember { mutableStateOf(false) }
+    val preset = EnhancePreset.fromKey(presetKey)
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Video enhance",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Realtime colour grading applied to the video itself (not an overlay), " +
+                "here and from the Enhance button in the player.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Box {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                    .clickable { menuOpen = true }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Preset", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        preset.desc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    preset.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                EnhancePreset.entries.forEach { p ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(p.label)
+                                Text(
+                                    p.desc,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        onClick = {
+                            menuOpen = false
+                            scope.launch {
+                                runCatching { app.store.setEnhancePreset(p.key) }
+                            }
+                        },
+                        leadingIcon = {
+                            if (p == preset) {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Natural applies nothing at all — enhancement only runs while a preset " +
+                "is picked. HDR videos ignore the tint part of a preset, and effects " +
+                "are applied with no quality loss to the source.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// ---- Accent colours (Appearance folder) ----
+
+/** The app accent picker (and the player's own accent while the two are not
+ *  linked). Every swatch is drawn from the accent's real gradient, so what you
+ *  tap is what the buttons will look like. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccentCard(
+    app: HikariApp,
+    appAccentKey: String,
+    playerAccentKey: String,
+    linked: Boolean,
+) {
+    val scope = rememberCoroutineScope()
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            "Accent color",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "The colour of buttons, selected tabs, sliders and highlights " +
+                "throughout the app.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        AccentSwatches(
+            selected = HikariAccent.fromKey(appAccentKey),
+            onPick = { accent ->
+                scope.launch { runCatching { app.store.setAppAccent(accent.key) } }
+            }
+        )
+
+        if (linked) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "The player is following this colour — see \"Match app & player " +
+                    "theme\" below to give it its own.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "Player color",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "The glow behind the player's pills, badges, play ring and " +
+                    "progress bar.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            AccentSwatches(
+                selected = HikariAccent.fromKey(playerAccentKey),
+                onPick = { accent ->
+                    scope.launch { runCatching { app.store.setPlayerAccent(accent.key) } }
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccentSwatches(selected: HikariAccent, onPick: (HikariAccent) -> Unit) {
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        HikariAccent.entries.forEach { accent ->
+            val isSelected = accent == selected
+            Column(
+                Modifier
+                    .width(56.dp)
+                    .clickable { onPick(accent) },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                Brush.linearGradient(listOf(accent.start, accent.end))
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    accent.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/** "Match app & player theme", plus the one-tap syncs in either direction. */
+@Composable
+private fun MatchThemeCard(
+    app: HikariApp,
+    linked: Boolean,
+    appAccentKey: String,
+    playerAccentKey: String,
+) {
+    val scope = rememberCoroutineScope()
+
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Match app & player theme", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Use one colour everywhere",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = linked,
+                onCheckedChange = { on ->
+                    scope.launch {
+                        runCatching {
+                            if (on) {
+                                // Copy the app colour onto the player as the two
+                                // are joined, so they are identical immediately.
+                                app.store.setPlayerAccent(appAccentKey)
+                                app.store.setThemeLinked(true)
+                            } else {
+                                app.store.setThemeLinked(false)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (linked) {
+                "On: the player always uses the app's accent colour, so the two " +
+                    "can never drift apart."
+            } else {
+                "Off: the app and the player each keep their own colour. Use the " +
+                    "buttons below to copy one onto the other."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    scope.launch { runCatching { app.store.setPlayerAccent(appAccentKey) } }
+                },
+                enabled = playerAccentKey != appAccentKey
+            ) { Text("App \u2192 player") }
+            OutlinedButton(
+                onClick = {
+                    scope.launch { runCatching { app.store.setAppAccent(playerAccentKey) } }
+                },
+                enabled = playerAccentKey != appAccentKey
+            ) { Text("Player \u2192 app") }
+        }
     }
 }

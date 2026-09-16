@@ -167,14 +167,22 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  and shows the busy indicator while it runs. Only the most recent task
      *  may clear the busy flag when it finishes — an older task that is
      *  superseded must not turn the spinner off while a newer one still runs. */
-    private fun startBackground(block: suspend () -> Unit): Job = viewModelScope.launch {
-        val gen = ++backgroundGeneration
-        _busy.value = true
-        try {
-            block()
-        } finally {
-            if (backgroundGeneration == gen) _busy.value = false
+    private fun startBackground(block: suspend () -> Unit): Job {
+        // Extension installs/updates are long downloads+dex loads; register
+        // them so a background trip doesn't freeze the process mid-install
+        // (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin("Updating extensions")
+        val job = viewModelScope.launch {
+            val gen = ++backgroundGeneration
+            _busy.value = true
+            try {
+                block()
+            } finally {
+                if (backgroundGeneration == gen) _busy.value = false
+            }
         }
+        job.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        return job
     }
 
     fun setSuccess(msg: String) {
@@ -981,7 +989,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 _busyMsg.value = "Installing ${p.name} (${i + 1}/${pending.size})…"
                 val r = runCatching {
                     withTimeoutOrNull(90_000) {
-                        when (kind) {
+                        when (effectiveRepoKind(kind, p.url)) {
                             RepoKind.CS3 -> installCs3Plugin(p)
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
@@ -1022,6 +1030,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+}
+
+/** A repo's [RepoKind] is only a default: a Hikari repo can also list native
+ *  CloudStream `.cs3` plugins (and a CloudStream repo can list `.hiki` ones), so
+ *  the file's own extension decides how it is installed. Installing a `.cs3`
+ *  through the `.hiki` path fails with "manifest.json has no mainClass", because
+ *  a CloudStream plugin's manifest has no `mainClass` entry. */
+private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
+    url.endsWith(".cs3", ignoreCase = true) -> RepoKind.CS3
+    url.endsWith(".hiki", ignoreCase = true) -> RepoKind.HIKARI
+    else -> default
 }
 
 @Composable
@@ -1089,7 +1108,7 @@ fun ExtensionsScreen() {
             "Installing ${p.name}…",
             success = { n -> "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})" },
         ) {
-            when (kind) {
+            when (effectiveRepoKind(kind, p.url)) {
                 RepoKind.CS3 -> vm.installCs3Plugin(p)
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
@@ -1099,7 +1118,7 @@ fun ExtensionsScreen() {
 
     fun uninstallPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runUninstall("Uninstalling ${p.name}…", "Uninstalled ${p.name}") {
-            when (kind) {
+            when (effectiveRepoKind(kind, p.url)) {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
                 RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)

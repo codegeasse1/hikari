@@ -14,9 +14,11 @@ import androidx.compose.runtime.setValue
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hikari.app.net.Updater
+import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.components.TelegramDialog
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.AppRoot
+import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariTheme
 import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.launch
@@ -48,6 +50,20 @@ class MainActivity : AppCompatActivity() {
         )
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // API 33+: the download and background-work notifications are how the
+        // user sees (and controls) work that keeps running while Hikari is in
+        // the background, so ask for the permission up front instead of only
+        // when the first download starts.
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                9911,
+            )
+        }
         // CloudStream plugin settings screens are often
         // BottomSheetDialogFragments whose layout wraps a plain
         // android.widget.ScrollView. Unlike NestedScrollView that is NOT a
@@ -83,6 +99,27 @@ class MainActivity : AppCompatActivity() {
             val themeFlow = remember { store.themeFlow() }
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
+
+            // Accent colours (Settings → Appearance). The app accent repaints
+            // the whole Compose UI; the player accent is for the View-based
+            // player, which reads it synchronously via AccentStore.
+            val appAccentFlow = remember { store.appAccentFlow() }
+            val playerAccentFlow = remember { store.playerAccentFlow() }
+            val themeLinkedFlow = remember { store.themeLinkedFlow() }
+            val appAccentKey by appAccentFlow.collectAsState(initial = HikariAccent.DEFAULT_APP.key)
+            val playerAccentKey by playerAccentFlow.collectAsState(
+                initial = HikariAccent.DEFAULT_PLAYER.key
+            )
+            val themeLinked by themeLinkedFlow.collectAsState(initial = false)
+            val appAccent = HikariAccent.fromKey(appAccentKey)
+
+            // Keep the synchronous mirror of the accent preferences current, so
+            // the player (and the next cold start) picks them up immediately.
+            LaunchedEffect(appAccentKey, playerAccentKey, themeLinked) {
+                AccentStore.sync(
+                    this@MainActivity, appAccentKey, playerAccentKey, themeLinked
+                )
+            }
 
             // In-app UI scale (Settings → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
@@ -129,7 +166,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            HikariTheme(themeMode, uiScaleEnabled, uiScale) {
+            HikariTheme(
+                mode = themeMode,
+                accent = appAccent,
+                uiScaleEnabled = uiScaleEnabled,
+                uiScale = uiScale,
+            ) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
                     UpdateDialog(

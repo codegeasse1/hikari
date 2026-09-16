@@ -91,6 +91,7 @@ import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.StreamCache
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.TitleDetails
 import com.hikari.app.data.TitleExtras
@@ -120,7 +121,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
@@ -153,6 +153,89 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** The provider id this page ended up using. Normally the one it was opened
+     *  with; when that provider no longer exists, the one [remapMissingProvider]
+     *  found for the same title — so Play/History carry a LIVE id. */
+    private val _activeProviderId = MutableStateFlow("")
+    val activeProviderId: StateFlow<String> = _activeProviderId.asStateFlow()
+
+    /**
+     * Finds an installed provider that carries [title], for a page whose origin
+     * provider id no longer exists. Local History is checked first (instant, no
+     * network), then the installed providers of the same engine (a renamed
+     * plugin usually re-registers the same sources), then the rest — bounded to
+     * a handful of searches so this can never become a long stall. Returns null
+     * when nothing matches, which keeps the old "Provider not found" state.
+     */
+    private suspend fun remapMissingProvider(missingId: String, title: String): String? {
+        if (title.isBlank()) return null
+        return withContext(Dispatchers.IO) {
+            // 1) Watch history / library: the same title may still be recorded
+            //    against a provider that exists (the user opened it there once).
+            runCatching {
+                val wanted = title.lowercase().trim()
+                HikariApp.instance.store.historyFlow().first()
+                    .firstOrNull {
+                        it.title.lowercase().trim() == wanted &&
+                            manager.byId(it.providerId) != null
+                    }?.providerId
+            }.getOrNull()?.let { return@withContext it }
+
+            // 2) The installed providers, same engine first.
+            val engine = missingId.substringBefore('|')
+            val candidates = manager.providers.value
+                .filter { it.config.enabled }
+                .sortedBy { if (it.config.id.substringBefore('|') == engine) 0 else 1 }
+                .take(6)
+            var best: Pair<String, Int>? = null
+            for (p in candidates) {
+                val hits = runCatching {
+                    withTimeoutOrNull(5_000) { p.search(title, 1) }.orEmpty()
+                }.getOrDefault(emptyList())
+                for (hit in hits) {
+                    val score = titleScoreFor(title, hit.title)
+                    if (score >= 55 && (best == null || score > best!!.second)) {
+                        best = p.config.id to score
+                    }
+                }
+                if ((best?.second ?: 0) >= 100) break
+            }
+            val found = best?.first
+            if (found != null) {
+                com.hikari.app.data.Logs.log(
+                    "Detail",
+                    "provider $missingId no longer exists — remapped \"$title\" to $found",
+                )
+            } else {
+                com.hikari.app.data.Logs.log(
+                    "Detail",
+                    "provider $missingId no longer exists and \"$title\" was not found elsewhere",
+                )
+            }
+            found
+        }
+    }
+
+    /** Loose title comparison for [remapMissingProvider] — keeps letters of any
+     *  script (a CJK title must not normalise to nothing). */
+    private fun titleScoreFor(wanted: String, candidate: String): Int {
+        fun norm(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        val a = norm(wanted)
+        val b = norm(candidate)
+        if (a.isEmpty() || b.isEmpty()) return 0
+        return when {
+            a == b -> 100
+            b.startsWith(a) || a.startsWith(b) -> 70
+            b.contains(a) || a.contains(b) -> 55
+            else -> {
+                val ta = a.split(' ').filter { it.length > 2 }.toSet()
+                val tb = b.split(' ').filter { it.length > 2 }.toSet()
+                if (ta.isEmpty() || tb.isEmpty()) 0
+                else (ta.intersect(tb).size * 100) / maxOf(ta.size, tb.size)
+            }
+        }
+    }
+
     /** TMDB \"Recommendations\" shelf for the current title — what people
      *  watched next. Empty until the (background) lookup lands. */
     private val _related = MutableStateFlow<List<MediaItem>>(emptyList())
@@ -171,16 +254,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Streams resolved ahead of time (first episode / movie) so tapping Play
      *  or the first episode starts instantly instead of waiting 20-30s for
-     *  extraction. Keyed by the target id. The list is TIMESTAMPED because the
-     *  links providers hand out expire — 4KHDHub/hubcloud's direct links are
-     *  signed workers.dev URLs whose `<token>::<sig>` part rotates per mirror.
-     *  Reusing a list extracted minutes ago (or during a previous play) handed
-     *  the player dead links, so every server 403'd and the app reported
-     *  "Playback failed" / "No playable sources found" for a title that plays
-     *  fine — the classic "it worked the first time, now it errors" report. */
-    private data class CachedStreams(val at: Long, val list: List<StreamSource>)
-
-    private val streamCache = ConcurrentHashMap<String, CachedStreams>()
+     *  extraction. Keyed by the target id.
+     *
+     *  The storage is [StreamCache] — a PROCESS-WIDE object, not a field here.
+     *  This screen is thrown away and recreated every time the user leaves it
+     *  (back out of the player, reopen the same title), and a cache that died
+     *  with it meant every return re-ran the whole extraction: the "tap Play,
+     *  watch Finding the best server… for a minute" report. The list is
+     *  TIMESTAMPED because the links providers hand out expire —
+     *  4KHDHub/hubcloud's direct links are signed workers.dev URLs whose
+     *  `<token>::<sig>` part rotates per mirror. Reusing a list extracted
+     *  minutes ago (or during a previous play) handed the player dead links, so
+     *  every server 403'd and the app reported "Playback failed" / "No playable
+     *  sources found" for a title that plays fine — the classic "it worked the
+     *  first time, now it errors" report. */
 
     private val _streamsReady = MutableStateFlow(false)
     val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
@@ -220,7 +307,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // hstream title) used to leak into every other extension's "no
             // sources" message and made the whole app look broken.
             val origin = manager.byId(item.providerId)
-            _streamError.value = when (origin?.config?.type) {
+            val originMessage = when (origin?.config?.type) {
                 ProviderType.STREMIO ->
                     com.hikari.app.providers.StremioAddon.streamErrors[item.providerId]
                 ProviderType.CS3 ->
@@ -233,13 +320,21 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.nuvio.NuvioScraper.streamErrors[item.providerId]
                 else -> null
             }
+            // A Cloudflare block is the one failure the user can actually fix, so
+            // it is never hidden behind a provider's generic "no links" note.
+            _streamError.value = originMessage?.takeIf { it.isNotBlank() }
+                ?: ContentRepository.crossNote
         } else {
             _streamError.value = null
         }
     }
 
     fun load(providerId: String, type: MediaType, mediaId: String, title: String, posterUrl: String?, rawType: String) {
-        viewModelScope.launch {
+        // Keeps the page's meta/episode/source work alive if the user leaves the
+        // app (see [com.hikari.app.work.BackgroundWork]) — the process would
+        // otherwise be frozen mid-fetch.
+        val work = com.hikari.app.work.BackgroundWork.begin("Opening \"${title.take(60)}\"")
+        val loadJob = viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _streamsReady.value = false
@@ -249,8 +344,27 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _related.value = emptyList()
             _similar.value = emptyList()
             _extras.value = null
-            if (manager.byId(providerId) == null) {
-                _error.value = "Provider not found"
+            // The provider this page was opened from may no longer exist: an
+            // extension can be renamed or removed, and a CloudStream plugin
+            // re-registering its providers REINDEXES them (its stored ids are
+            // `cs3|<file name>|<index>`), which invalidates ids saved in
+            // History, Library and share links. Dead-ending the page on
+            // "Provider not found" punished the user for that, so find the same
+            // title in the installed providers and carry on from there.
+            val activeProvider = if (manager.byId(providerId) != null) {
+                providerId
+            } else {
+                remapMissingProvider(providerId, title) ?: providerId
+            }
+            _activeProviderId.value = activeProvider
+            if (manager.byId(activeProvider) == null) {
+                // Only reached when the remap above could not find the title in
+                // any installed provider either — i.e. the extension really is
+                // gone. Say what to do about it instead of a bare "not found".
+                _error.value =
+                    "The extension this title came from is no longer installed. " +
+                        "Install it again from Sources & Extensions, or open the " +
+                        "title from Search."
                 _loading.value = false
                 _episodesLoaded.value = true
                 return@launch
@@ -260,7 +374,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // be slow or minimal). rawType keeps the addon's own type string
             // for meta/episode/stream URLs.
             val base = MediaItem(
-                providerId, mediaId, title, type,
+                activeProvider, mediaId, title, type,
                 posterUrl = posterUrl,
                 rawType = rawType,
             )
@@ -299,6 +413,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             launch { loadShelves(item) }
             prefetchFirstStreams(item)
         }
+        loadJob.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
     private suspend fun loadShelves(item: MediaItem) {
@@ -316,13 +431,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Streams currently being resolved, keyed the same as [streamCache]. A
-     *  Play tap while the page is still prefetching joins the SAME extraction
-     *  instead of launching a second one — two concurrent loadLinks runs on the
-     *  same CS3 plugin instance can corrupt its state and make it return "no
-     *  sources" for a movie that plays fine on its own. */
-    private val inflight = ConcurrentHashMap<String, CompletableDeferred<List<StreamSource>>>()
-
+    /**
+     * Extracts streams for one item, sharing the work with every other caller
+     * through [StreamCache]: a Play tap made while the page is still prefetching
+     * joins the SAME extraction instead of launching a second one — two
+     * concurrent loadLinks runs on the same CS3 plugin instance can corrupt its
+     * state and make it return "no sources" for a movie that plays fine on its
+     * own (and the same applies across a re-created screen).
+     */
     private suspend fun resolveStreams(
         item: MediaItem,
         ep: Episode?,
@@ -332,24 +448,45 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         force: Boolean = false,
     ): List<StreamSource> {
         val key = cacheKey(item, ep)
-        val cached = streamCache[key]
+        val cached = StreamCache.get(key)
         if (cached != null) {
-            _liveStreams.value = cached.list
             // Fresh enough to trust: serve it with no network at all (this is
             // what makes a Play tap instant right after the detail page opened).
+            // A fresh list is safe to mirror onto the live feed, because those
+            // signed links still work.
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
-            if (!force && (cached.list.isEmpty() || fresh)) return cached.list
-            // Stale (or forced): the signed links in there are very likely
-            // dead, but keeping them on the live feed costs nothing — an
-            // already-open player can still try them while the fresh extraction
-            // below runs, and the new servers get appended as they arrive.
+            if (!force && (cached.list.isEmpty() || fresh)) {
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "cache hit \"${item.title}\" (${if (fresh) "fresh" else "empty"}) " +
+                        "→ ${cached.list.size} servers",
+                )
+                _liveStreams.value = cached.list
+                return cached.list
+            }
+            // Stale or forced: the signed links in there are very likely dead.
+            // They are deliberately NOT put on the live feed — whatever lands
+            // on the feed first is what an instant-play tap starts on, so
+            // seeding the feed with expired links is exactly the "server
+            // failed, trying next … every server failed, tap Play again and it
+            // works" bug. The fresh extraction below streams the new servers to
+            // the feed instead, and the player's title card covers the wait.
+            // Callers that track their own "ready" state are still told what we
+            // are holding, so the Play button never stalls on a stale entry.
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "cache stale/forced \"${item.title}\" — re-extracting",
+            )
             if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
         }
-        val existing = inflight[key]
-        if (existing != null) return existing.await()
+        // Someone (another instance of this screen for the same title, or a
+        // prefetch that is still running) already owns this extraction: join it
+        // instead of running the providers a second time.
+        StreamCache.joined(key)?.let { return it.await() }
         val deferred = CompletableDeferred<List<StreamSource>>()
-        val prev = inflight.putIfAbsent(key, deferred)
-        if (prev != null) return prev.await()
+        if (!StreamCache.claim(key, deferred)) {
+            return StreamCache.joined(key)?.await() ?: emptyList()
+        }
         try {
             // Every provider response is mirrored into the live feed so the UI
             // can start playback with the first server found, regardless of
@@ -369,7 +506,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 deferred.complete(cached.list)
                 return cached.list
             }
-            streamCache[key] = CachedStreams(System.currentTimeMillis(), result)
+            StreamCache.put(key, result)
             _liveStreams.value = result
             recordOutcome(result, item)
             deferred.complete(result)
@@ -378,7 +515,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             deferred.complete(emptyList())
             throw e
         } finally {
-            inflight.remove(key)
+            StreamCache.release(key)
         }
     }
 
@@ -394,7 +531,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
         val (item, ep) = target
         val key = cacheKey(item, ep)
-        val cached = streamCache[key]
+        val cached = StreamCache.get(key)
         // Reuse a NON-EMPTY, still-fresh cache; anything else (empty result from
         // a minute ago, or a stale list whose signed links have since expired)
         // falls through to a real extraction so the tap that follows has live
@@ -424,7 +561,16 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         force: Boolean = false,
     ): List<StreamSource> {
         val m = _meta.value ?: return emptyList()
-        return resolveStreams(m, episode, onProgress, force)
+        // The provider scan can run for a minute; keep it alive across a
+        // background trip (see [com.hikari.app.work.BackgroundWork]).
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Finding servers for \"${m.title.take(60)}\""
+        )
+        try {
+            return resolveStreams(m, episode, onProgress, force)
+        } finally {
+            com.hikari.app.work.BackgroundWork.end(work)
+        }
     }
 
     /** New play session (a fresh tap of Play / a new episode): clear the live
@@ -499,6 +645,12 @@ fun DetailScreen(
     val similar by vm.similar.collectAsState()
     val extras by vm.extras.collectAsState()
     val m = meta
+    // When the origin provider no longer exists, the ViewModel remaps this page
+    // onto a live provider (see remapMissingProvider). Everything that RECORDS
+    // or LOOKS UP state by provider must use that live id — the id this page was
+    // opened with is precisely the dead one.
+    val activeProviderId by vm.activeProviderId.collectAsState()
+    val livePid = activeProviderId.ifBlank { providerId }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -534,12 +686,12 @@ fun DetailScreen(
     // and the match is opened — still without the Search tab.
     var shelfOpening by remember { mutableStateOf<String?>(null) }
     fun openShelfItem(item: MediaItem) {
-        val origin = providers.firstOrNull { it.config.id == providerId }
+        val origin = providers.firstOrNull { it.config.id == livePid }
         if (origin == null || origin.config.type == ProviderType.NUVIO) {
             Routes.safeNavigate(
                 nav,
                 Routes.detail(
-                    providerId, item.type, item.id, item.title, item.posterUrl,
+                    livePid, item.type, item.id, item.title, item.posterUrl,
                     rawType = item.rawType.ifBlank { "tmdb" },
                 ),
             )
@@ -561,7 +713,7 @@ fun DetailScreen(
                     Routes.detail(hit.providerId, hit.type, hit.id, hit.title, hit.posterUrl, hit.rawType),
                 )
             } else {
-                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, item.title))
+                Routes.safeNavigate(nav, Routes.searchInProvider(livePid, item.title))
             }
         }
     }
@@ -680,7 +832,11 @@ fun DetailScreen(
                 // provider; the player appends them to its "Select server" list.
                 putExtra("streamsLiveId", liveId)
                 putExtra("histTitle", m?.title ?: title)
-                putExtra("histProviderId", providerId)
+                // The provider that the page actually resolved to — NOT the id
+                // the page was opened with, which may be a stale one that no
+                // longer exists (see DetailViewModel.load's remap). Without
+                // this, History would re-record a dead id every play.
+                putExtra("histProviderId", m?.providerId ?: providerId)
                 putExtra("histMediaId", mediaId)
                 putExtra("histType", (m?.type ?: type).name)
                 putExtra("histPoster", PosterLoader.tokenize((m?.posterUrl ?: posterUrl).orEmpty()).orEmpty())
@@ -800,7 +956,7 @@ fun DetailScreen(
             // exists we hold playback until that exact server shows up (up to
             // [PREFERRED_GRACE_MS]) instead of jumping onto whichever provider
             // answers first.
-            val historyKey = "${providerId}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
+            val historyKey = "${livePid}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
             val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
             val prefUrl = last?.url.orEmpty()
             val prefName = last?.name.orEmpty()
@@ -952,9 +1108,9 @@ fun DetailScreen(
     // What the heart saves into the Library — built from the (type-corrected)
     // meta when it has arrived, and from the nav args before that, so the
     // button works even while the origin's /meta is still in flight.
-    val savedItem = remember(m, providerId, mediaId, title, posterUrl, rawType, type) {
+    val savedItem = remember(m, livePid, mediaId, title, posterUrl, rawType, type) {
         MediaItem(
-            providerId = providerId,
+            providerId = livePid,
             id = mediaId,
             title = m?.title ?: title,
             type = m?.type ?: type,
@@ -1070,7 +1226,7 @@ fun DetailScreen(
                                                     tagOpen = false
                                                     Routes.safeNavigate(
                                                         nav,
-                                                        Routes.searchInProvider(providerId, g)
+                                                        Routes.searchInProvider(livePid, g)
                                                     )
                                                 }
                                             )
@@ -1327,7 +1483,7 @@ fun DetailScreen(
                             shelf = related,
                             onClick = { openShelfItem(it) },
                             onSearchHere = {
-                                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, it.title))
+                                Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
                             onGlobalSearch = {
                                 Routes.safeNavigate(nav, Routes.searchQuery(it.title))
@@ -1342,7 +1498,7 @@ fun DetailScreen(
                             shelf = similar,
                             onClick = { openShelfItem(it) },
                             onSearchHere = {
-                                Routes.safeNavigate(nav, Routes.searchInProvider(providerId, it.title))
+                                Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
                             onGlobalSearch = {
                                 Routes.safeNavigate(nav, Routes.searchQuery(it.title))
@@ -1715,6 +1871,12 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
                     .put("isMpd", s.isMpd)
                     .put("isTorrent", s.isTorrent)
                     .put("provider", s.provider)
+                    // Which PROVIDER (repo plugin) produced this server, as
+                    // opposed to which engine: the player gives the provider the
+                    // user opened this title from its own section at the top of
+                    // "Select server", and starts playback on its server.
+                    .put("providerId", s.providerId)
+                    .put("providerName", s.providerName)
                     .put("infoHash", s.infoHash ?: "")
                     .put("fileIdx", s.fileIdx ?: -1)
                     .put(

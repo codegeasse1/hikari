@@ -205,6 +205,13 @@ data class StreamSource(
      *  servers sit under their own heading; blank when the origin is unknown
      *  (the chooser then falls back to an "Other" section). */
     val provider: String = "",
+    /** The installed provider's own id (`cs3|…`, `hiki|…`, `nuvio|…`) — what
+     *  the player uses to put the provider a title was opened from at the FRONT
+     *  of the server list (its own servers are the ones the user expects). */
+    val providerId: String = "",
+    /** The installed provider's display name. The player's server chooser uses
+     *  it for the heading of that provider's own section. */
+    val providerName: String = "",
 )
 
 data class CatalogRef(

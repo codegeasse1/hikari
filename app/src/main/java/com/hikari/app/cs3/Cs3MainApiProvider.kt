@@ -422,7 +422,21 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            val a = api ?: return@withContext emptyList()
+            val a = api
+            if (a == null) {
+                // Say WHY this extension cannot be searched instead of returning
+                // a bare empty list: the cross-extension pass reported that as
+                // "no matching title in this repo", so a plugin that failed to
+                // load and a repo that genuinely does not carry the show looked
+                // identical — and the repo the user KNEW had the title stayed
+                // missing with no way to tell why.
+                streamErrors[config.id] = apiFailureReason()
+                com.hikari.app.data.Logs.log(
+                    "Provider",
+                    "${config.name}: search skipped — ${apiFailureReason()}",
+                )
+                return@withContext emptyList()
+            }
             val found = try {
                 searchItems(a, query, page)
             } catch (e: Throwable) {
@@ -433,6 +447,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     searchItems(a, query, page)
                 } catch (e2: Throwable) {
                     if (e2 is CancellationException) throw e2
+                    val why = fullCause(e2)
+                    // An extractor-only plugin (most "(Phisher)" entries) has no
+                    // search at all — it exists to turn a page URL into links.
+                    // Reporting that as a search FAILURE made the cross-pass
+                    // summary look like a wall of broken repos, so name it.
+                    val noSearch = why.contains("NotImplementedError") ||
+                        why.contains("UnsupportedOperationException") ||
+                        why.contains("not implemented", ignoreCase = true)
+                    streamErrors[config.id] = if (noSearch) {
+                        "This extension is extractor-only (no search) — it cannot be asked by title."
+                    } else {
+                        "Search failed: $why"
+                    }
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        "${config.name}: " + (if (noSearch) "has no search (extractor-only)" else "search failed — $why"),
+                    )
                     emptyList()
                 }
             }
@@ -1066,7 +1097,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         ).also { recordPosterHeaders(posterUrl, posterHeaders) }
     }
 
-    private fun com.lagradost.cloudstream3.Episode.toHikari(respHeaders: Map<String, String>?): Episode {
+    private fun com.lagradost.cloudstream3.Episode.toHikari(
+        respHeaders: Map<String, String>?,
+    ): Episode {
         val num = episode ?: data?.substringAfterLast("|")?.toIntOrNull() ?: 1
         return Episode(
             number = num,

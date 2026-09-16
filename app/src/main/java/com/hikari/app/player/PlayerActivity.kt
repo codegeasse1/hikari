@@ -14,6 +14,7 @@ import android.content.res.Configuration
 import android.graphics.Point
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
@@ -45,6 +46,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -75,6 +77,7 @@ import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
@@ -98,8 +101,10 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
+import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.UiScale
+import com.hikari.app.ui.theme.HikariAccent
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -141,6 +146,12 @@ class PlayerActivity : ComponentActivity() {
         /** Which engine found this server ("CloudStream", "Hikari", "Nuvio",
          *  "Stremio") — the section it is listed under in the server chooser. */
         val provider: String = "",
+        /** The installed provider that produced this server (`cs3|…`, `nuvio|…`).
+         *  Lets the chooser give the provider the user opened the title from its
+         *  own section, ahead of the engine sections. */
+        val providerId: String = "",
+        /** That provider's display name (the repo plugin's name). */
+        val providerName: String = "",
     )
 
     private var player: ExoPlayer? = null
@@ -148,6 +159,29 @@ class PlayerActivity : ComponentActivity() {
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
+
+    /** True once [playSource] has actually chosen a server this session. Until
+     *  then nothing may be drawn as "already selected": `currentIndex` starts
+     *  at its 0 default, so a plain `index == currentIndex` check painted the
+     *  FIRST row of the chooser as the current one — and the row's tap handler
+     *  then treated a tap on that row as a no-op, closing the chooser without
+     *  playing anything. */
+    private var playbackCommitted = false
+
+    /** True while the startMode chooser is up waiting for the user's pick, so
+     *  that backing out of it falls back to the remembered server. A dismiss
+     *  caused by the user's own tap must NOT also trigger that fallback. */
+    private var startChoicePending = false
+
+    /** The startMode chooser is presented at most once per Activity. The live
+     *  search keeps appending servers, and a late [startOrAsk] used to re-open
+     *  the chooser the user had already answered (or backed out of), which is
+     *  the "server list comes back by itself" bug. */
+    private var startChooserShown = false
+
+    /** Set when the user rotates with the button, so the once-per-source
+     *  auto-rotate never overrides their choice. */
+    private var userRotated = false
 
     /** Mirrors the Settings "Don't play directly" toggle: when on, a freshly
      *  found server list is never auto-played — the grouped chooser opens
@@ -170,6 +204,12 @@ class PlayerActivity : ComponentActivity() {
      *  instead of showing a frozen snapshot. */
     private val sourcesWatchers = ArrayList<() -> Unit>()
 
+    /** The live "Select server" sheet while it is up — the "don't play
+     *  directly" chooser can be opened before the first server has landed, so
+     *  the search-finished-with-nothing path needs a handle on it to close it
+     *  before showing the "no servers" error over it. */
+    private var serverChooserDialog: Dialog? = null
+
     private fun notifySourcesChanged() {
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
@@ -183,6 +223,14 @@ class PlayerActivity : ComponentActivity() {
      *  attached detail screen to re-run the providers with fresh, freshly-
      *  signed links (see [refreshSources]) instead of replaying a dead one. */
     private var liveSessionId: String? = null
+
+    /** The provider the user opened this title FROM (the detail screen passes
+     *  it as `histProviderId`) and its display name. Its own servers are listed
+     *  in their own section ahead of the engine sections and are the ones
+     *  playback starts on — "if I am on MovieBox, play MovieBox's server
+     *  first". Both blank when the player was opened without that context. */
+    private var originProviderId: String = ""
+    private var originProviderName: String = ""
 
     /** Every URL this player has already tried this session. A re-extraction
      *  usually returns the same links (same mirror) plus a few new ones, so
@@ -237,6 +285,8 @@ class PlayerActivity : ComponentActivity() {
         trackers,
         drm = drm,
         provider = provider,
+        providerId = providerId,
+        providerName = providerName,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -255,6 +305,8 @@ class PlayerActivity : ComponentActivity() {
         trackers,
         drm = drm,
         provider = provider,
+        providerId = providerId,
+        providerName = providerName,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -534,6 +586,13 @@ class PlayerActivity : ComponentActivity() {
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
             override fun onVisibilityChanged(visibility: Int) {
                 controllerVisible = visibility == View.VISIBLE
+                // The pill row is a HorizontalScrollView. A focused pill (the
+                // media3 control view asks for focus, and a scroll view reveals
+                // a focused descendant) could pull the row to one end and leave
+                // it parked there for the rest of the session — the first pill
+                // sat half cut off in portrait. Every fresh appearance of the
+                // controls starts the row at its left edge again.
+                if (controllerVisible) resetPillScroll()
             }
         })
         speedChip = findViewById(R.id.speed_btn)
@@ -724,6 +783,43 @@ class PlayerActivity : ComponentActivity() {
         unlockBtn?.background = ContextCompat.getDrawable(this, R.drawable.ic_unlock)
         unlockBtn?.setPadding(0, 0, 0, 0)
 
+        // ---- Player accent, control layout, video enhance ------------------
+        // The accent comes from the AccentStore mirror (Settings → Appearance →
+        // Player color, or the app accent while the two are linked). It is read
+        // SYNCHRONOUSLY so the very first frame is already the right colour —
+        // no flash of the default violet. Everything else in the player that is
+        // accent-coloured derives from it already; applyAccentPalette covers the
+        // pieces that were baked into XML drawables.
+        runCatching { setAccent(AccentStore.player(this)) }
+        applyAccentPalette()
+
+        // The Enhance pill: realtime colour grading of the video itself.
+        findViewById<TextView>(R.id.enhance_btn)?.setOnClickListener { showEnhanceMenu() }
+
+        // Both remaining preferences are read asynchronously and applied as soon
+        // as they land. Until then the player keeps the layout it shipped with
+        // and applies no enhancement, so nothing here can delay first playback.
+        lifecycleScope.launch {
+            controlLayout = PlayerControlsConfig.decode(
+                runCatching { (applicationContext as HikariApp).store.playerControls() }
+                    .getOrNull()
+            )
+            applyControlLayout()
+        }
+        lifecycleScope.launch {
+            enhancePresetKey = EnhancePreset.fromKey(
+                runCatching { (applicationContext as HikariApp).store.enhancePreset() }
+                    .getOrNull()
+            ).key
+            // A device that once refused the effects pipeline is remembered, so
+            // the player never arms it again (arming on such a device failed
+            // every play, not just the one where a preset was picked).
+            enhanceUnsupported = runCatching {
+                (applicationContext as HikariApp).store.enhanceUnsupported()
+            }.getOrDefault(false)
+            applyVideoEnhance(force = true)
+        }
+
         // Picture-in-picture: explicit pip button (top bar) plus YouTube-style
         // auto-enter when the user leaves the player with video playing (12+).
         // minSdk is 24, so the whole feature is gated on SDK >= 26 (API 26
@@ -842,6 +938,10 @@ class PlayerActivity : ComponentActivity() {
         // Watch-history context (set by the detail screen). When present, the
         // player periodically persists resume position into the app store.
         val histProvider = intent.getStringExtra("histProviderId")
+        originProviderId = histProvider.orEmpty()
+        originProviderName = runCatching {
+            (applicationContext as HikariApp).providers.byId(originProviderId)?.config?.name
+        }.getOrNull().orEmpty()
         if (!histProvider.isNullOrBlank()) {
             historyEntry = HistoryEntry(
                 providerId = histProvider,
@@ -937,6 +1037,8 @@ class PlayerActivity : ComponentActivity() {
                     drm = parseDrmSpec(o.optJSONObject("drm")),
                     local = o.optBoolean("local"),
                     provider = o.optString("provider"),
+                    providerId = o.optString("providerId"),
+                    providerName = o.optString("providerName"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -945,9 +1047,22 @@ class PlayerActivity : ComponentActivity() {
             // so keying on url alone would collapse every torrent source into a
             // single row.
             .distinctBy { it.infoHash ?: it.url }
+            // The provider the user opened this title from goes to the FRONT, so
+            // the server playback starts on (and the top of "Select server") is
+            // one it actually came from — "on MovieBox, play MovieBox". Stable
+            // sort, so every other engine keeps the order the repo sent.
+            .sortedBy { if (it.isFromOrigin()) 0 else 1 }
 
         val liveId = intent.getStringExtra("streamsLiveId")
         liveSessionId = liveId
+        // One line per playback in the on-device log: which title, from which
+        // provider, with how many servers — the starting point of every "why
+        // didn't it play / why was this server missing" report.
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "open \"${intent.getStringExtra("title")}\" origin=" +
+                "$originProviderName ($originProviderId) sources=${sources.size} live=${!liveId.isNullOrBlank()}",
+        )
         // The detail screen now opens the player the instant Play is tapped,
         // BEFORE any server is found, and streams servers to us over
         // [StreamsLive]. An empty list plus a live session id therefore means
@@ -978,14 +1093,23 @@ class PlayerActivity : ComponentActivity() {
                 // installed extension has answered, instead of waiting forever
                 // for a 3rd..5th one that does not exist.
                 val startAfter = intent.getIntExtra("startAfterServers", 1).coerceIn(1, 8)
+                // "Don't play directly": the chooser is the destination, so ONE
+                // server is already enough to put the list on screen — the
+                // "wait for N servers" setting must not hold the chooser back.
+                val askMode = shouldAskServer()
                 var searchDone = false
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
-                    if (sources.isEmpty()) showError("No playable sources received.", false)
+                    if (sources.isEmpty()) {
+                        // Give up on the search: close a still-empty chooser
+                        // first so the error isn't buried behind it.
+                        runCatching { serverChooserDialog?.dismiss() }
+                        showError("No playable sources received.", false)
+                    }
                 } else null
                 val tryStart: suspend () -> Unit = {
                     if (pendingStart && sources.isNotEmpty() &&
-                        (searchDone || sources.size >= startAfter)
+                        (searchDone || askMode || sources.size >= startAfter)
                     ) {
                         pendingStart = false
                         waitTimeout?.cancel()
@@ -1010,6 +1134,11 @@ class PlayerActivity : ComponentActivity() {
                         // Append happens before markDone, so a non-empty live
                         // flow means servers are on the way.
                         if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                            // The "don't play directly" chooser may already be
+                            // up with nothing in it (it opens the instant the
+                            // player does). Close it before showing the error,
+                            // so the message isn't buried behind an empty sheet.
+                            runCatching { serverChooserDialog?.dismiss() }
                             showError("No playable sources received.", false)
                         } else {
                             tryStart()
@@ -1064,7 +1193,13 @@ class PlayerActivity : ComponentActivity() {
         // known-good, already-resolved source. On the instant open (no servers
         // yet) the live collector above starts playback the moment the first
         // server arrives.
-        if (sources.isNotEmpty()) startOrAsk()
+        //
+        // With "don't play directly" ON, [startOrAsk] opens the server chooser
+        // instead — and it is called here for the instant open too (empty list
+        // + a live session), so the chooser comes up the moment the player does
+        // and fills in as servers are found, rather than after the first (or
+        // fifth) one finally lands.
+        if (sources.isNotEmpty() || liveId != null) startOrAsk()
     }
 
     /** Index of the server the user last played this video with — matched by
@@ -1097,9 +1232,15 @@ class PlayerActivity : ComponentActivity() {
      *  opens the grouped server chooser and waits for the user's pick. */
     private fun startOrAsk() {
         lifecycleScope.launch {
-            if (sources.isNotEmpty() && shouldAskServer()) {
+            if (shouldAskServer()) {
+                // The chooser is the destination, so open it even while the
+                // list is still empty: the player is already on screen (its own
+                // title card sits behind the sheet), and opening now means the
+                // user never waits for a slow provider before they can see —
+                // and start adding to — the server list. Every server that lands
+                // afterwards is appended live (see [sourcesWatchers]).
                 showServerChooser(startMode = true)
-            } else {
+            } else if (sources.isNotEmpty()) {
                 playSource(preferredStartIndex())
             }
         }
@@ -1196,6 +1337,9 @@ class PlayerActivity : ComponentActivity() {
             SCREEN_ORIENTATION_UNSPECIFIED, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             else -> SCREEN_ORIENTATION_PORTRAIT
         }
+        // The user has taken over: the once-per-source auto-rotate must not
+        // spin the screen back to the video's own orientation afterwards.
+        userRotated = true
         requestedOrientation = next
         Toast.makeText(
             this,
@@ -1250,7 +1394,7 @@ class PlayerActivity : ComponentActivity() {
     /** White = off, the player accent = on. Used by the mute-style state icons
      *  (resize, favourite) so a toggled control is readable at a glance. */
     private fun tintOf(on: Boolean) = ColorStateList.valueOf(
-        if (on) android.graphics.Color.parseColor("#7B5CFF") else android.graphics.Color.WHITE
+        if (on) accentMidColor else android.graphics.Color.WHITE
     )
 
     /** Top-bar heart: add/remove this title from the app's Library. */
@@ -1415,10 +1559,35 @@ class PlayerActivity : ComponentActivity() {
         else -> "${height}p"
     }
 
-    /** The player palette (mirrors colors.xml) driving the redesigned menus. */
-    private val accentStartColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_start) }
-    private val accentEndColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_end) }
-    private val accentMidColor: Int by lazy { ContextCompat.getColor(this, R.color.hikari_accent_mid) }
+    /** The accent the player is drawn with: Settings → Appearance → Player
+     *  color, or the app accent while "Match app & player theme" is on. Read
+     *  synchronously from the [AccentStore] mirror at the top of onCreate,
+     *  BEFORE anything is coloured, so the first frame is already right
+     *  (no flash of the default violet). */
+    private var accent = HikariAccent.DEFAULT_PLAYER
+
+    /** Cached ARGB ints for [accent]. These are read from layout/draw paths, so
+     *  they must be plain fields rather than re-derived on every access. Their
+     *  names are the ones the whole player already colours itself from
+     *  (spinners, the loading banner, gesture HUD fills, glass-menu chips,
+     *  subtitle highlight, error panel) — so changing [accent] recolours all of
+     *  it at once. */
+    private var accentStartColor: Int = HikariAccent.DEFAULT_PLAYER.start.toArgb()
+    private var accentEndColor: Int = HikariAccent.DEFAULT_PLAYER.end.toArgb()
+    private var accentMidColor: Int = HikariAccent.DEFAULT_PLAYER.mid.toArgb()
+
+    private fun setAccent(next: HikariAccent) {
+        accent = next
+        accentStartColor = next.start.toArgb()
+        accentEndColor = next.end.toArgb()
+        accentMidColor = next.mid.toArgb()
+    }
+
+    /** The pill controls whose fill is the accent gradient (recoloured at
+     *  runtime, so they follow the picked accent instead of the old XML one). */
+    private val accentPillIds = intArrayOf(
+        R.id.sources_btn, R.id.skip_btn, R.id.enhance_btn
+    )
 
     /** The cyan -> violet player gradient as a shape (the signature accent). */
     private fun accentShape(radiusDp: Float): GradientDrawable = GradientDrawable(
@@ -1429,6 +1598,440 @@ class PlayerActivity : ComponentActivity() {
     /** [color] with its alpha replaced by [fraction] — for translucent accents. */
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
+
+    // ---- Accent palette (Settings → Appearance) ----------------------------
+
+    /** The accent gradient as a shape (the player's signature fill). */
+    private fun accentBadgeDrawable(radiusDp: Float): Drawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(accentStartColor, accentEndColor)
+    ).apply { cornerRadius = radiusDp * resources.displayMetrics.density }
+
+    /** A ripple over the accent gradient — the accent pill (sources/skip/enhance). */
+    private fun accentPillRipple(): Drawable = RippleDrawable(
+        ColorStateList.valueOf(0x4DFFFFFF.toInt()),
+        accentShape(22f),
+        null
+    )
+
+    /** The big centre play button: accent gradient ring around a dark disc. */
+    private fun playRingDrawable(): Drawable {
+        val d = resources.displayMetrics.density
+        val ring = GradientDrawable(
+            GradientDrawable.Orientation.BL_TR,
+            intArrayOf(accentStartColor, accentEndColor)
+        ).apply { shape = GradientDrawable.OVAL }
+        val disc = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0x66060A14.toInt())
+        }
+        val layers = LayerDrawable(arrayOf(ring, disc))
+        val inset = (3f * d).roundToInt()
+        layers.setLayerInset(1, inset, inset, inset, inset)
+        return RippleDrawable(ColorStateList.valueOf(0x4DFFFFFF.toInt()), layers, null)
+    }
+
+    /**
+     * Repaints the parts of the player that are coloured by the accent but could
+     * not be derived from [accentStartColor] automatically, because they are
+     * drawables baked into XML (@drawable/pill_accent, /badge_accent,
+     * /player_play_ring, /hud_fill and the @color/hikari_accent_mid labels,
+     * spinners and progress bar). Called once the preference has been read, and
+     * again after any control-layout change (a pill moved out of the top bar
+     * gets its accent fill back).
+     */
+    private fun applyAccentPalette() {
+        val d = resources.displayMetrics.density
+
+        // Accent pills — skipped while compacted into the top bar, where they
+        // are drawn as plain glass round buttons like their neighbours.
+        for (id in accentPillIds) {
+            val v = findViewById<TextView>(id) ?: continue
+            if ((v.parent as? View)?.id == R.id.player_top_actions) continue
+            v.background = accentPillRipple()
+        }
+
+        // The highlighted metadata badge (video quality).
+        findViewById<TextView>(R.id.badge_quality)?.background = accentBadgeDrawable(11f)
+
+        // The centre play/pause ring.
+        exoView("exo_play_pause")?.background = playRingDrawable()
+
+        // Gesture-HUD fills (brightness / volume).
+        val fill = GradientDrawable(
+            GradientDrawable.Orientation.BOTTOM_TOP,
+            intArrayOf(accentStartColor, accentEndColor)
+        ).apply { cornerRadius = 5f * d }
+        hudBrightFill?.background = fill
+        hudVolFill?.background = fill.constantState?.newDrawable() ?: fill
+
+        // Progress bar: the played portion + scrubber follow the accent.
+        (exoView("exo_progress") as? androidx.media3.ui.DefaultTimeBar)
+            ?.setPlayedColor(accentMidColor)
+
+        // Labels/spinners the layout colours from @color/hikari_accent_mid, which
+        // no runtime accent can reach.
+        loadingEpisode?.setTextColor(accentMidColor)
+        seekText?.setTextColor(withAlpha(accentMidColor, 0.95f))
+        findViewById<View>(R.id.loading_banner)?.let { tintProgressBars(it) }
+        findViewById<View>(R.id.loading_spinner)?.let { tintProgressBars(it) }
+    }
+
+    private fun tintProgressBars(v: View) {
+        if (v is ProgressBar) {
+            v.indeterminateTintList = ColorStateList.valueOf(accentMidColor)
+        }
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) tintProgressBars(v.getChildAt(i))
+        }
+    }
+
+    /**
+     * Looks up a view by an id that media3-ui declares in ITS OWN resources
+     * (`exo_play_pause`, `exo_progress`, …). The app is built with
+     * `android.nonTransitiveRClass=true`, so `R.id` here only holds this app's
+     * own ids — the library's ids live in the merged resource table, where the
+     * name still resolves at runtime. Resolving by name therefore reaches the
+     * same view the library inflated, without hard-coding a library R class.
+     */
+    private fun exoView(name: String): View? {
+        val id = resources.getIdentifier(name, "id", packageName)
+        return if (id != 0) findViewById<View>(id) else null
+    }
+
+    // ---- Control layout (Settings → Player → Player controls) --------------
+
+    /** Where each movable button goes. Defaults reproduce the shipped layout, so
+     *  an install that never opens the editor is unchanged. */
+    private var controlLayout: Map<PlayerControl, PlayerControlSlot> =
+        PlayerControlsConfig.defaults()
+
+    /** Original look of a pill, stashed the first time it is compacted for the
+     *  top bar, so moving it back to a bottom row restores it exactly. */
+    private class PillOriginal(
+        val text: CharSequence,
+        val start: Drawable?,
+        val end: Drawable?,
+        val background: Drawable?,
+        val padStart: Int,
+        val padTop: Int,
+        val padEnd: Int,
+        val padBottom: Int,
+        val params: ViewGroup.LayoutParams,
+    )
+
+    private val pillOriginals = HashMap<Int, PillOriginal>()
+
+    /** The layout order inside each slot. Matches the XML order, so the default
+     *  layout comes out exactly as shipped (and the resize button stays pinned
+     *  at the far right, after the enhance pill). */
+    private val controlOrder = listOf(
+        PlayerControl.FAVORITE, PlayerControl.DOWNLOAD, PlayerControl.PIP,
+        PlayerControl.OPTIONS, PlayerControl.LOCK,
+        PlayerControl.SPEED, PlayerControl.EPISODES, PlayerControl.SOURCES,
+        PlayerControl.QUALITY, PlayerControl.AUDIO, PlayerControl.SUBS,
+        PlayerControl.ROTATE, PlayerControl.SKIP,
+        PlayerControl.ENHANCE, PlayerControl.RESIZE,
+    )
+
+    private fun controlView(c: PlayerControl): View? = when (c) {
+        PlayerControl.FAVORITE -> findViewById(R.id.fav_btn)
+        PlayerControl.DOWNLOAD -> findViewById(R.id.download_btn)
+        PlayerControl.PIP -> findViewById(R.id.pip_btn)
+        PlayerControl.OPTIONS -> findViewById(R.id.options_btn)
+        PlayerControl.LOCK -> findViewById(R.id.lock_btn)
+        PlayerControl.SPEED -> findViewById(R.id.speed_btn)
+        PlayerControl.EPISODES -> findViewById(R.id.episodes_btn)
+        PlayerControl.SOURCES -> findViewById(R.id.sources_btn)
+        PlayerControl.QUALITY -> findViewById(R.id.quality_btn)
+        PlayerControl.AUDIO -> findViewById(R.id.audio_btn)
+        PlayerControl.SUBS -> findViewById(R.id.subs_btn)
+        PlayerControl.ROTATE -> findViewById(R.id.rotate_btn)
+        PlayerControl.SKIP -> findViewById(R.id.skip_btn)
+        PlayerControl.RESIZE -> findViewById(R.id.resize_btn)
+        PlayerControl.ENHANCE -> findViewById(R.id.enhance_btn)
+    }
+
+    /**
+     * Puts every button in its configured slot. Buttons the player itself hides
+     * (Episodes on a movie, PiP below API 26) stay hidden whatever the layout
+     * says — the setting can never resurrect a dead button.
+     */
+    private fun applyControlLayout() {
+        val top = findViewById<ViewGroup>(R.id.player_top_actions) ?: return
+        val left = findViewById<ViewGroup>(R.id.player_pills) ?: return
+        val right = findViewById<ViewGroup>(R.id.player_right_actions) ?: return
+
+        val managedHidden = listOf(R.id.episodes_btn, R.id.pip_btn).filter {
+            findViewById<View>(it)?.visibility == View.GONE
+        }
+
+        for (c in controlOrder) {
+            val v = controlView(c) ?: continue
+            (v.parent as? ViewGroup)?.removeView(v)
+            when (controlLayout[c] ?: c.defaultSlot) {
+                PlayerControlSlot.TOP_BAR -> {
+                    top.addView(v)
+                    compactForTopBar(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.BOTTOM_LEFT -> {
+                    left.addView(v)
+                    restorePill(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.BOTTOM_RIGHT -> {
+                    right.addView(v)
+                    restorePill(v)
+                    v.visibility = View.VISIBLE
+                }
+                PlayerControlSlot.HIDDEN -> {
+                    // Kept in the pill row (GONE) so the view tree stays stable
+                    // and unhiding it later is a plain visibility flip.
+                    left.addView(v)
+                    restorePill(v)
+                    v.visibility = View.GONE
+                }
+            }
+        }
+        for (id in managedHidden) findViewById<View>(id)?.visibility = View.GONE
+
+        // Keep the pill row centred: its left spacer mirrors the width of the
+        // right container, which the loop above may have resized.
+        right.post { syncLeftSpacer() }
+
+        // A pill that just moved out of the top bar needs its accent fill back.
+        applyAccentPalette()
+
+        // Start the scrollable pill row at its left edge, never wherever a
+        // focus jump (media3's control view) left it.
+        resetPillScroll()
+    }
+
+    /** Puts the pill row back at its left edge. */
+    private fun resetPillScroll() {
+        val sc = findViewById<HorizontalScrollView>(R.id.player_pill_scroll) ?: return
+        if (sc.scrollX != 0) sc.scrollTo(0, 0)
+    }
+
+    private fun syncLeftSpacer() {
+        val right = findViewById<View>(R.id.player_right_actions) ?: return
+        val spacer = findViewById<View>(R.id.player_left_spacer) ?: return
+        // Mirroring the right container's width keeps a centred pill row on the
+        // screen's centre line — but only while the pills fit. When the row is
+        // wider than the space left for it (portrait, with eight pills) the
+        // mirror is dead weight that eats another ~31dp of a strip that already
+        // has to be scrolled, so the spacer drops back to its minimum instead.
+        val pills = findViewById<View>(R.id.player_pills)
+        val scroll = findViewById<HorizontalScrollView>(R.id.player_pill_scroll)
+        val overflows = pills != null && scroll != null && scroll.measuredWidth > 0 &&
+            pills.measuredWidth > scroll.measuredWidth
+        val target = if (overflows) (2 * resources.displayMetrics.density).roundToInt()
+        else right.measuredWidth
+        if (target <= 0) return
+        val lp = spacer.layoutParams
+        if (lp.width != target) {
+            lp.width = target
+            spacer.layoutParams = lp
+        }
+    }
+
+    /**
+     * A pill drawn in the top bar becomes a compact round icon button: the top
+     * bar is a single non-scrolling row, so a wide labelled pill there could
+     * push the buttons off the screen. The original look is stashed and restored
+     * by [restorePill] when the button leaves the top bar.
+     */
+    private fun compactForTopBar(v: View) {
+        if (v !is TextView) return
+        val orig = pillOriginals.getOrPut(v.id) {
+            PillOriginal(
+                text = v.text,
+                start = v.compoundDrawablesRelative.getOrNull(0),
+                end = v.compoundDrawablesRelative.getOrNull(2),
+                background = v.background,
+                padStart = v.paddingStart,
+                padTop = v.paddingTop,
+                padEnd = v.paddingEnd,
+                padBottom = v.paddingBottom,
+                params = ViewGroup.LayoutParams(v.layoutParams),
+            )
+        }
+        val d = resources.displayMetrics.density
+        val side = (26f * d).roundToInt()
+        v.text = ""
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(orig.start, null, null, null)
+        v.background = ContextCompat.getDrawable(this, R.drawable.circle_glass_ripple)
+        v.setPadding(0, 0, 0, 0)
+        v.gravity = android.view.Gravity.CENTER
+        v.visibility = View.VISIBLE
+        val lp = v.layoutParams
+        lp.width = side
+        lp.height = side
+        if (lp is ViewGroup.MarginLayoutParams) {
+            lp.marginStart = (3f * d).roundToInt()
+            lp.marginEnd = 0
+        }
+        v.layoutParams = lp
+    }
+
+    private fun restorePill(v: View) {
+        if (v !is TextView) return
+        val orig = pillOriginals[v.id] ?: return
+        v.text = orig.text
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(orig.start, null, orig.end, null)
+        v.background = orig.background
+        v.setPadding(orig.padStart, orig.padTop, orig.padEnd, orig.padBottom)
+        v.layoutParams = orig.params
+    }
+
+    // ---- Video enhance (Settings → Player → Video enhance) -----------------
+
+    private var enhancePresetKey: String = EnhancePreset.DEFAULT.key
+    private var appliedEnhanceKey: String? = null
+    private var appliedEnhanceHdr: Boolean? = null
+
+    /** Set when the device/stream refused the effects pipeline, so the menu can
+     *  say so instead of silently doing nothing. */
+    private var enhanceUnsupported = false
+
+    /**
+     * True when THIS player instance's video renderer was enabled with an
+     * effects pipeline attached. media3 can only attach one while the renderer
+     * is being enabled (it builds the video sink from the effect list present at
+     * that instant — see MediaCodecVideoRenderer.onEnabled), so this flag says
+     * whether a preset can be applied live or needs the source re-opened.
+     * Reset for every new player instance in [playDirectInner].
+     */
+    private var videoSinkArmed = false
+
+    /**
+     * Hands the chosen preset to media3's video-effects pipeline. Idempotent:
+     * it only talks to the player when the preset or the video's HDR-ness really
+     * changed, so it is safe to call from onTracksChanged.
+     *
+     * Colour grading is applied to the decoded frames on the GPU, and the
+     * matrix-based effects cannot touch HDR video at all (media3 asserts on
+     * it), so the HDR part of a preset is dropped automatically — a 4K HDR
+     * stream can never be broken by picking a preset.
+     */
+    private fun applyVideoEnhance(force: Boolean = false) {
+        val p = player ?: return
+        val preset = EnhancePreset.fromKey(enhancePresetKey)
+        val hdr = isCurrentVideoHdr()
+        if (!force && preset.key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
+        appliedEnhanceKey = preset.key
+        appliedEnhanceHdr = hdr
+        // Nothing to apply and no pipeline to apply it to: skip the call
+        // entirely, so Natural can never drag an unused GL pass into playback.
+        if (preset == EnhancePreset.NATURAL && !videoSinkArmed) return
+        runCatching { p.setVideoEffects(preset.effects(hdr)) }
+            .onFailure {
+                enhanceUnsupported = true
+                com.hikari.app.data.Logs.logError("Player", "video effects unavailable", it)
+                android.util.Log.w("HikariPlayer", "video effects unavailable", it)
+            }
+    }
+
+    /** True while the stream on screen is HDR (PQ/HLG, or BT.2020 primaries). */
+    private fun isCurrentVideoHdr(): Boolean {
+        val tracks = player?.currentTracks ?: return false
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val ci = mediaGroup.getFormat(i).colorInfo ?: continue
+                if (ci.colorTransfer == C.COLOR_TRANSFER_ST2084 ||
+                    ci.colorTransfer == C.COLOR_TRANSFER_HLG ||
+                    ci.colorSpace == C.COLOR_SPACE_BT2020
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun setEnhancePreset(preset: EnhancePreset) {
+        enhancePresetKey = preset.key
+        val needsPipeline = preset != EnhancePreset.NATURAL
+        val p = player
+        if (needsPipeline && !enhanceUnsupported && !videoSinkArmed &&
+            p != null && currentIndex in sources.indices
+        ) {
+            // The player was opened on Natural, so media3 never created the
+            // effects pipeline — and a running renderer cannot be given one
+            // later (the factory is only consulted while it is being enabled).
+            // Re-open the SAME source with the pipeline armed, keeping the
+            // position in the film, so the preset actually reaches the screen.
+            val position = p.currentPosition
+            if (position > 2_000L) {
+                startPositionMs = position
+                seekPending = true
+            }
+            // Let onTracksChanged re-apply the exact SDR/HDR effect list once
+            // the new player knows the tracks.
+            appliedEnhanceKey = null
+            appliedEnhanceHdr = null
+            noSubsRetry = false
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "arming video effects pipeline for ${preset.key} (reopening current source)"
+            )
+            Toast.makeText(this, "Applying ${preset.label}…", Toast.LENGTH_SHORT).show()
+            playSource(currentIndex)
+            lifecycleScope.launch {
+                runCatching {
+                    (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+                }
+            }
+            return
+        }
+        applyVideoEnhance(force = true)
+        if (enhanceUnsupported && preset != EnhancePreset.NATURAL) {
+            Toast.makeText(
+                this,
+                "This device can't apply video effects — the preset was skipped.",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else if (needsPipeline) {
+            Toast.makeText(this, "${preset.label} applied", Toast.LENGTH_SHORT).show()
+        }
+        lifecycleScope.launch {
+            runCatching {
+                (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+            }
+        }
+    }
+
+    /** The Enhance button's menu: every preset, with the active one ticked. */
+    private fun showEnhanceMenu() {
+        val presets = EnhancePreset.entries
+        val current = EnhancePreset.fromKey(enhancePresetKey)
+        showGlassMenu(
+            "Video enhance",
+            presets.map { p ->
+                GlassOption(
+                    label = p.label,
+                    sub = p.desc,
+                    iconRes = R.drawable.ic_enhance,
+                    marker = RowMarker.ICON,
+                    selected = p == current,
+                )
+            },
+            hint = if (enhanceUnsupported) {
+                "Not available on this device — its video pipeline refused " +
+                    "media3's effects engine, so Natural is used instead."
+            } else {
+                "Realtime colour grading of the video itself. " +
+                    "Natural applies nothing at all."
+            },
+            iconRes = R.drawable.ic_enhance,
+        ) { which ->
+            val picked = presets.getOrNull(which) ?: return@showGlassMenu
+            setEnhancePreset(picked)
+        }
+    }
 
     /**
      * Sets a [TextView]'s size in dp — deliberately NOT sp — so the player's
@@ -1707,7 +2310,14 @@ class PlayerActivity : ComponentActivity() {
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
                 dpText(12.5f)
-                maxLines = 2
+                // One line, always. A row is a capsule, so its HEIGHT decides how
+                // round it reads (the corner radius is clamped to half of it), and
+                // a label that wrapped to a second line made those rows a visibly
+                // fatter, rounder pill than the rows beside them — the long
+                // "Provider (Repo) · Plugin" server names sat next to the short
+                // CloudStream ones and looked like a different component. The tail
+                // is ellipsised instead of pushing the capsule taller.
+                maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -1717,7 +2327,10 @@ class PlayerActivity : ComponentActivity() {
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
                     dpText(10f)
-                    maxLines = 2
+                    // Same rule for the secondary line, so every row on screen is
+                    // exactly one label line plus one sub line: identical capsules.
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
                 }, LinearLayout.LayoutParams(
@@ -1918,6 +2531,14 @@ class PlayerActivity : ComponentActivity() {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            // Android 12's "stretch" overscroll effect scales and translates
+            // the content while the user keeps dragging past the end. The rows
+            // are bent to the panel's curve from their measured positions, so a
+            // stretch changes those positions on every frame and the bend keeps
+            // chasing them — which is the up/down shudder at the end of a list.
+            // The glass panel already has its own edge light; the platform's
+            // stretch adds nothing but the jitter.
+            overScrollMode = View.OVER_SCROLL_NEVER
         }
 
         val panel = CurvedGlassPanel(this).apply {
@@ -1931,6 +2552,12 @@ class PlayerActivity : ComponentActivity() {
             // stack's outline then IS the shape. A dialog with rows in two
             // places (track list + control rows) hands over both.
             rowHosts.forEach { bendHost(it) }
+            // …and anything else the content holds that is not part of a host:
+            // a message line above the list (the download sheet's "Episode 683
+            // · …"), which otherwise sits at the panel's full inner width and
+            // gets sliced by the bowed edge. The content is a plain view by
+            // signature; only a container can hold loose children.
+            (content as? ViewGroup)?.let { bendLoose(it) }
         }
         panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         // Rows are bent to the curve at their CURRENT height inside the panel, so
@@ -1989,6 +2616,40 @@ class PlayerActivity : ComponentActivity() {
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+
+        // A cap TALLER than the rows it holds is just empty glass: the panel's
+        // bottom keeps its curve while the rows stop well above it, which is
+        // what a bare band of panel between two groups of rows is. Measure the
+        // content at the panel's own width and shrink the panel onto it — the
+        // cap above stays as an upper bound, and anything longer still scrolls.
+        val panelLp = panel.layoutParams as? LinearLayout.LayoutParams
+        var appliedSil = -1
+        fun fitToContent() {
+            if (panelLp == null) return
+            val innerW = panel.width - 2 * halo
+            if (innerW <= 0 || panel.height - 2 * halo <= 0) return
+            content.measure(
+                View.MeasureSpec.makeMeasureSpec(innerW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            )
+            val contentH = content.measuredHeight
+            if (contentH <= 0) return
+            // The panel's own padding (halo + row gap, top and bottom) is part
+            // of the silhouette, so the wanted height is the rows plus it — the
+            // halo is added AROUND the silhouette, not inside it.
+            val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
+                panel.paddingTop + panel.paddingBottom
+            val sil = wanted.coerceIn(minPanel, minOf(fitsScreen, maxFraction))
+            if (sil == appliedSil) return
+            appliedSil = sil
+            panelLp.height = sil + 2 * halo
+            panel.layoutParams = panelLp
+        }
+        // Widths only exist after the dialog is shown, and the rows can change
+        // height while it is up (a server landing mid-search), so fit now and
+        // again on every content layout change.
+        scroll.post { fitToContent() }
+        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitToContent() }
         return hintView
     }
 
@@ -2207,17 +2868,34 @@ class PlayerActivity : ComponentActivity() {
             sources = streams.map { it.toPlayerSource() }
             notifySourcesChanged()
             currentIndex = 0
-            playSource(0)
+            // "Don't play directly" applies to an in-player episode switch too:
+            // this is a brand-new server list, so it gets its own chooser
+            // instead of auto-starting on the first server.
+            if (shouldAskServer()) {
+                startChooserShown = false
+                showServerChooser(startMode = true)
+            } else {
+                playSource(0)
+            }
         }
     }
 
     /** The Source pill: the same grouped picker, dismissible without a pick. */
     private fun showSourcesDialog() = showServerChooser()
 
-    /** The fixed section order: CloudStream servers first, then Hikari's own
-     *  providers, then Nuvio, then Stremio — with anything the repository could
-     *  not attribute last. */
-    private val serverGroupOrder = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+    /** The fixed section order: the engine the user opened the title from first
+     *  — the other repos of THAT engine are the closest thing to "my
+     *  provider", and used to land behind forty Hikari servers — then
+     *  CloudStream, Hikari's own providers, Nuvio and Stremio, with anything
+     *  the repository could not attribute last. */
+    private val serverGroupOrder: List<String>
+        get() {
+            val base = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+            val originEngine = sources.firstOrNull { it.isFromOrigin() && it.provider.isNotBlank() }
+                ?.provider
+                ?: return base
+            return listOf(originEngine) + base.filter { it != originEngine }
+        }
 
     /** Which section a server belongs to. [PlayerSource.provider] is stamped by
      *  the repository from the provider that produced it; a blank one falls back
@@ -2228,6 +2906,47 @@ class PlayerActivity : ComponentActivity() {
         val prefix = src.name.substringBefore(" \u00B7 ").trim()
         return prefix.takeIf { it.isNotBlank() && prefix.length < src.name.length } ?: "Other"
     }
+
+    /**
+     * True when this server came from the provider the user opened the title
+     * from — matched by provider id first, then by the provider's display name
+     * (also as the "Provider · Server" prefix a cross-extension server carries).
+     */
+    private fun PlayerSource.isFromOrigin(): Boolean {
+        if (originProviderId.isNotBlank() && providerId == originProviderId) return true
+        if (originProviderName.isNotBlank() && providerName.equals(originProviderName, true)) return true
+        if (originProviderName.isNotBlank()) {
+            val prefix = name.substringBefore(" \u00B7 ").trim()
+            if (prefix.equals(originProviderName, ignoreCase = true)) return true
+        }
+        return false
+    }
+
+    /** Heading for the origin provider's servers, named by its ENGINE — the
+     *  section the user opened the title from leads, but it reads like every
+     *  other section ("CLOUDSTREAM" over the CloudStream repos' servers, then
+     *  "HIKARI", "NUVIO"…), so the heading is a category rather than one repo's
+     *  name. The repo a server came from stays visible on the row itself
+     *  ("MovieBoxIN (Hindi Audio) 1080p"), which is where it belongs: the
+     *  heading above it groups the engine, not the one repo.
+     *
+     *  Falls back to the provider's display name when the engine was not stamped
+     *  on the source, and is blank with no origin context (the chooser then just
+     *  shows the engine sections). */
+    private val originLabel: String
+        get() {
+            val originRow = sources.firstOrNull { it.isFromOrigin() }
+            if (originRow != null) {
+                val engine = serverGroup(originRow)
+                if (engine.isNotBlank() && engine != "Other") return engine
+            }
+            if (originProviderName.isNotBlank()) return originProviderName
+            if (originProviderId.isNotBlank()) {
+                return sources.firstOrNull { it.providerId == originProviderId }
+                    ?.providerName.orEmpty()
+            }
+            return ""
+        }
 
     /** One server's row — the same capsule the flat picker used. */
     private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
@@ -2243,7 +2962,9 @@ class PlayerActivity : ComponentActivity() {
             source.isMpd -> "DASH"
             else -> null
         },
-        selected = index == currentIndex,
+        // Only mark a row as current once playback has actually been committed
+        // to a server — see [playbackCommitted].
+        selected = playbackCommitted && index == currentIndex,
     )
 
     /**
@@ -2260,9 +2981,24 @@ class PlayerActivity : ComponentActivity() {
      * remembered/best server rather than leaving the player blank.
      */
     private fun showServerChooser(startMode: Boolean = false) {
-        if (sources.isEmpty()) return
+        // startMode is the "don't play directly" chooser, which is opened the
+        // instant the player does — before the first server has landed — so it
+        // may legitimately be empty and fill in live. The Source pill
+        // (non-startMode) only makes sense with a list, so it still no-ops.
+        if (sources.isEmpty() && !startMode) return
+        if (startMode) {
+            // Present the start chooser at most once per Activity: the live
+            // search keeps growing the list, and re-opening the chooser after
+            // the user already picked (or backed out) is the bug where the
+            // server list reappears by itself and playback restarts on the
+            // fastest server instead of the one that was chosen.
+            if (startChooserShown) return
+            startChooserShown = true
+            startChoicePending = true
+        }
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        serverChooserDialog = dialog
         var chip = "All"
 
         /** Sections that actually have servers, in the fixed order above. */
@@ -2270,6 +3006,38 @@ class PlayerActivity : ComponentActivity() {
             val have = sources.map { serverGroup(it) }.toSet()
             return serverGroupOrder.filter { it in have } +
                 have.filter { it !in serverGroupOrder }.sorted()
+        }
+
+        /**
+         * The list's sections as (heading, source indices): the ENGINE the user
+         * opened the title from FIRST — its own servers are the ones they expect
+         * ("on MovieBox, play MovieBox") — then each other engine that found
+         * something. The heading is the engine's name (CLOUDSTREAM / HIKARI /
+         * NUVIO…), never one repo's name: the repo is on the row. A server only
+         * ever appears in one section, so the counts add up to the number of
+         * servers on screen.
+         */
+        fun sections(): List<Pair<String, List<Int>>> {
+            // Origin rows lead (they are what the user opened the title from),
+            // then every engine group. When the origin's own engine is ALSO a
+            // group — a CloudStream title plus the other installed CloudStream
+            // repos — the two are one section named after the engine: two
+            // "CLOUDSTREAM" headings (and two identical chips) would be a bug of
+            // their own, and the other repos' servers belong beside the origin's
+            // anyway.
+            val byName = LinkedHashMap<String, MutableList<Int>>()
+            val origin = sources.indices.filter { sources[it].isFromOrigin() }
+            if (origin.isNotEmpty() && originLabel.isNotBlank()) {
+                byName.getOrPut(originLabel) { ArrayList() }.addAll(origin)
+            }
+            for (name in groups()) {
+                val idx = sources.indices.filter {
+                    !sources[it].isFromOrigin() && serverGroup(sources[it]) == name
+                }
+                if (idx.isEmpty()) continue
+                byName.getOrPut(name) { ArrayList() }.addAll(idx)
+            }
+            return byName.map { it.key to it.value.toList() }
         }
 
         val chipRow = LinearLayout(this).apply {
@@ -2361,53 +3129,147 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+        /** A flat signature of one row, so a rebuild can tell "the list only
+         *  grew" (append) from "the layout really changed" (re-render). */
+        fun itemKey(i: Int): String {
+            val s = sources[i]
+            return s.name + "\u0001" + s.url
+        }
+
+        // What the list holds right now (headings + rows, in order) and the
+        // selection those rows were drawn with.
+        var builtSig = ArrayList<String>()
+        var builtSelected = -1
+
         fun rebuildList() {
-            // The chip strip is this container's FIRST child (see above), so drop
-            // only the headers and rows — removeAllViews would take the chips
-            // with them and leave an empty strip behind.
-            while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
-            val all = groups()
-            val visible = if (chip == "All") all else all.filter { it == chip }
-            visible.forEach { name ->
-                val members = sources.withIndex().filter { serverGroup(it.value) == name }
-                // The header names the engine and counts its servers; it is
-                // skipped for a single-chip view (the chip already says it).
+            val all = sections()
+            val visible = if (chip == "All") all else all.filter { it.first == chip }
+            val sig = ArrayList<String>()
+            visible.forEach { (name, memberIdx) ->
+                if (chip == "All") sig.add("#" + name + "\u0001" + memberIdx.size)
+                memberIdx.forEach { sig.add(itemKey(it)) }
+            }
+            // A live search keeps appending servers for a minute or two. Before
+            // this, every rebuild re-created every row, which tore down the row
+            // a finger was already pressing: the tap arrived as an ACTION_CANCEL
+            // and was silently swallowed — the chooser closed and nothing
+            // played. When the new layout only APPENDS to the rendered one, keep
+            // what is on screen and add just the new rows.
+            val grew = sig.size >= builtSig.size &&
+                builtSig.indices.all { builtSig[it] == sig[it] }
+            val keep = if (grew && builtSelected == currentIndex &&
+                builtSig.isNotEmpty()) builtSig.size else 0
+            if (keep == 0) {
+                // The chip strip is this container's FIRST child (see above), so
+                // drop only the headers and rows — removeAllViews would take the
+                // chips with them and leave an empty strip behind.
+                while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
+            }
+            var pos = 0
+            visible.forEach { (name, memberIdx) ->
                 if (chip == "All") {
-                    val first = list.childCount == 1
-                    list.addView(TextView(this).apply {
-                        text = name.uppercase() + "  \u00B7  " + members.size
-                        dpText(10f)
-                        includeFontPadding = false
-                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                        setTextColor(withAlpha(accentMidColor, 0.95f))
-                    }, LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
-                        setMargins(
-                            (4 * density).toInt(),
-                            topMargin,
-                            (4 * density).toInt(),
-                            (4 * density).toInt()
-                        )
-                    })
+                    val isNew = pos >= keep
+                    pos++
+                    if (isNew) {
+                        // The header names the engine and counts its servers;
+                        // it is skipped for a single-chip view (the chip
+                        // already says it).
+                        val first = list.childCount == 1
+                        list.addView(TextView(this).apply {
+                            text = name.uppercase() + "  \u00B7  " + memberIdx.size
+                            dpText(10f)
+                            includeFontPadding = false
+                            isSingleLine = true
+                            ellipsize = TextUtils.TruncateAt.END
+                            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                            setTextColor(withAlpha(accentMidColor, 0.95f))
+                        }, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
+                            setMargins(
+                                (4 * density).toInt(),
+                                topMargin,
+                                (4 * density).toInt(),
+                                (4 * density).toInt()
+                            )
+                        })
+                    }
                 }
-                members.forEach { (i, src) ->
-                    addOptionRow(list, serverOption(src, i)) {
-                        dialog.dismiss()
-                        if (i != currentIndex) {
-                            noSubsRetry = false
-                            playSource(i)
+                memberIdx.forEach { i ->
+                    val isNew = pos >= keep
+                    pos++
+                    if (isNew) {
+                        val src = sources[i]
+                        addOptionRow(list, serverOption(src, i)) {
+                            // The tap IS the answer: never let the
+                            // dismiss-induced fallback start a different server
+                            // on the way out.
+                            startChoicePending = false
+                            dialog.dismiss()
+                            // Before anything has played, `currentIndex` is
+                            // still its 0 default, so a tap on the first row
+                            // must play it like any other row rather than being
+                            // treated as "already on this one".
+                            if (i != currentIndex || !playbackCommitted) {
+                                noSubsRetry = false
+                                playSource(i)
+                            }
                         }
                     }
                 }
             }
+            if (visible.isEmpty()) {
+                // Opened before the first server landed ("don't play directly"
+                // opens the chooser the instant the player does): show that the
+                // search is running and that this list is where the servers
+                // will appear, instead of a blank panel.
+                val stateRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(0, (26 * density).roundToInt(), 0, (12 * density).roundToInt())
+                }
+                stateRow.addView(ProgressBar(this).apply {
+                    isIndeterminate = true
+                    indeterminateTintList = ColorStateList.valueOf(
+                        withAlpha(accentMidColor, 0.95f)
+                    )
+                }, LinearLayout.LayoutParams(
+                    (22 * density).roundToInt(), (22 * density).roundToInt()
+                ))
+                val who = originProviderName.takeIf { it.isNotBlank() }
+                stateRow.addView(TextView(this).apply {
+                    text = if (who != null) "Searching $who\u2026" else "Searching your providers\u2026"
+                    dpText(11.5f)
+                    includeFontPadding = false
+                    setTextColor(0xFFD5DCE8.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (11 * density).roundToInt() })
+                stateRow.addView(TextView(this).apply {
+                    text = "Your provider is searched first. Every server shows here the moment it is found."
+                    dpText(10f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0x99FFFFFF.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (5 * density).roundToInt() })
+                list.addView(stateRow, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+            }
+            builtSig = sig
+            builtSelected = currentIndex
         }
 
         fun rebuildChips() {
             chipRow.removeAllViews()
-            (listOf("All") + groups()).forEach { name ->
+            (listOf("All") + sections().map { it.first }).forEach { name ->
                 // The pill carries its own measured LayoutParams (see chipPill),
                 // so it is added bare — it can neither collapse nor be squeezed.
                 chipRow.addView(
@@ -2437,24 +3299,129 @@ class PlayerActivity : ComponentActivity() {
             chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
         sourcesWatchers.add(watcher)
-        dialog.setOnDismissListener { sourcesWatchers.remove(watcher) }
-        if (startMode) {
-            // Backing out of the start chooser must not leave the player
-            // blank: fall back to the remembered/best server.
-            dialog.setOnCancelListener {
-                lifecycleScope.launch { playSource(preferredStartIndex()) }
+        var hintTicker: Job? = null
+        dialog.setOnDismissListener {
+            hintTicker?.cancel()
+            sourcesWatchers.remove(watcher)
+            if (serverChooserDialog === dialog) serverChooserDialog = null
+            // Closed without a pick (the back button, the ✕, a tap outside):
+            // fall back to the remembered/best server rather than leaving the
+            // player blank on the loading card. A tap on a row has already
+            // cleared the flag and gone on to play that row, so this never
+            // starts a *different* server than the one the user chose.
+            if (startChoicePending) {
+                startChoicePending = false
+                if (sources.isNotEmpty()) {
+                    lifecycleScope.launch { playSource(preferredStartIndex()) }
+                } else {
+                    // Backed out of the chooser before ANY server had landed —
+                    // there was nothing to pick. Don't fail the play; let the
+                    // live search keep running and re-open the chooser (once)
+                    // when the first server actually arrives.
+                    startChooserShown = false
+                }
             }
         }
-        presentGlass(
+        val baseHint = if (sources.isEmpty()) {
+            val who = originProviderName.takeIf { it.isNotBlank() }
+            if (who != null) "Searching $who \u2014 servers appear as they are found."
+            else "Searching your providers \u2014 servers appear as they are found."
+        } else {
+            "Your provider first, then every engine that found a server."
+        }
+        val hintView = presentGlass(
             dialog,
             "Select server",
             list,
             700f,
-            hint = "Grouped by the engine that found each server.",
+            hint = baseHint,
             iconRes = R.drawable.ic_server,
             rowHosts = listOf(list),
         )
+        if (hintView != null) {
+            // The hint doubles as the live status of the OTHER extensions: which
+            // ones are still being asked right now, and which came back without a
+            // single server (and why). A repo that carries the title but cannot be
+            // searched — or one that is simply slower than the Hikari/Nuvio pass
+            // the user waited for — used to leave no trace at all in this sheet.
+            hintTicker = lifecycleScope.launch {
+                var shown = ""
+                while (dialog.isShowing) {
+                    val text = crossSearchHint() ?: baseHint
+                    if (text != shown) {
+                        shown = text
+                        hintView.text = text
+                    }
+                    delay(600)
+                }
+            }
+        }
     }
+
+    /**
+     * One line for the hint above the server chooser describing what the other
+     * installed extensions are doing. It leads with NUMBERS — how many repos
+     * were asked (out of how many are installed, per engine), how many found
+     * servers, how many are still going — so the line can never look "stuck" on
+     * one repo while the rest keep working. The old version was a " · "-joined
+     * list of the failures, and the two-line hint truncated it after the first
+     * repo (a repo that said "no matching title" sat there looking like the end
+     * of the search). The per-repo detail is still in the log, and one example
+     * reason is appended when nothing at all was found.
+     */
+    private fun crossSearchHint(): String? {
+        val asked = ContentRepository.crossAsked.values.toList()
+        if (asked.isEmpty()) return null
+        val running = ContentRepository.crossRunning.size
+        val found = ContentRepository.crossFound.size
+        val byEngine = asked.groupingBy { it }.eachCount().entries
+            .sortedBy { it.key }
+            .joinToString(", ") { e ->
+                val total = ContentRepository.crossInstalled[e.key]
+                if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
+            }
+        val verdicts = ContentRepository.crossVerdict.values.toList()
+        val unfinished = verdicts.count {
+            val b = ContentRepository.crossReasonBucket(it.substringAfter(" — ", it))
+            b == "not reached (pass ended)" || b == "unfinished"
+        }
+        val state = when {
+            running > 0 -> "$running still searching"
+            unfinished > 0 -> "stopped early ($unfinished never finished)"
+            else -> "all done"
+        }
+        val servers = if (found > 0) ", $found with servers" else ", none with servers"
+        // When nothing came back, say WHAT the pass ran into, counted by kind —
+        // "200 no such title, 28 could not load" answers "was it even asked? did
+        // it break?" on screen, without needing a log. The single example then
+        // shows the real plugin text, preferring a repo that FAILED over one
+        // that simply did not carry the title (a failure is the actionable one).
+        val breakdown = if (found == 0 && verdicts.isNotEmpty()) {
+            val buckets = LinkedHashMap<String, Int>()
+            for (v in verdicts) {
+                val b = ContentRepository.crossReasonBucket(v.substringAfter(" — ", v))
+                buckets[b] = (buckets[b] ?: 0) + 1
+            }
+            buckets.entries.sortedByDescending { it.value }.take(3)
+                .joinToString(", ") { "${it.value} ${it.key}" }
+        } else ""
+        val why = if (running == 0 && found == 0) {
+            val actionable = verdicts.firstOrNull {
+                val b = ContentRepository.crossReasonBucket(it)
+                b == "could not load" || b == "search error" || b == "timed out"
+            } ?: verdicts.firstOrNull()
+            actionable?.let { " · e.g. " + oneLine(it).take(56) }.orEmpty()
+        } else ""
+        // A Cloudflare block belongs to the site, not to one repo; it is the one
+        // thing here the user can actually FIX, so it always gets a line.
+        val note = ContentRepository.crossNote?.let { " · $it" }.orEmpty()
+        return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
+            (if (breakdown.isBlank()) "" else " · $breakdown") + why + note
+    }
+
+    /** A reason can come straight from a plugin's exception text — collapse it
+     *  onto one line so the two-line hint above the panel cannot be blown up. */
+    private fun oneLine(s: String): String = s.replace(Regex("\\s+"), " ").trim()
 
     private fun showQualityDialog() {
         val p = player ?: return
@@ -3037,8 +4004,11 @@ class PlayerActivity : ComponentActivity() {
         }
         if (index != currentIndex) headerVariant = 0
         autoRotated = false
+        userRotated = false
         userPickedSubs = false
         currentIndex = index
+        // From here on the chooser may show this row as the current one.
+        playbackCommitted = true
         val src = sources[index]
         // Persisting here would remember a source that has NOT proven itself —
         // a signed link that turns out to be expired, or a URL/host whose right
@@ -3447,6 +4417,9 @@ class PlayerActivity : ComponentActivity() {
         firstFrameTask = null
         renderedFirstFrame = false
         firstFrameRetried = false
+        // A brand-new player instance means a brand-new video renderer, which
+        // starts with no effects pipeline attached (see [videoSinkArmed]).
+        videoSinkArmed = false
 
         // Send the SOURCE's own User-Agent when it declares one (extractors like
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
@@ -3550,6 +4523,36 @@ class PlayerActivity : ComponentActivity() {
         val mime = mainMimeOf(src)
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
+
+        // ---- Video enhance: arm the effects pipeline BEFORE prepare() -------
+        // media3 only builds the video-effects pipeline while the video renderer
+        // is being ENABLED, from the effect list present at that instant
+        // (MediaCodecVideoRenderer.onEnabled); a setVideoEffects() call made
+        // afterwards is silently dropped when the renderer was enabled without
+        // one. prepare() is what enables it, so a preset that should be in
+        // effect from the very first frame has to be handed over right here —
+        // this is exactly why the presets used to do nothing at all.
+        //
+        // Natural deliberately arms NOTHING: media3 then copies every decoded
+        // frame straight to the surface, with no GL pass. The HDR-safe variant
+        // of the preset is handed over because the stream's colour transfer is
+        // not known until prepare() has run; onTracksChanged refines it to the
+        // exact SDR/HDR effect list a moment later.
+        val armPreset = EnhancePreset.fromKey(enhancePresetKey)
+        if (armPreset != EnhancePreset.NATURAL && !enhanceUnsupported) {
+            runCatching {
+                player.setVideoEffects(armPreset.effects(hdr = true))
+                videoSinkArmed = true
+            }.onFailure {
+                videoSinkArmed = false
+                com.hikari.app.data.Logs.logError(
+                    "Player",
+                    "could not arm the video effects pipeline",
+                    it
+                )
+                android.util.Log.w("HikariPlayer", "could not arm video effects", it)
+            }
+        }
 
         player.setMediaItem(itemBuilder.build())
         player.prepare()
@@ -3964,30 +4967,74 @@ class PlayerActivity : ComponentActivity() {
         Uri.fromFile(file)
     }.getOrNull()
 
+    /** The video's real pixel size taken from the video track's own format, for
+     *  the case where media3 never reports a size: with the video-effects
+     *  pipeline armed, `PlaybackVideoGraphWrapper.onVideoSizeChanged` is an
+     *  empty override, so the player's size callback never fires — which left
+     *  the quality badge missing AND the screen stuck in portrait with a
+     *  letterboxed landscape video. The track format still carries the coded
+     *  size (rotation included), so the real size can be derived from it. */
+    private fun videoFormatSize(tracks: Tracks): Pair<Int, Int>? {
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO || group.length == 0) continue
+            val fmt = runCatching { group.getTrackFormat(0) }.getOrNull() ?: continue
+            var w = fmt.width
+            var h = fmt.height
+            if (w <= 0 || h <= 0) continue
+            if (fmt.rotationDegrees == 90 || fmt.rotationDegrees == 270) {
+                val t = w
+                w = h
+                h = t
+            }
+            return w to h
+        }
+        return null
+    }
+
+    /** Everything that depends on knowing the video's real size: the quality
+     *  badge, the render aspect ratio, and the once-per-source auto-rotate.
+     *  Called from the size callback, and — when that callback never comes —
+     *  from the tracks callback. */
+    private fun onKnownVideoSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        // Quality badge: the rendered video's height (updates per server,
+        // since a different source can be a different resolution).
+        val q = qualityBadgeFor(height)
+        if (q.isNotBlank()) {
+            badgeQuality?.text = q
+            badgeQuality?.visibility = View.VISIBLE
+        }
+        // Keep the surface at the video's shape. PlayerView exposes no setter
+        // for this (its field and update method are private), so it is reached
+        // through the AspectRatioFrameLayout it inflates as `exo_content_frame`
+        // — id resolved by name, like the other media3 controls above.
+        runCatching {
+            (exoView("exo_content_frame") as? AspectRatioFrameLayout)
+                ?.setAspectRatio(width.toFloat() / height.toFloat())
+        }
+        if (autoRotated || userRotated) return
+        autoRotated = true
+        val landscape = width > height
+        requestedOrientation = if (landscape) {
+            SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
     private val listener = object : Player.Listener {
         // Auto-rotate to match the video: landscape videos play landscape,
         // portrait videos play portrait — once, per source. After that the
         // rotate button is entirely in the user's hands.
         override fun onVideoSizeChanged(videoSize: VideoSize) {
-            // Quality badge: the rendered video's height (updates per server,
-            // since a different source can be a different resolution).
-            val q = qualityBadgeFor(videoSize.height)
-            if (q.isNotBlank()) {
-                badgeQuality?.text = q
-                badgeQuality?.visibility = View.VISIBLE
-            }
-            if (autoRotated) return
-            if (videoSize.width <= 0 || videoSize.height <= 0) return
-            autoRotated = true
-            val landscape = videoSize.width > videoSize.height
-            requestedOrientation = if (landscape) {
-                SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            } else {
-                SCREEN_ORIENTATION_PORTRAIT
-            }
+            onKnownVideoSize(videoSize.width, videoSize.height)
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            // A source rendered through the video-effects pipeline never gets an
+            // onVideoSizeChanged, so take the size from the video track itself.
+            videoFormatSize(tracks)?.let { (w, h) -> onKnownVideoSize(w, h) }
+            applyVideoEnhance()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
             val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)
@@ -4006,6 +5053,11 @@ class PlayerActivity : ComponentActivity() {
             // variant that got us here, so the next replay of this video jumps
             // straight onto it (no re-probe, no header trial-and-error).
             sources.getOrNull(currentIndex)?.let { rememberPlayedSource(currentIndex, it) }
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "playing ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
+                    "(server ${currentIndex + 1}/${sources.size})",
+            )
             maybeOfferResume()
         }
 
@@ -4067,11 +5119,56 @@ class PlayerActivity : ComponentActivity() {
                     append("\nURL: ").append(sources[currentIndex].url)
                 }
             }
+            // Every playback error is recorded with the server it came from, so
+            // a "the play button spins and then it fails / goes black" report is
+            // a readable line in the shared log instead of a guess.
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "playback error on ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
+                    "(server ${currentIndex + 1}/${sources.size}): " +
+                    details.replace("\n", " | ").take(600),
+            )
             // HLS manifests often declare a subtitle track whose URL returns
             // junk ("Expected WEBVTT. Got 1" / contentIsMalformed). media3
             // treats that as a fatal parse error — retry the SAME server with
             // text tracks disabled before giving up on it.
             val code = error.errorCode
+            // The video-effects pipeline itself failed — usually a device whose
+            // GL stack cannot run media3's frame processor, occasionally an
+            // HDR stream we mis-classified. That is NOT the server's fault, so
+            // walking to the next server would just fail the same way (and burn
+            // the whole server list). Turn the pipeline off, remember it, and
+            // re-open the SAME source clean.
+            val effectsIssue =
+                code == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED ||
+                    code == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED
+            if (effectsIssue && videoSinkArmed) {
+                videoSinkArmed = false
+                enhanceUnsupported = true
+                appliedEnhanceKey = null
+                appliedEnhanceHdr = null
+                enhancePresetKey = EnhancePreset.NATURAL.key
+                com.hikari.app.data.Logs.logError(
+                    "Player",
+                    "video effects failed on this device — enhance disabled",
+                    error
+                )
+                lifecycleScope.launch {
+                    runCatching {
+                        val store = (applicationContext as HikariApp).store
+                        store.setEnhanceUnsupported(true)
+                        store.setEnhancePreset(EnhancePreset.NATURAL.key)
+                    }
+                }
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "This device can't apply video effects — turning them off.",
+                    Toast.LENGTH_LONG
+                ).show()
+                noSubsRetry = false
+                playSource(currentIndex)
+                return
+            }
             val subtitleIssue = !noSubsRetry &&
                 (code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
                     code == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED) &&

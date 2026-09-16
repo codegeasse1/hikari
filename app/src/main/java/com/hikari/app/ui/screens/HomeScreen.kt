@@ -56,6 +56,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.Logs
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
@@ -141,6 +142,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true
             _rows.value = emptyList()
         }
+        // Keep the process alive (and awake) for the whole load: pressing Home
+        // mid-load used to freeze the app and stop every catalog dead. See
+        // [com.hikari.app.work.BackgroundWork].
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            if (key == "all") "Loading Home catalogs"
+            else "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
+        )
         loadJob = viewModelScope.launch {
             // Row key -> poster-tokenized copy, so a partial update only
             // tokenizes the rows that just arrived. MRDS/51CG catalogs carry
@@ -181,6 +189,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 _loading.value = false
             }
         }
+        loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
         loadJob?.join()
     }
 
@@ -289,16 +298,23 @@ fun HomeScreen(nav: NavHostController) {
     }
     val openVerify: () -> Unit = {
         scope.launch {
+            // Prefer the host a search actually got CHALLENGED on: the whole
+            // point of this button is to clear the block that is stopping
+            // content, and that site may belong to a different repo than the one
+            // selected here (see CloudflareVerifier.blockedHost).
+            val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
             val url = withContext(Dispatchers.IO) {
-                providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+                blocked?.let { "https://$it/" }
+                    ?: providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
             }
             if (url != null) {
                 verifyLauncher.launch(
                     Intent(context, WebViewActivity::class.java).apply {
                         putExtra("url", url)
-                        putExtra("title", "Verify: ${selectedName ?: "site"}")
+                        putExtra("title", "Verify: " + (blocked ?: selectedName ?: "site"))
                         putExtra("providerId", selected)
                         putExtra("autoCloseWhenCloudflarePassed", true)
+                        if (blocked != null) putExtra("verifyHost", blocked)
                     }
                 )
             } else {
@@ -337,6 +353,24 @@ fun HomeScreen(nav: NavHostController) {
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)
                         )
+                        TextButton(onClick = {
+                            // The banner is the moment the user is most willing to
+                            // send us the report: hand over the crash log itself
+                            // (Settings → Logs & diagnostics serves the full set)
+                            // instead of asking for a screenshot.
+                            val files = Logs.existingFiles(context)
+                            if (files.isEmpty()) {
+                                Toast.makeText(
+                                    context,
+                                    "No log file found",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                shareFiles(context, files.map { it.file }, "Hikari crash log")
+                            }
+                        }) {
+                            Text("Share log")
+                        }
                         TextButton(onClick = {
                             showCrash = false
                             HikariApp.instance.clearCrash()

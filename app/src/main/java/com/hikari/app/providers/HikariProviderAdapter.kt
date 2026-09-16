@@ -7,6 +7,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.hiki.HikariPluginManager
 import com.hikari.app.hiki.HikariRuntime
 import com.hikari.ext.HikariCatalog
 import com.hikari.ext.HikariEpisode
@@ -61,9 +62,35 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             ?.map { it.toApp(config.id) }
             ?: emptyList()
 
-    override suspend fun search(query: String, page: Int): List<MediaItem> =
-        provider?.search(query, page)?.map { it.toApp(config.id) }
-            ?: emptyList()
+    override suspend fun search(query: String, page: Int): List<MediaItem> {
+        val p = provider
+        if (p == null) {
+            // A .hiki that cannot be loaded (a corrupt/old archive, a bundle
+            // that registers no provider, a load that just failed) used to
+            // return a bare empty list, so the cross-extension pass reported the
+            // repo as "no matching title in this repo" — the one verdict that
+            // tells the user nothing, and that hides a broken extension.
+            streamErrors[config.id] = "Extension failed to load — " +
+                (
+                    HikariPluginManager.lastError
+                        ?.lineSequence()?.firstOrNull()?.take(140)
+                        ?: "open Extensions and reinstall this one."
+                    )
+            return emptyList()
+        }
+        return try {
+            val found = p.search(query, page)?.map { it.toApp(config.id) } ?: emptyList()
+            // The search worked, so any earlier "failed to load"/"search failed"
+            // note is stale.
+            streamErrors.remove(config.id)
+            found
+        } catch (e: Throwable) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            streamErrors[config.id] =
+                "Search failed: ${e.javaClass.simpleName}: " + (e.message ?: "no message").take(140)
+            emptyList()
+        }
+    }
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
         val p = provider ?: return item

@@ -302,14 +302,22 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         // surfaces so cards/nav bar read as frosted glass. Solid themes draw
         // nothing (the Scaffold's background color covers it).
         if (themeKey == HikariThemeMode.GLASS.key) {
+            // The backdrop is tinted by the app accent, so the glass theme
+            // follows whatever colour the user picked in Appearance instead of
+            // being stuck on the old fixed purple.
+            val accent = MaterialTheme.colorScheme.primary
             Box(
                 Modifier
                     .fillMaxSize()
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
-                                Color(0xFF2A1440),
-                                Color(0xFF1B2A4A),
+                                androidx.compose.ui.graphics.lerp(
+                                    Color(0xFF120E1F), accent, 0.38f
+                                ),
+                                androidx.compose.ui.graphics.lerp(
+                                    Color(0xFF151A33), accent, 0.16f
+                                ),
                                 Color(0xFF0B0E1A),
                             ),
                             start = Offset.Zero,

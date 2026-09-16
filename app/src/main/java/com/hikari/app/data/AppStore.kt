@@ -8,7 +8,10 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.player.EnhancePreset
+import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.UiScale
+import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -38,6 +41,12 @@ class AppStore(private val ctx: Context) {
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
+        val APP_ACCENT = stringPreferencesKey("appAccent")
+        val PLAYER_ACCENT = stringPreferencesKey("playerAccent")
+        val THEME_LINKED = booleanPreferencesKey("themeLinked")
+        val PLAYER_CONTROLS = stringPreferencesKey("playerControls")
+        val PLAYER_ENHANCE = stringPreferencesKey("playerEnhance")
+        val PLAYER_ENHANCE_UNSUPPORTED = booleanPreferencesKey("playerEnhanceUnsupported")
         val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         val HISTORY = stringPreferencesKey("history")
@@ -253,6 +262,96 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTheme(key: String) {
         store.edit { it[K.THEME] = key }
+    }
+
+    // ---- Accent colours (app + player) ----
+
+    /** The app UI's accent colour (Settings → Appearance → Accent). Defaults to
+     *  the amber/gold the app has always used, so an existing install looks
+     *  identical until the user picks something else. */
+    fun appAccentFlow(): Flow<String> =
+        store.data.map { it[K.APP_ACCENT] ?: HikariAccent.DEFAULT_APP.key }
+
+    suspend fun appAccent(): String = appAccentFlow().first()
+
+    suspend fun setAppAccent(key: String) {
+        store.edit { it[K.APP_ACCENT] = key }
+        syncAccents()
+    }
+
+    /** The player's own accent (used only while the app and the player are NOT
+     *  linked). Defaults to the cyan→violet glow the player has always had. */
+    fun playerAccentFlow(): Flow<String> =
+        store.data.map { it[K.PLAYER_ACCENT] ?: HikariAccent.DEFAULT_PLAYER.key }
+
+    suspend fun playerAccent(): String = playerAccentFlow().first()
+
+    suspend fun setPlayerAccent(key: String) {
+        store.edit { it[K.PLAYER_ACCENT] = key }
+        syncAccents()
+    }
+
+    /** "Match app & player theme": while ON the player follows the app accent
+     *  and picking a colour in either place recolours both. */
+    fun themeLinkedFlow(): Flow<Boolean> =
+        store.data.map { it[K.THEME_LINKED] ?: false }
+
+    suspend fun themeLinked(): Boolean = themeLinkedFlow().first()
+
+    suspend fun setThemeLinked(linked: Boolean) {
+        store.edit { it[K.THEME_LINKED] = linked }
+        syncAccents()
+    }
+
+    /** The accent the player should actually use right now (app accent while
+     *  linked, otherwise its own). */
+    suspend fun effectivePlayerAccent(): String =
+        if (themeLinked()) appAccent() else playerAccent()
+
+    /** Mirror the accent preferences into [AccentStore] so the View-based
+     *  player can read them synchronously during Activity creation. */
+    private suspend fun syncAccents() {
+        runCatching {
+            AccentStore.sync(ctx, appAccent(), playerAccent(), themeLinked())
+        }
+    }
+
+    // ---- Player overlay layout & video enhance ----
+
+    /** The player's control layout, as [com.hikari.app.player.PlayerControlsConfig]
+     *  JSON (control key → slot key). Blank means "the default layout". */
+    fun playerControlsFlow(): Flow<String> =
+        store.data.map { it[K.PLAYER_CONTROLS] ?: "" }
+
+    suspend fun playerControls(): String = playerControlsFlow().first()
+
+    suspend fun setPlayerControls(json: String) {
+        store.edit { it[K.PLAYER_CONTROLS] = json }
+    }
+
+    /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */
+    fun enhancePresetFlow(): Flow<String> =
+        store.data.map { it[K.PLAYER_ENHANCE] ?: EnhancePreset.DEFAULT.key }
+
+    suspend fun enhancePreset(): String = enhancePresetFlow().first()
+
+    suspend fun setEnhancePreset(key: String) {
+        store.edit { it[K.PLAYER_ENHANCE] = key }
+    }
+
+    /**
+     * True once a device has proven it cannot run media3's video-effects
+     * pipeline (its GL stack refuses the frame processor). Remembered so the
+     * player stops arming the pipeline — arming it on such a device would fail
+     * EVERY play, not just the one where the user first picked a preset.
+     */
+    fun enhanceUnsupportedFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_ENHANCE_UNSUPPORTED] ?: false }
+
+    suspend fun enhanceUnsupported(): Boolean = enhanceUnsupportedFlow().first()
+
+    suspend fun setEnhanceUnsupported(value: Boolean) {
+        store.edit { it[K.PLAYER_ENHANCE_UNSUPPORTED] = value }
     }
 
     // ---- In-app UI scale ----
