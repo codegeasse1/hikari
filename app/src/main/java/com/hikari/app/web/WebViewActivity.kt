@@ -110,12 +110,17 @@ class WebViewActivity : ComponentActivity() {
     // hard block — i.e. it loaded as ordinary content and has nothing to
     // verify. After a few ticks the view closes itself instead of lingering.
     private var noChallengePolls = 0
-    // Set when the activity was auto-launched by CloudflareVerifier (a request
-    // hit a challenge) — the host lets the verifier wake its waiters when this
-    // view closes so the retry runs immediately.
+    // Set when this view was opened to pass a Cloudflare challenge for a host
+    // (intent extra "verifyHost"). CloudflareVerifier is NOT the launcher — it
+    // never opens a visible view (see its class doc); the host is passed so the
+    // verifier can wake its waiters the moment this view closes and retry
+    // immediately.
     private var verifyHost: String? = null
-    // Video-verification mode (set alongside verifyHost by CloudflareVerifier):
-    // this view is open solely to pass a CF challenge for a STREAMING site, and
+    // Renderer-crash recoveries already spent by this view (carried across the
+    // relaunch via the intent, see onRenderProcessGone).
+    private var renderRestarts = 0
+    // Video-verification mode (set alongside verifyHost): this view is open
+    // solely to pass a CF challenge for a STREAMING site, and
     // the site's redirect to the real video page is legitimate — so main-frame
     // redirects are NOT blocked here (the browsing view's redirect protection
     // cancels exactly those, which is what kept the movie page from opening).
@@ -201,6 +206,7 @@ class WebViewActivity : ComponentActivity() {
         verifyHost = intent.getStringExtra("verifyHost")
         verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
         providerId = intent.getStringExtra("providerId")
+        renderRestarts = intent.getIntExtra("renderRestarts", 0)
         val forceTranslate = intent.getBooleanExtra("translate", false)
         // Record every open (and why) so a "the site opened by itself" report
         // can be traced in Settings › Logs & diagnostics.
@@ -482,6 +488,12 @@ class WebViewActivity : ComponentActivity() {
             ): WebResourceResponse? {
                 val u = request.url.toString()
                 val host = request.url.host ?: ""
+                // Cloudflare's own challenge traffic is never ad traffic (see
+                // isCloudflareInfra): letting the challenge's scripts, iframes
+                // and /cdn-cgi/ endpoints load is what lets it COMPLETE. Block
+                // or rewrite them and the page simply reloads itself into the
+                // same challenge — the verify page looping instead of passing.
+                if (isCloudflareInfra(u)) return null
                 if (host.isNotBlank()) {
                     // Whitelist wins first — a site the user unblocked keeps
                     // all its subdomains usable.
@@ -610,11 +622,31 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
             ): Boolean {
+                // A verification view is never relaunched: it exists only to
+                // pass a challenge, and a Cloudflare page that just killed the
+                // renderer will kill it again on the next load — relaunching
+                // turned that into a loop of verify views opening one after
+                // another. Close instead and leave the user in control.
+                if (autoCloseWhenCloudflarePassed) {
+                    verifyDone = true
+                    runCatching { finish() }
+                    return true
+                }
                 // The renderer crashed (often a heavyweight site) — relaunch the
-                // activity instead of showing a dead white screen.
+                // activity instead of showing a dead white screen. Bounded: a
+                // page that crashes the renderer once will do it every time, so
+                // one retry, then close rather than reopened-forever.
+                if (renderRestarts >= MAX_RENDER_RESTARTS) {
+                    runCatching { finish() }
+                    return true
+                }
+                renderRestarts++
                 runCatching {
                     finish()
-                    startActivity(intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                    startActivity(Intent(intent).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        putExtra("renderRestarts", renderRestarts)
+                    })
                 }
                 return true
             }
@@ -921,6 +953,14 @@ class WebViewActivity : ComponentActivity() {
 
     /** Injects the blocker script + the persisted selectors into the page. */
     private fun injectElementBlocker(view: WebView?) {
+        // Never touch a Cloudflare-verification page. The element blocker is
+        // built for ad iframes/overlays, and a challenge's widget lives in an
+        // iframe of its own — hiding the wrong node (or the wrapper the whole
+        // challenge renders into) leaves Cloudflare's script to re-render and
+        // re-request the challenge, which is exactly the "the verification page
+        // keeps opening in a loop" report. The verify view has no ads to block
+        // anyway: it is one page shown solely to pass the check.
+        if (autoCloseWhenCloudflarePassed) return
         view?.evaluateJavascript(ELEMENT_BLOCK_JS, null)
         val arr = JSONArray().apply { blockedSelectors.forEach { put(it) } }
         view?.evaluateJavascript(
@@ -938,6 +978,21 @@ class WebViewActivity : ComponentActivity() {
     /** Same host or one being a subdomain of the other (registrable-domain-ish). */
     private fun isSameSite(host: String, current: String): Boolean =
         host == current || host.endsWith("." + current) || current.endsWith("." + host)
+
+    /** Cloudflare's own challenge infrastructure — the scripts, iframes and
+     *  /cdn-cgi/ endpoints that mint the cf_clearance cookie. These must NEVER
+     *  be treated as ad traffic: an ad host list that carries (or a user
+     *  blocklist that happens to carry) a Cloudflare challenge host turns the
+     *  challenge's own bootstrap into a blocked request, so the page reloads
+     *  itself and asks again — the challenge loops instead of completing. */
+    private fun isCloudflareInfra(url: String?): Boolean {
+        if (url == null) return false
+        if (url.contains("/cdn-cgi/")) return true
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com") ||
+            host == "cloudflare.com" || host.endsWith(".cloudflare.com") ||
+            host == "cloudflareinsights.com" || host.endsWith(".cloudflareinsights.com")
+    }
 
     /** In Cloudflare-verification mode ONLY the challenge may be shown: the
      *  site we started on plus Cloudflare's own challenge infra. Anything else
@@ -1352,6 +1407,15 @@ class WebViewActivity : ComponentActivity() {
          *  scanner mistook for a stream), so the verify view is useless and
          *  should close itself instead of lingering (~14s). */
         private const val VERIFY_NO_CHALLENGE_POLLS = 12
+
+        /** How many times a crashed renderer may be recovered by relaunching
+         *  this activity inside one browsing session. A page that kills
+         *  Chromium's renderer does it again on the next load — before this
+         *  limit the activity relaunched itself from its own intent, so a
+         *  crash-on-load page (a Cloudflare challenge on a low-end device is the
+         *  classic one) reopened and crashed in a loop: "it keeps opening over
+         *  and over". After the limit the view just closes. */
+        private const val MAX_RENDER_RESTARTS = 1
 
         /** HLS/DASH/MP4 URLs ending the request path (optional query). */
         private val VIDEO_URL_RE =

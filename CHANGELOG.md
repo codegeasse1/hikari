@@ -1,3 +1,47 @@
+## 0.3.84
+
+**"Play as soon as the first server is found" now really plays on the first
+server — and the loading cover says what it is waiting for.**
+
+- **The remembered last-used server no longer overrides that choice.** When a
+  title had been played before, the detail screen held playback back until
+  *that* server appeared (a 10-second head start) even with "play as soon as the
+  first server is found" selected — and if the head start expired before any
+  server had arrived, every later arrival was still filtered out, so playback
+  only started when the entire search had finished or not at all. The hold now
+  applies only to the "wait for more servers first" choice, and the head start
+  is a hard deadline: after it, the next server to arrive starts playback at
+  once. The cover also says *"Waiting for your last used server (up to 10s)…"*
+  instead of a generic sentence.
+- **A "nothing found" status can no longer fail a session that did get
+  servers.** The player's fail-fast check now also requires its own source list
+  to be empty.
+- **A dead first server no longer parks the whole list.** Server 1 answering
+  HTTP 500 used to send the player into a same-server re-resolution that held
+  playback on that one server (cover back to "Found N servers — still
+  searching…") while the other servers already in hand sat untried — the
+  "it found 8 servers but nothing played" report. That re-resolution now only
+  runs when there is nothing else left to try; otherwise the player fails over
+  to the next server immediately, and the cover says *"Reconnecting — <server>"*
+  while it does.
+- **Hikari no longer loads a Cloudflare check on its own.** Automatic
+  (invisible) Cloudflare solving is now opt-in — Settings → *Solve Cloudflare
+  checks automatically*, **off by default**. A challenged host is simply
+  recorded so the UI can offer the deliberate globe-button verification instead.
+  Three loop causes are fixed alongside it: Cloudflare's own challenge hosts and
+  `/cdn-cgi/` endpoints are never treated as ad traffic (blocking them made the
+  page re-request itself forever, in both the browsing view and the solver),
+  the element blocker is never injected into a verification page (hiding the
+  wrong iframe made the challenge re-render), and a renderer crash can no longer
+  relaunch the web view over and over — one recovery at most, and never for a
+  verification view.
+- **The 20 app languages are real now.** The translation table the UI reads
+  (`assets/i18n/…`) was never shipped, so every `tr("…")` lookup fell back to
+  English and picking a language changed nothing. The UI is now translated into
+  es, pt-BR, fr, de, it, ru, uk, tr, ar, hi, id, vi, th, ko, ja, zh-CN, pl, nl,
+  el and he (plus the joke "mmmm… monke"). One file per language, loaded lazily,
+  so a language switch costs a ~20 KB asset read instead of a 450 KB one.
+
 ## 0.3.83
 
 **Build fix — 0.3.82 never produced an APK.** Two Kotlin compile errors in the

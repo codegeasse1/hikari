@@ -971,8 +971,23 @@ fun DetailScreen(
                 val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
                 val prefUrl = last?.url.orEmpty()
                 val prefName = last?.name.orEmpty()
-                val wantPreferred =
-                    !askServerOnPlay && (prefUrl.isNotBlank() || prefName.isNotBlank())
+                // Only when the user asked to WAIT for more servers. "Play as
+                // soon as the first server is found" means exactly that: nothing
+                // — not even the server this title was last played with — may
+                // hold playback back. (Before, a remembered server suppressed
+                // the first-server start even with that choice selected, so the
+                // fastest option could still sit on "Finding the best server…"
+                // until every extension had finished answering.)
+                var wantPreferred =
+                    !askServerOnPlay && playWaitServers &&
+                        (prefUrl.isNotBlank() || prefName.isNotBlank())
+                if (wantPreferred) {
+                    StreamsLive.setStatus(
+                        sessionId,
+                        "Waiting for your last used server (up to " +
+                            (PREFERRED_GRACE_MS / 1000) + "s)…",
+                    )
+                }
                 val preferredIndex = { list: List<StreamSource> ->
                     if (prefUrl.isBlank() && prefName.isBlank()) -1
                     else list.indexOfFirst { s ->
@@ -1064,6 +1079,12 @@ fun DetailScreen(
                 // fall back to whatever has been found so the tap never hangs.
                 val grace = launch {
                     delay(PREFERRED_GRACE_MS)
+                    // The head start is over: stop holding out for the remembered
+                    // server. Servers that answer after this moment then start
+                    // playback at once, instead of waiting for the whole search
+                    // to end (which is what made the cover sit on "Finding the
+                    // best server…" for a slow provider).
+                    wantPreferred = false
                     startNow()
                 }
                 val final = vm.getStreams(epForSearch)

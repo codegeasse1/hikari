@@ -60,6 +60,7 @@ class AppStore(private val ctx: Context) {
         val AD_WHITE = stringPreferencesKey("adWhite")
         val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
+        val CF_AUTO_SOLVE = booleanPreferencesKey("cfAutoSolve")
         val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
@@ -439,6 +440,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setWebviewPopup(enabled: Boolean) {
         store.edit { it[K.WEBVIEW_POPUP] = enabled }
+    }
+
+    /** Automatic (invisible) Cloudflare challenge solving. Default OFF: a
+     *  challenge then only records the blocked host so the UI can offer the
+     *  deliberate globe-button verification — nothing loads a Cloudflare check
+     *  on its own. */
+    fun cfAutoSolveFlow(): Flow<Boolean> =
+        store.data.map { it[K.CF_AUTO_SOLVE] ?: false }
+
+    suspend fun cfAutoSolve(): Boolean = cfAutoSolveFlow().first()
+
+    suspend fun setCfAutoSolve(enabled: Boolean) {
+        store.edit { it[K.CF_AUTO_SOLVE] = enabled }
     }
 
     /** Hosts the user allowed redirects to (blocked-elsewhere hosts allowed

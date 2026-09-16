@@ -89,10 +89,14 @@ object CloudflareVerifier {
     private val hiddenSolves = HashMap<String, WebView>()
 
     /** Master switch: attempt the automatic (hidden, off-screen) Cloudflare
-     *  solve on a challenge. When off, the challenge response is handed to the
-     *  caller and the user verifies manually via the Home globe button. */
+     *  solve on a challenge. Default OFF (Settings → "Solve Cloudflare checks
+     *  automatically"): nothing loads a Cloudflare challenge unless the user
+     *  asked for it. When off, the challenge response is handed to the caller
+     *  and the host is only recorded so the UI can offer the deliberate globe
+     *  button on Home. The value is loaded from prefs at startup (HikariApp)
+     *  and toggled live by the settings card. */
     @Volatile
-    var autoOpenEnabled = true
+    var autoOpenEnabled = false
 
     /** cf_clearance (or the full cookie string containing it) for [url] from the
      *  WebView cookie jar — the jar the verify WebView keeps populated. */
@@ -333,7 +337,17 @@ object CloudflareVerifier {
                         request: WebResourceRequest
                     ): WebResourceResponse? {
                         if (request.isForMainFrame) return null
+                        val ru = request.url.toString()
+                        // Cloudflare's own challenge traffic ALWAYS loads: the
+                        // scripts/iframes under challenges.cloudflare.com and
+                        // the /cdn-cgi/ endpoints are what let the challenge
+                        // complete. Treating them as ad traffic (some lists do)
+                        // makes the challenge re-request itself forever.
+                        if (ru.contains("/cdn-cgi/")) return null
                         val rh = request.url.host ?: return null
+                        if (rh == "cloudflare.com" || rh.endsWith(".cloudflare.com") ||
+                            rh == "cloudflareinsights.com" || rh.endsWith(".cloudflareinsights.com")
+                        ) return null
                         if (AdBlocker.matches(rh, blocked) && !AdBlocker.isMediaLike(request)) {
                             return WebResourceResponse(
                                 "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))

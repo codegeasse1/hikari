@@ -1194,8 +1194,8 @@ class PlayerActivity : ComponentActivity() {
                     // cancelled — the exact case that used to leave this cover
                     // spinning for the full safety timeout), the text alone is
                     // enough to fail here in the same second, WITH the reason.
-                    if (awaitLive && !liveSearchDone && s != null &&
-                        s.startsWith(NO_RESULT_PREFIX)
+                    if (awaitLive && !liveSearchDone && sources.isEmpty() &&
+                        s != null && s.startsWith(NO_RESULT_PREFIX)
                     ) {
                         liveSearchDone = true
                         runCatching { serverChooserDialog?.dismiss() }
@@ -5249,9 +5249,21 @@ class PlayerActivity : ComponentActivity() {
             // users have been working around it. Do the equivalent here: ask
             // for fresh links and, if one for THIS server arrives, play it
             // (keeping the position). Once per session, and only while the
-            // search is still running, so the normal failover below is never
-            // delayed in any other case.
+            // search is still running AND nothing else is waiting to be tried:
+            // a dead link on server 1 of 8 must not hold playback on that one
+            // server for the whole re-extraction while seven already-found
+            // servers sit untouched — that is the "Found 8 servers but the
+            // video never played" report (server 1 answered HTTP 500, and the
+            // player stayed on it, cover still counting servers, instead of
+            // moving on). With other untried servers in hand the normal
+            // failover below runs immediately; the re-extraction still happens
+            // once the list is exhausted.
+            val hasOtherUntried = sources.indices.any { i ->
+                i != currentIndex && sources[i].url.isNotBlank() &&
+                    sources[i].url !in triedUrls
+            }
             if (startedWhileSearching && !liveSearchDone && !sameServerRelinkUsed &&
+                !hasOtherUntried &&
                 refreshAttempts < MAX_REFRESH_ATTEMPTS && isIoFailure(code, headerIssue) &&
                 currentIndex < sources.size
             ) {
@@ -5259,11 +5271,18 @@ class PlayerActivity : ComponentActivity() {
                 refreshAttempts++
                 noSubsRetry = false
                 errorPanel?.visibility = View.GONE
+                val wantName = sources[currentIndex].name
+                val wantUrl = sources[currentIndex].url
+                // Say what is actually happening: the cover used to keep the
+                // search's own line ("Finding the best server… (23s)") while
+                // this server was being re-resolved, so a dead link looked like
+                // a search that was still going nowhere.
+                loadingStatusBase = "Reconnecting — $wantName"
+                loadingStatus?.text = loadingStatusBase
+                loadingSpinnerStatus?.text = loadingStatusBase
                 if (loadingBanner?.visibility != View.VISIBLE &&
                     loadingSpinner?.visibility != View.VISIBLE
                 ) showLoadingCover()
-                val wantName = sources[currentIndex].name
-                val wantUrl = sources[currentIndex].url
                 val keepPosition = player?.currentPosition?.takeIf { it > 2_000L } ?: 0L
                 Toast.makeText(
                     this@PlayerActivity,
