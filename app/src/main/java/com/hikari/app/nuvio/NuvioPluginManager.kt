@@ -29,7 +29,7 @@ object NuvioPluginManager {
 
     const val MAX_BYTES = 5 * 1024 * 1024
 
-    /** The three well-known Nuvio provider repositories (manifest.json). */
+    /** The built-in Nuvio provider repositories (manifest.json). */
     val DEFAULT_REPOS = listOf(
         Triple(
             "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json",
@@ -45,6 +45,11 @@ object NuvioPluginManager {
             "https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/main/manifest.json",
             "Phisher's Nuvio Repo",
             "Nuvio providers by Phisher98",
+        ),
+        Triple(
+            "https://plugin.eclipsia.dpdns.org/manifest.json",
+            "Eclipsia",
+            "Eclipsia nuvio providers (HDHub4u, VegaMovies, AnimeWorld, …)",
         ),
     )
 

@@ -1,3 +1,9 @@
+## 0.3.71
+
+### Added
+
+- **Eclipsia Nuvio repo is now built in.** The Eclipsia provider manifest (`https://plugin.eclipsia.dpdns.org/manifest.json`) is added alongside the other Nuvio repos, so its providers are available out of the box. It is also part of the `nuvio` / `nuvioall` short name, and can be added on its own with the short name `eclipsia`.
+
 ## 0.3.70
 
 ### Added

@@ -719,7 +719,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val saimuel = nuvio("https://raw.githubusercontent.com/saimuelbr/saimuel-nuvio-repo/refs/heads/main/manifest.json")
         val mooncrown = nuvio("https://raw.githubusercontent.com/mooncrown04/nuviotr/refs/heads/main/manifest.json")
         val kenneth = nuvio("https://raw.githubusercontent.com/KennethJYS/Nuvio-Providers-Latino/refs/heads/main/manifest.json")
-        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth)
+        val eclipsia = nuvio("https://plugin.eclipsia.dpdns.org/manifest.json")
+        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
         put("csrepos", listOf(mega))
@@ -742,6 +743,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("kenneth", listOf(kenneth))
         put("kennethjys", listOf(kenneth))
         put("latino", listOf(kenneth))
+        put("eclipsia", listOf(eclipsia))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -1440,7 +1442,7 @@ fun ExtensionsScreen() {
                     Text(
                         "Short names work too: megarepo (every CloudStream repo), hikari, " +
                             "nuvio, yoru, gowaru, phisher, allinone, michat88, spidey, " +
-                            "saimuel, mooncrown, kennethjys.",
+                            "saimuel, mooncrown, kennethjys, eclipsia.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
