@@ -298,6 +298,30 @@ object CloudflareVerifier {
         if (host != null) blockedHosts.remove(host)
     }
 
+    /**
+     * True when playing [url] would need the "verify you are human" step first:
+     * its host answered a Cloudflare challenge we could not clear, and no
+     * `cf_clearance` cookie for it is in the jar. The source search withholds
+     * such servers (see the detail screen) — listing one only gave the user a
+     * server that failed with "Cloudflare challenge active" the moment it was
+     * picked, while the ones that actually play sat further down the list.
+     *
+     * Once the user HAS done the verification (the extension WebView's globe
+     * button, or the automatic solver), the clearance cookie exists and the
+     * host's servers are listed normally again — which is exactly the rule
+     * asked for: hide what still needs verification, show what does not.
+     */
+    fun needsVerification(url: String, maxAgeMs: Long = 30 * 60_000L): Boolean {
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        if (host.isBlank()) return false
+        val now = System.currentTimeMillis()
+        val challenged = blockedHosts.entries.any { (h, at) ->
+            (host == h || host.endsWith(".$h") || h.endsWith(".$host")) && now - at <= maxAgeMs
+        }
+        if (!challenged) return false
+        return clearanceFor(url) == null
+    }
+
     /** Hidden off-screen solver: loads the challenged URL in an INVISIBLE
      *  WebView (real dimensions so the challenge JS gets a sane viewport, but
      *  never attached to a window and never drawn) and polls the shared cookie

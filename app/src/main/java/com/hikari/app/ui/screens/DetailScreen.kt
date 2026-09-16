@@ -60,6 +60,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -581,6 +582,19 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+private fun cfBlockedProviders(): Set<String> {
+    val ids = HashSet<String>()
+    fun scan(map: Map<String, String>) {
+        for ((id, msg) in map) if (msg.contains("cloudflare", ignoreCase = true)) ids.add(id)
+    }
+    scan(com.hikari.app.cs3.Cs3MainApiProvider.streamErrors)
+    scan(com.hikari.app.providers.HikariProviderAdapter.streamErrors)
+    scan(com.hikari.app.providers.UniversalScraper.streamErrors)
+    scan(com.hikari.app.providers.StremioAddon.streamErrors)
+    scan(com.hikari.app.nuvio.NuvioScraper.streamErrors)
+    return ids
+}
+
 /** One diagnostic line per extension for the sources sheet's empty state:
  *  what each searched addon actually reported ("✓ 3 sources", "✗ timeout",
  *  "✗ cut off after 110s", …). Null when the addon has no recorded outcome. */
@@ -655,6 +669,22 @@ fun DetailScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    // The multi-provider source search must OUTLIVE this screen. Playback now
+    // opens the player the instant Play is tapped, and on a memory-tight device
+    // (the reported Infinix) the activity behind the player can be torn down
+    // while the player is in the foreground — which cancelled a
+    // composition-scoped search mid-flight and left the player with nothing.
+    // That is the "it just keeps saying loading server and then fails / the
+    // search stopped early (LeftCompositionCancellationException)" report. The
+    // search therefore runs on the APPLICATION scope (HikariApp.appScope, never
+    // cancelled) and only touches this screen's state while it is still alive.
+    val screenAlive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(Unit) { onDispose { screenAlive.set(false) } }
+    val onUi: suspend (() -> Unit) -> Unit = { block ->
+        withContext(Dispatchers.Main.immediate) {
+            if (screenAlive.get()) runCatching { block() }
+        }
+    }
 
     var showSheet by remember { mutableStateOf(false) }
     // The full-screen title-card cover shown from the moment the user taps Play
@@ -927,10 +957,29 @@ fun DetailScreen(
         // Local once-only flag: playback launches exactly ONCE per tap (either
         // the feed, the preferred-server grace period, or the final batch) —
         // afterwards new servers are appended to the player's live session,
-        // never re-launched.
-        var launched = false
+        // never re-launched. Atomic because this search now runs on the app
+        // scope while the screen's own reads happen on the main thread.
+        val launched = java.util.concurrent.atomic.AtomicBoolean(false)
+        // The coroutine's own copy of everything found so far. Deliberately NOT
+        // the Compose state: the search outlives this screen, so it keeps its
+        // own list and only mirrors it into [streams] (for the source sheet)
+        // while the screen is alive.
+        var found: List<StreamSource> = emptyList()
         val playableEvery = { list: List<StreamSource> ->
-            list.filter { s -> s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) }
+            list.filter { s ->
+                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) &&
+                    // Servers behind a Cloudflare "verify you are human" wall are
+                    // withheld until that host's clearance cookie exists — i.e.
+                    // until the user has actually done the verification for it
+                    // (manually in the extension's WebView, or via the automatic
+                    // solver). Before, such a server was listed and failed with
+                    // "Cloudflare challenge active" the moment it was picked,
+                    // while the servers that play sat further down the list.
+                    !com.hikari.app.net.CloudflareVerifier.needsVerification(s.url) &&
+                    // A provider whose own answer was a Cloudflare block cannot
+                    // hand out a playable link either.
+                    !(s.providerId.isNotBlank() && s.providerId in cfBlockedProviders())
+            }
                 // Archive links (.zip/.rar/.7z …) are not videos: providers
                 // (4KHDHub's isDirectVideo only checks the hostname, so its
                 // ".mkv.zip" hubcloud links leak through) sometimes hand them
@@ -939,7 +988,8 @@ fun DetailScreen(
                 // pushes archives to the back, so they are never server #1.
                 .sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
-        scope.launch {
+        // NOTE: application scope, NOT the composition's. See [screenAlive].
+        app.appScope.launch {
             try {
                 // Live progress for the player's loading cover. The player
                 // opened the instant Play was tapped, so this line is the
@@ -956,7 +1006,7 @@ fun DetailScreen(
                 // starts playing the instant episode 1 resolves.
                 val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
                 if (ep == null && epForSearch != null) {
-                    selectedEp = epForSearch
+                    onUi { selectedEp = epForSearch }
                     // Hand the already-open player the episode it ended up on, so
                     // its title card, resume key and watch history are per-episode
                     // rather than the movie-level entry.
@@ -1017,7 +1067,8 @@ fun DetailScreen(
                         StreamsLive.setStatus(sessionId, "Re-extracting expired links…")
                         val fresh = vm.getStreams(epForSearch, force = true)
                         if (fresh.isNotEmpty()) {
-                            streams = fresh
+                            found = fresh
+                            onUi { streams = fresh }
                             val freshPlayable = playableEvery(fresh)
                             StreamProbe.warmAsync(freshPlayable)
                             StreamsLive.setStatus(
@@ -1029,21 +1080,40 @@ fun DetailScreen(
                         }
                     }
                 }
-                val startNow = startNow@{
-                    if (launched || playerLaunched) return@startNow
-                    val playable = playableEvery(streams)
+                // Starts playback on the servers found so far. Runs on the main
+                // thread: [launchPlayer] uses this composition's
+                // ActivityResultLauncher, so it may only be called while the
+                // screen is alive.
+                val startNow: suspend () -> Unit = startNow@{
+                    if (launched.get() || playerLaunched) return@startNow
+                    val playable = playableEvery(found)
                     if (playable.isEmpty()) return@startNow
-                    if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
-                        launched = true
-                        showSheet = false
-                        loadingStreams = false
+                    var started = false
+                    onUi {
+                        if (launched.get()) return@onUi
+                        started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos)
+                    }
+                    if (started) {
+                        launched.set(true)
+                        onUi {
+                            showSheet = false
+                            loadingStreams = false
+                        }
+                    } else if (screenAlive.get()) {
+                        // Player could not be opened (bad payload / launch
+                        // failure) — leave the source sheet up with its
+                        // per-extension diagnostics so the user can still pick a
+                        // server.
+                        onUi {
+                            loadingStreams = false
+                            showLoadingBanner = false
+                            showSheet = true
+                        }
                     } else {
-                        // Player could not be opened (bad payload / launch failure)
-                        // — leave the source sheet up with its per-extension
-                        // diagnostics so the user can still pick a server.
-                        loadingStreams = false
-                        showLoadingBanner = false
-                        showSheet = true
+                        // The screen is gone and the player never opened: keep the
+                        // servers on the live session instead, so a player that
+                        // opens later still finds them.
+                        StreamsLive.append(sessionId, playableEvery(found))
                     }
                 }
                 // Live feed: start the instant a playable server appears — unless a
@@ -1052,13 +1122,14 @@ fun DetailScreen(
                     vm.liveStreams.collect { current ->
                         val playable = playableEvery(current)
                         if (playable.isEmpty()) return@collect
-                        streams = current
+                        found = current
+                        onUi { streams = current }
                         // Resolve wrapper URLs ahead of playback so "Select server"
                         // and any failover are instant.
                         StreamProbe.warmAsync(playable)
                         StreamsLive.setStatus(
                             sessionId,
-                            if (launched || playerLaunched) {
+                            if (launched.get() || playerLaunched) {
                                 "Found " + playable.size + " server" +
                                     (if (playable.size == 1) "" else "s") + " — still searching…"
                             } else {
@@ -1067,7 +1138,7 @@ fun DetailScreen(
                                     " — starting playback…"
                             },
                         )
-                        if (launched || playerLaunched) {
+                        if (launched.get() || playerLaunched) {
                             // Player already up — hand it the newly found servers.
                             StreamsLive.append(sessionId, playable)
                         } else if (!wantPreferred || preferredIndex(playable) >= 0) {
@@ -1090,29 +1161,43 @@ fun DetailScreen(
                 val final = vm.getStreams(epForSearch)
                 feed.cancel()
                 grace.cancel()
-                loadingStreams = false
-                streams = final
+                found = final
+                onUi {
+                    loadingStreams = false
+                    streams = final
+                }
                 val playable = playableEvery(final)
                 StreamProbe.warmAsync(playable)
-                if (launched || playerLaunched) {
+                if (launched.get() || playerLaunched) {
                     // Player is up (or already was) — close the sheet and hand it the
                     // complete list.
-                    showSheet = false
+                    onUi { showSheet = false }
                     StreamsLive.append(sessionId, playable)
                 } else if (playable.isNotEmpty()) {
                     // Cached/instant result arrived before the feed attached.
-                    if (launchPlayer(ordered(playable), epForSearch, sessionId, startPos)) {
-                        launched = true
-                        showSheet = false
+                    var started = false
+                    onUi {
+                        if (!launched.get()) {
+                            started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos)
+                        }
+                    }
+                    if (started) {
+                        launched.set(true)
+                        onUi { showSheet = false }
                     } else {
-                        showLoadingBanner = false
-                        showSheet = true
+                        onUi {
+                            showLoadingBanner = false
+                            showSheet = true
+                        }
+                        if (!screenAlive.get()) StreamsLive.append(sessionId, playable)
                     }
                 } else {
                     // Nothing playable anywhere — keep the source sheet up, with the
                     // per-extension diagnostics explaining what failed.
-                    showLoadingBanner = false
-                    showSheet = true
+                    onUi {
+                        showLoadingBanner = false
+                        showSheet = true
+                    }
                 }
                 // The whole source search is over. The player (which opened the
                 // moment Play was tapped) uses this to fail fast when nothing was
@@ -1132,8 +1217,8 @@ fun DetailScreen(
                 // the search is declared finished, so this is what turns an
                 // empty result into a clear message within a second instead
                 // of a minute and a half of nothing.
-                val found = playableEvery(streams).size
-                if (found == 0) {
+                val foundCount = playableEvery(found).size
+                if (foundCount == 0) {
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }

@@ -49,6 +49,22 @@ object StreamProbe {
      *  to force (HLS/DASH) or null to let ExoPlayer sniff a normal container. */
     data class Resolved(val url: String, val mime: String?)
 
+    /**
+     * URLs a probe reached and that answered a TERMINAL failure (an HTTP 5xx, a
+     * 404/410). The player consults this before handing a URL to ExoPlayer: a
+     * server the probe already proved dead would only cost a full prepare +
+     * error timeout again — which is exactly what made a playlist of dead
+     * MovieBlast rows crawl instead of failing over (see PlayerActivity's
+     * [deadHosts]).
+     *
+     * A 401/403 is deliberately NOT remembered: those are usually the header
+     * set, not the host, and the player walks it down to fix them.
+     */
+    private val badUrls = ConcurrentHashMap.newKeySet<String>()
+
+    /** True when a probe has already reached [url] and been told it is dead. */
+    fun knownBad(url: String): Boolean = url.isNotBlank() && url in badUrls
+
     private const val MAX_DEPTH = 3
     private const val HEAD_BYTES = 131_072
 
@@ -277,7 +293,14 @@ object StreamProbe {
         if (System.currentTimeMillis() > deadline) return null
         val response = get(url, headers) ?: return null
         response.use { r ->
-            if (!r.isSuccessful) return null
+            if (!r.isSuccessful) {
+                // Remember a terminal answer (server error, gone) so the player
+                // can skip this URL instead of paying its own prepare + error
+                // timeout to re-discover the same thing. 401/403 are excluded:
+                // they are usually fixed by walking the header set down.
+                if (r.code >= 500 || r.code == 404 || r.code == 410) badUrls.add(url)
+                return null
+            }
             val ct = r.headers["Content-Type"]?.lowercase() ?: ""
             val body = r.body ?: return null
             val head: String = try {

@@ -114,7 +114,11 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val p = provider ?: return emptyList()
         val ep = episode?.let { HikariEpisode(it.number, it.id, it.name, it.image) }
-        return p.getStreams(item.toExt(), ep).map { it.toApp() }
+        // One call at a time into this extension: a bridge provider that keeps
+        // state (see [ProviderGate]) is corrupted by two concurrent passes.
+        return com.hikari.app.providers.ProviderGate.withProvider(config.id) {
+            p.getStreams(item.toExt(), ep).map { it.toApp() }
+        }
     }
 
     // ---- conversions ----

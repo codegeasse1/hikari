@@ -237,6 +237,27 @@ class PlayerActivity : ComponentActivity() {
      *  [freshIndex] uses this to avoid handing back a URL we know is dead. */
     private val triedUrls = HashSet<String>()
 
+    /** Hosts that answered a terminal failure (an HTTP 5xx, a refused
+     *  connection, a DNS failure) this session. Providers hand out several
+     *  qualities of the SAME file from the SAME mirror — MovieBlast's 1080p,
+     *  720p, 360p rows all live on `mbfiles.mbaccess.site` — so when that host
+     *  answers 500 for one quality it answers 500 for the rest. Walking the
+     *  list one dead row at a time cost ~13s per row (the "Found 63 servers but
+     *  it never plays" report: it was grinding through one broken mirror the
+     *  whole time). Servers on a failed host are now tried LAST, not first. */
+    private val deadHosts = HashSet<String>()
+
+    /** Host of [url], or blank when it cannot be parsed. */
+    private fun mirrorHostOf(url: String): String = runCatching {
+        java.net.URI(url).host.orEmpty().lowercase()
+    }.getOrDefault("")
+
+    /** The HTTP status behind a playback error, when there was one. media3 puts
+     *  "Response code: 500" in the cause chain, which [onPlayerError] already
+     *  stringifies into its details blob. */
+    private fun httpStatusOf(details: String): Int? =
+        Regex("Response code: (\\d{3})").find(details)?.groupValues?.get(1)?.toIntOrNull()
+
     /** How many times [refreshSources] has already asked for fresh sources —
      *  bounded so a genuinely dead video fails instead of looping forever. */
     private var refreshAttempts = 0
@@ -1247,13 +1268,14 @@ class PlayerActivity : ComponentActivity() {
      *  URL first (same link across runs), then by server name (signed/tokenized
      *  URLs that differ per run) — or 0 when nothing is remembered. */
     private suspend fun preferredStartIndex(): Int {
-        if (historyKey.isBlank() || sources.isEmpty()) return 0
-        val last = runCatching { (applicationContext as HikariApp).store.lastSource(historyKey) }
-            .getOrNull() ?: return 0
-        val byUrl = if (last.url.isNotBlank()) {
+        if (sources.isEmpty()) return 0
+        val last = if (historyKey.isBlank()) null else runCatching {
+            (applicationContext as HikariApp).store.lastSource(historyKey)
+        }.getOrNull()
+        val byUrl = if (last != null && last.url.isNotBlank()) {
             sources.indexOfFirst { it.url == last.url }
         } else -1
-        val byName = if (byUrl < 0 && last.name.isNotBlank()) {
+        val byName = if (last != null && byUrl < 0 && last.name.isNotBlank()) {
             sources.indexOfFirst { it.name.equals(last.name, ignoreCase = true) }
         } else -1
         // Restore the header variant that actually played last time — but ONLY
@@ -1261,12 +1283,27 @@ class PlayerActivity : ComponentActivity() {
         // different mirror) that may need a completely different header set, so
         // restoring the remembered variant there could pin the player to the
         // wrong variant and skip the full → no-Referer → none walk entirely.
-        if (byUrl >= 0) headerVariant = last.headerVariant.coerceIn(0, 2)
+        if (last != null && byUrl >= 0) headerVariant = last.headerVariant.coerceIn(0, 2)
         return when {
             byUrl >= 0 -> byUrl
             byName >= 0 -> byName
-            else -> 0
+            // Nothing remembered: do not blindly start on row 1. A host that
+            // already answered a terminal failure this session (or a URL a probe
+            // found dead) is skipped, so the tap lands on something that can
+            // actually play instead of burning a full error cycle first.
+            else -> healthyStartIndex()
         }
+    }
+
+    /** First server that is neither on a host that already failed terminally
+     *  this session nor already known-dead from a probe — the best row to start
+     *  playback on. Falls back to row 1 so something always plays. */
+    private fun healthyStartIndex(): Int {
+        val i = sources.indexOfFirst { s ->
+            !s.isTorrent && s.url.isNotBlank() &&
+                mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
+        }
+        return if (i >= 0) i else 0
     }
 
     /** Starts playback — or, when the "don't play directly" setting is on,
@@ -4350,6 +4387,18 @@ class PlayerActivity : ComponentActivity() {
             // ExoPlayer treats them as a progressive container and reports
             // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED on streams that are
             // perfectly playable (the "every yt-dlp source fails" symptom).
+            // A URL a probe has already proved dead is skipped outright when
+            // there is anywhere else to go, instead of paying ExoPlayer's own
+            // error timeout to re-discover it.
+            if (!src.torrentStream && !src.local && StreamProbe.knownBad(src.url)) {
+                val next = nextUntriedIndex()
+                if (next >= 0) {
+                    triedUrls.add(src.url)
+                    noSubsRetry = false
+                    playSource(next)
+                    return
+                }
+            }
             val needsProbe = !src.torrentStream &&
                 StreamProbe.needsResolve(src.url, src.isTorrent, src.isM3u8, src.isMpd)
             if (needsProbe) {
@@ -4406,6 +4455,21 @@ class PlayerActivity : ComponentActivity() {
             probeDialog?.let { runCatching { it.dismiss() } }
             probeDialog = null
             if (currentIndex != index) return@launch
+            if (resolved == null && StreamProbe.knownBad(src.url)) {
+                // The probe reached the host and was told the URL is dead (an
+                // HTTP 5xx/404/410). Handing that to ExoPlayer anyway cost a
+                // full prepare + error cycle per dead server — with a provider
+                // like MovieBlast handing out four dead qualities, that is what
+                // "it keeps loading server and then fails" was. Walk on now,
+                // while other servers are still waiting to be tried.
+                triedUrls.add(src.url)
+                val next = nextUntriedIndex()
+                if (next >= 0) {
+                    noSubsRetry = false
+                    playSource(next)
+                    return@launch
+                }
+            }
             if (resolved != null) applyProbe(index, src, resolved)
             // ALWAYS hand the source to ExoPlayer — resolved when the probe
             // identified a real media URL, otherwise the ORIGINAL url. This is
@@ -5176,6 +5240,22 @@ class PlayerActivity : ComponentActivity() {
             // treats that as a fatal parse error — retry the SAME server with
             // text tracks disabled before giving up on it.
             val code = error.errorCode
+            val httpStatus = httpStatusOf(details)
+            // A 5xx — or a refused/timed-out connection — is the HOST saying
+            // "not this file, not now". The same mirror hands out every quality
+            // of the same video, so it answers the same way for all of them,
+            // and no header set can fix it. Remember the host so the failover
+            // below skips its siblings instead of grinding through them one
+            // 13-second error at a time.
+            val terminalHostFailure = (httpStatus != null && httpStatus >= 500) ||
+                httpStatus == 404 || httpStatus == 410 ||
+                code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+            if (terminalHostFailure) {
+                val h = mirrorHostOf(sources.getOrNull(currentIndex)?.url.orEmpty())
+                if (h.isNotBlank()) deadHosts.add(h)
+            }
             // The video-effects pipeline itself failed — usually a device whose
             // GL stack cannot run media3's frame processor, occasionally an
             // HDR stream we mis-classified. That is NOT the server's fault, so
@@ -5234,7 +5314,9 @@ class PlayerActivity : ComponentActivity() {
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
-            if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) && headerVariant < 2) {
+            if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
+                headerVariant < 2 && !terminalHostFailure
+            ) {
                 headerVariant++
                 // Silent retry — same server, next header set down. The only
                 // message the user sees is "Server failed — trying next" once
@@ -5263,7 +5345,7 @@ class PlayerActivity : ComponentActivity() {
                     sources[i].url !in triedUrls
             }
             if (startedWhileSearching && !liveSearchDone && !sameServerRelinkUsed &&
-                !hasOtherUntried &&
+                !hasOtherUntried && !terminalHostFailure &&
                 refreshAttempts < MAX_REFRESH_ATTEMPTS && isIoFailure(code, headerIssue) &&
                 currentIndex < sources.size
             ) {
@@ -5318,6 +5400,31 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
+     * The next server to walk to after the current one failed: the first server
+     * not yet tried and not on a host that has already failed terminally this
+     * session — else the first untried server — else the next row in the list.
+     * Servers on a dead host are tried LAST, never first: one broken mirror
+     * (MovieBlast's `mbfiles.mbaccess.site`) usually serves several qualities of
+     * the same file, and walking them in order burned the failover on a host we
+     * had already proven useless while a working server sat further down the
+     * list. -1 when there is nothing left to try.
+     */
+    private fun nextUntriedIndex(): Int {
+        var fallback = -1
+        for (i in sources.indices) {
+            if (i == currentIndex) continue
+            val s = sources[i]
+            if (!s.isTorrent && s.url.isBlank()) continue
+            if (s.url.isNotEmpty() && s.url in triedUrls) continue
+            if (fallback < 0) fallback = i
+            val h = mirrorHostOf(s.url)
+            if (h.isBlank() || h !in deadHosts) return i
+        }
+        if (fallback >= 0) return fallback
+        return if (currentIndex + 1 < sources.size) currentIndex + 1 else -1
+    }
+
+    /**
      * Every attempt on the current server is spent: advance to the next one, or
      * — when that was the last — ask the detail screen for a fresh extraction
      * before reporting failure.
@@ -5325,12 +5432,12 @@ class PlayerActivity : ComponentActivity() {
     private fun failoverFromCurrent(details: String, code: Int, headerIssue: Boolean) {
         // Like CloudStream: never strand the user — keep trying the next
         // server automatically on every failure.
-        val hasNext = currentIndex + 1 < sources.size
-        if (hasNext) {
+        val nextIndex = nextUntriedIndex()
+        if (nextIndex >= 0) {
             noSubsRetry = false
             SlowNetTip.onServerFailed()
             Toast.makeText(this, "Server failed — trying next", Toast.LENGTH_SHORT).show()
-            playSource(currentIndex + 1)
+            playSource(nextIndex)
             return
         }
         // No server left. If this looks like the servers simply died — expired

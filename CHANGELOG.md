@@ -1,3 +1,57 @@
+## 0.3.85
+
+**The extension crash is fixed, one broken mirror can no longer eat the whole
+failover, the source search survives the player opening, Cloudflare-gated
+servers stay hidden until they are verified, and the language you pick applies
+on the first tap.**
+
+- **Crash fixed — `ArrayIndexOutOfBoundsException` thrown out of an
+  extension.** The report (`length=49; index=49` at `java.util.ArrayList.add`,
+  raised inside a `Cs3BridgeProvider` callback while its coroutine was already
+  cancelling) was a plugin mutating a plain `ArrayList` from more than one
+  thread at once. Hikari can no longer be part of that race: the stream
+  callbacks it hands an extension are now `CopyOnWriteArrayList`s, and calls
+  into any one extension are serialised (a lock per extension id, so a wedged
+  extension cannot block the others) — Hikari never has two calls inside the
+  same extension at the same time.
+- **"Loading server… then it fails", with only one dead mirror in the list.**
+  A host that answers HTTP 500/404/410 (or refuses the connection) is now
+  remembered for the session: its sibling rows — MovieBlast's 1080p/720p/360p
+  all live on the same `mbfiles.mbaccess.site` — are skipped instead of being
+  walked one 13-second error at a time, and a 5xx no longer spends the three
+  header-variant retries first (no header set can fix a server error). The
+  probe remembers the same answers, so a URL a probe already proved dead is
+  skipped outright, and playback starts on the first *healthy* server rather
+  than blindly on row 1.
+- **The source search no longer stops early when the player opens.** The
+  multi-extension search ran on the composition's scope, so tearing the detail
+  screen down behind the player (low-memory devices) cancelled it mid-flight —
+  the reported *"The search stopped early (LeftCompositionCancellationException)"*
+  with an empty server list. It now runs on the application scope, keeps its own
+  list of what it found, and only touches the screen's state while the screen is
+  still alive.
+- **Cloudflare-gated servers are only listed once the host is verified.**
+  A source whose host answered a Cloudflare challenge and has no `cf_clearance`
+  cookie yet is withheld from the list — so the servers shown are the ones that
+  actually play. If you have already done the verification for that host
+  (manually in the extension's WebView, or via the automatic solver), its
+  servers appear normally again.
+- **Language applies on the first tap.** Choosing a language recorded the
+  choice *after* recreating the activity, on the dying composition's scope, so
+  the write was cancelled and the app came back in the old language until the
+  same option was picked again. The choice is now held in memory and persisted
+  on the application scope *before* the locale is applied, so the first tap
+  works, and the override is forgotten as soon as the store agrees.
+- **Settings is fully translated.** The Settings index folders (Player, Sources
+  & Extensions, Downloads, Appearance, Privacy & Browsing, Logs & Diagnostics,
+  About & Updates, with their subtitles and blurbs) were never passed through
+  the translator, and five strings whose keys had been stored with escaped
+  quotes could never match — that is why whole cards stayed English. Both are
+  fixed, and the 28 missing strings are translated in all 21 languages.
+- **"System default (English)"** is now how the language picker names the
+  follow-the-phone option, instead of an empty bracket, and it stays in English
+  on purpose so it reads the same in every language.
+
 ## 0.3.84
 
 **"Play as soon as the first server is found" now really plays on the first

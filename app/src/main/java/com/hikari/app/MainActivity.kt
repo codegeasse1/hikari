@@ -106,12 +106,19 @@ class MainActivity : AppCompatActivity() {
             // that wraps a literal with tr(...) re-renders in the new language
             // the moment the choice changes — app-wide, live, no restart.
             val languageFlow = remember { store.languageFlow() }
-            val languageTag by languageFlow.collectAsState(initial = "")
+            val storedLanguage by languageFlow.collectAsState(initial = "")
+            // The picker's choice is kept in memory (LanguageManager.pending)
+            // until the store catches up, so the activity recreation the locale
+            // change triggers can never show the previous language.
+            val languageTag = com.hikari.app.ui.LanguageManager.pending() ?: storedLanguage
             val i18nMap = remember(languageTag) {
                 com.hikari.app.i18n.I18n.mapFor(this@MainActivity, languageTag)
             }
             LaunchedEffect(i18nMap) {
                 com.hikari.app.i18n.I18n.setCurrent(i18nMap)
+            }
+            LaunchedEffect(storedLanguage) {
+                com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
             }
 
             // Accent colours (Settings → Appearance). The app accent repaints

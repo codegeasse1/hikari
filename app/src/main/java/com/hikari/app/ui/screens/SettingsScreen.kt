@@ -605,12 +605,12 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    folder.title,
+                    tr(folder.title),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    folder.subtitle,
+                    tr(folder.subtitle),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -618,7 +618,7 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            folder.blurb,
+            tr(folder.blurb),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -659,13 +659,13 @@ private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    folder.title,
+                    tr(folder.title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    folder.subtitle,
+                    tr(folder.subtitle),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1332,14 +1332,15 @@ private fun UniversalExtractionCard(app: HikariApp) {
 
 @Composable
 private fun LanguageCard(app: HikariApp, current: String) {
-    val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     val selected = LanguageManager.ALL.firstOrNull { it.tag == current } ?: LanguageManager.SYSTEM
-    val selectedName = if (selected.tag.isBlank()) {
-        stringResource(R.string.settings_language_system)
-    } else {
-        selected.name
-    }
+    // The System-default entry is deliberately NOT translated: its job is to say
+    // "unless you pick otherwise, this app speaks English", and that reads best
+    // as the plain English words followed by the language actually in effect —
+    // ("System default (English)"). Translating it left the brackets empty (or
+    // nonsense) in every language but English.
+    val systemLabel = "System default (English)"
+    val selectedName = if (selected.tag.isBlank()) systemLabel else selected.name
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1389,11 +1390,15 @@ private fun LanguageCard(app: HikariApp, current: String) {
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 LanguageManager.ALL.forEach { lang ->
                     DropdownMenuItem(
-                        text = { Text("${lang.flag}  ${if (lang.tag.isBlank()) stringResource(R.string.settings_language_system) else lang.name}") },
+                        text = { Text("${lang.flag}  ${if (lang.tag.isBlank()) systemLabel else lang.name}") },
                         onClick = {
                             menuOpen = false
-                            LanguageManager.apply(lang.tag)
-                            scope.launch { runCatching { app.store.setLanguage(lang.tag) } }
+                            // Persist FIRST (in memory + on the app scope), then
+                            // hand the locale to the platform: the apply recreates
+                            // the activity, and a write launched on the dying
+                            // composition's scope was cancelled by it — which is
+                            // why the same language had to be picked twice.
+                            LanguageManager.choose(app, lang.tag)
                         },
                         leadingIcon = {
                             if (lang.tag == selected.tag) {
