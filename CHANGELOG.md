@@ -1,3 +1,18 @@
+## 0.3.83
+
+**Build fix — 0.3.82 never produced an APK.** Two Kotlin compile errors in the
+extensions screen stopped the release build; both are inside the new machine-
+readable "bundle" repo importer and the i18n pass, so no shipped behaviour
+changes.
+
+- `for (((url, _), name) in fresh.zip(names))` — Kotlin's `for` destructuring
+  grammar has no nested patterns (only lambda parameters and `val` allow them),
+  so the parser rejected the line and every reference below it cascaded into
+  "unresolved reference 'url'". It is now a plain indexed loop.
+- `tr("CloudStream")` / `tr("Hikari")` / `tr("Nuvio")` were called inside the
+  `LazyColumn` (a `LazyListScope`, not a composable scope). The three group
+  titles are now resolved above the list and passed in.
+
 ## 0.3.82
 
 **Three crashes/never-ends are gone: plugin toasts no longer kill the app, the

@@ -1120,7 +1120,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }.awaitAll()
         }
         var added = 0
-        for (((url, _), name) in fresh.zip(names)) {
+        for (i in fresh.indices) {
+            val (url, _) = fresh[i]
+            val name = names.getOrElse(i) { url }
             val ok = runCatching {
                 store.addCs3Repo(Cs3Repo(url = url, name = name, kind = RepoKind.CS3))
             }.isSuccess
@@ -3575,6 +3577,9 @@ private fun SourcesOverviewView(
 ) {
     var extFilter by remember { mutableStateOf("") }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    val cs3GroupTitle = tr("CloudStream")
+    val hikiGroupTitle = tr("Hikari")
+    val nuvioGroupTitle = tr("Nuvio")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3626,7 +3631,7 @@ private fun SourcesOverviewView(
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             repoGroup(
-                title = tr("CloudStream"),
+                title = cs3GroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.CS3 },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3636,7 +3641,7 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = tr("Hikari"),
+                title = hikiGroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.HIKARI },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3646,7 +3651,7 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = tr("Nuvio"),
+                title = nuvioGroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.NUVIO },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
