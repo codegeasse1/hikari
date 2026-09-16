@@ -431,7 +431,7 @@ class PlayerActivity : ComponentActivity() {
     private var speedIndex = 2
 
     /** True while the controls are locked — the media3 controller stays hidden
-     *  and only the center unlock button remains touchable. */
+     *  and only the small top-right unlock button remains touchable. */
     private var controlsLocked = false
 
     /** Last time the "Locked — …" toast was shown, so a burst of taps while the
@@ -1448,8 +1448,8 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Locks the controls: the media3 controller stays hidden and only the
-     *  center unlock button remains touchable (like the reference player's
-     *  Lock button). */
+     *  small top-right unlock button remains touchable (like the reference
+     *  player's Lock button), so a locked film is not covered by a padlock. */
     private fun lockControls() {
         controlsLocked = true
         val pv = playerView ?: return
