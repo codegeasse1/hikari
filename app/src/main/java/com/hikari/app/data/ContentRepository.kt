@@ -731,8 +731,6 @@ class ContentRepository(private val manager: ProviderManager) {
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-            var result: List<StreamSource> = emptyList()
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
