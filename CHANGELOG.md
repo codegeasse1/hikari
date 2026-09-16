@@ -1,3 +1,16 @@
+## 0.3.80
+
+**Every row in the server chooser is now the same small capsule.**
+
+- **Fixed the oversized, extra-round pill on rows with a long server name.** A
+  row's roundness comes from its height (the corner radius is clamped to half of
+  it), and the label was allowed to wrap onto a second line. So a long
+  "Provider (Repo) · Plugin" name — the first Hikari servers, right under the
+  CloudStream ones — made a two-line label plus the host line: a visibly fatter,
+  rounder capsule than its neighbours. The label is now a single line with the
+  tail ellipsised, and the host line is single-line too, so every row on screen
+  is exactly one label line plus one host line.
+
 ## 0.3.79
 
 **The crash on opening servers is fixed, "my other repo's servers are missing" is

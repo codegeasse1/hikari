@@ -2310,7 +2310,14 @@ class PlayerActivity : ComponentActivity() {
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
                 dpText(12.5f)
-                maxLines = 2
+                // One line, always. A row is a capsule, so its HEIGHT decides how
+                // round it reads (the corner radius is clamped to half of it), and
+                // a label that wrapped to a second line made those rows a visibly
+                // fatter, rounder pill than the rows beside them — the long
+                // "Provider (Repo) · Plugin" server names sat next to the short
+                // CloudStream ones and looked like a different component. The tail
+                // is ellipsised instead of pushing the capsule taller.
+                maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -2320,7 +2327,10 @@ class PlayerActivity : ComponentActivity() {
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
                     dpText(10f)
-                    maxLines = 2
+                    // Same rule for the secondary line, so every row on screen is
+                    // exactly one label line plus one sub line: identical capsules.
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
                 }, LinearLayout.LayoutParams(
