@@ -202,6 +202,13 @@ class WebViewActivity : ComponentActivity() {
         verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
         providerId = intent.getStringExtra("providerId")
         val forceTranslate = intent.getBooleanExtra("translate", false)
+        // Record every open (and why) so a "the site opened by itself" report
+        // can be traced in Settings › Logs & diagnostics.
+        com.hikari.app.data.Logs.log(
+            "WebView",
+            "open \"$startUrl\" (title=\"$pageTitle\", verifyHost=${verifyHost ?: "-"}, " +
+                "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"})"
+        )
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100

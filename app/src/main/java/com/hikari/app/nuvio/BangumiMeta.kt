@@ -36,7 +36,7 @@ object BangumiMeta {
     data class Ep(val number: Int, val name: String?, val airDate: String?)
 
     private const val BASE = "https://api.bgm.tv"
-    private const val UA = "Hikari/0.3.69 (Android; +https://perchance.org/hikari)"
+    private const val UA = "Hikari/0.3.70 (Android; +https://perchance.org/hikari)"
 
     /** Subjects that must never join the main numbering: movies and specials
      *  carry their own 1..n numbering on Bangumi and would collide with (and

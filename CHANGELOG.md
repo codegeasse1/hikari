@@ -1,3 +1,17 @@
+## 0.3.70
+
+### Added
+
+- **Short names for repositories.** In Extensions › Add repository you can type a name instead of a full URL: `megarepo` adds every CloudStream repo, `hikari` adds the Hikari extensions repo, and `nuvio` adds every Nuvio repo listed on nuvioplugin.com — or add a single one by name (`yoru`, `gowaru`, `phisher`, `allinone`, `michat88`, `spidey`, `saimuel`, `mooncrown`, `kennethjys`).
+
+### Fixed
+
+- **A site no longer opens itself in the WebView.** When a Cloudflare check could not be passed by the background solver, the app opened the site's page in a visible WebView on its own — and since the clearance cookie was normally already cached, it did not show a challenge at all: it landed straight on the ad-heavy site page, and it kept re-opening for every challenged host and every challenged request. That automatic launch is gone. The WebView now only opens when you ask for it, from the globe on Home. The invisible background solve and the "Cloudflare check needed on <host> — open the globe on Home, then search again" hint are unchanged.
+
+### Changed
+
+- **Logs** now record every WebView open (URL, title, and why it was opened), so a future "it opened by itself" report can be traced in Settings › Logs & diagnostics.
+
 ## 0.3.69
 
 ### Added

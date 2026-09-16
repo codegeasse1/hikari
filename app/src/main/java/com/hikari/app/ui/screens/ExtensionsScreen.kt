@@ -692,11 +692,94 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return emptyList()
     }
 
+    /**
+     * Short names the "Add repository" dialog accepts in place of a full URL —
+     * e.g. "megarepo" (every CloudStream repo), "hikari", or the Nuvio repos
+     * listed on nuvioplugin.com. Each name maps to one or more real repo URLs,
+     * and the alias carries its own kind so the name works from any tab.
+     */
+    private data class RepoAlias(val url: String, val kind: RepoKind)
+
+    private val REPO_ALIASES: Map<String, List<RepoAlias>> = buildMap<String, List<RepoAlias>> {
+        val mega = RepoAlias(
+            "https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json",
+            RepoKind.CS3,
+        )
+        val hikari = RepoAlias(
+            "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json",
+            RepoKind.HIKARI,
+        )
+        fun nuvio(url: String) = RepoAlias(url, RepoKind.NUVIO)
+        val yoru = nuvio("https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json")
+        val gowaru = nuvio("https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json")
+        val phisher = nuvio("https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/main/manifest.json")
+        val allInOne = nuvio("https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/refs/heads/main/manifest.json")
+        val michat = nuvio("https://raw.githubusercontent.com/michat88/nuvio-providers/refs/heads/main/manifest.json")
+        val spidey = nuvio("https://raw.githubusercontent.com/Abinanthankv/NuvioRepo/refs/heads/master/manifest.json")
+        val saimuel = nuvio("https://raw.githubusercontent.com/saimuelbr/saimuel-nuvio-repo/refs/heads/main/manifest.json")
+        val mooncrown = nuvio("https://raw.githubusercontent.com/mooncrown04/nuviotr/refs/heads/main/manifest.json")
+        val kenneth = nuvio("https://raw.githubusercontent.com/KennethJYS/Nuvio-Providers-Latino/refs/heads/main/manifest.json")
+        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth)
+        put("megarepo", listOf(mega))
+        put("mega", listOf(mega))
+        put("csrepos", listOf(mega))
+        put("hikari", listOf(hikari))
+        put("hikariextensions", listOf(hikari))
+        put("nuvio", everyNuvio)
+        put("nuvioall", everyNuvio)
+        put("yoru", listOf(yoru))
+        put("yoruix", listOf(yoru))
+        put("gowaru", listOf(gowaru))
+        put("phisher", listOf(phisher))
+        put("allinone", listOf(allInOne))
+        put("d3adlyrocket", listOf(allInOne))
+        put("michat", listOf(michat))
+        put("michat88", listOf(michat))
+        put("spidey", listOf(spidey))
+        put("saimuel", listOf(saimuel))
+        put("saimuelbr", listOf(saimuel))
+        put("mooncrown", listOf(mooncrown))
+        put("kenneth", listOf(kenneth))
+        put("kennethjys", listOf(kenneth))
+        put("latino", listOf(kenneth))
+    }
+
+    /** A pasted short name (case-insensitive) resolved to its repo(s), or null
+     *  when the input is a real URL / unknown name. */
+    private fun resolveRepoAlias(raw: String): List<RepoAlias>? {
+        val key = raw.trim().lowercase()
+            .removePrefix("@")
+            .removeSuffix(".json")
+            .trimEnd('/')
+        return REPO_ALIASES[key]
+    }
+
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
-        val url = rawUrl.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            return Result.failure(Exception("Must start with http(s)://"))
+        val trimmed = rawUrl.trim()
+        resolveRepoAlias(trimmed)?.let { aliases ->
+            var first: Cs3Repo? = null
+            var lastError: Throwable? = null
+            for (alias in aliases) {
+                val result = addRepoUrl(alias.url, alias.kind)
+                val added = result.getOrNull()
+                if (added != null) {
+                    if (first == null) first = added
+                } else {
+                    lastError = result.exceptionOrNull()
+                }
+            }
+            return first?.let { Result.success(it) }
+                ?: Result.failure(lastError ?: Exception("Could not add \"$trimmed\""))
         }
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            return Result.failure(
+                Exception("Must start with http(s):// — or a short name (megarepo, hikari, nuvio, …)")
+            )
+        }
+        return addRepoUrl(trimmed, kind)
+    }
+
+    private suspend fun addRepoUrl(url: String, kind: RepoKind): Result<Cs3Repo> {
         val file = if (kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
         return withContext(Dispatchers.IO) {
             runCatching {
@@ -1352,6 +1435,14 @@ fun ExtensionsScreen() {
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
                         }
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Short names work too: megarepo (every CloudStream repo), hikari, " +
+                            "nuvio, yoru, gowaru, phisher, allinone, michat88, spidey, " +
+                            "saimuel, mooncrown, kennethjys.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
