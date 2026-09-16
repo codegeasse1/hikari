@@ -3252,7 +3252,16 @@ private fun pluginStatus(p: ContentProvider): String? {
     }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
-    if (err != null) return err.take(200)
+    if (err != null) {
+        // A verification wall is reported in Hikari's own words: the
+        // extension's raw text is about CloudStream's settings screen and is
+        // meaningless here (see CloudflareVerifier.isVerificationMessage).
+        if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)) {
+            return "Site needs a Cloudflare verification — open this extension on Home " +
+                "and tap the WebView (globe) icon."
+        }
+        return err.take(200)
+    }
     if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
     return null
 }

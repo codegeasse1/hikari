@@ -63,15 +63,6 @@ class ContentRepository(private val manager: ProviderManager) {
         val crossFound = ConcurrentHashMap<String, String>()
         val crossInstalled = ConcurrentHashMap<String, Int>()
 
-        /** A single pass-level note for the chooser's hint — currently the host
-         *  that needed a Cloudflare verification (see CloudflareVerifier). Kept
-         *  separate from the per-repo verdicts on purpose: the block belongs to
-         *  the SITE, not to one repo's catalog, and attributing it to whichever
-         *  repo happened to be searching would repeat the mistake that made a
-         *  Cloudflare block read as "this repo has no such title". */
-        @Volatile
-        var crossNote: String? = null
-
         @Volatile
         var crossStatusVersion: Long = 0L
             private set
@@ -740,17 +731,8 @@ class ContentRepository(private val manager: ProviderManager) {
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
-            // A Cloudflare-blocked repo must not eat the pass: while these
-            // searches run, each hidden solve gets a short budget and only a
-            // couple run at once (see CloudflareVerifier). The block is recorded
-            // and reported instead, so one challenged host cannot hold a search
-            // slot for its full 20s and starve the repos still waiting to be
-            // asked. The flag also stops a search from throwing verification
-            // windows at the user.
-            val solveBudgetBefore = CloudflareVerifier.hiddenSolveBudgetMs
-            CloudflareVerifier.bulkSearchActive = true
-            CloudflareVerifier.hiddenSolveBudgetMs = NetTuning.timeout(6_000L)
-            crossNote = null
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            var result: List<StreamSource> = emptyList()
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
@@ -1002,14 +984,6 @@ class ContentRepository(private val manager: ProviderManager) {
                         "$repo — never reached (the pass ended before asking it)"
                 }
                 crossRunning.clear()
-                // A Cloudflare block belongs to the SITE, not to one repo: keep
-                // it as a single pass-level note so the hint can say what really
-                // happened instead of the repos it touched looking like empty
-                // catalogs.
-                val blockedHost = CloudflareVerifier.blockedHost()
-                crossNote = blockedHost?.let {
-                    "Cloudflare check needed on $it — open the globe (verify) on Home, then search again"
-                }
                 bumpCrossStatus()
                 // One line that answers "were the other engines even asked,
                 // and if so what happened?" — without scrolling through one
@@ -1042,8 +1016,6 @@ class ContentRepository(private val manager: ProviderManager) {
                         (if (examples.isBlank()) "" else " · e.g. $examples"),
                 )
             } finally {
-                CloudflareVerifier.bulkSearchActive = false
-                CloudflareVerifier.hiddenSolveBudgetMs = solveBudgetBefore
                 scope.cancel()
             }
             // Same torrent/video surfaced by several addons = one entry.

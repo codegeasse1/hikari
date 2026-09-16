@@ -128,14 +128,9 @@ class HikariApp : Application() {
             )
         }
         providers = ProviderManager(store)
-        // Cloudflare auto-solve (Settings → "Solve Cloudflare checks
-        // automatically", default OFF): read synchronously so the very first
-        // network request of the launch already respects the user's choice —
-        // off means no Cloudflare challenge is ever loaded automatically.
-        runCatching {
-            com.hikari.app.net.CloudflareVerifier.autoOpenEnabled =
-                kotlinx.coroutines.runBlocking { store.cfAutoSolve() }
-        }
+        // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
+        // verification page opens only when the user taps the WebView (globe)
+        // button themselves (see CloudflareVerifier).
         // "Your connection looks slow?" tip: measures in the background while a
         // play is starting and only speaks up with real evidence (see SlowNetTip).
         SlowNetTip.init(this)

@@ -328,14 +328,27 @@
         </LinearLayout>
     </FrameLayout>
 
-    <!-- Shown when controls are locked: the only way back to the controls. -->
-    <TextView
+    <!-- Shown when controls are locked: the only way back to the controls, and
+         deliberately SMALL and out of the way, sitting exactly where the lock
+         button itself sits in the controller's top bar (same top-right corner,
+         offsets chosen so the two icons' centres line up, so tapping the same
+         spot unlocks). An earlier build put a big 64dp padlock dead centre,
+         which sat on top of the picture for the whole film — watching a locked
+         movie was ruined by the button itself. Brightness/volume swipes and
+         playback keep working while locked; this icon is the only thing drawn. -->
+    <ImageButton
         android:id="@+id/unlock_btn"
-        android:layout_width="64dp"
-        android:layout_height="64dp"
-        android:layout_gravity="center"
-        android:background="@drawable/chip_bg"
-        android:padding="18dp"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="5dp"
+        android:layout_marginEnd="4dp"
+        android:src="@drawable/ic_unlock"
+        android:tint="#FFFFFF"
+        android:background="@drawable/circle_glass_ripple"
+        android:scaleType="centerInside"
+        android:padding="6dp"
+        android:contentDescription="@string/cd_lock_controls"
         android:visibility="gone" />
 
     <LinearLayout

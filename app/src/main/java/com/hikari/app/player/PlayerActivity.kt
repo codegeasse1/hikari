@@ -399,7 +399,7 @@ class PlayerActivity : ComponentActivity() {
     private var resizeBtn: ImageButton? = null
     private var skipBtn: TextView? = null
     private var rotateBtn: TextView? = null
-    private var unlockBtn: TextView? = null
+    private var unlockBtn: ImageButton? = null
     private var playHint: TextView? = null
 
     /** The favourite toggled by the top-bar heart button, and whether it is
@@ -433,6 +433,10 @@ class PlayerActivity : ComponentActivity() {
     /** True while the controls are locked — the media3 controller stays hidden
      *  and only the center unlock button remains touchable. */
     private var controlsLocked = false
+
+    /** Last time the "Locked — …" toast was shown, so a burst of taps while the
+     *  controls are locked cannot stack a dozen toasts. */
+    private var lockToastAt = 0L
 
     /** Auto-rotation already applied for the current source (once the screen
      *  matched the video's aspect we stop fighting the user's rotate button). */
@@ -545,6 +549,16 @@ class PlayerActivity : ComponentActivity() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (suppressNextTap) {
                     suppressNextTap = false
+                    return true
+                }
+                if (controlsLocked) {
+                    // Brightness/volume swipes and playback carry on working
+                    // while locked; only the controls stay hidden. Say so once
+                    // in a while so a tap doesn't look like a dead screen.
+                    if (System.currentTimeMillis() - lockToastAt > 4_000L) {
+                        lockToastAt = System.currentTimeMillis()
+                        Toast.makeText(this@PlayerActivity, "Locked — tap the small lock icon to unlock", Toast.LENGTH_SHORT).show()
+                    }
                     return true
                 }
                 toggleController()
@@ -817,8 +831,6 @@ class PlayerActivity : ComponentActivity() {
             p.seekTo(target)
         }
         unlockBtn?.setOnClickListener { unlockControls() }
-        unlockBtn?.background = ContextCompat.getDrawable(this, R.drawable.ic_unlock)
-        unlockBtn?.setPadding(0, 0, 0, 0)
 
         // ---- Player accent, control layout, video enhance ------------------
         // The accent comes from the AccentStore mirror (Settings → Appearance →
@@ -910,6 +922,10 @@ class PlayerActivity : ComponentActivity() {
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     val task = Runnable {
                         // Finger has stayed down ≥2s → play at 2× until lift.
+                        // Not while the controls are locked: the lock exists to
+                        // stop accidental interaction, and a speed change is
+                        // very audible.
+                        if (controlsLocked) return@Runnable
                         holdingFast = true
                         applySpeed(2f)
                     }
@@ -1508,6 +1524,9 @@ class PlayerActivity : ComponentActivity() {
     /** Double-tap seek: left half rewinds 10s, right half forwards 10s
      *  (matching the 10s shown on the centre rewind/forward buttons). */
     private fun seekByTap(x: Float) {
+        // Locked = watch only: a stray double-tap (very easy with a thumb
+        // resting on the screen) must not jump the position.
+        if (controlsLocked) return
         val p = player ?: return
         val mid = (playerView?.width ?: resources.displayMetrics.widthPixels) / 2f
         val forward = x >= mid
@@ -3460,7 +3479,14 @@ class PlayerActivity : ComponentActivity() {
                 val total = ContentRepository.crossInstalled[e.key]
                 if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
             }
-        val verdicts = ContentRepository.crossVerdict.values.toList()
+        // Cloudflare verdicts are dropped: an extension's own wording
+        // ("Cloudflare blocked. Go to Settings 'n Bypass Cloudflare.") is not
+        // something to read in the server chooser — the Home screen reports a
+        // verification wall in Hikari's own words instead.
+        val allVerdicts = ContentRepository.crossVerdict.values.toList()
+        val verdicts = allVerdicts.filterNot {
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it.substringAfter(" — ", it))
+        }
         val unfinished = verdicts.count {
             val b = ContentRepository.crossReasonBucket(it.substringAfter(" — ", it))
             b == "not reached (pass ended)" || b == "unfinished"
@@ -3492,11 +3518,8 @@ class PlayerActivity : ComponentActivity() {
             } ?: verdicts.firstOrNull()
             actionable?.let { " · e.g. " + oneLine(it).take(56) }.orEmpty()
         } else ""
-        // A Cloudflare block belongs to the site, not to one repo; it is the one
-        // thing here the user can actually FIX, so it always gets a line.
-        val note = ContentRepository.crossNote?.let { " · $it" }.orEmpty()
         return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
-            (if (breakdown.isBlank()) "" else " · $breakdown") + why + note
+            (if (breakdown.isBlank()) "" else " · $breakdown") + why
     }
 
     /** A reason can come straight from a plugin's exception text — collapse it

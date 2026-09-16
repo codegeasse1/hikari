@@ -442,10 +442,11 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.WEBVIEW_POPUP] = enabled }
     }
 
-    /** Automatic (invisible) Cloudflare challenge solving. Default OFF: a
-     *  challenge then only records the blocked host so the UI can offer the
-     *  deliberate globe-button verification — nothing loads a Cloudflare check
-     *  on its own. */
+    /** Legacy preference: "Solve Cloudflare checks automatically" used to exist
+     *  in Settings, and the value is left in place so an old install's stored
+     *  key still reads back cleanly. NOTHING reads it any more and the switch is
+     *  gone on purpose: no Cloudflare challenge is ever loaded on its own, so
+     *  there is nothing to toggle (see CloudflareVerifier). */
     fun cfAutoSolveFlow(): Flow<Boolean> =
         store.data.map { it[K.CF_AUTO_SOLVE] ?: false }
 

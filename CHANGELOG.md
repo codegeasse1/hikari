@@ -1,3 +1,49 @@
+## 0.3.86
+
+**The crash is fixed at its source, a verification page can never open on its own
+again, the extension's own Cloudflare wording is gone from the app, and a locked
+player stops covering the film.**
+
+- **Crash fixed — `NoSuchMethodError: getWebViewUserAgent1()`, on every
+  Cloudflare-fronted extension.** CloudStream's `CloudflareKiller` (built into
+  the jar) is now shadowed by Hikari's own implementation with the exact same
+  public method table, so plugin bytecode still links. The old class was
+  compiled against an Android API the jar's own `WebViewResolver` stub never
+  declared — every request that reached it died on an OkHttp dispatcher thread
+  (`CloudflareKiller.proceed`), which is what kept putting "app crashed on a
+  previous launch" on Home. As a second line of defence,
+  `WebViewResolver.getWebViewUserAgent1()` now exists.
+- **Nothing opens a WebView by itself.** The invisible Cloudflare solver is
+  gone, and so is the jar's `CloudflareKiller`, which used to load the
+  challenged site — a real page load — straight from the networking stack on
+  any 403/503. A challenge is now simply recorded, and the verification happens
+  only when you tap the WebView (globe) button. The "Solve Cloudflare checks
+  automatically" setting is gone with it: there is nothing left to toggle.
+- **Your verification now sticks.** The jar's class also called
+  `CookieManager.removeAllCookies()` from its constructor, wiping the
+  `cf_clearance` you had just earned — which is why verifying never seemed to
+  change anything. Hikari's replacement only ever *reads* the cookie jar and
+  reuses the clearance once it exists.
+- **The extension's Cloudflare text is gone from the app.** *"Cloudflare
+  blocked. Go to Settings 'n Bypass Cloudflare."* is a message about
+  CloudStream's settings screen; it no longer appears in the server list, the
+  per-extension diagnostics, or the player's "other repos" hint. A Cloudflare
+  answer also no longer hides a whole provider from the source list.
+- **On Home, a verification wall is explained in Hikari's own words.** Pick
+  that extension as your provider and it says its site needs a verification and
+  gives you an **Open WebView** button that opens it — the only place the
+  message appears, because it is the only place you can act on it. The
+  extension list says the same, in one line.
+- **Locking the player no longer ruins the film.** The big padlock that used to
+  sit in the middle of the picture all through the movie is gone; in its place
+  is a small icon in the top-right corner, exactly where the Lock button lives
+  in the controls, so tapping the same spot unlocks it again.
+- **Brightness and volume keep working while locked** — swipe up/down on the
+  left or right half as usual. What no longer works while locked is the
+  accidental stuff: a double-tap can't seek, and a finger held down can't jump
+  to 2x speed. A tap while locked says "Locked — tap the small lock icon to
+  unlock" instead of looking like a dead screen.
+
 ## 0.3.85
 
 **The extension crash is fixed, one broken mirror can no longer eat the whole

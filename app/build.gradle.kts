@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 109
-        versionName = "0.3.85"
+        versionCode = 110
+        versionName = "0.3.86"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -101,6 +101,20 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/network/ — so drop the
         // stub classes here to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/network/WebViewResolver*.class")
+        // The jar's CloudflareKiller is the Android build of CloudStream's
+        // auto Cloudflare solver: its init() WIPES the WebView cookie jar
+        // (`CookieManager.removeAllCookies`), and on a 403/503 it loads the
+        // challenged site in a WebView all by itself — no user tap. It also
+        // calls `WebViewResolver.Companion.getWebViewUserAgent1()`, which the
+        // jar's own WebViewResolver stub never declared, so it crashed the app
+        // with NoSuchMethodError any time an extension (Cinemacity's
+        // Cloudflare-bypass interceptor) wrapped a request with it. Shadow it
+        // with app/src/main/java/com/lagradost/cloudstream3/network/
+        // CloudflareKiller.kt (same public method table as the jar's class, so
+        // plugin bytecode still links) — a version that never opens a WebView,
+        // never clears cookies, and simply reuses the clearance the user
+        // earned with the app's own verify button.
+        exclude("com/lagradost/cloudstream3/network/CloudflareKiller*.class")
         // The jar's CloudStreamApp is compiled against Coil 3 (it implements
         // coil3.SingletonImageLoader.Factory), which this app does NOT bundle
         // (it ships Coil 2) — so any plugin that touches the class dies with

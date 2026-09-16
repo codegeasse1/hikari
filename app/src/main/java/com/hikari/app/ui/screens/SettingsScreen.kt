@@ -1421,14 +1421,12 @@ private fun WebViewSafetyCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var redirectProtection by remember { mutableStateOf(true) }
     var popupProtection by remember { mutableStateOf(true) }
-    var cfAutoSolve by remember { mutableStateOf(false) }
     var allowedRedirects by remember { mutableStateOf(listOf<String>()) }
     var newAllowedDomain by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         redirectProtection = app.store.webviewRedirect()
         popupProtection = app.store.webviewPopup()
-        cfAutoSolve = app.store.cfAutoSolve()
         allowedRedirects = app.store.webviewRedirectAllow()
     }
 
@@ -1490,28 +1488,11 @@ private fun WebViewSafetyCard(app: HikariApp) {
             )
         }
         Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Solve Cloudflare checks automatically"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Off: nothing opens on its own. On: Hikari tries to clear a \"verify you are human\" page in an invisible web view while it loads."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = cfAutoSolve,
-                onCheckedChange = {
-                    cfAutoSolve = it
-                    com.hikari.app.net.CloudflareVerifier.autoOpenEnabled = it
-                    scope.launch { runCatching { app.store.setCfAutoSolve(it) } }
-                }
-            )
-        }
+        Text(
+            tr("Nothing opens in a web view on its own — not ads, not pop-ups, and not a site's human-verification page. If a provider needs that, Hikari says so on Home and you open it yourself with the WebView button."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
         Spacer(Modifier.height(10.dp))

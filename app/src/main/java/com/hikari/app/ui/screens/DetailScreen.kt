@@ -322,10 +322,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.nuvio.NuvioScraper.streamErrors[item.providerId]
                 else -> null
             }
-            // A Cloudflare block is the one failure the user can actually fix, so
-            // it is never hidden behind a provider's generic "no links" note.
-            _streamError.value = originMessage?.takeIf { it.isNotBlank() }
-                ?: ContentRepository.crossNote
+            // A Cloudflare wall is never surfaced here: the Home screen reports
+            // it in Hikari's own words (see CloudflareVerifier) and the raw
+            // extension wording ("Cloudflare blocked. Go to Settings…") must
+            // not leak into the server list or the player's diagnostics.
+            _streamError.value = originMessage?.takeIf {
+                it.isNotBlank() && !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it)
+            }
         } else {
             _streamError.value = null
         }
@@ -582,19 +585,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-private fun cfBlockedProviders(): Set<String> {
-    val ids = HashSet<String>()
-    fun scan(map: Map<String, String>) {
-        for ((id, msg) in map) if (msg.contains("cloudflare", ignoreCase = true)) ids.add(id)
-    }
-    scan(com.hikari.app.cs3.Cs3MainApiProvider.streamErrors)
-    scan(com.hikari.app.providers.HikariProviderAdapter.streamErrors)
-    scan(com.hikari.app.providers.UniversalScraper.streamErrors)
-    scan(com.hikari.app.providers.StremioAddon.streamErrors)
-    scan(com.hikari.app.nuvio.NuvioScraper.streamErrors)
-    return ids
-}
-
 /** One diagnostic line per extension for the sources sheet's empty state:
  *  what each searched addon actually reported ("✓ 3 sources", "✗ timeout",
  *  "✗ cut off after 110s", …). Null when the addon has no recorded outcome. */
@@ -609,7 +599,8 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ProviderType.UNIVERSAL -> com.hikari.app.providers.UniversalScraper.streamErrors[p.config.id]
         else -> null
     }
-    return msg?.let { "$name: $it" }
+    return msg?.takeIf { !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it) }
+        ?.let { "$name: $it" }
 }
 
 /** How long a replay waits for the server it was last played with to appear in
@@ -971,14 +962,11 @@ fun DetailScreen(
                     // Servers behind a Cloudflare "verify you are human" wall are
                     // withheld until that host's clearance cookie exists — i.e.
                     // until the user has actually done the verification for it
-                    // (manually in the extension's WebView, or via the automatic
-                    // solver). Before, such a server was listed and failed with
-                    // "Cloudflare challenge active" the moment it was picked,
-                    // while the servers that play sat further down the list.
-                    !com.hikari.app.net.CloudflareVerifier.needsVerification(s.url) &&
-                    // A provider whose own answer was a Cloudflare block cannot
-                    // hand out a playable link either.
-                    !(s.providerId.isNotBlank() && s.providerId in cfBlockedProviders())
+                    // (manually in the extension's WebView). Before, such a
+                    // server was listed and failed with "Cloudflare challenge
+                    // active" the moment it was picked, while the servers that
+                    // play sat further down the list.
+                    !com.hikari.app.net.CloudflareVerifier.needsVerification(s.url)
             }
                 // Archive links (.zip/.rar/.7z …) are not videos: providers
                 // (4KHDHub's isDirectVideo only checks the hostname, so its
@@ -1222,7 +1210,6 @@ fun DetailScreen(
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
-                        ?: com.hikari.app.data.ContentRepository.crossNote?.takeIf { it.isNotBlank() }
                     val note = buildString {
                         append("No playable server found after searching $enabledN ")
                         append(if (enabledN == 1) "extension" else "extensions")

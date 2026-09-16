@@ -64,6 +64,27 @@ class WebViewResolver(
         @Volatile
         var webViewUserAgent: String? = null
 
+        /**
+         * The UA a WebView resolver should advertise, as a NON-NULL string.
+         *
+         * This exists purely for link compatibility: CloudStream's Android
+         * `WebViewResolver` exposes a second UA accessor under this name, and
+         * code compiled against it — the jar's own `CloudflareKiller`, and any
+         * extension that vendors a copy of that class — calls
+         * `getWebViewUserAgent1()`. The jar's desktop stub (which this class
+         * shadows) never declared it, so every such call died with
+         * `NoSuchMethodError: No virtual method getWebViewUserAgent1()...` on
+         * an OkHttp dispatcher thread, taking the whole app down (Hikari 0.3.85
+         * crash reports: `CloudflareKiller.proceed(CloudflareKiller.kt:99)`).
+         * Declaring it makes that bytecode link and degrade gracefully.
+         */
+        @JvmStatic
+        fun getWebViewUserAgent1(): String =
+            webViewUserAgent
+                ?: runCatching { com.hikari.app.HikariApp.instance.effectiveWebViewUa() }
+                    .getOrNull()
+                ?: USER_AGENT
+
         /** Forces a muted play + clicks common play overlays. Kept as a shared
          *  constant so both the throttled nudge and the post-finish retries use
          *  the exact same script. */
