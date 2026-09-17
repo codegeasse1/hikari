@@ -1302,7 +1302,7 @@ class PlayerActivity : ComponentActivity() {
                 // once [tryStart] exists: at the deadline the first server from
                 // anywhere starts playback, exactly as if the origin had
                 // answered with nothing.
-                val tryStart: suspend () -> Unit = {
+                val tryStart: suspend () -> Unit = tryStart@{
                     if (pendingStart && sources.isNotEmpty() &&
                         (searchDone || askMode || sources.size >= startAfter)
                     ) {

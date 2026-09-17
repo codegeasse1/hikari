@@ -925,7 +925,13 @@ fun DetailScreen(
                 // there would be nothing to wait for.
                 putExtra(
                     "originGraceMs",
-                    if (origin?.config?.enabled == true) ORIGIN_PLAY_GRACE_MS.toInt() else 0
+                    // [liveId] is the provider this page actually resolved to —
+                    // the extension the title was opened from, or its live
+                    // replacement if that one is gone. A disabled or missing
+                    // one is not in the search at all, so there is nothing to
+                    // hold the first start for.
+                    if (providers.firstOrNull { it.config.id == liveId }?.config?.enabled == true)
+                        ORIGIN_PLAY_GRACE_MS.toInt() else 0
                 )
                 putExtra("openDownload", wantsDownload)
                 putExtra("histEpisodeId", ep?.id.orEmpty())

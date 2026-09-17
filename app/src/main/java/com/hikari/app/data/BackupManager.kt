@@ -52,8 +52,8 @@ object BackupManager {
 
     /**
      * The only directories a restore may write into, relative to `filesDir`:
-     * `<files>/cs3/*` and `<files>/hiki/*` are the installed extensions,
-     * `<files>/nuvio/scrapers/*` and `<files>/nuvio/settings/*` the Nuvio
+     * `<files>/cs3` and `<files>/hiki` are the installed extensions,
+     * `<files>/nuvio/scrapers` and `<files>/nuvio/settings` the Nuvio
      * scrapers and their per-provider settings.
      *
      * This is the security boundary of the whole feature: a backup file is
