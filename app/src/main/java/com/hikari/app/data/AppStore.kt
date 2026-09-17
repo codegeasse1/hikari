@@ -736,7 +736,7 @@ class AppStore(private val ctx: Context) {
 
     /** A stable, URL/JSON-safe id for a new collection or folder. */
     fun newId(prefix: String): String =
-        prefix + "-" + Long.toString(System.currentTimeMillis(), 36) +
+        prefix + "-" + System.currentTimeMillis().toString(36) +
             "-" + (1000 + (Math.random() * 8999).toInt())
 
     // ---- First-run extension-repo seeding ----

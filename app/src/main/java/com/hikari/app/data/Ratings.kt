@@ -364,7 +364,7 @@ object Ratings {
 
     /** Records that [sources] were asked for [key] just now — the clock the
      *  re-ask window is measured against. */
-    private fun markAttempts(key: String, sources: Collection<RatingSource>) {
+    private fun markAttempts(key: String, sources: kotlin.collections.Collection<RatingSource>) {
         if (sources.isEmpty()) return
         val now = System.currentTimeMillis()
         val row = attempts.getOrPut(key) { ConcurrentHashMap() }

@@ -61,6 +61,7 @@ import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.Collection
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.Logs
+import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
@@ -559,18 +560,16 @@ fun HomeScreen(nav: NavHostController) {
                 item {
                     val collection = selectedCollection
                     if (collection != null) {
+                        val noFolders = collection.folders.isEmpty()
                         EmptyState(
-                            title = if (collection.folders.isEmpty()) {
-                                tr("This collection has no folders")
-                            } else {
-                                tr("Nothing loaded from this collection")
-                            },
-                            subtitle = if (collection.folders.isEmpty()) {
-                                tr("Add a folder in Settings → Appearance → Collections."),
+                            title = if (noFolders) tr("This collection has no folders")
+                            else tr("Nothing loaded from this collection"),
+                            subtitle = if (noFolders) {
+                                tr("Add a folder in Settings → Appearance → Collections.")
                             } else {
                                 tr(
-                                    "Its folders came back empty. Check the extension sites, or add " +
-                                        "another catalog to a folder."
+                                    "Its folders came back empty. Check the extension " +
+                                        "sites, or add another catalog to a folder."
                                 )
                             },
                             actionLabel = tr("Collections"),
@@ -1058,4 +1057,3 @@ private fun HomeHeader(
         }
     }
 }
-import androidx.compose.ui.text.style.TextOverflow
