@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 
 import android.app.Application
@@ -1510,11 +1511,11 @@ fun DetailScreen(
                 val btnEp = if (canPlay) null else (resumeEp ?: sortedEps.firstOrNull())
                 val actionLabel = when {
                     resumeEp != null ->
-                        tr("Resume") + if (resumeEp.season > 1)
+                        I18n.t("Resume") + if (resumeEp.season > 1)
                             " S${resumeEp.season} E${resumeEp.number}" else " E${resumeEp.number}"
-                    btnEp == null -> tr("Play")
-                    btnEp.season > 1 -> tr("Play") + " S${btnEp.season} E${btnEp.number}"
-                    else -> tr("Play") + " E${btnEp.number}"
+                    btnEp == null -> I18n.t("Play")
+                    btnEp.season > 1 -> I18n.t("Play") + " S${btnEp.season} E${btnEp.number}"
+                    else -> I18n.t("Play") + " E${btnEp.number}"
                 }
                 item {
                     Row(
