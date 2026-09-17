@@ -1,12 +1,32 @@
 ## 0.5.6
 
+First release since 0.3.71, so a lot of this is new to you — the builds in between were test builds and never went out.
+
+New:
+- SkyStream `.sky` extensions. Install them from a repo, a link or a file, and use them like any other source: Home rows, search, episodes, servers, downloads. If one hands back an embed link, Hikari resolves it itself.
+- A new look: rounded frosted glass cards, a floating bottom bar, round icon badges, a soft glow behind the top of the screen.
+- AMOLED Black theme, true black with the same soft cards.
+- Accent colours — eleven of them, and the player can keep its own accent separate from the app's.
+- App icon picker: eleven icons, changed while the app runs, and your choice survives updates.
+- Taskbar buttons: turn off Home, Discover, Search, Library, Downloads or Settings one by one. The top bar keeps a gear, a magnifier and the verify globe.
+- 20 languages, translated properly through the whole app — menus, Home, search, downloads, toasts, the player. Picked in Settings → Language.
+- Personal Catalog creator. Build your own Home shelves out of TMDB lists (Marvel, Pixar, A24, Netflix, HBO, Disney+…) and any catalog from your extensions, grouped into your own folders.
+- Ratings on every title: IMDb, Rotten Tomatoes with its popcornmeter, Metacritic, Letterboxd and TMDB, each badge in its own colour. Tap a badge and it explains the number.
+- Age rating on every movie and series — PG-13, R, TV-MA — colour-coded: green for all ages, amber for guidance, red for adult.
+- Download without playing: a download button on every episode row and one next to Library, and the player's download button now asks which server to use instead of starting the video.
+- Add external subtitle: pick your own `.srt`, `.vtt`, `.ass` or `.ttml` from the CC sheet in the player, and it is used straight away.
+- Server list grouped by engine, with engine filter chips in Home's provider picker.
+- "Ask me when a chosen server fails" — Hikari offers you the next server instead of switching on its own while you watch.
+- One Play tap searches every installed extension and keeps adding servers to the player's own list while the video runs.
+- Import from CloudStream: read a CloudStream backup file and add every repository in it in one tap.
+- Backup & Restore: one file with your extensions, sources, repos, settings, history and favourites.
+- A crash from the previous run is shown on Home, with a pointer to the logs.
+- Extension verification pages switch (off by default), so an extension cannot open its own verification page over your video. Hikari's globe button still opens one when you tap it.
+
 Fixed:
-- Removed the Cloudflare wording from Settings (WebView user-agent card, extension verification-pages card), the `.hiki` install dialog, the Home empty state and the playback-failed panel.
-- "No playable server found" only mentions disabled extensions when 5 or more are turned off, and says "N of your installed extensions are turned off".
-- Extensions that need a browser verification are skipped instantly: not searched, not counted, no error shown.
-- "stopped early" / "unfinished" removed from the search progress line and from the no-sources summary.
-- Engine filter chips (All / CloudStream / Hikari / Nuvio / Sky) made smaller so the last ones no longer fall off the screen.
-- A title that played once shows servers again if a new search comes back empty (servers kept for 15 minutes).
+- The app no longer crashes when an extension shows a message or a login box, or when a WebView page dies.
+- Picking a language changes the app right away — before, it stayed English.
+- A dead server asks you what to do instead of switching behind your back, and playback starts on the first server that really works.
 
 ## 0.5.4
 
