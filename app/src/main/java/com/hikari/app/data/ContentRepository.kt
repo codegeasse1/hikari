@@ -442,14 +442,14 @@ class ContentRepository(private val manager: ProviderManager) {
                                                     rawType = c.rawType,
                                                 )
                                             }
-                                    }
-                                }.awaitAll().filterNotNull()
+                                        }
+                                    }.awaitAll().filterNotNull()
+                                }
                             }
                             if (loaded == null) {
                                 noteCatalogTimeout(p, 55_000)
                                 emptyList()
                             } else loaded
-                        } ?: emptyList()
                         }
                     }.getOrDefault(emptyList())
                 }
