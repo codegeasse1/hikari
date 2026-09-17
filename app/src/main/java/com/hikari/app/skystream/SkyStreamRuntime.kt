@@ -159,7 +159,7 @@ object SkyStreamRuntime {
      * to convert). Nothing in this runtime wants a completion value, so every
      * script is finished with `void 0` instead.
      */
-    private fun QuickJs.evaluateVoid(js: String, name: String) {
+    private suspend fun QuickJs.evaluateVoid(js: String, name: String) {
         evaluate<Any?>("$js\n;void 0;\n", name, false)
     }
 
