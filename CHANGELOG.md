@@ -1,3 +1,57 @@
+## 0.5.3
+
+**Search can no longer get stuck on "finding server", the provider chips and list
+rows are a comfortable size again, and a SkyStream extension behind Cloudflare
+loads its catalog instead of reporting "no catalog".**
+
+- **"Stuck on finding server" — and then it never searched again.** Two unbounded
+  waits caused it. (1) The plugin loader took its process-wide slots with
+  `acquireUninterruptibly()`: with only six slots and a few hundred installed
+  extensions, one load that never returned parked every slot for good, so every
+  later load — the whole cross-extension sweep and the Home warm-up — waited
+  behind it forever and did nothing at all. A slot is now waited for at most 45
+  seconds and then reported as *that one extension's* failure, so the sweep
+  records it, moves on, and leaves the queue free for everyone else. (2) The
+  search's wall-clock budgets ran through the slow-connection multiplier, so on a
+  slow network "provider budget" became 150s and the sweep 450s — the sheet sat
+  on "finding server" for minutes and appeared frozen. Every budget is now
+  clamped to its intended ceiling (25s per page, 90s per provider, 100s per
+  sweep, 55s per server scan), and a repo that already proved it has a show is
+  remembered, so asking the same show again answers immediately instead of
+  re-walking every repo.
+- **The server list always stops saying "still searching…".** The final join onto
+  the server search had no timeout, so one provider that never answered left the
+  sheet in the searching state forever even after everything else had finished:
+  it is now bounded (90s), the closing streams call has a hard 80s cap, and when
+  a search ends with servers found the status line says so ("Found N server(s) —
+  search finished.") instead of leaving the spinner text up.
+- **SkyStream extension catalogs: the real cause of "no catalog" on 4khdhub &
+  friends.** SkyStream's HTTP fetches were the only ones in the app without
+  Cloudflare handling. A challenged site answered with its "Just a moment…"
+  interstitial, the extension parsed *that page* as its catalog and reported a
+  successful, empty result — so Home said "no catalog" while the site was simply
+  waiting for a verification. SkyStream's client now runs CloudflareVerifier's
+  interceptor like every other provider: it reuses the clearance your verify
+  WebView earned, retries the challenge with the WebView's own user agent, and
+  records the host so Home offers its globe button. The catalog budget is 75s
+  (a SkyStream extension boots a whole JS engine plus a dozen-plus page fetches
+  before it can answer), its fetch pool is 24 wide so a home page's parallel
+  requests actually run in parallel, a plugin that parks on a promise nothing
+  settles now says "the extension stopped responding before it could finish"
+  instead of a misleading "timed out", and an empty catalog points at the globe
+  button when the cause was really a Cloudflare wall.
+- **Extensions are asked in engine-family order.** Home and search walked the
+  install list, so with a few hundred installs the extensions installed *last* —
+  every SkyStream one — sat at position ~240 and were never reached before the
+  feed's own ceiling: their rows never appeared, which also read as "this
+  extension has no catalog". Providers are now round-robined by family (first of
+  each, then second of each, …), while install order is kept inside a family so
+  the oldest install of a kind still sorts first among its own kind.
+- **Smaller boxes.** The provider chips (All / Hikari / Nuvio / CloudStream)
+  under the search bar, the extension picker on Home, its section headers, the
+  option rows and the list rows are all one size down — medium instead of large —
+  with tighter padding all round.
+
 ## 0.5.2
 
 **A SkyStream extension's catalog loads now. The extension list stopped showing
