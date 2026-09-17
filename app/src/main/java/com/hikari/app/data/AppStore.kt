@@ -2,9 +2,14 @@ package com.hikari.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.byteArrayPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
@@ -29,6 +34,19 @@ data class LastSource(
     val url: String,
     val name: String,
     val headerVariant: Int = 0,
+)
+
+/**
+ * One stored preference in a backup file: its key, a one-letter type code and
+ * the value itself (already flattened to something JSON can carry). See
+ * [AppStore.snapshotPreferences] for why the type rides along explicitly.
+ */
+data class PrefRecord(
+    val key: String,
+    /** "s" string · "b" boolean · "i" int · "l" long · "f" float · "d" double ·
+     *  "ss" set of strings · "bin" base64 bytes. */
+    val type: String,
+    val value: Any?,
 )
 
 class AppStore(private val ctx: Context) {
@@ -77,6 +95,7 @@ class AppStore(private val ctx: Context) {
         val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
         val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
         val ASK_SERVER = booleanPreferencesKey("askServerOnPlay")
+        val FAILOVER_ASK = booleanPreferencesKey("failoverAskOnFailure")
         val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
         val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
@@ -136,6 +155,27 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAskServerOnPlay(ask: Boolean) {
         store.edit { it[K.ASK_SERVER] = ask }
+    }
+
+    /**
+     * What the player does when the server it is playing dies mid-video (a
+     * signed link expired, the mirror went away): on (the default) it asks —
+     * "try the next server" or "choose another server", with a countdown that
+     * switches automatically if the question is ignored. Off, it walks the list
+     * silently like it always did.
+     *
+     * Only a server the USER picked gets the question: a dead link discovered
+     * while the player is still walking the list on its own (the instant-play
+     * start, an automatic failover) keeps advancing on its own, so a title with
+     * a few dud servers never turns into a wall of dialogs.
+     */
+    fun failoverAskOnFailureFlow(): Flow<Boolean> =
+        store.data.map { it[K.FAILOVER_ASK] ?: true }
+
+    suspend fun failoverAskOnFailure(): Boolean = failoverAskOnFailureFlow().first()
+
+    suspend fun setFailoverAskOnFailure(ask: Boolean) {
+        store.edit { it[K.FAILOVER_ASK] = ask }
     }
 
     /** Show the full-screen title card (backdrop + breathing name) from Play
@@ -728,6 +768,71 @@ class AppStore(private val ctx: Context) {
 
     suspend fun clearAll() {
         store.edit { it.clear() }
+    }
+
+    // ---- Backup & restore (Settings → Backup & Restore) ----
+
+    /**
+     * Every stored preference as plain data, for the backup file.
+     *
+     * Deliberately a GENERIC dump rather than a hand-written list of the keys
+     * this class happens to declare today: the store is where the whole setup
+     * lives (installed sources and their configs, repos, history, favorites,
+     * per-provider settings, the lot), and a curated list silently drops every
+     * key added after it was written. [PrefRecord.type] keeps each value's exact
+     * type so a restore is byte-for-byte what was saved rather than a guess
+     * (a Long that comes back as a Double, or a String set that comes back as a
+     * list, is a subtly broken setting).
+     */
+    suspend fun snapshotPreferences(): List<PrefRecord> =
+        store.data.first().asMap().mapNotNull { (key, value) -> recordOf(key.name, value) }
+
+    /**
+     * Applies records from a backup file, overwriting the values for those keys
+     * and leaving every other key alone. One edit transaction, so the app can
+     * never observe a half-restored store.
+     */
+    suspend fun restorePreferences(records: List<PrefRecord>) {
+        if (records.isEmpty()) return
+        store.edit { prefs ->
+            for (r in records) applyRecord(prefs, r)
+        }
+    }
+
+    /** [value] in the backup file's own terms, or null for a type the file
+     *  format has no code for (nothing in this store uses one today). */
+    private fun recordOf(name: String, value: Any): PrefRecord? = when (value) {
+        is String -> PrefRecord(name, "s", value)
+        is Boolean -> PrefRecord(name, "b", value)
+        is Int -> PrefRecord(name, "i", value)
+        is Long -> PrefRecord(name, "l", value)
+        is Float -> PrefRecord(name, "f", value)
+        is Double -> PrefRecord(name, "d", value)
+        is Set<*> -> PrefRecord(name, "ss", value.filterIsInstance<String>())
+        is ByteArray -> PrefRecord(
+            name, "bin",
+            android.util.Base64.encodeToString(value, android.util.Base64.NO_WRAP),
+        )
+        else -> null
+    }
+
+    private fun applyRecord(prefs: MutablePreferences, r: PrefRecord) {
+        when (r.type) {
+            "s" -> (r.value as? String)?.let { prefs[stringPreferencesKey(r.key)] = it }
+            "b" -> (r.value as? Boolean)?.let { prefs[booleanPreferencesKey(r.key)] = it }
+            "i" -> (r.value as? Number)?.let { prefs[intPreferencesKey(r.key)] = it.toInt() }
+            "l" -> (r.value as? Number)?.let { prefs[longPreferencesKey(r.key)] = it.toLong() }
+            "f" -> (r.value as? Number)?.let { prefs[floatPreferencesKey(r.key)] = it.toFloat() }
+            "d" -> (r.value as? Number)?.let { prefs[doublePreferencesKey(r.key)] = it.toDouble() }
+            "ss" -> (r.value as? List<*>)?.let { list ->
+                prefs[stringSetPreferencesKey(r.key)] = list.filterIsInstance<String>().toSet()
+            }
+            "bin" -> (r.value as? String)?.let { b64 ->
+                runCatching { android.util.Base64.decode(b64, android.util.Base64.NO_WRAP) }
+                    .getOrNull()
+                    ?.let { prefs[byteArrayPreferencesKey(r.key)] = it }
+            }
+        }
     }
 
     // ---- Watch history ----

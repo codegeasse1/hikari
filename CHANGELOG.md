@@ -1,3 +1,84 @@
+## 0.3.88
+
+**Every score for a film in one coloured row — IMDb, Rotten Tomatoes,
+Metacritic, Letterboxd and TMDB — plus save-without-watching, one-file backup,
+and a player that plays your own extension's server first and never slides onto
+a dead one behind your back.**
+
+- **The lone white `★ 6.9` is gone — the detail page now shows every review
+  score, in each site's own colour.** One badge per site: a yellow **IMDb**
+  number, the **Rotten Tomatoes** tomatometer (red when fresh, green when rotten)
+  with its **popcornmeter** audience score, the **Metacritic** square that turns
+  green/yellow/red with the Metascore, the green **Letterboxd** average, and
+  TMDB's own score in TMDB's blue. Each badge is the site's mark next to its
+  number on a tinted pill, and the row scrolls sideways so six of them still fit
+  a phone. This is why a film that IMDb scores 8.7 and Rotten Tomatoes scores
+  73% no longer reads as a flat "6.9".
+- **Where the numbers come from — no API keys, nothing to set up.** IMDb's own
+  site answers a plain app with an empty page, so the IMDb rating comes from
+  Wikidata's record of it (matched by the title's IMDb id, which the TMDB lookup
+  already returns); Rotten Tomatoes, Metacritic and Letterboxd are read from
+  their own pages and then checked against the title and year before they are
+  trusted — a bad guess shows no badge rather than a different film's score.
+  Every source is independent: whatever answers shows up, whatever is blocked,
+  renamed or simply has no entry is quietly absent, and a review site can never
+  delay or break the page it decorates. Scores are cached for a day.
+- **Your own subtitle files: "Add external subtitle".** When no extension has
+  subtitles for a film — or only bad ones — the Subtitles sheet (the CC pill in
+  the player) now has **Add external subtitle**, which opens your device's file
+  picker so you can choose an `.srt`, `.vtt`, `.ass` or `.ttml` you downloaded
+  yourself. The file is checked for real captions before it is accepted (so a
+  wrong pick answers with a message instead of nothing), shows up in the
+  track list labelled with its own file name, and is **selected automatically**
+  — you don't have to go and find it. Subtitles you add stay attached when the
+  player moves to another server, and the existing **Sync** buttons re-time them
+  exactly like a provider's subtitle. **Remove added subtitles** takes them back
+  out again.
+- **Download straight from a detail page.** Every episode row has a download
+  icon, and the big button row under the cover has a second button next to
+  Library. Tapping either one opens the player on that episode and puts its
+  download chooser up as soon as a server is ready — you never have to watch the
+  first seconds just to reach the download button. It is the same download flow
+  as the player's own button (one code path, so quality/server choice, progress
+  and the queue all behave exactly the same), and it covers movies, whose only
+  row is the main one.
+- **New: Settings → Backup & Restore.** *Back up Hikari data* writes one JSON
+  file — your installed extensions, sources, repos, per-provider settings,
+  history, favourites and app settings — into your phone's Downloads folder.
+  *Restore from a backup* picks such a file back up and puts it on this device,
+  then reloads the sources. The file contains **no videos and no passwords** (the
+  offline copies, caches and the download queue are deliberately left out, so a
+  backup stays small enough to e-mail to yourself), and a restore is only ever
+  allowed to write inside the app's own extension folders, so a backup you were
+  sent cannot touch anything else on your phone.
+- **The Backup & Restore page is a folder in Settings**, like the others:
+  Settings now reads Player · Sources & Extensions · Downloads · Appearance ·
+  Privacy & Browsing · Logs & Diagnostics · Backup & Restore · About & Updates.
+- **Your own extension's server goes first.** Tapping a film inside an extension
+  used to play whichever installed provider happened to answer first — often
+  another repo entirely. Now the extension the title was opened from is asked
+  before the others, and playback holds for a bounded moment (8 seconds, only
+  when that extension is installed and enabled) so its own link is the one that
+  plays. It ends the instant that extension answers, and the search keeps running
+  behind the player either way, so nothing is delayed by an extension that has
+  nothing to say.
+- **A dead server is now your decision, not a surprise.** New setting
+  **Settings → Player → Playback start → *Ask me when a chosen server fails***
+  (on by default). When a server *you* tapped in the list dies, Hikari no longer
+  slides onto another one behind your back: it offers *Try next server*, *Choose
+  another server*, or *Always switch automatically*, and switches on its own
+  after 8 seconds if you don't answer, so playback is never stranded. A server
+  Hikari picked by itself still fails over silently, exactly as before.
+- **"Choose another server" continues the list, it does not restart it.** It
+  re-opens the same grouped list you picked from — every server found so far,
+  with the ones still arriving appended live — so the list picks up where it left
+  off instead of running the whole search again. If the play started from a
+  Download tap, the download chooser is re-armed too, so whichever server you
+  land on offers to download it.
+- **New copy is translated in all 21 languages** (including the new Download
+  button's label and the whole server-failure prompt), and the backup page's own
+  strings fall back to English only where a language has no word for it yet.
+
 ## 0.3.87
 
 **The verification page can no longer open on its own — the cause was found in

@@ -31,6 +31,9 @@ object Http {
 
     private lateinit var client: OkHttpClient
 
+    /** Same tuning, WITHOUT the Cloudflare interceptor — see [getQuiet]. */
+    private lateinit var quietClient: OkHttpClient
+
     fun init() {
         client = OkHttpClient.Builder()
             .followRedirects(true)
@@ -42,7 +45,37 @@ object Http {
             // and retries with the fresh cookie (see CloudflareVerifier).
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .build()
+        quietClient = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
     }
+
+    /**
+     * A request that bypasses [CloudflareVerifier] entirely. Used by the
+     * background decorating lookups ([com.hikari.app.data.Ratings]): those go to
+     * third-party review sites that put a challenge in front of a plain HTTP
+     * client, and the interceptor would record that host as "blocked" — the flag
+     * the Home screen turns into "verification needed on X". That banner is
+     * about the user's own extensions, so a review site must never be able to
+     * raise it.
+     */
+    fun getQuiet(url: String, headers: Map<String, String> = emptyMap()): Response {
+        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        return quietClient.newCall(builder.build()).execute()
+    }
+
+    /** [getQuiet] as text, null for any non-2xx (so a guessed page URL that
+     *  does not exist is simply "nothing found"). */
+    fun getStringQuiet(url: String, headers: Map<String, String> = emptyMap()): String? =
+        try {
+            getQuiet(url, headers).use { if (it.isSuccessful) it.body?.string() else null }
+        } catch (e: Exception) {
+            null
+        }
 
     fun get(url: String, headers: Map<String, String> = emptyMap()): Response {
         val builder = Request.Builder().url(url).header("User-Agent", UA)

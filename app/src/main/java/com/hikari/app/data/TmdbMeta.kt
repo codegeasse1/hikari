@@ -328,7 +328,7 @@ object TmdbMeta {
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"
         val d = TmdbResolver.apiGet(
             "/$seg/${resolved.tmdbId}",
-            mapOf("append_to_response" to "credits,videos,$certKey"),
+            mapOf("append_to_response" to "credits,videos,$certKey,external_ids"),
         ) ?: return null
 
         val isMovie = seg == "movie"
@@ -365,6 +365,9 @@ object TmdbMeta {
                 .takeIf { it.isNotBlank() }?.uppercase(),
             director = directors.takeIf { it.isNotEmpty() }?.joinToString(", "),
             writers = writers,
+            imdbId = d.optJSONObject("external_ids")
+                ?.optString("imdb_id")?.trim()
+                ?.takeIf { it.startsWith("tt") && it.length >= 8 },
         )
 
         val cast = ArrayList<CastMember>(20)

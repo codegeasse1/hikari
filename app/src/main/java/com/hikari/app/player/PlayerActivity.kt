@@ -96,6 +96,7 @@ import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
 import com.hikari.app.download.DownloadsRepository
+import com.hikari.app.i18n.I18n
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
@@ -121,6 +122,29 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
+
+/** The `Format.label` every user-added subtitle carries, so a track in the
+ *  picker can be recognised as one the user brought themselves (and so a
+ *  remembered pick can find it again after a re-prepare). The file's own name
+ *  follows it, which is what identifies the track to the user. */
+private const val USER_SUB_PREFIX = "Added · "
+
+/** Language names that commonly appear in subtitle file names, mapped to the
+ *  ISO code the subtitle sheet shows. Anything not listed is only used when it
+ *  already looks like a code ("film.fr.srt"). */
+private val FULL_LANG_NAMES = mapOf(
+    "english" to "en", "spanish" to "es", "latino" to "es", "french" to "fr",
+    "german" to "de", "italian" to "it", "portuguese" to "pt",
+    "brazilian" to "pt", "russian" to "ru", "ukrainian" to "uk",
+    "turkish" to "tr", "arabic" to "ar", "hindi" to "hi", "urdu" to "ur",
+    "bengali" to "bn", "tamil" to "ta", "telugu" to "te", "malayalam" to "ml",
+    "indonesian" to "id", "malay" to "ms", "vietnamese" to "vi", "thai" to "th",
+    "korean" to "ko", "japanese" to "ja", "chinese" to "zh", "cantonese" to "zh",
+    "polish" to "pl", "dutch" to "nl", "greek" to "el", "hebrew" to "he",
+    "swedish" to "sv", "danish" to "da", "norwegian" to "no", "finnish" to "fi",
+    "czech" to "cs", "hungarian" to "hu", "romanian" to "ro", "persian" to "fa",
+    "farsi" to "fa", "filipino" to "fil", "tagalog" to "fil", "swahili" to "sw",
+)
 
 class PlayerActivity : ComponentActivity() {
 
@@ -168,6 +192,18 @@ class PlayerActivity : ComponentActivity() {
      *  playing anything. */
     private var playbackCommitted = false
 
+    /** Set when the player was opened by a "download this" tap from OUTSIDE the
+     *  player (an episode row's download button, or the detail page's download
+     *  action — see DetailScreen's `openDownload` intent extra).
+     *
+     *  Nothing about playback changes: the video plays exactly as it does after
+     *  a normal tap, and the download chooser simply comes up the moment a
+     *  server has actually been prepared — byte-for-byte the dialog the
+     *  in-player Download button shows, so there is only one download flow in
+     *  the app. Cleared once it has been shown, so failing over to another
+     *  server later in the same session never re-opens it. */
+    private var openDownloadPending = false
+
     /** True while the startMode chooser is up waiting for the user's pick, so
      *  that backing out of it falls back to the remembered server. A dismiss
      *  caused by the user's own tap must NOT also trigger that fallback. */
@@ -192,6 +228,39 @@ class PlayerActivity : ComponentActivity() {
      *  lazily, on the first start decision, so an entry point that never starts
      *  playback pays nothing). */
     private var askServerPrefLoaded = false
+
+    /** Mirrors the Settings "Ask me when a chosen server fails" toggle: when on
+     *  (the default), a server the USER picked that then dies brings up a choice
+     *  — try the next one, pick another, or switch automatically from now on —
+     *  instead of the player sliding onto another server by itself. Read lazily
+     *  like [askServerOnPlay]. */
+    private var failoverAskOnFailure = true
+
+    /** Whether [failoverAskOnFailure] has been read from DataStore yet. */
+    private var failoverAskPrefLoaded = false
+
+    /** True while the server currently playing is one the user tapped in the
+     *  chooser (as opposed to one the instant-play start or an automatic
+     *  failover landed on). Only such a server asks the user before the player
+     *  moves on — see [failoverFromCurrent] and AppStore's
+     *  [AppStore.failoverAskOnFailureFlow]. Cleared as soon as an automatic
+     *  advance happens, so a run of dead servers never becomes a run of
+     *  dialogs. */
+    private var pickedByUser = false
+
+    /** The "server failed — what next?" prompt while it is up, and its
+     *  countdown ticker (identical lifecycle to [slowDialog]). */
+    private var failDialog: Dialog? = null
+    private var failDialogTicker: Runnable? = null
+
+    /** True when THIS launch came from a Download tap outside the player (the
+     *  detail page's download button, a downloads-list retry). The download
+     *  chooser is then offered on the first server that actually starts
+     *  PLAYING, not on whatever was prepared first: a download started from a
+     *  dead link is a download that fails a minute later, and offering it on a
+     *  source that never rendered is exactly the "downloaded file is broken"
+     *  report. */
+    private var downloadFlowActive = false
 
     /** Whether THIS launch asked for the chooser. The detail screen passes the
      *  setting through the intent, so flipping the toggle mid-session can't
@@ -482,6 +551,33 @@ class PlayerActivity : ComponentActivity() {
      *  subtitles without re-fetching them over the network. */
     private val subtitleRawCache = HashMap<String, String>()
 
+    /** A subtitle file the user added by hand from this device — the answer to
+     *  "this film's extensions have no subtitles at all". The bytes are kept in
+     *  memory and the timed file is written to the subtitle cache, so a sync
+     *  change re-times it exactly like a provider's subtitle, and no remote
+     *  fetch is ever involved (which is also why attaching one can never break
+     *  playback the way a dead subtitle URL can). */
+    private class UserSubtitle(
+        /** The unique `Format.label` this track carries, used to find it again
+         *  after a re-prepare (TrackGroup instances are always new). */
+        val label: String,
+        /** The file's name on the user's device, shown in the picker's sub-line. */
+        val fileName: String,
+        val text: String,
+        val mime: String,
+    ) {
+        var uri: Uri? = null
+        var forOffset: Long = Long.MIN_VALUE
+    }
+
+    /** User subtitles, in the order they were added. Session-scoped: they stay
+     *  attached across a server switch or an automatic failover, and are gone
+     *  when the player closes. */
+    private val userSubs = mutableListOf<UserSubtitle>()
+
+    /** The system file picker for "Add external subtitle". */
+    private var externalSubLauncher: ActivityResultLauncher<Array<String>>? = null
+
     private var torrentDialog: Dialog? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
@@ -711,6 +807,8 @@ class PlayerActivity : ComponentActivity() {
         loadingStatus = findViewById(R.id.loading_status)
         loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
+        openDownloadPending = intent.getBooleanExtra("openDownload", false)
+        downloadFlowActive = openDownloadPending
 
         // The cover stays up by design until real video is on screen, so tapping
         // it does nothing. (It used to skip straight to the player/controls,
@@ -819,6 +917,15 @@ class PlayerActivity : ComponentActivity() {
                 ActivityResultContracts.RequestPermission()
             ) { }
         }
+
+        // "Add external subtitle": the system picker hands back a content:// URI
+        // to a .srt/.vtt/.ass/.ttml the user downloaded (or copied over from a
+        // USB stick). It is copied into Hikari's own subtitle cache immediately —
+        // the picked URI's permission is not persisted, and a cache copy is what
+        // keeps the subtitle reading after a failover to another server.
+        externalSubLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri -> if (uri != null) lifecycleScope.launch { addUserSubtitle(uri) } }
 
         lockBtn?.setOnClickListener { lockControls() }
         resizeBtn?.setOnClickListener { cycleResize() }
@@ -1156,6 +1263,31 @@ class PlayerActivity : ComponentActivity() {
                 // "wait for N servers" setting must not hold the chooser back.
                 val askMode = shouldAskServer()
                 var searchDone = false
+                // ---- "Search your own extension first", at the start level --
+                // The detail screen already asks the provider the title was
+                // opened from BEFORE the others (and holds the cross-extension
+                // pass back a moment for it). This is the matching half of that
+                // promise in the player: when the origin is one of the providers
+                // being searched, playback waits a bounded moment for a server
+                // from IT rather than jumping onto whichever other extension
+                // answered first — tapping a movie inside an extension plays
+                // that extension's link. The hold ends the instant the origin's
+                // server lands, and the whole rest of the search keeps streaming
+                // into "Select server" in the background either way (see the
+                // live collector below). [originGraceMs] comes from the intent
+                // and is 0 unless the origin really is being searched (disabled
+                // and uninstalled extensions must not cost a wait).
+                val originGraceMs = intent.getIntExtra("originGraceMs", 0).coerceAtLeast(0)
+                val originHoldUntil = System.currentTimeMillis() + originGraceMs
+                val originFound = {
+                    originProviderId.isNotBlank() &&
+                        sources.any { it.providerId == originProviderId }
+                }
+                /** True once there is no reason left to hold for the origin. */
+                val originReady = {
+                    originGraceMs <= 0 || originProviderId.isBlank() || originFound() ||
+                        searchDone || System.currentTimeMillis() >= originHoldUntil
+                }
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
                     if (sources.isEmpty()) {
@@ -1165,10 +1297,25 @@ class PlayerActivity : ComponentActivity() {
                         showError("No playable sources received.", false)
                     }
                 } else null
+                // Nothing will call [tryStart] again once the servers stop
+                // arriving, so the hold needs its own alarm — armed just below,
+                // once [tryStart] exists: at the deadline the first server from
+                // anywhere starts playback, exactly as if the origin had
+                // answered with nothing.
                 val tryStart: suspend () -> Unit = {
                     if (pendingStart && sources.isNotEmpty() &&
                         (searchDone || askMode || sources.size >= startAfter)
                     ) {
+                        if (!originReady()) {
+                            // Servers are here, but not the origin's yet: say so
+                            // on the cover, or a two-second pause while a
+                            // perfect-looking server list is already in hand
+                            // reads as the app being stuck.
+                            val line = I18n.t("Checking your own extension first…")
+                            loadingStatusBase = line
+                            loadingStatus?.text = line
+                            return@tryStart
+                        }
                         pendingStart = false
                         waitTimeout?.cancel()
                         // Remember that this link was extracted mid-search: if
@@ -1179,6 +1326,14 @@ class PlayerActivity : ComponentActivity() {
                         startedWhileSearching = !searchDone
                         startOrAsk()
                     }
+                }
+                // The hold's own alarm (see the note above): if the origin never
+                // answers, this fires at the deadline and starts the first
+                // server from anywhere — no other call to [tryStart] is coming
+                // once the servers stop arriving.
+                if (awaitLive && originGraceMs > 0) launch {
+                    delay((originHoldUntil - System.currentTimeMillis()).coerceAtLeast(0L) + 60L)
+                    tryStart()
                 }
                 // The detail screen signals when its whole search is finished;
                 // if it ended with nothing, fail fast instead of waiting out
@@ -1320,10 +1475,18 @@ class PlayerActivity : ComponentActivity() {
      *  this session nor already known-dead from a probe — the best row to start
      *  playback on. Falls back to row 1 so something always plays. */
     private fun healthyStartIndex(): Int {
-        val i = sources.indexOfFirst { s ->
+        val healthy = { s: PlayerSource ->
             !s.isTorrent && s.url.isNotBlank() &&
                 mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
         }
+        // "If I am on MovieBox, play MovieBox's server first": among the servers
+        // that can actually play, the one from the extension the title was
+        // opened from wins. This is the same preference the detail screen's
+        // search applies (the origin is asked first) — it just also has to be
+        // honoured at the moment playback commits to a row.
+        val origin = sources.indexOfFirst { it.isFromOrigin() && healthy(it) }
+        if (origin >= 0) return origin
+        val i = sources.indexOfFirst { healthy(it) }
         return if (i >= 0) i else 0
     }
 
@@ -1358,6 +1521,19 @@ class PlayerActivity : ComponentActivity() {
             askServerPrefLoaded = true
         }
         return askServerOnPlay
+    }
+
+    /** Whether a server the user picked that then fails should ask before the
+     *  player moves on (Settings → Player → Playback start). Read lazily, like
+     *  [shouldAskServer], so an entry point that never fails pays nothing. */
+    private suspend fun shouldAskOnFailure(): Boolean {
+        if (!failoverAskPrefLoaded) {
+            failoverAskOnFailure = runCatching {
+                (applicationContext as HikariApp).store.failoverAskOnFailure()
+            }.getOrDefault(true)
+            failoverAskPrefLoaded = true
+        }
+        return failoverAskOnFailure
     }
 
     /** Enters picture-in-picture mode (SDK 26+). The window is sized to the
@@ -3319,6 +3495,10 @@ class PlayerActivity : ComponentActivity() {
                             if (i != currentIndex || !playbackCommitted) {
                                 noSubsRetry = false
                                 playSource(i)
+                                // A tap here IS the user's choice: if this
+                                // server dies, offer a way out instead of
+                                // sliding onto another one silently.
+                                pickedByUser = true
                             }
                         }
                     }
@@ -3430,6 +3610,12 @@ class PlayerActivity : ComponentActivity() {
             val who = originProviderName.takeIf { it.isNotBlank() }
             if (who != null) "Searching $who \u2014 servers appear as they are found."
             else "Searching your providers \u2014 servers appear as they are found."
+        } else if (playbackCommitted) {
+            // Re-opened mid-playback (the Source pill, or "Choose another
+            // server" after a failure): this is a CONTINUATION of the list the
+            // user already saw, not a new search — say so, and say that more
+            // keep arriving.
+            "${sources.size} found so far \u2014 still adding any new ones."
         } else {
             "Your provider first, then every engine that found a server."
         }
@@ -3652,8 +3838,16 @@ class PlayerActivity : ComponentActivity() {
             val mediaGroup = group.mediaTrackGroup
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val primary = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
-                val sub = trackSub(primary, f.label, f.id)
+                val lang = languageOf(f.language)
+                // A subtitle file the user brought themselves is named by the
+                // file: "Movie.English.srt" (with the guessed language as its
+                // second line) rather than by its internal marker label.
+                val userFile = f.label?.takeIf { isUserSubLabel(it) }?.removePrefix(USER_SUB_PREFIX)
+                val primary = when {
+                    userFile != null -> userFile
+                    else -> lang ?: trackLabel(f.label ?: f.id, i)
+                }
+                val sub = if (userFile != null) lang else trackSub(primary, f.label, f.id)
                 if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
@@ -3673,9 +3867,37 @@ class PlayerActivity : ComponentActivity() {
                 selected = !textDisabled && !overrideSelected,
             ),
         )
+        // The answer to "no extension has subtitles for this film": bring your
+        // own file. It sits directly under Off/Auto so it is seen before a long
+        // track list, and it is an action row like any other. The rows'
+        // positions are captured here rather than written as literals below, so
+        // adding one can never silently shift the meaning of another.
+        val addSubRow = options.size
+        options.add(
+            GlassOption(
+                I18n.t("Add external subtitle"),
+                I18n.t("Pick a subtitle file from this device"),
+                iconRes = R.drawable.ic_download,
+                marker = RowMarker.ICON,
+            )
+        )
+        // Offered only when there is something to remove, so the sheet never
+        // carries a dead row.
+        val removeSubRow = if (userSubs.isNotEmpty()) options.size else -1
+        if (removeSubRow >= 0) {
+            options.add(
+                GlassOption(
+                    I18n.t("Remove added subtitles"),
+                    userSubs.joinToString(", ") { it.fileName }.take(64),
+                    iconRes = R.drawable.ic_close,
+                    marker = RowMarker.ICON,
+                )
+            )
+        }
+        val trackBase = options.size
         val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
         rows.forEachIndexed { i, row ->
-            indexMap[i + 2] = row.group to row.index
+            indexMap[trackBase + i] = row.group to row.index
             options.add(
                 GlassOption(
                     label = row.label,
@@ -3748,6 +3970,16 @@ class PlayerActivity : ComponentActivity() {
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                             .build()
                     }
+                    addSubRow -> {
+                        // Hand over to the system picker: whatever the user
+                        // downloaded or copied onto the device. "*/*" because an
+                        // .srt or .ass file usually has no subtitle mime type at
+                        // all — the content is validated after the pick instead.
+                        // The sheet closes first so the picker is not stacked
+                        // behind it (see the dismiss below).
+                        externalSubLauncher?.launch(arrayOf("*/*"))
+                    }
+                    removeSubRow -> removeUserSubs()
                     else -> {
                         val (group, ti) = indexMap[idx] ?: return@addOptionRow
                         val format = group.mediaTrackGroup.getFormat(ti)
@@ -4115,6 +4347,11 @@ class PlayerActivity : ComponentActivity() {
         userRotated = false
         userPickedSubs = false
         currentIndex = index
+        // Every route into playback that is NOT an explicit pick in the chooser
+        // clears this: only a server the user tapped themselves is allowed to
+        // ask before the player moves on (see [failoverFromCurrent]). The
+        // chooser's row tap re-sets it after calling this.
+        pickedByUser = false
         // From here on the chooser may show this row as the current one.
         playbackCommitted = true
         val src = sources[index]
@@ -4658,6 +4895,15 @@ class PlayerActivity : ComponentActivity() {
         val mime = mainMimeOf(src)
         val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
+        // A subtitle the user added themselves is attached EAGERLY, unlike the
+        // provider's (which are deferred and validated in the background because
+        // a dead subtitle URL must never kill playback). These are local files
+        // that were already validated when they were picked, so they can be
+        // trusted on the item from the very first frame — and a server change
+        // keeps them without a second round trip.
+        if (userSubs.isNotEmpty()) {
+            runCatching { itemBuilder.setSubtitleConfigurations(userSubConfigs()) }
+        }
 
         // ---- Video enhance: arm the effects pipeline BEFORE prepare() -------
         // media3 only builds the video-effects pipeline while the video renderer
@@ -4693,6 +4939,14 @@ class PlayerActivity : ComponentActivity() {
         player.prepare()
         player.playWhenReady = true
         applySpeed(SPEEDS[speedIndex])
+        // Opened via a "download this" tap: the chooser is put up once a server
+        // is actually PLAYING (see the STATE_READY branch of the player
+        // listener), not here. Handing it to whatever was prepared first meant a
+        // download could be started from a source that never rendered — a file
+        // that fails to convert a minute later. The flag stays armed across an
+        // automatic failover, so the first source that does play is the one the
+        // download is offered on (and it is cleared for good once shown, so
+        // backing out of the chooser leaves normal playback alone).
         // A video source that reaches READY but never draws a frame is a
         // silently-hanging decoder (black screen) — the buffering watchdog
         // can't catch it because playbackState is already READY. Give it 20s
@@ -4856,6 +5110,125 @@ class PlayerActivity : ComponentActivity() {
         slowDialog = null
     }
 
+    /** The silent half of a failover: hand [nextIndex] to the player. */
+    private fun advanceToServer(nextIndex: Int) {
+        noSubsRetry = false
+        SlowNetTip.onServerFailed()
+        Toast.makeText(this, I18n.t("Server failed — trying next"), Toast.LENGTH_SHORT).show()
+        playSource(nextIndex)
+    }
+
+    /**
+     * A server the user picked themselves failed, and the setting to ask is on:
+     * offer the three ways forward instead of switching silently. This is the
+     * "10 servers, I tapped the 4th, it didn't start" case.
+     *
+     * "Choose another server" re-opens the SAME grouped chooser the user picked
+     * from — it is not a fresh search: it lists every server found so far and
+     * keeps appending the ones still arriving (the live search never stopped),
+     * so the list continues where it left off instead of restarting. When this
+     * launch came from a Download tap, the download chooser is re-armed too, so
+     * whichever server the user lands on offers to download it.
+     *
+     * Unanswered after 8s it advances on its own — a failure must never strand
+     * playback on the title card.
+     */
+    private fun promptServerFailed(nextIndex: Int, details: String) {
+        if (failDialog != null) return
+        val nextName = sources.getOrNull(nextIndex)?.name
+            ?: I18n.t("Next server")
+        val count = sources.size
+        var countdown: TextView? = null
+        val dialog = showGlassMenu(
+            I18n.t("Server failed"),
+            listOf(
+                GlassOption(
+                    I18n.t("Try next server"),
+                    nextName,
+                    iconRes = R.drawable.ic_server,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    I18n.t("Choose another server"),
+                    I18n.t("All servers found so far") + " ($count)",
+                    iconRes = R.drawable.ic_server,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    I18n.t("Always switch automatically"),
+                    I18n.t("Never ask again — switch servers on its own"),
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = I18n.t("Switching to the next server automatically…") + " (8s)",
+            iconRes = R.drawable.ic_server,
+            message = details,
+            cancelable = true,
+            onHint = { countdown = it },
+        ) { which ->
+            dismissFailDialog()
+            when (which) {
+                1 -> {
+                    // Back to the list the tap came from. Clear the "picked"
+                    // flag first: the chooser's own row tap sets it again for
+                    // whichever server the user lands on next.
+                    pickedByUser = false
+                    noSubsRetry = false
+                    if (downloadFlowActive) openDownloadPending = true
+                    showServerChooser()
+                }
+                2 -> {
+                    // Stop asking from now on — persist it so the next video
+                    // fails over silently too.
+                    failoverAskOnFailure = false
+                    failoverAskPrefLoaded = true
+                    lifecycleScope.launch {
+                        runCatching {
+                            (applicationContext as HikariApp).store.setFailoverAskOnFailure(false)
+                        }
+                    }
+                    advanceToServer(nextIndex)
+                }
+                else -> {
+                    // "Try next server": the user is still steering, so the
+                    // next failure asks again (the escape is option 2).
+                    pickedByUser = true
+                    if (downloadFlowActive) openDownloadPending = true
+                    advanceToServer(nextIndex)
+                }
+            }
+        }
+        failDialog = dialog
+        val start = System.currentTimeMillis()
+        val ticker = object : Runnable {
+            override fun run() {
+                if (failDialog != dialog) return
+                val remaining = 8_000 - (System.currentTimeMillis() - start)
+                if (remaining <= 0) {
+                    dismissFailDialog()
+                    pickedByUser = false
+                    advanceToServer(nextIndex)
+                    return
+                }
+                countdown?.text = I18n.t("Switching to the next server automatically…") +
+                    " (${(remaining / 1000) + 1}s)"
+            }
+        }
+        failDialogTicker = ticker
+        bufferingWatchdog.post(ticker)
+    }
+
+    private fun dismissFailDialog() {
+        failDialogTicker?.let { bufferingWatchdog.removeCallbacks(it) }
+        failDialogTicker = null
+        failDialog?.let { runCatching { it.dismiss() } }
+        failDialog = null
+    }
+
     /**
      * Fetches a subtitle file with the given headers, validates it, and caches
      * its raw text (so a later sync-offset change can re-time it without a
@@ -4995,21 +5368,186 @@ class PlayerActivity : ComponentActivity() {
      *  saved sync offset, keeping the current playback position. */
     private fun attachExternalSubtitles() {
         val p = player ?: return
-        if (noSubsRetry) return
+        if (noSubsRetry && userSubs.isEmpty()) return
         val src = sources.getOrNull(currentIndex) ?: return
         if (src.subtitles.isEmpty()) {
-            Toast.makeText(this, "Sync applies to downloaded subtitles", Toast.LENGTH_SHORT).show()
+            if (userSubs.isEmpty()) {
+                Toast.makeText(this, "Sync applies to downloaded subtitles", Toast.LENGTH_SHORT).show()
+                return
+            }
+            // This server's provider has no subtitles at all, but the user added
+            // one of their own: re-time that (there is nothing to re-fetch, so
+            // the "downloaded subtitles" notice would be wrong here).
+            reattachSubtitles(null)
             return
         }
         val playedIndex = currentIndex
         lifecycleScope.launch {
             try {
                 val configs = buildSubtitleConfigs(src)
-                if (configs.isEmpty() || currentIndex != playedIndex) return@launch
+                if (configs.isEmpty() && userSubs.isEmpty()) return@launch
+                if (currentIndex != playedIndex) return@launch
                 p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle sync attach failed", t)
+            }
+        }
+    }
+
+    // ------------------------------------------- user-added subtitle files --
+
+    /** The system name of a picked document ("Movie.English.srt"), or "". */
+    private fun displayNameOf(uri: Uri): String = runCatching {
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        }
+    }.getOrNull().orEmpty()
+
+    /** An ISO code guessed from a subtitle's file name ("Film.en.srt",
+     *  "Film.English.srt"), or null when the name says nothing useful. Worth
+     *  guessing: it is what the sheet shows as the track's name, and it is what
+     *  the remembered pick matches on when a server changes. */
+    private fun langFromFileName(fileName: String): String? {
+        val base = fileName.substringBeforeLast('.', fileName).substringAfterLast('.', "")
+        if (base.isBlank()) return null
+        val token = base.lowercase().trim()
+        FULL_LANG_NAMES[token]?.let { return it }
+        return token.takeIf { it.length in 2..3 && it.all { ch -> ch in 'a'..'z' } }
+    }
+
+    /** True for a track that came from a file the user added rather than from
+     *  the stream or the provider. */
+    private fun isUserSubLabel(label: String?): Boolean =
+        label != null && label.startsWith(USER_SUB_PREFIX)
+
+    /** [sub]'s configuration, re-timed for the current sync offset. The file is
+     *  rewritten (and so gets a fresh URI) only when the offset really changed,
+     *  which keeps attaching one off the hot path. */
+    private fun userSubConfig(sub: UserSubtitle): MediaItem.SubtitleConfiguration? {
+        val uri = if (sub.uri != null && sub.forOffset == subtitleOffsetMs) {
+            sub.uri
+        } else {
+            writeSubtitleFile(
+                shiftSubtitleText(sub.text, subtitleOffsetMs, "user:" + sub.label),
+                "user:" + sub.label,
+                sub.mime,
+            )?.also {
+                sub.uri = it
+                sub.forOffset = subtitleOffsetMs
+            }
+        } ?: return null
+        // Two identical chains rather than a stored builder: the setters' return
+        // type is media3's self-typed Builder, so keeping a reference to the
+        // intermediate only works as long as every setter keeps returning the
+        // concrete type — chaining to build() is what the provider-subtitle path
+        // above already does, and is the shape that is guaranteed to compile.
+        val language = langFromFileName(sub.fileName)
+        return if (language != null) {
+            MediaItem.SubtitleConfiguration.Builder(uri)
+                .setMimeType(sub.mime)
+                .setLanguage(language)
+                .setLabel(sub.label)
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+        } else {
+            MediaItem.SubtitleConfiguration.Builder(uri)
+                .setMimeType(sub.mime)
+                .setLabel(sub.label)
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+        }
+    }
+
+    /** Every user-added subtitle, ready to hand ExoPlayer. */
+    private fun userSubConfigs(): List<MediaItem.SubtitleConfiguration> =
+        userSubs.mapNotNull { runCatching { userSubConfig(it) }.getOrNull() }
+
+    /**
+     * Takes the file the user picked and starts showing it. The bytes get the
+     * same treatment a provider's subtitle gets — the same gzip/zip/UTF-16
+     * container decoding and the same "does it really carry cues" test — but a
+     * failure is REPORTED instead of silently dropped: the user chose one
+     * specific file, so "nothing happened" is not an acceptable answer.
+     */
+    private suspend fun addUserSubtitle(uri: Uri) {
+        val name = displayNameOf(uri)
+        val checked = withContext(Dispatchers.IO) {
+            val bytes = runCatching {
+                contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+            val decoded = bytes?.let { decodeSubtitleBytes(it) }
+            if (decoded != null && isSubtitleText(decoded)) decoded else null
+        }
+        if (checked == null) {
+            Toast.makeText(
+                this, I18n.t("That file doesn't look like a subtitle file"), Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val label = USER_SUB_PREFIX + name.ifBlank { "subtitle" }
+        val mime = subtitleMimeOf(checked, name.ifBlank { uri.toString() })
+        // Write the timed copy now, off the main thread, so the re-prepare below
+        // is a pure in-memory step and the new track is up in the same breath.
+        val written = withContext(Dispatchers.IO) {
+            writeSubtitleFile(
+                shiftSubtitleText(checked, subtitleOffsetMs, "user:" + label), "user:" + label, mime
+            )
+        }
+        if (written == null) {
+            Toast.makeText(this, I18n.t("Couldn't read that file"), Toast.LENGTH_LONG).show()
+            return
+        }
+        userSubs.removeAll { it.label == label }
+        userSubs.add(UserSubtitle(label, name, checked, mime).also {
+            it.uri = written
+            it.forOffset = subtitleOffsetMs
+        })
+        // The user just asked for subtitles: undo a previous "Off" and re-enable
+        // the text track type. A subtitle they brought themselves is local and
+        // already validated, so the "the provider's subtitle broke playback"
+        // bail-out must not suppress it either.
+        textOff = false
+        noSubsRetry = false
+        Toast.makeText(this, I18n.t("Subtitle added"), Toast.LENGTH_SHORT).show()
+        reattachSubtitles(label)
+    }
+
+    /** Forgets every subtitle the user added and re-prepares without them. */
+    private fun removeUserSubs() {
+        if (userSubs.isEmpty()) return
+        userSubs.clear()
+        // The remembered pick pointed at a track that no longer exists, which
+        // would make the next track change try to override a group that isn't
+        // there — drop it and let the provider's own tracks win again.
+        pickText = null
+        Toast.makeText(this, I18n.t("Added subtitles removed"), Toast.LENGTH_SHORT).show()
+        reattachSubtitles(null)
+    }
+
+    /**
+     * Rebuilds the current media item with the provider's subtitles PLUS the
+     * user's, and — when [selectLabel] is given — remembers that track so the
+     * rebuilt track list selects it. Rebuilding the item (rather than restarting
+     * the source) is what makes a subtitle added mid-film appear immediately
+     * without losing the playback position: `setMediaItem(item, false)` keeps it.
+     */
+    private fun reattachSubtitles(selectLabel: String?) {
+        val src = sources.getOrNull(currentIndex) ?: return
+        val playedIndex = currentIndex
+        if (selectLabel != null) {
+            pickText = TrackPick(C.TRACK_TYPE_TEXT, null, selectLabel, 0)
+        }
+        lifecycleScope.launch {
+            val configs = runCatching { buildSubtitleConfigs(src) }.getOrDefault(emptyList())
+            if (currentIndex != playedIndex) return@launch
+            val p = player ?: return@launch
+            runCatching {
+                p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
+                p.prepare()
+            }.onFailure {
+                android.util.Log.e("HikariPlayer", "user subtitle attach failed", it)
             }
         }
     }
@@ -5024,12 +5562,15 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** The playback item for [src] with [configs] attached as side-loaded
-     *  subtitles (and the source's own mime preserved). */
+     *  subtitles (and the source's own mime preserved). Any subtitle the user
+     *  added themselves is appended after the provider's, so a file they brought
+     *  survives every re-prepare — including a failover to another server. */
     private fun mediaItemWithSubtitles(
         src: PlayerSource,
         configs: List<MediaItem.SubtitleConfiguration>,
     ): MediaItem {
-        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(configs)
+        val all = if (userSubs.isEmpty()) configs else configs + userSubConfigs()
+        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(all)
         mainMimeOf(src)?.let { item.setMimeType(it) }
         return item.build()
     }
@@ -5211,6 +5752,17 @@ class PlayerActivity : ComponentActivity() {
                     badgeDuration?.visibility = View.VISIBLE
                 }
                 dismissSlowDialog()
+                // The failure prompt has either been answered or is moot now
+                // that something is actually playing.
+                dismissFailDialog()
+                // A download launch waits for exactly this: a server that really
+                // started. The chooser is offered here (and only here), so a
+                // download is never started from a link that was only alive
+                // during prepare.
+                if (openDownloadPending) {
+                    openDownloadPending = false
+                    showDownloadDialog()
+                }
                 // Audio-only streams never fire onRenderedFirstFrame, so the same
                 // "playback really did start" signal applies here.
                 SlowNetTip.onFirstFrame()
@@ -5459,13 +6011,22 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun failoverFromCurrent(details: String, code: Int, headerIssue: Boolean) {
         // Like CloudStream: never strand the user — keep trying the next
-        // server automatically on every failure.
+        // server automatically on every failure. The ONE exception is a server
+        // the user picked themselves in the chooser: silently sliding onto a
+        // different link there hides a whole-server-list problem, so the user
+        // gets the choice (try the next one now, pick another from the list so
+        // far, or stop asking). See [promptServerFailed].
         val nextIndex = nextUntriedIndex()
         if (nextIndex >= 0) {
-            noSubsRetry = false
-            SlowNetTip.onServerFailed()
-            Toast.makeText(this, "Server failed — trying next", Toast.LENGTH_SHORT).show()
-            playSource(nextIndex)
+            if (pickedByUser) {
+                lifecycleScope.launch {
+                    // The pref read is a DataStore hit on first use only.
+                    if (shouldAskOnFailure()) promptServerFailed(nextIndex, details)
+                    else advanceToServer(nextIndex)
+                }
+            } else {
+                advanceToServer(nextIndex)
+            }
             return
         }
         // No server left. If this looks like the servers simply died — expired
@@ -6274,6 +6835,7 @@ class PlayerActivity : ComponentActivity() {
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
         dismissSlowDialog()
+        dismissFailDialog()
         dismissSlowNetTip()
         hudHideTask?.let { hudHandler.removeCallbacks(it) }
         hudHideTask = null

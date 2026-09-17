@@ -3,7 +3,10 @@ import com.hikari.app.i18n.tr
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -45,7 +48,10 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestorePage
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Translate
@@ -89,6 +95,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.R
+import com.hikari.app.data.BackupManager
 import com.hikari.app.data.Userscript
 import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
@@ -167,6 +174,12 @@ private enum class SettingsFolder(
         "App logs & crash reports",
         "Share what the app recorded, so a bug needs no screenshot.",
         Icons.Filled.BugReport,
+    ),
+    BACKUP(
+        "Backup & Restore",
+        "One file with your whole setup",
+        "Carry your extensions, sources and settings to another phone.",
+        Icons.Filled.SettingsBackupRestore,
     ),
     ABOUT(
         "About & Updates",
@@ -403,6 +416,9 @@ fun SettingsScreen(nav: NavHostController) {
                             modifier = Modifier.padding(top = 10.dp, start = 4.dp),
                         )
                     }
+                }
+                SettingsFolder.BACKUP -> {
+                    item { SettingsCard(top = 2.dp) { BackupCard(app) } }
                 }
                 SettingsFolder.ABOUT -> {
                     item {
@@ -1094,11 +1110,13 @@ private fun PlaybackStartCard(app: HikariApp) {
     var waitServers by remember { mutableStateOf(false) }
     var minServers by remember { mutableStateOf(2f) }
     var askServer by remember { mutableStateOf(false) }
+    var failoverAsk by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         waitServers = app.store.playWaitServers()
         minServers = app.store.playMinServers().toFloat()
         askServer = app.store.askServerOnPlay()
+        failoverAsk = app.store.failoverAskOnFailure()
     }
 
     fun persist(wait: Boolean) {
@@ -1224,6 +1242,37 @@ private fun PlaybackStartCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setAskServerOnPlay(it) } }
                 }
             )
+        }
+
+        // Only meaningful when the player is choosing a server by itself: when a
+        // server the USER picked fails, should Hikari switch on its own or ask?
+        if (!askServer) {
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        tr("Ask me when a chosen server fails"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        tr(
+                            "When a server you picked yourself fails, Hikari offers to try " +
+                                "the next one or lets you choose another — instead of " +
+                                "switching silently."
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = failoverAsk,
+                    onCheckedChange = {
+                        failoverAsk = it
+                        scope.launch { runCatching { app.store.setFailoverAskOnFailure(it) } }
+                    }
+                )
+            }
         }
     }
 }
@@ -1565,6 +1614,168 @@ private fun WebViewSafetyCard(app: HikariApp) {
  * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof of the
  * Cinemacity path.
  */
+/**
+ * Settings → Backup & Restore: the whole setup (installed extensions, sources
+ * and every pref this app owns) in one JSON file, and the way back.
+ *
+ * What a backup deliberately does NOT contain — offline videos, the poster and
+ * adblock caches, the download queue — is documented in BackupManager; the short
+ * version is that a backup stays small enough to e-mail to yourself, and a
+ * restore can never point the app at a video file this phone does not have.
+ */
+@Composable
+private fun BackupCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    // Read here, not in the coroutine below: tr() is a composable, so it cannot
+    // be called from inside scope.launch.
+    val savedPrefix = tr("Saved to Downloads")
+
+    fun report(r: BackupManager.Report) {
+        busy = false
+        status = if (r.detail.isBlank()) r.message else r.message + " · " + r.detail
+        Toast.makeText(context, r.message, Toast.LENGTH_SHORT).show()
+    }
+
+    // Restore goes through the system file picker (SAF) rather than a path: the
+    // backup is usually in Downloads or was sent over a chat, and the picker
+    // hands back a URI anyone can read — no storage permission needed.
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        status = ""
+        scope.launch {
+            val result = runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }
+                if (bytes == null) BackupManager.Report(false, "Could not read that file.")
+                else BackupManager.restore(app, bytes)
+            }.getOrElse { BackupManager.Report(false, "Backup failed.", it.message.orEmpty()) }
+            report(result)
+        }
+    }
+
+    fun backup() {
+        busy = true
+        status = ""
+        scope.launch {
+            val result = runCatching {
+                val bytes = BackupManager.export(app)
+                val name = BackupManager.fileName()
+                val saved = withContext(Dispatchers.IO) {
+                    BackupManager.saveToDownloads(context, bytes, name)
+                }
+                if (saved == null) {
+                    BackupManager.Report(false, "Could not save the backup.")
+                } else {
+                    BackupManager.Report(
+                        true,
+                        savedPrefix + "/" + saved,
+                        "${(bytes.size + 1023) / 1024} KB · " +
+                            "${app.providers.providers.value.size} sources",
+                    )
+                }
+            }.getOrElse { BackupManager.Report(false, "Backup failed.", it.message.orEmpty()) }
+            report(result)
+        }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                tr("Backup & Restore"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Your extensions, sources and settings — not your videos — in one file."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        BackupRow(
+            icon = Icons.Filled.SaveAlt,
+            title = tr("Back up Hikari data"),
+            subtitle = tr("Save your extensions, sources and settings to one file you can keep."),
+            action = tr("Back up"),
+            enabled = !busy,
+            onClick = { backup() },
+        )
+        Spacer(Modifier.height(10.dp))
+        BackupRow(
+            icon = Icons.Filled.RestorePage,
+            title = tr("Restore from a backup"),
+            subtitle = tr("Pick a Hikari backup file and put it back on this device."),
+            action = tr("Restore"),
+            enabled = !busy,
+            onClick = { picker.launch(arrayOf("application/json", "text/plain", "*/*")) },
+        )
+        if (status.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                status,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            tr("A backup holds your settings and extension files — never your videos and never your passwords. Restoring replaces what is on this device now."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One "icon · title/subtitle · button" row inside [BackupCard]. */
+@Composable
+private fun BackupRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    action: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = onClick, enabled = enabled) { Text(action) }
+    }
+}
+
 @Composable
 private fun ExtensionVerifyCard(app: HikariApp) {
     val scope = rememberCoroutineScope()

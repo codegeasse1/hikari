@@ -13,7 +13,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -76,16 +78,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
+import com.hikari.app.R
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.CastMember
 import com.hikari.app.data.Episode
@@ -93,10 +98,13 @@ import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RatingSource
+import com.hikari.app.data.Ratings
 import com.hikari.app.data.StreamCache
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.TitleDetails
 import com.hikari.app.data.TitleExtras
+import com.hikari.app.data.TitleRating
 import com.hikari.app.data.TmdbMeta
 import com.hikari.app.data.Trailer
 import com.hikari.app.net.StreamProbe
@@ -253,6 +261,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  don't render. */
     private val _extras = MutableStateFlow<TitleExtras?>(null)
     val extras: StateFlow<TitleExtras?> = _extras.asStateFlow()
+
+    /** The coloured rating badges (IMDb / Rotten Tomatoes / Metacritic /
+     *  Letterboxd / TMDB) for the current title. Filled in two steps: the TMDB
+     *  badge the details lookup already produced first, then whatever the
+     *  review-site lookup found (see [Ratings]). Empty until then — the row
+     *  simply isn't there. */
+    private val _ratings = MutableStateFlow<List<TitleRating>>(emptyList())
+    val ratings: StateFlow<List<TitleRating>> = _ratings.asStateFlow()
 
     /** Streams resolved ahead of time (first episode / movie) so tapping Play
      *  or the first episode starts instantly instead of waiting 20-30s for
@@ -430,7 +446,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) {
             // Extras first: they are ONE TMDB call (credits+videos+certifications)
             // and carry the details block, so the page fills in fastest this way.
-            _extras.value = runCatching { TmdbMeta.extras(item) }.getOrNull()
+            val ex = runCatching { TmdbMeta.extras(item) }.getOrNull()
+            _extras.value = ex
+            // Ratings next: a handful of review sites (Wikidata, Rotten Tomatoes,
+            // Metacritic, Letterboxd) asked in parallel and each independently
+            // optional. TMDB's own score is part of the strip and comes from the
+            // call above, so the row has something to show immediately.
+            runCatching {
+                Ratings.load(
+                    item,
+                    ex?.details?.imdbId,
+                    ex?.details?.rating,
+                    ex?.details?.voteCount,
+                )
+            }.getOrDefault(emptyList()).let { _ratings.value = it }
             _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
             _similar.value = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
         }
@@ -609,6 +638,15 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
 
+/** How long the player holds playback at the start of a fresh search, waiting
+ *  for a server from the extension the title was opened from, before it takes
+ *  whichever other extension answered first. Short: the promise is "your own
+ *  extension goes first", not "wait for it" — the search keeps running behind
+ *  the player either way. Passed to the player as the `originGraceMs` extra, and
+ *  set to 0 when the origin is disabled or gone, so a dead extension can never
+ *  cost a wait. See PlayerActivity's live collector. */
+private const val ORIGIN_PLAY_GRACE_MS = 8_000L
+
 /** How long a prefetched source list may be reused before it must be resolved
  *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
  *  a detail page left open for a few minutes used to replay those dead links on
@@ -650,6 +688,7 @@ fun DetailScreen(
     val related by vm.related.collectAsState()
     val similar by vm.similar.collectAsState()
     val extras by vm.extras.collectAsState()
+    val ratings by vm.ratings.collectAsState()
     val m = meta
     // When the origin provider no longer exists, the ViewModel remaps this page
     // onto a live provider (see remapMissingProvider). Everything that RECORDS
@@ -834,7 +873,12 @@ fun DetailScreen(
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { playerLaunched = false; showLoadingBanner = false }
-    val launchPlayer: (List<StreamSource>, Episode?, String, Long) -> Boolean = launchPlayer@{ playable, ep, liveId, startPos ->
+    // [wantsDownload] rides along as the `openDownload` intent extra: the player
+    // then puts its download chooser up as soon as a server is ready instead of
+    // just watching. Same intent, same player, same chooser as the in-player
+    // Download button — the download buttons outside the player are only a
+    // different way IN, never a second download implementation.
+    val launchPlayer: (List<StreamSource>, Episode?, String, Long, Boolean) -> Boolean = launchPlayer@{ playable, ep, liveId, startPos, wantsDownload ->
         if (playerLaunched) return@launchPlayer false
         // Build the payload BEFORE flipping the once-only guard. It used to be
         // the other way round: one malformed source list set `playerLaunched`
@@ -874,6 +918,16 @@ fun DetailScreen(
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
                 putExtra("askServer", askServerOnPlay)
+                // "Your own extension goes first": the player holds the first
+                // start for a moment so the extension this title was opened
+                // from gets a chance to answer. 0 when that extension is
+                // disabled or uninstalled — it is not in [streamTargets], so
+                // there would be nothing to wait for.
+                putExtra(
+                    "originGraceMs",
+                    if (origin?.config?.enabled == true) ORIGIN_PLAY_GRACE_MS.toInt() else 0
+                )
+                putExtra("openDownload", wantsDownload)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
                 putExtra("histEpisodeSeason", ep?.season ?: 0)
@@ -913,7 +967,7 @@ fun DetailScreen(
             ?.firstOrNull()
     }
 
-    val openStreams: (Episode?, Long) -> Unit = { ep, startPos ->
+    val openStreams: (Episode?, Long, Boolean) -> Unit = { ep, startPos, wantsDownload ->
         // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
         // style). The player has its own title-card screen, so instead of the
         // detail page sitting on a spinner for several seconds while the first
@@ -944,7 +998,7 @@ fun DetailScreen(
         // launch itself fails (the activity can't be resolved), the coroutine
         // below falls back to the old "resolve here, then open the player" path
         // and the source sheet.
-        launchPlayer(emptyList<StreamSource>(), ep, sessionId, startPos)
+        launchPlayer(emptyList<StreamSource>(), ep, sessionId, startPos, wantsDownload)
         // Local once-only flag: playback launches exactly ONCE per tap (either
         // the feed, the preferred-server grace period, or the final batch) —
         // afterwards new servers are appended to the player's live session,
@@ -1079,7 +1133,7 @@ fun DetailScreen(
                     var started = false
                     onUi {
                         if (launched.get()) return@onUi
-                        started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos)
+                        started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos, wantsDownload)
                     }
                     if (started) {
                         launched.set(true)
@@ -1166,7 +1220,7 @@ fun DetailScreen(
                     var started = false
                     onUi {
                         if (!launched.get()) {
-                            started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos)
+                            started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos, wantsDownload)
                         }
                     }
                     if (started) {
@@ -1246,7 +1300,17 @@ fun DetailScreen(
     val tryPlay: (Episode?) -> Unit = { ep ->
         val saved = savedProgressFor(ep)
         resumeHint = saved
-        openStreams(ep, 0L)
+        openStreams(ep, 0L, false)
+    }
+
+    // The download buttons (the play row and every episode row). Identical to
+    // [tryPlay] apart from the flag the player needs: it resolves servers and
+    // opens the player the same way, and the player shows its own download
+    // chooser the moment a server is ready — so "download episode 7" reaches
+    // exactly the same code path as "play episode 7, then tap Download".
+    val tryDownload: (Episode?) -> Unit = { ep ->
+        resumeHint = savedProgressFor(ep)
+        openStreams(ep, 0L, true)
     }
 
     // What the primary action button plays: the first episode with progress
@@ -1456,6 +1520,19 @@ fun DetailScreen(
                             // "Preparing…" spinner of its own.
                             Text(actionLabel)
                         }
+                        // Download without watching first: opens the player on
+                        // this episode and puts its download chooser up as soon
+                        // as a server is ready (see launchPlayer's
+                        // `openDownload`). The episode rows below offer the same
+                        // per episode; this one also covers a movie, whose only
+                        // affordance is this row.
+                        FilledTonalButton(onClick = { tryDownload(btnEp) }) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_download),
+                                contentDescription = tr("Download"),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                         // Library toggle, mirroring the player's heart: the same
                         // MediaItem and the same store calls, so the two views
                         // can never disagree about what is saved.
@@ -1487,7 +1564,7 @@ fun DetailScreen(
                 // language and the director/writer credits. Renders only once
                 // the background TMDB lookup has landed.
                 extras?.details?.let { det ->
-                    item { DetailsBlock(det) }
+                    item { DetailsBlock(det, ratings) }
                 }
                 // Cast + Trailers sit ABOVE the episode list — the order the
                 // Nuvio/Stremio detail page uses. Below it they were buried under
@@ -1620,7 +1697,11 @@ fun DetailScreen(
                         // duplicate Compose key crashes the whole screen.
                         pageEps.forEachIndexed { index, ep ->
                             item(key = "ep-$index") {
-                                EpisodeRow(ep) { tryPlay(ep) }
+                                EpisodeRow(
+                                    ep,
+                                    onClick = { tryPlay(ep) },
+                                    onDownload = { tryDownload(ep) },
+                                )
                             }
                         }
                     }
@@ -1864,7 +1945,7 @@ fun DetailScreen(
                                                     o.ytId == null && !o.externalUrl &&
                                                     (o.url.isNotBlank() || o.isTorrent)
                                             }
-                                            launchPlayer(listOf(s) + others, selectedEp, sessionId, pendingStartPos)
+                                            launchPlayer(listOf(s) + others, selectedEp, sessionId, pendingStartPos, false)
                                         }
                                     }
                                 }
@@ -2215,12 +2296,13 @@ private fun ShelfRow(
     }
 }
 
-/** The "Show Details" block: year/runtime/certification/rating, then
- *  status/country/language, then the director/writer credits — the metadata
- *  Nuvio and Stremio show above their Cast row. Each line is skipped when the
- *  lookup had nothing for it, so a sparse TMDB record still renders cleanly. */
+/** The "Show Details" block: year/runtime/certification, then the coloured
+ *  rating badges, then status/country/language, then the director/writer
+ *  credits — the metadata Nuvio and Stremio show above their Cast row. Each line
+ *  is skipped when the lookup had nothing for it, so a sparse TMDB record still
+ *  renders cleanly. */
 @Composable
-private fun DetailsBlock(d: TitleDetails) {
+private fun DetailsBlock(d: TitleDetails, ratings: List<TitleRating>) {
     val stats = ArrayList<String>(5)
     d.year?.let { stats.add(it.toString()) }
     d.runtimeMinutes?.let { minutes ->
@@ -2229,7 +2311,6 @@ private fun DetailsBlock(d: TitleDetails) {
         stats.add(if (h > 0) "${h}h ${mm}m" else "${mm}m")
     }
     d.certification?.let { stats.add(it) }
-    d.rating?.takeIf { it > 0.0 }?.let { stats.add("★ " + (Math.round(it * 10) / 10.0)) }
 
     val meta = ArrayList<String>(4)
     d.status?.let { meta.add(it) }
@@ -2238,7 +2319,9 @@ private fun DetailsBlock(d: TitleDetails) {
     d.voteCount?.takeIf { it > 0 }?.let { meta.add("$it votes") }
 
     // A TMDB record with nothing usable would otherwise render an empty block.
-    if (stats.isEmpty() && meta.isEmpty() && d.director.isNullOrBlank() && d.writers.isEmpty()) return
+    if (stats.isEmpty() && meta.isEmpty() && ratings.isEmpty() &&
+        d.director.isNullOrBlank() && d.writers.isEmpty()
+    ) return
 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
         if (stats.isNotEmpty()) {
@@ -2249,6 +2332,19 @@ private fun DetailsBlock(d: TitleDetails) {
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(top = 4.dp)
             )
+        }
+        // The review-score strip: one badge per site, in that site's own colour
+        // (see [RatingBadge]). Scrolls sideways so six of them still fit a phone.
+        if (ratings.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ratings.forEach { r -> RatingBadge(r) }
+            }
         }
         if (meta.isNotEmpty()) {
             Text(
@@ -2273,6 +2369,151 @@ private fun DetailsBlock(d: TitleDetails) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
+        }
+    }
+}
+
+// --------------------------------------------------------------- ratings --
+// The sites' own brand colours, deliberately NOT the app's accent: a rating is
+// recognised by the colour of the site that published it.
+
+private val IMDbYellow = Color(0xFFF5C518)
+private val TmdbCyan = Color(0xFF01B4E4)
+private val TomatoRed = Color(0xFFFA320A)
+private val TomatoGreen = Color(0xFF3FA33F)
+private val MetacriticGreen = Color(0xFF00CE7A)
+private val MetacriticYellow = Color(0xFFFFBD3F)
+private val MetacriticRed = Color(0xFFFF6871)
+private val LetterboxdGreen = Color(0xFF00C030)
+
+/** The colour a badge shows in: the site's brand colour, except for the two
+ *  sites whose mark is itself score-dependent — Metacritic turns
+ *  green/yellow/red with the Metascore, and a tomatometer under 60% is a green
+ *  "rotten" splat rather than a red tomato. */
+private fun ratingTint(r: TitleRating): Color = when (r.source) {
+    RatingSource.IMDB -> IMDbYellow
+    RatingSource.TMDB -> TmdbCyan
+    RatingSource.TOMATOMETER -> {
+        val p = percentOf(r.value)
+        if (p in 0..59) TomatoGreen else TomatoRed
+    }
+    RatingSource.POPCORN -> TomatoRed
+    RatingSource.LETTERBOXD -> LetterboxdGreen
+    RatingSource.METACRITIC -> when (val s = r.value.trim().toIntOrNull()) {
+        null -> MetacriticGreen
+        in 61..Int.MAX_VALUE -> MetacriticGreen
+        in 40..60 -> MetacriticYellow
+        else -> MetacriticRed
+    }
+}
+
+private fun percentOf(value: String): Int =
+    value.trim().removeSuffix("%").trim().toIntOrNull() ?: -1
+
+/** One rating badge: the site's mark, then its number, in the site's colour on
+ *  a tinted glass pill — so a row of six still reads as one strip. */
+@Composable
+private fun RatingBadge(r: TitleRating) {
+    val tint = ratingTint(r)
+    val shape = RoundedCornerShape(9.dp)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(tint.copy(alpha = 0.16f))
+            .border(1.dp, tint.copy(alpha = 0.40f), shape)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        RatingMark(r.source, tint)
+        Text(
+            r.value,
+            color = tint,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * The site mark in front of the number, drawn from primitives — no image
+ * assets and no network, so a badge can never be the thing that fails to load:
+ * coloured wordmarks for IMDb and TMDB, a green-leaved disc for the
+ * tomatometer, a striped bucket with popcorn for the popcornmeter, a white M on
+ * the score's colour for the Metascore, and Letterboxd's three dots.
+ */
+@Composable
+private fun RatingMark(source: RatingSource, tint: Color) {
+    when (source) {
+        RatingSource.IMDB -> Text(
+            "IMDb",
+            color = IMDbYellow,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        RatingSource.TMDB -> Text(
+            "TMDB",
+            color = TmdbCyan,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        RatingSource.TOMATOMETER -> Box(Modifier.size(11.dp)) {
+            Box(
+                Modifier
+                    .size(9.dp)
+                    .align(Alignment.BottomCenter)
+                    .clip(CircleShape)
+                    .background(tint)
+            )
+            Box(
+                Modifier
+                    .size(width = 5.dp, height = 2.dp)
+                    .align(Alignment.TopCenter)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(TomatoGreen)
+            )
+        }
+        RatingSource.POPCORN -> Box(Modifier.size(width = 10.dp, height = 11.dp)) {
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .size(width = 9.dp, height = 8.dp)
+                    .clip(RoundedCornerShape(1.dp))
+            ) {
+                Box(Modifier.weight(1f).height(8.dp).background(Color.White))
+                Box(Modifier.weight(1f).height(8.dp).background(TomatoRed))
+                Box(Modifier.weight(1f).height(8.dp).background(Color.White))
+                Box(Modifier.weight(1f).height(8.dp).background(TomatoRed))
+            }
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFFFF0B8))
+            )
+        }
+        RatingSource.METACRITIC -> Box(
+            Modifier
+                .size(14.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(tint),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("M", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        }
+        RatingSource.LETTERBOXD -> Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+            listOf(Color(0xFFFF8000), Color(0xFF00E054), Color(0xFF40BCF4)).forEach { c ->
+                Box(
+                    Modifier
+                        .size(4.5.dp)
+                        .clip(CircleShape)
+                        .background(c)
+                )
+            }
         }
     }
 }
@@ -2422,7 +2663,14 @@ private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
 }
 
 @Composable
-private fun EpisodeRow(ep: Episode, onClick: () -> Unit) {
+private fun EpisodeRow(
+    ep: Episode,
+    onClick: () -> Unit,
+    /** Download this episode without watching it: the player opens on it and
+     *  shows its own download chooser the moment a server is ready. Null hides
+     *  the button (callers that have nowhere to send a download). */
+    onDownload: (() -> Unit)? = null,
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -2468,5 +2716,16 @@ private fun EpisodeRow(ep: Episode, onClick: () -> Unit) {
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary
         )
+        if (onDownload != null) {
+            Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onDownload, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_download),
+                    contentDescription = tr("Download"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
     }
 }

@@ -133,6 +133,9 @@ data class TitleDetails(
     val language: String? = null,
     val director: String? = null,
     val writers: List<String> = emptyList(),
+    /** TMDB's `external_ids.imdb_id` — the key the ratings lookup uses for
+     *  Wikidata and Letterboxd. Null when TMDB doesn't know one. */
+    val imdbId: String? = null,
 )
 
 /** Everything the detail page's extra sections need — the details block, the
