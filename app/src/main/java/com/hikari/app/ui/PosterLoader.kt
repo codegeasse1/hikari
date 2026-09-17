@@ -1,6 +1,7 @@
 package com.hikari.app.ui
 
 import android.util.Base64
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -103,7 +104,7 @@ object PosterLoader {
      * those itself), or an [ImageRequest] over the stored bytes for a poster we
      * had to decrypt ourselves. Null while those bytes are still being decoded —
      * the caller should render a placeholder and will be recomposed when they
-     * land (see [revision]).
+     * land (see [pending]).
      */
     fun model(url: String?): Any? {
         val u = normalize(url) ?: return null
@@ -213,7 +214,7 @@ object PosterLoader {
 
     /**
      * Decodes a [DATA_IMAGE] URI on a background thread and persists the bytes,
-     * then bumps [revision] so the cells that are waiting for it repaint. A
+     * then bumps its own counter so the cells that are waiting for it repaint. A
      * no-op while an identical decode is in flight, and rate-limited after a
      * failure so a broken payload can't spin the pool on every recomposition.
      */
