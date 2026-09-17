@@ -1200,6 +1200,25 @@ class ContentRepository(private val manager: ProviderManager) {
                 )
             } finally {
                 scope.cancel()
+                // Teardown that must happen even when the pass above threw or
+                // was cancelled before its own reporting block ran: the chooser
+                // reads [crossRunning] for its "N still searching" line, and a
+                // pass that died early would otherwise leave those entries in
+                // place forever — nothing ever clears them again, so the search
+                // looked permanently stuck ("it found servers, then just sat
+                // there"). Idempotent: on the normal path every id is already in
+                // [crossVerdict]/[crossFound] and nothing is written twice.
+                crossTargets.forEach { p ->
+                    val id = p.config.id
+                    if (crossVerdict.containsKey(id) || crossFound.containsKey(id)) return@forEach
+                    val repo = p.config.name.ifBlank { id }
+                    crossVerdict[id] = if (crossAsked.containsKey(id))
+                        "$repo — was still searching when the pass ended"
+                    else
+                        "$repo — never reached (the pass ended before asking it)"
+                }
+                crossRunning.clear()
+                bumpCrossStatus()
             }
             // Same torrent/video surfaced by several addons = one entry.
             // Some scrapers/extensions also capture non-content scaffolding —

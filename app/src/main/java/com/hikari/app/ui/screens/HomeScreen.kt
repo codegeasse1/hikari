@@ -622,18 +622,18 @@ fun HomeScreen(nav: NavHostController) {
                 .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
             Row(
-                Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     Icons.Filled.List,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Text(
                     "  " + (selectedName ?: tr("All providers")),
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -940,7 +940,7 @@ private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit
 /**
  * One row of the extension picker. Glassy by design: the same translucent
  * top-to-bottom fill and 1px hairline the settings cards use (see
- * [rememberGlassTokens]), with a 18dp radius and a small vertical gap between
+ * [rememberGlassTokens]), with a 14dp radius and a small vertical gap between
  * rows — so the list reads as separate round cards floating over the sheet
  * rather than a wall of flat charcoal rows.
  */
