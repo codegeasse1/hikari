@@ -101,6 +101,7 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.data.RepoLoadState
 import com.hikari.app.data.Site
+import com.hikari.app.data.SourceUrls
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
@@ -132,6 +133,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val repos = MutableStateFlow<List<Cs3Repo>>(emptyList())
     val pluginsByRepo = MutableStateFlow<Map<String, List<Cs3RepoPlugin>>>(emptyMap())
     val installedUrls = MutableStateFlow<Set<String>>(emptySet())
+    /** Source URLs of installed extensions whose published `fileHash` no
+     *  longer matches the file on disk — i.e. the repo has a newer build.
+     *  Filled by [checkUpdates], shown as an Update button on the row. */
+    val outdatedUrls = MutableStateFlow<Set<String>>(emptySet())
     val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
     /** Repo URLs that turned out to be "bundle" repos (the Mega repo and
      *  friends): they hold no plugins of their own, they only list other
@@ -160,6 +165,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Repos whose plugin list is being fetched right now — guards the window
      *  between a load starting and `repoState` reporting it as loading. */
     private val reposLoading = mutableSetOf<String>()
+
+    /** True when the last [addRepo] hit a repo that was already in the list
+     *  (same repo, possibly a different URL spelling) — the dialog says so
+     *  instead of claiming it was added a second time. */
+    var duplicateRepoAdd: Boolean = false
+        private set
 
     private inline fun <T> cancellableCatching(block: () -> T): Result<T> =
         try {
@@ -567,12 +578,18 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         installedUrls.value = buildSet {
             store.providers().forEach { p ->
                 val extra = p.extra ?: return@forEach
-                when (p.type) {
-                    ProviderType.CS3 -> if (extra.startsWith("http")) add(extra)
-                    ProviderType.HIKARI -> if (extra.startsWith("http")) add(extra.substringBeforeLast('|'))
-                    ProviderType.NUVIO -> if (extra.startsWith("http")) add(extra)
-                    else -> {}
+                val source = when (p.type) {
+                    ProviderType.CS3, ProviderType.NUVIO -> extra
+                    ProviderType.HIKARI -> extra.substringBeforeLast('|')
+                    else -> return@forEach
                 }
+                if (!source.startsWith("http")) return@forEach
+                // Remember every spelling of the source URL, not just the one
+                // the repo served at install time: a repo build can move a file
+                // (a new branch, `refs/heads/x` vs `x`, the jsDelivr mirror),
+                // and a literal comparison used to greet the extension the user
+                // already installed with an Install button again.
+                addAll(SourceUrls.matchKeys(source))
             }
         }
     }
@@ -606,10 +623,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Removes every NUVIO provider that came from [pluginUrl]. */
     suspend fun uninstallNuvioPlugin(pluginUrl: String) {
-        com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(
-            getApplication<Application>(),
-            pluginUrl,
-        )
+        val app = getApplication<Application>()
+        // The manager removes by exact source URL, so hand it the spelling each
+        // installed provider actually stored (they can differ from the repo's
+        // current listing) — otherwise "Uninstalled" would leave the provider
+        // in place when the repo moved the file.
+        val stored = store.providers()
+            .filter { it.type == ProviderType.NUVIO && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
+        }
         reloadInstalled()
     }
 
@@ -899,6 +925,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     description = obj.optString("description"),
                     kind = kind,
                 )
+                // Adding a repo that is already in the list (same repo — the
+                // URL spelling may differ: refs/heads vs plain branch, the
+                // jsDelivr mirror) must not grow a second copy: that copy's
+                // extensions all looked uninstalled again while the originals
+                // kept working on Home. The store merges it into the one entry
+                // it belongs to; report which of the two happened so the dialog
+                // can say "already added" instead of "added".
+                val key = SourceUrls.canonical(repo.url)
+                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
                 store.addCs3Repo(repo)
                 // A "Mega"-style bundle repo isn't a plugin repo — its single
                 // plugin only exists to add every CloudStream repo from the
@@ -909,8 +944,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     markBundle(repo.url)
                     importMegaRepos()
                 }
+                val saved = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }
                 repos.value = store.repos()
-                repo
+                saved ?: repo
             }
         }
     }
@@ -1181,10 +1217,24 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * True when [p]'s stored source URL is the same file as [source] — however
+     * either side spells it (refs/heads vs a plain branch, the jsDelivr mirror,
+     * %20 vs a space). Install, uninstall and the update check all key on the
+     * source URL, so they all have to agree on what "the same file" means.
+     */
+    private fun sourceMatches(p: ProviderConfig, source: String): Boolean {
+        val extra = p.extra ?: return false
+        if (!extra.startsWith("http")) return false
+        val raw = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+        val wanted = SourceUrls.matchKeys(source)
+        return SourceUrls.matchKeys(raw).any { it in wanted }
+    }
+
     suspend fun uninstallCs3Plugin(pluginUrl: String) {
         val all = store.providers()
-        val paths = all.filter { it.extra == pluginUrl }.map { it.url }.toSet()
-        store.saveProviders(all.filter { it.extra != pluginUrl })
+        val paths = all.filter { sourceMatches(it, pluginUrl) }.map { it.url }.toSet()
+        store.saveProviders(all.filterNot { sourceMatches(it, pluginUrl) })
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {
@@ -1263,11 +1313,92 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Compares the file each installed extension was saved as against the
+     * `fileHash` its repo publishes. A mismatch IS the update signal: it needs
+     * no version bookkeeping of our own, and it also catches a re-released
+     * build that kept the same version number. Repos that publish no `fileHash`
+     * can't be checked this way, and are simply never flagged.
+     */
+    suspend fun checkUpdates() = withContext(Dispatchers.IO) {
+        // installed source URL -> the .cs3/.hiki/.js file it was stored as
+        val onDisk = HashMap<String, String>()
+        // saved file -> the source URL it was installed from (the raw spelling)
+        val sourceOfPath = HashMap<String, String>()
+        for (p in store.providers()) {
+            val extra = p.extra ?: continue
+            if (!extra.startsWith("http")) continue
+            if (p.url.isBlank()) continue
+            val source = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+            // A repo build can move a file without changing it (a new branch,
+            // `refs/heads/x` vs `x`, the jsDelivr mirror), so index the
+            // installed file under every spelling of its source URL — else the
+            // update check can't find the file and never offers the Update.
+            for (key in SourceUrls.matchKeys(source)) onDisk.putIfAbsent(key, p.url)
+            sourceOfPath.putIfAbsent(p.url, source)
+        }
+        val outdated = HashSet<String>()
+        if (onDisk.isNotEmpty()) {
+            for (plugins in pluginsByRepo.value.values) {
+                for (plugin in plugins) {
+                    val hash = plugin.fileHash ?: continue
+                    if (!hash.startsWith("sha256-")) continue
+                    val path = onDisk[plugin.url] ?: continue
+                    val expected = hash.removePrefix("sha256-").lowercase()
+                    val actual = runCatching { sha256Hex(File(path).readBytes()) }.getOrNull()
+                        ?: continue
+                    if (actual == expected) continue
+                    outdated += plugin.url
+                    // Light the Update button up on the installed-provider row
+                    // too, whatever spelling that row's stored source has.
+                    sourceOfPath[path]?.let { s -> outdated += SourceUrls.matchKeys(s) }
+                }
+            }
+        }
+        outdatedUrls.value = outdated
+    }
+
+    /**
+     * Re-installs already-installed extensions from their repo's current file —
+     * the Update button on a row, and Update all. [items] are run one after
+     * another inside ONE background job (an install cancels the previous job,
+     * so a loop of individual installs would cancel itself).
+     */
+    fun updatePlugins(items: List<Pair<Cs3RepoPlugin, RepoKind>>) {
+        if (items.isEmpty()) return
+        installJob?.cancel()
+        installJob = startBackground {
+            clearStatus()
+            var ok = 0
+            val failed = mutableListOf<String>()
+            for ((i, item) in items.withIndex()) {
+                val (p, kind) = item
+                _busyMsg.value = "Updating ${p.name} (${i + 1}/${items.size})…"
+                val r = runCatching {
+                    withTimeoutOrNull(90_000) {
+                        when (effectiveRepoKind(kind, p.url)) {
+                            RepoKind.CS3 -> installCs3Plugin(p)
+                            RepoKind.HIKARI -> installHikiPlugin(p)
+                            RepoKind.NUVIO -> installNuvioPlugin(p)
+                        }
+                    }
+                }.getOrNull()
+                if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+            }
+            // Re-hash: anything that came back clean loses its Update button.
+            checkUpdates()
+            setSuccess(
+                if (failed.isEmpty()) "Updated $ok extension${if (ok == 1) "" else "s"}"
+                else "Updated $ok of ${items.size} — failed: " +
+                    failed.take(3).joinToString(", ") + (if (failed.size > 3) "…" else "")
+            )
+        }
+    }
+
     /** Removes every HIKARI provider that came from [pluginUrl]. */
     suspend fun uninstallHikiPlugin(pluginUrl: String) {
         fun fromPlugin(p: ProviderConfig) =
-            p.type == ProviderType.HIKARI &&
-                (p.extra == pluginUrl || p.extra?.startsWith("$pluginUrl|") == true)
+            p.type == ProviderType.HIKARI && sourceMatches(p, pluginUrl)
         val all = store.providers()
         val paths = all.filter { fromPlugin(it) }.map { it.url }.toSet()
         store.saveProviders(all.filter { !fromPlugin(it) })
@@ -1326,6 +1457,14 @@ fun ExtensionsScreen() {
     val repos by vm.repos.collectAsState()
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
+    val outdated by vm.outdatedUrls.collectAsState()
+    // Every outdated plugin together with the kind of repo it came from, so
+    // "Update all" can re-install each one the same way its row would.
+    val outdatedItems = remember(outdated, pluginsByRepo, repos) {
+        repos.flatMap { repo ->
+            (pluginsByRepo[repo.url] ?: emptyList()).map { repo.kind to it }
+        }.filter { (_, p) -> p.url in outdated }
+    }
     val repoState by vm.repoState.collectAsState()
     val bundleRepos by vm.bundleRepos.collectAsState()
     val sites by vm.sites.collectAsState()
@@ -1343,6 +1482,13 @@ fun ExtensionsScreen() {
 
     LaunchedEffect(Unit) {
         vm.loadReposIfNeeded()
+    }
+
+    // Re-hash installed extensions whenever a plugin list or the installed set
+    // changes: a completed install/update clears its own Update button, and a
+    // refreshed repo reveals a new one.
+    LaunchedEffect(pluginsByRepo, installed, providers) {
+        vm.checkUpdates()
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -1380,6 +1526,24 @@ fun ExtensionsScreen() {
         }
     }
 
+    /** Update from the Installed list: the row only knows the provider, so the
+     *  matching repo entry (which carries the file + hash to download) is looked
+     *  up in the update list. */
+    fun updateProvider(prov: ContentProvider) {
+        val source = providerSource(prov) ?: return
+        // The installed row stores the spelling that was live at install time;
+        // the repo entry may spell the same file differently by now.
+        val wanted = SourceUrls.matchKeys(source)
+        val match = outdatedItems.firstOrNull { (_, plugin) ->
+            plugin.url == source || SourceUrls.matchKeys(plugin.url).any { it in wanted }
+        }
+        if (match == null) {
+            vm.setError("This extension's repo isn't loaded — refresh the repo in Extensions.")
+            return
+        }
+        vm.updatePlugins(listOf(match.second to match.first))
+    }
+
     val folder = openFolder
 
     BackHandler(
@@ -1408,6 +1572,7 @@ fun ExtensionsScreen() {
             isBundle = openRepo.url in bundleRepos,
             providers = providers,
             installedUrls = installed,
+            outdatedUrls = outdated,
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -1416,6 +1581,7 @@ fun ExtensionsScreen() {
             onRefresh = { vm.refreshRepo(openRepo) },
             onInstall = { installPlugin(it, openRepo.kind) },
             onUninstall = { uninstallPlugin(it, openRepo.kind) },
+            onUpdate = { vm.updatePlugins(listOf(it to openRepo.kind)) },
             onOpenSettings = { openProviderSettings(it) },
             onInstallAll = {
                 vm.installAllPlugins(
@@ -1483,6 +1649,8 @@ fun ExtensionsScreen() {
         )
         installedOpen -> InstalledExtensionsView(
             providers = providers,
+            outdatedUrls = outdated,
+            onUpdateProvider = { prov -> updateProvider(prov) },
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -1571,8 +1739,11 @@ fun ExtensionsScreen() {
                 vm.refreshRepo(repo)
             },
             installedUrls = installed,
+            outdatedUrls = outdated,
+            onUpdateAll = { vm.updatePlugins(outdatedItems.map { (kind, p) -> p to kind }) },
             onInstallPlugin = { p, kind -> installPlugin(p, kind) },
             onUninstallPlugin = { p, kind -> uninstallPlugin(p, kind) },
+            onUpdatePlugin = { p, kind -> vm.updatePlugins(listOf(p to kind)) },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onOpenSettings = { openProviderSettings(it) },
@@ -1656,7 +1827,10 @@ fun ExtensionsScreen() {
                             onSuccess = { repo ->
                                 showRepoDialog = false
                                 repoUrl = ""
-                                vm.setSuccess("Added repo: ${repo.name}")
+                                vm.setSuccess(
+                                    if (vm.duplicateRepoAdd) "Repo already added: ${repo.name}"
+                                    else "Added repo: ${repo.name}"
+                                )
                                 vm.refreshRepo(repo)
                             },
                         )
@@ -2038,6 +2212,8 @@ private fun RepoBrowserView(
     errorMsg: String?,
     onEnsureReposLoaded: () -> Unit,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String> = emptySet(),
+    onUpdateAll: () -> Unit = {},
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
     onOpenFolder: (SourceFolder) -> Unit,
@@ -2055,6 +2231,7 @@ private fun RepoBrowserView(
     onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUpdatePlugin: (Cs3RepoPlugin, RepoKind) -> Unit = { _, _ -> },
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
@@ -2098,6 +2275,47 @@ private fun RepoBrowserView(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             )
         }
+        // Updates found by re-hashing every installed extension against its
+        // repo's published fileHash (see ExtensionsViewModel.checkUpdates).
+        if (query.isBlank() && outdatedUrls.isNotEmpty()) {
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("Extension updates available"),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                "${outdatedUrls.size} installed " +
+                                    "extension${if (outdatedUrls.size == 1) "" else "s"} " +
+                                    "can be updated",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(onClick = onUpdateAll, enabled = !busy) {
+                            Text(tr("Update all"))
+                        }
+                    }
+                }
+            }
+        }
         if (busy) {
             item {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -2136,11 +2354,13 @@ private fun RepoBrowserView(
                 repoState = repoState,
                 providers = providers,
                 installedUrls = installedUrls,
+                outdatedUrls = outdatedUrls,
                 busy = busy,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onInstallPlugin = onInstallPlugin,
                 onUninstallPlugin = onUninstallPlugin,
+                onUpdatePlugin = { p, kind -> onUpdatePlugin(p, kind) },
                 onDeleteProvider = onDeleteProvider,
                 onToggleProvider = onToggleProvider,
                 cs3SettingsIds = cs3SettingsIds,
@@ -2308,11 +2528,13 @@ private fun LazyListScope.extensionsSearchItems(
     repoState: Map<String, RepoLoadState>,
     providers: List<ContentProvider>,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String>,
     busy: Boolean,
     onOpenRepo: (Cs3Repo) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUpdatePlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     cs3SettingsIds: Set<String>,
@@ -2396,6 +2618,8 @@ private fun LazyListScope.extensionsSearchItems(
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
                     onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                         ?.let { target -> { onOpenSettings(target) } },
+                    updateAvailable = p.url in outdatedUrls,
+                    onUpdate = { onUpdatePlugin(p, repo.kind) },
                 )
             }
         }
@@ -2462,6 +2686,7 @@ private fun RepoPluginsView(
     isBundle: Boolean = false,
     providers: List<ContentProvider>,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String>,
     busy: Boolean,
     busyMsg: String,
     successMsg: String?,
@@ -2470,6 +2695,7 @@ private fun RepoPluginsView(
     onRefresh: () -> Unit,
     onInstall: (Cs3RepoPlugin) -> Unit,
     onUninstall: (Cs3RepoPlugin) -> Unit,
+    onUpdate: (Cs3RepoPlugin) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
     onInstallAll: () -> Unit,
 ) {
@@ -2570,7 +2796,9 @@ private fun RepoPluginsView(
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Install all $uninstalled ${unit}s")
+                        Text(
+                            tr("Install all (%s)").replace("%s", uninstalled.toString())
+                        )
                     }
                 }
             }
@@ -2617,7 +2845,9 @@ private fun RepoPluginsView(
                         onInstall = { onInstall(p) },
                         onUninstall = { onUninstall(p) },
                         onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
-                            ?.let { target -> { onOpenSettings(target) } }
+                            ?.let { target -> { onOpenSettings(target) } },
+                        updateAvailable = p.url in outdatedUrls,
+                        onUpdate = { onUpdate(p) },
                     )
                 }
             }
@@ -2725,20 +2955,69 @@ private fun openProviderSettingsSafely(
         Toast.makeText(context, "Loading ${p.config.name}…", Toast.LENGTH_SHORT).show()
     }
     scope.launch {
-        val ready = withContext(Dispatchers.IO) {
+        var ready = withContext(Dispatchers.IO) {
             runCatching { p.prepareSettings() }.getOrDefault(false)
         }
-        val opened = ready && withContext(Dispatchers.Main) {
+        var opened = ready && withContext(Dispatchers.Main) {
             runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
         }
+        // A plugin's settings screen is third-party code, and some of them bail
+        // out on a transient condition (an activity that was briefly stopped
+        // while the plugin was being loaded, a sheet that was left behind).
+        // Reload the plugin and try once more before reporting a failure.
+        if (!opened) {
+            kotlinx.coroutines.delay(300)
+            ready = withContext(Dispatchers.IO) {
+                runCatching { p.prepareSettings() }.getOrDefault(false)
+            }
+            opened = ready && withContext(Dispatchers.Main) {
+                runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
+            }
+        }
         if (opened) return@launch
-        val detail = Cs3PluginManager.lastError?.take(240)
-        Toast.makeText(
-            context,
-            if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
-            else "Couldn't open ${p.config.name} settings: $detail",
-            Toast.LENGTH_LONG,
-        ).show()
+        val detail = Cs3PluginManager.lastError.orEmpty()
+        if (detail.isBlank()) {
+            Toast.makeText(
+                context,
+                I18n.t("%s has no settings screen").replace("%s", p.config.name),
+                Toast.LENGTH_LONG,
+            ).show()
+            return@launch
+        }
+        // The reason a plugin's own screen refused to open is a full exception
+        // description (the plugin class and line now included) — far too long
+        // for a toast, which only ever showed "… threw: Il…". Show it in a
+        // dialog the user can read and copy, so a broken extension settings
+        // screen can actually be reported instead of guessed at.
+        showSettingsFailureDialog(context, p.config.name, detail)
+    }
+}
+
+/** Full, copyable report of why an extension's own settings screen didn't
+ *  open. The text is whatever [Cs3PluginManager.lastError] recorded — the
+ *  plugin's exception class, message and first stack frames — plus a line
+ *  telling the user what to do with it. */
+private fun showSettingsFailureDialog(context: Context, name: String, detail: String) {
+    val activity = context as? android.app.Activity
+        ?: HikariApp.mainActivity
+        ?: return
+    runCatching {
+        val report = "${name}: $detail"
+        android.app.AlertDialog.Builder(activity)
+            .setTitle(I18n.t("Couldn't open %s settings").replace("%s", name))
+            .setMessage(report)
+            .setPositiveButton(I18n.t("Copy report")) { _, _ ->
+                runCatching {
+                    val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(
+                        android.content.ClipData.newPlainText("Hikari settings error", report)
+                    )
+                    Toast.makeText(activity, I18n.t("Report copied"), Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(I18n.t("Close"), null)
+            .show()
     }
 }
 
@@ -2749,6 +3028,8 @@ private fun ProviderCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
+    updateAvailable: Boolean = false,
+    onUpdate: (() -> Unit)? = null,
 ) {    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -2788,8 +3069,25 @@ private fun ProviderCard(
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
+                if (updateAvailable) {
+                    Text(
+                        tr("Update available"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             Switch(checked = p.config.enabled, onCheckedChange = onToggle)
+            if (updateAvailable && onUpdate != null) {
+                IconButton(onClick = onUpdate) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = tr("Update"),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
             if (onSettings != null) {
                 IconButton(onClick = onSettings) {
                     Icon(
@@ -2872,7 +3170,7 @@ private fun NuvioSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${provider.config.name} settings") },
+        title = { Text("${provider.config.name} " + tr("Settings")) },
         text = {
             when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3159,6 +3457,8 @@ private fun PluginRow(
     onInstall: () -> Unit,
     onUninstall: () -> Unit,
     onSettings: (() -> Unit)? = null,
+    updateAvailable: Boolean = false,
+    onUpdate: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -3211,8 +3511,26 @@ private fun PluginRow(
         }
         Spacer(Modifier.width(8.dp))
         if (installed) {
-            TextButton(onClick = onUninstall) {
-                Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
+            if (updateAvailable && onUpdate != null) {
+                TextButton(onClick = onUninstall) {
+                    Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
+                }
+                Button(
+                    onClick = onUpdate,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(tr("Update"))
+                }
+            } else {
+                TextButton(onClick = onUninstall) {
+                    Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
+                }
             }
         } else {
             Button(onClick = onInstall) {
@@ -3232,15 +3550,28 @@ private fun PluginRow(
  * permissions/settings screen; Hikari extensions append a "|index" suffix to
  * their source URL.
  */
+/** The repo URL an installed provider was installed from — the key both
+ *  uninstall and the update check use. Hikari extensions append a "|index"
+ *  suffix (one file can hold several providers); a provider installed from a
+ *  local file has no repo URL at all. */
+private fun providerSource(p: ContentProvider): String? {
+    val extra = p.config.extra ?: return null
+    if (!extra.startsWith("http")) return null
+    return if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+}
+
 private fun repoPluginSettingsTarget(
     plugin: Cs3RepoPlugin,
     providers: List<ContentProvider>,
     cs3SettingsIds: Set<String>,
-): ContentProvider? = providers.firstOrNull { p ->
-    val extra = p.config.extra ?: return@firstOrNull false
-    val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-    if (source != plugin.url) return@firstOrNull false
-    p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
+): ContentProvider? {
+    val wanted = SourceUrls.matchKeys(plugin.url)
+    return providers.firstOrNull { p ->
+        val extra = p.config.extra ?: return@firstOrNull false
+        val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+        if (SourceUrls.matchKeys(source).none { it in wanted }) return@firstOrNull false
+        p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
+    }
 }
 
 private fun pluginStatus(p: ContentProvider): String? {
@@ -3923,6 +4254,8 @@ private fun InstalledExtensionsView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    outdatedUrls: Set<String> = emptySet(),
+    onUpdateProvider: (ContentProvider) -> Unit = {},
     onBack: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -4023,6 +4356,8 @@ private fun InstalledExtensionsView(
                         p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
                         else -> null
                     },
+                    updateAvailable = providerSource(p) in outdatedUrls,
+                    onUpdate = { onUpdateProvider(p) },
                 )
             }
         }

@@ -1,3 +1,43 @@
+## 0.4.1
+
+**An extension you installed stays installed, a repo can only be added once, and
+the whole app now speaks your language.**
+
+- **An installed extension stays installed.** A repo's list is matched against
+  what is on your device by the *identity* of the file, not by the exact URL
+  string the repo happened to publish the day you installed it. Repos rewrite
+  those URLs as they rebuild — a new branch, `refs/heads/x` against plain `x`,
+  or the jsDelivr mirror Hikari falls back to when GitHub rate-limits — and a
+  literal string comparison is why a repo you had already added greeted you with
+  an *Install* button for an extension that was installed and still working on
+  Home, and why its *Install all* offered to install it a second time. The
+  Uninstall button, uninstall itself, the update check and the gear button on a
+  repo row all key on that identity now.
+- **One repo, one entry.** Adding a repo you already have (pasting the CNC link
+  a second time, say) no longer files a second copy of it in the list under a
+  different URL spelling — that copy showed *every* extension of the repo as
+  uninstalled all over again. Re-adding now refreshes the entry you already
+  have and says *Repo already added*, and a repo list that already has such
+  duplicates is healed the first time anything is added or removed.
+- **The gear on an extension now says why it failed.** When a plugin's own
+  settings screen refuses to open, Hikari names the exception, the plugin class
+  and the line in a dialog you can read and copy, instead of an ellipsized toast
+  that only had room for *"…threw: Il…"*. The full stack trace also goes to the
+  app log (Settings → Logs), and the plugin is re-loaded and tried once more,
+  because several of them fail only on a transient condition.
+- **The rest of the app is translated.** Home's row titles and genre names, the
+  search-scope and translate dialogs, install/update/remove statuses, the
+  extension update row and its buttons, the toasts — all of it goes through the
+  translation table now: about 490 strings in each of 20 languages plus the
+  pseudo-locale, on top of the sections that were already covered.
+- **A crash is explained, not just logged.** A crash on the previous run is
+  reported on Home as a glass dialog — *Hikari crashed last time* — with a line
+  on what to do about it and a pointer to Settings → Logs, instead of a banner
+  that sat on the page until it was dismissed.
+- **The language picker is a glass dialog.** *Settings → Language* opens the
+  20 languages in the app's own dialog, each written in its own script, with the
+  current one marked.
+
 ## 0.4.0
 
 **A rating row that fills itself in, a colour-coded age rating, a download that

@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,6 +28,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -37,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,13 +64,13 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.Collection
 import com.hikari.app.data.ContentRepository
-import com.hikari.app.data.Logs
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.ContinueWatchingRow
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
@@ -74,6 +78,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -290,7 +295,12 @@ fun HomeScreen(nav: NavHostController) {
     // The picker's engine filter ("All", "CloudStream", "Hikari", "Nuvio",
     // "Stremio"). Purely a narrowing device: it never changes what Home shows.
     var providerFilter by remember { mutableStateOf<com.hikari.app.data.ProviderType?>(null) }
-    var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
+    // Shown only if the last crash hasn't been announced yet (see
+    // HikariApp.markCrashNoticeShown): a crash that was already reported never
+    // interrupts the user twice.
+    var showCrash by remember {
+        mutableStateOf(HikariApp.lastCrash != null && !HikariApp.crashNoticeShown)
+    }
     var showPicker by remember { mutableStateOf(false) }
     var showTranslate by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
@@ -414,54 +424,10 @@ fun HomeScreen(nav: NavHostController) {
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 72.dp)
         ) {
-            // Crash report FIRST: an uncaught OOM/exception from the previous
-            // launch is the most important thing on this screen. It used to be
-            // rendered after the hero + Continue Watching row, so it appeared in
-            // the middle of the page; as the leading item it now sits at the top.
-            if (showCrash && HikariApp.lastCrash != null) {
-                item(key = "crash-banner") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.errorContainer)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "The app crashed on a previous launch:\n${HikariApp.lastCrash}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = {
-                            // The banner is the moment the user is most willing to
-                            // send us the report: hand over the crash log itself
-                            // (Settings → Logs & diagnostics serves the full set)
-                            // instead of asking for a screenshot.
-                            val files = Logs.existingFiles(context)
-                            if (files.isEmpty()) {
-                                Toast.makeText(
-                                    context,
-                                    "No log file found",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                shareFiles(context, files.map { it.file }, "Hikari crash log")
-                            }
-                        }) {
-                            Text(tr("Share log"))
-                        }
-                        TextButton(onClick = {
-                            showCrash = false
-                            HikariApp.instance.clearCrash()
-                        }) {
-                            Text(tr("Dismiss"))
-                        }
-                    }
-                }
-            }
+            // Crash report: NOT inline any more. A stack trace dumped into the
+            // feed made the feed look broken; the one-shot warning panel below
+            // (see the GlassDialog after the Box) says what happened and points
+            // at Settings → Logs, then stays out of the way.
             item {
                 if (featured.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth()) {
@@ -646,11 +612,46 @@ fun HomeScreen(nav: NavHostController) {
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "  ${selectedName ?: "All providers"}",
+                    "  " + (selectedName ?: tr("All providers")),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+            }
+        }
+
+        // Crash warning: one glass panel, shown once per crash. It says only what
+        // the user needs (it crashed, the log is saved, share it if it keeps
+        // happening) — the stack trace itself lives in Settings → Logs. It closes
+        // by itself after a few seconds, on a tap anywhere, or on the X, and
+        // either way this crash is never announced again.
+        if (showCrash) {
+            val dismissCrash: () -> Unit = {
+                showCrash = false
+                // Keeps the log file (unlike clearCrash) and remembers the
+                // fingerprint, so the panel doesn't come back on the next launch.
+                HikariApp.instance.markCrashNoticeShown()
+            }
+            LaunchedEffect(Unit) {
+                delay(5000)
+                dismissCrash()
+            }
+            GlassDialog(
+                onDismiss = dismissCrash,
+                title = tr("Hikari crashed last time"),
+            ) {
+                Text(
+                    tr(
+                        "The crash log has been saved. You can view it in Settings, " +
+                            "and share it with the developer if the issue continues."
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(onClick = { dismissCrash() }) { Text(tr("OK")) }
+                }
             }
         }
     }
@@ -681,14 +682,16 @@ fun HomeScreen(nav: NavHostController) {
         val isOn = com.hikari.app.data.Translator.isOn(pid)
         AlertDialog(
             onDismissRequest = { showTranslate = false },
-            title = { Text(if (isOn) "Turn off translation?" else "Translate to English?") },
+            title = { Text(if (isOn) tr("Turn off translation?") else tr("Translate to English?")) },
             text = {
                 Text(
                     if (isOn) {
-                        "Translation is ON for $pname — its titles and text are shown in English."
+                        tr("Translation is ON for %s — its titles and text are shown in English.")
+                            .replace("%s", pname)
                     } else {
-                        "$pname shows content in its original language. Turn it into English? " +
-                            "Only this extension is affected — every other extension stays as it is."
+                        tr("%s shows content in its original language. Turn it into English? " +
+                            "Only this extension is affected — every other extension stays as it is.")
+                            .replace("%s", pname)
                     }
                 )
             },
@@ -700,7 +703,7 @@ fun HomeScreen(nav: NavHostController) {
                         vm.refresh()
                     }
                 }) {
-                    Text(if (isOn) "Turn off" else "Always translate")
+                    Text(if (isOn) tr("Turn off") else tr("Always translate"))
                 }
             },
             dismissButton = {
@@ -717,7 +720,7 @@ fun HomeScreen(nav: NavHostController) {
         AlertDialog(
             onDismissRequest = { showSearchDialog = false },
             title = { Text(tr("Search")) },
-            text = { Text("Search across every provider, or only inside $pname?") },
+            text = { Text(tr("Search across every provider, or only inside %s?").replace("%s", pname)) },
             confirmButton = {
                 TextButton(onClick = {
                     showSearchDialog = false
@@ -731,7 +734,7 @@ fun HomeScreen(nav: NavHostController) {
                     showSearchDialog = false
                     Routes.safeNavigate(nav, Routes.searchInProvider(searchSel))
                 }) {
-                    Text("In $pname")
+                    Text(tr("In %s").replace("%s", pname))
                 }
             },
         )

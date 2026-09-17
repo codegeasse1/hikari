@@ -679,7 +679,7 @@ class PlayerActivity : ComponentActivity() {
                     // screen.
                     if (System.currentTimeMillis() - lockToastAt > 4_000L) {
                         lockToastAt = System.currentTimeMillis()
-                        Toast.makeText(this@PlayerActivity, "Locked — tap the small lock icon to unlock", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@PlayerActivity, I18n.t("Locked — tap the small lock icon to unlock"), Toast.LENGTH_SHORT).show()
                     }
                     return true
                 }
@@ -1582,7 +1582,7 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return
         val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
         if (!hasVideo) {
-            Toast.makeText(this, "No video track to keep in the background", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("No video track to keep in the background"), Toast.LENGTH_SHORT).show()
             return
         }
         val builder = PictureInPictureParams.Builder()
@@ -1594,7 +1594,7 @@ class PlayerActivity : ComponentActivity() {
         try {
             enterPictureInPictureMode(builder.build())
         } catch (t: Throwable) {
-            Toast.makeText(this, "Picture-in-picture unavailable", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("Picture-in-picture unavailable"), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1729,7 +1729,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        Toast.makeText(this, if (next) "Added to library" else "Removed from library", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (next) I18n.t("Added to library") else I18n.t("Removed from library"), Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleController() {
@@ -3117,7 +3117,7 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             val eps = runCatching { repo.episodesFor(item) }.getOrNull().orEmpty()
             if (eps.isEmpty()) {
-                Toast.makeText(this@PlayerActivity, "No episode list available", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PlayerActivity, I18n.t("No episode list available"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
             val options = eps.map { ep ->
@@ -3893,7 +3893,7 @@ class PlayerActivity : ComponentActivity() {
         ) {
             Toast.makeText(
                 this,
-                "This server's subtitles couldn't be loaded",
+                I18n.t("This server's subtitles couldn't be loaded"),
                 Toast.LENGTH_SHORT,
             ).show()
         }
@@ -4281,7 +4281,7 @@ class PlayerActivity : ComponentActivity() {
             )
         }
         if (groups.isEmpty() && variantMap.isEmpty()) {
-            Toast.makeText(this, "No separate audio tracks on this stream", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("No separate audio tracks on this stream"), Toast.LENGTH_SHORT).show()
             return
         }
         showGlassMenu(
@@ -4512,7 +4512,7 @@ class PlayerActivity : ComponentActivity() {
                 val hasNext = currentIndex + 1 < sources.size
                 if (hasNext) {
                     noSubsRetry = false
-                    Toast.makeText(this@PlayerActivity, "Torrent failed — trying next", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@PlayerActivity, I18n.t("Torrent failed — trying next"), Toast.LENGTH_SHORT).show()
                     playSource(currentIndex + 1)
                 } else {
                     showError("Torrent playback failed:\n$msg", false)
@@ -4707,11 +4707,11 @@ class PlayerActivity : ComponentActivity() {
             ) {
                 triedUrls.add(src.url)
                 if (index + 1 < sources.size) {
-                    Toast.makeText(this, "Archive link (not a video) — trying next server", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, I18n.t("Archive link (not a video) — trying next server"), Toast.LENGTH_SHORT).show()
                     noSubsRetry = false
                     playSource(index + 1)
                 } else if (!refreshSources(index)) {
-                    showError("Only archive links (.zip) were found for this title — no playable video.", false)
+                    showError(I18n.t("Only archive links (.zip) were found for this title — no playable video."), false)
                 }
                 return
             }
@@ -5033,7 +5033,7 @@ class PlayerActivity : ComponentActivity() {
                 if (p.playbackState == Player.STATE_ENDED) return@Runnable
                 android.util.Log.w("HikariPlayer", "No first frame rendered in 20s — decoder hang")
                 if (currentIndex + 1 < sources.size) {
-                    Toast.makeText(this@PlayerActivity, "Video stuck — trying next server", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@PlayerActivity, I18n.t("Video stuck — trying next server"), Toast.LENGTH_SHORT).show()
                     noSubsRetry = false
                     playSource(currentIndex + 1)
                 } else if (!firstFrameRetried) {
@@ -5441,7 +5441,7 @@ class PlayerActivity : ComponentActivity() {
         val src = sources.getOrNull(currentIndex) ?: return
         if (src.subtitles.isEmpty()) {
             if (userSubs.isEmpty()) {
-                Toast.makeText(this, "Sync applies to downloaded subtitles", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, I18n.t("Sync applies to downloaded subtitles"), Toast.LENGTH_SHORT).show()
                 return
             }
             // This server's provider has no subtitles at all, but the user added
@@ -6361,7 +6361,7 @@ class PlayerActivity : ComponentActivity() {
         app.appScope.launch {
             runCatching { app.store.setSlowConnection(true) }
         }
-        Toast.makeText(this, "Slow connection mode on", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, I18n.t("Slow connection mode on"), Toast.LENGTH_SHORT).show()
         if (!renderedFirstFrame && sources.isEmpty()) refreshSources(-1)
     }
 
@@ -6429,7 +6429,7 @@ class PlayerActivity : ComponentActivity() {
         if (loadingBanner?.visibility != View.VISIBLE &&
             loadingSpinner?.visibility != View.VISIBLE
         ) showLoadingCover()
-        Toast.makeText(this, "Looking for other servers…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, I18n.t("Looking for other servers…"), Toast.LENGTH_SHORT).show()
         StreamsLive.requestRefresh(session)
         lifecycleScope.launch {
             val deadline = System.currentTimeMillis() + REFRESH_WAIT_MS
@@ -6478,7 +6478,7 @@ class PlayerActivity : ComponentActivity() {
         if (isFinishing || isDestroyed) return
         val src = sources.getOrNull(currentIndex)
         if (src == null || src.url.isBlank() || src.isTorrent || src.torrentStream) {
-            Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("This server can't be downloaded."), Toast.LENGTH_SHORT).show()
             leaveAfterDownloadPick()
             return
         }
@@ -6630,7 +6630,7 @@ class PlayerActivity : ComponentActivity() {
     private fun startDownload(kind: DownloadKind, preferredHeight: Int, preferredBandwidth: Long) {
         val src = sources.getOrNull(currentIndex) ?: return
         if (src.url.isBlank() || src.isTorrent || src.torrentStream) {
-            Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("This server can't be downloaded."), Toast.LENGTH_SHORT).show()
             leaveAfterDownloadPick()
             return
         }
@@ -6663,7 +6663,7 @@ class PlayerActivity : ComponentActivity() {
         if (queued.isFailure) {
             // Never let a queueing failure take the app down with it; the user
             // gets a sentence instead.
-            Toast.makeText(this, "Could not start the download.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("Could not start the download."), Toast.LENGTH_SHORT).show()
             leaveAfterDownloadPick()
             return
         }

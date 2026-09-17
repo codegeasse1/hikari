@@ -40,9 +40,11 @@ object Http {
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            // Auto Cloudflare handling: attaches a WebView cf_clearance cookie
-            // when present, and on a challenge auto-opens the verify WebView
-            // and retries with the fresh cookie (see CloudflareVerifier).
+            // Cloudflare handling: attaches a WebView cf_clearance cookie when
+            // one is present, and marks the host as blocked when a challenge
+            // comes back — Hikari itself NEVER opens the verify WebView here.
+            // The user opens it by tapping the globe button, and the requests
+            // retry with the cookie that tap earned (see CloudflareVerifier).
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .build()
         quietClient = OkHttpClient.Builder()

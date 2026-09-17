@@ -42,10 +42,25 @@ class HikariApp : Application() {
         lateinit var instance: HikariApp
             private set
 
-        /** Stack trace of the last uncaught crash (shown as a Home banner). */
+        /** Stack trace of the last uncaught crash (shown as a one-shot Home
+         *  warning — see [crashNoticeShown]). */
         @Volatile
         var lastCrash: String? = null
             private set
+
+        /**
+         * True when this exact crash has already been announced to the user
+         * before, so the warning is shown ONCE per crash instead of on every
+         * launch (the log file itself is kept for Settings → Logs, which is why
+         * the warning can't simply call [clearCrash]).
+         */
+        @Volatile
+        var crashNoticeShown: Boolean = false
+            private set
+
+        /** Fingerprint of the crash currently in [lastCrash]. */
+        @Volatile
+        private var crashFp: Int = 0
 
         /**
          * The current MainActivity, set on create and cleared on destroy. The
@@ -240,7 +255,15 @@ class HikariApp : Application() {
         runCatching {
             val text = Logs.crashText(this)
                 ?: File(cacheDir, "crash.log").takeIf { it.exists() }?.readText()
-            if (!text.isNullOrBlank()) lastCrash = text.take(1600)
+            if (!text.isNullOrBlank()) {
+                lastCrash = text.take(1600)
+                crashFp = text.hashCode()
+                // Announce a given crash once: the log stays in Settings → Logs
+                // forever, so re-warning on every launch is pure nagging.
+                crashNoticeShown = runCatching {
+                    crashNoticeFpFile().takeIf { it.exists() }?.readText()?.trim() == crashFp.toString()
+                }.getOrDefault(false)
+            }
         }
         Thread.setDefaultUncaughtExceptionHandler { thread, t ->
             // The full report (with breadcrumbs) goes to filesDir/logs/crash.log
@@ -289,6 +312,24 @@ class HikariApp : Application() {
         lastCrash = null
         runCatching { File(cacheDir, "crash.log").delete() }
         runCatching { Logs.clearCrash(this) }
+    }
+
+    /** Where the fingerprint of the already-announced crash is kept. */
+    private fun crashNoticeFpFile() = File(filesDir, "logs/crash.notified")
+
+    /**
+     * The user has seen the crash warning. Unlike [clearCrash] this KEEPS the
+     * crash log (Settings → Logs still has it to share with the developer) and
+     * only remembers that this crash was already announced, so the warning never
+     * reappears for it.
+     */
+    fun markCrashNoticeShown() {
+        lastCrash = null
+        crashNoticeShown = true
+        runCatching {
+            crashNoticeFpFile().parentFile?.mkdirs()
+            crashNoticeFpFile().writeText(crashFp.toString())
+        }
     }
 
     /**

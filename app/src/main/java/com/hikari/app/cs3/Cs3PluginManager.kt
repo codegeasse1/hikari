@@ -119,11 +119,22 @@ object Cs3PluginManager {
                 // be resolved) is the actionable part; keep a couple of frames.
                 root.cause?.let { append(" (cause: ${it.javaClass.name}: ${it.message})") }
             }
+            // Where it was thrown. A third-party settings screen that throws
+            // inside its own code is otherwise a dead end: the toast only has
+            // room for the exception's name, which names neither the plugin
+            // class nor the line that failed.
+            for (f in e.stackTrace.take(4)) append("\n    at $f")
         }
         if (errorDetails.length < 4000) {
             errorDetails.append(line).append("\n")
         }
         android.util.Log.e("Cs3PluginManager", line, e)
+        // And into Hikari's own log file, with the full stack trace. A plugin's
+        // own settings screen (openSettings) is third-party code that can throw
+        // anything, and the one-line message the UI has room for ("… threw:
+        // IllegalStateException") names neither the class nor the line — the
+        // log trail is what makes it fixable.
+        runCatching { com.hikari.app.data.Logs.logError("Cs3PluginManager", line, e) }
     }
 
     /**

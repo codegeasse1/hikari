@@ -1510,11 +1510,11 @@ fun DetailScreen(
                 val btnEp = if (canPlay) null else (resumeEp ?: sortedEps.firstOrNull())
                 val actionLabel = when {
                     resumeEp != null ->
-                        if (resumeEp.season > 1) "Resume S${resumeEp.season} E${resumeEp.number}"
-                        else "Resume E${resumeEp.number}"
-                    btnEp == null -> "Play"
-                    btnEp.season > 1 -> "Play S${btnEp.season} E${btnEp.number}"
-                    else -> "Play E${btnEp.number}"
+                        tr("Resume") + if (resumeEp.season > 1)
+                            " S${resumeEp.season} E${resumeEp.number}" else " E${resumeEp.number}"
+                    btnEp == null -> tr("Play")
+                    btnEp.season > 1 -> tr("Play") + " S${btnEp.season} E${btnEp.number}"
+                    else -> tr("Play") + " E${btnEp.number}"
                 }
                 item {
                     Row(
@@ -1620,7 +1620,7 @@ fun DetailScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "Episodes (${shownEps.size})",
+                                tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
@@ -1632,7 +1632,7 @@ fun DetailScreen(
                                             onClick = { seasonExpanded = true },
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                                         ) {
-                                            Text("Season $activeSeason", maxLines = 1)
+                                            Text(tr("Season %s").replace("%s", activeSeason.toString()), maxLines = 1)
                                         }
                                         DropdownMenu(
                                             expanded = seasonExpanded,
@@ -1640,7 +1640,9 @@ fun DetailScreen(
                                         ) {
                                             seasons.forEach { s ->
                                                 DropdownMenuItem(
-                                                    text = { Text("Season $s") },
+                                                    text = {
+                                                        Text(tr("Season %s").replace("%s", s.toString()))
+                                                    },
                                                     onClick = {
                                                         selectedSeason = s
                                                         seasonExpanded = false
@@ -1767,7 +1769,8 @@ fun DetailScreen(
         PlayLoadingBanner(
             title = m?.title ?: title,
             episodeLabel = selectedEp?.let {
-                if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}"
+                if (it.season > 1) "S${it.season} E${it.number}"
+                else tr("Episode %s").replace("%s", it.number.toString())
             },
             detail = selectedEp?.name?.takeIf { it.isNotBlank() },
             image = (m?.backdropUrl?.takeIf { it.isNotBlank() }) ?: posterUrl
@@ -1788,7 +1791,7 @@ fun DetailScreen(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Text(
-                    "Opening $opening…",
+                    tr("Opening %s…").replace("%s", opening),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 12.dp, start = 24.dp, end = 24.dp)
@@ -1805,7 +1808,7 @@ fun DetailScreen(
         ModalBottomSheet(onDismissRequest = { showSheet = false }) {
             Text(
                 selectedEp?.let { if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}" }
-                    ?: "Playback sources",
+                    ?: tr("Playback sources"),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -1916,9 +1919,9 @@ fun DetailScreen(
                             supportingContent = {
                                 Text(
                                     when {
-                                        s.isTorrent -> "Torrent — streams from peers"
+                                        s.isTorrent -> tr("Torrent — streams from peers")
                                         s.ytId != null -> "YouTube"
-                                        s.externalUrl -> "Opens in web view"
+                                        s.externalUrl -> tr("Opens in web view")
                                         s.url.contains(".m3u8", true) -> "HLS"
                                         else -> "Direct"
                                     }
@@ -2398,14 +2401,15 @@ private fun DetailsBlock(
         }
         if (!d.director.isNullOrBlank()) {
             Text(
-                "Director: " + d.director,                style = MaterialTheme.typography.labelMedium,
+                tr("Director: %s").replace("%s", d.director),
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
         if (d.writers.isNotEmpty()) {
             Text(
-                "Writer: " + d.writers.joinToString(", "),
+                tr("Writers: %s").replace("%s", d.writers.joinToString(", ")),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
@@ -3022,7 +3026,8 @@ private fun EpisodeRow(
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            ep.name?.ifBlank { "Episode ${ep.number}" } ?: "Episode ${ep.number}",
+            ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
+                ?: tr("Episode %s").replace("%s", ep.number.toString()),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
             maxLines = 1,

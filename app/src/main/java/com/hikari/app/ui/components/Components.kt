@@ -1,6 +1,7 @@
 package com.hikari.app.ui.components
 import com.hikari.app.i18n.tr
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -10,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,7 +101,10 @@ fun MediaRow(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    title,
+                    // Catalog/row names come from the extensions, so they are
+                    // English strings from outside the app: tr() translates the
+                    // ones the i18n files know and leaves the rest untouched.
+                    tr(title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -329,9 +334,12 @@ fun EmptyState(
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        Text(title, style = MaterialTheme.typography.titleMedium)
+        // tr() here (not at every call site) so an error/empty state written
+        // anywhere in the app is translated: an unknown string — a raw error
+        // from an extension, say — comes back unchanged.
+        Text(tr(title), style = MaterialTheme.typography.titleMedium)
         Text(
-            subtitle,
+            tr(subtitle),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -339,7 +347,7 @@ fun EmptyState(
         )
         if (actionLabel != null && action != null) {
             Button(onClick = action, modifier = Modifier.padding(top = 16.dp)) {
-                Text(actionLabel)
+                Text(tr(actionLabel))
             }
         }
     }
@@ -749,4 +757,90 @@ fun GlassCard(
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         content = content,
     )
+}
+
+/**
+ * The app's modal panel: a dimming scrim over the page with a glass card in the
+ * middle — the same fill/edge/size recipe as [GlassCard], so a dialog looks like
+ * the rest of Hikari instead of the platform's grey Material box.
+ *
+ * Tapping the scrim anywhere dismisses (so every dialog can be cancelled with a
+ * single tap), while taps INSIDE the card are swallowed by an empty clickable —
+ * otherwise they would fall through to the scrim and close the dialog the moment
+ * someone reached for a row.
+ */
+@Composable
+fun GlassDialog(
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    title: String? = null,
+    showClose: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val glass = rememberGlassTokens()
+    val shape = RoundedCornerShape(26.dp)
+    // A short fade + scale so the panel appears rather than blinks.
+    val appear = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
+    val a = appear.value
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = a }
+            .background(Color.Black.copy(alpha = 0.62f * a))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier
+                .fillMaxWidth(0.92f)
+                .graphicsLayer {
+                    scaleX = 0.94f + 0.06f * a
+                    scaleY = 0.94f + 0.06f * a
+                }
+                // Swallow taps: reaching for a row must not close the dialog.
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+                .then(if (glass.dark) Modifier else Modifier.shadow(6.dp, shape, clip = false))
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surface)
+                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                .border(1.dp, glass.border, shape)
+                .padding(20.dp),
+            content = {
+                if (title != null || showClose) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (title != null) {
+                            Text(
+                                tr(title),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        if (showClose) {
+                            IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                content()
+            },
+        )
+    }
 }

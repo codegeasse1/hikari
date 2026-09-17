@@ -204,8 +204,8 @@ fun CatalogScreen(
                 Icon(Icons.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text(
-                    catalogName,
+            Text(
+                tr(catalogName),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,

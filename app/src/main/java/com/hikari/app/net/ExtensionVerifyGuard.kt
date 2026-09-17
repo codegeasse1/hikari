@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.preference.PreferenceManager
 import com.hikari.app.data.Logs
 import com.lagradost.cloudstream3.CloudStreamApp
+import java.io.File
 
 /**
  * Keeps EXTENSIONS from opening their own Cloudflare verification page.
@@ -44,6 +45,14 @@ import com.lagradost.cloudstream3.CloudStreamApp
 object ExtensionVerifyGuard {
 
     /**
+     * The user's current choice. Starts `false` (blocked) because that is the
+     * preference's default, so a read that happens before [apply] runs — a
+     * plugin's settings sheet touched during launch — is still guarded.
+     */
+    @Volatile
+    private var allowed = false
+
+    /**
      * Toggles that gate an extension's own Cloudflare WebView, under the exact
      * key the extension stores them with.
      *
@@ -64,19 +73,38 @@ object ExtensionVerifyGuard {
     private val CLOUDFLARE_WORD = Regex("CF|CLOUDFLARE", RegexOption.IGNORE_CASE)
     private val WEBVIEW_WORD = Regex("WEBVIEW|BYPASS|VERIFY|CHALLENGE", RegexOption.IGNORE_CASE)
 
+    /** True for a key [apply] would force off (the same rule [discoveredToggles]
+     *  uses), so a key that doesn't exist in any file yet is covered too. */
+    private fun looksLikeVerifyToggle(key: String): Boolean =
+        KNOWN_KEYS.contains(key) ||
+            (CLOUDFLARE_WORD.containsMatchIn(key) && WEBVIEW_WORD.containsMatchIn(key))
+
+    /**
+     * Read-time half of the guard: when the user has extensions' own
+     * verification pages blocked, every CF/X-WebView-shaped key reads back as
+     * `false` **even if it doesn't exist on disk yet**.
+     *
+     * This is the part that closes the gap [apply] alone cannot: an extension
+     * that ships the toggle enabled (`?: true`, or its own default written on
+     * first run) would otherwise get `true` back and open its dialog anyway.
+     * The keys are only ever turned *off* here, never on — and never invented,
+     * just intercepted on the way out of the jar's key store.
+     */
+    fun forcesOff(key: String): Boolean = !allowed && looksLikeVerifyToggle(key)
+
     /**
      * Applies the user's choice. Returns a description of every key it changed
      * (empty when nothing needed changing), for the app log.
      */
     fun apply(context: Context, allow: Boolean): List<String> {
-        val targets = if (allow) KNOWN_KEYS else (KNOWN_KEYS + discoveredToggleKeys(context))
-            .distinct()
-        val changed = ArrayList<String>(targets.size)
-        for (key in targets) {
+        allowed = allow
+        val changed = ArrayList<String>()
+        val targets = if (allow) KNOWN_KEYS.map { null to it }
+        else (KNOWN_KEYS.map { null to it } + discoveredToggles(context)).distinct()
+        for ((file, key) in targets) {
             val current = readToggle(context, key)
-            if (current == allow) continue
-            writeToggle(context, key, allow)
-            changed += "$key=${allow}"
+            if (current != allow) changed += "$key=${allow}"
+            writeToggle(context, key, allow, file)
         }
         if (changed.isNotEmpty()) {
             Logs.log(
@@ -88,31 +116,46 @@ object ExtensionVerifyGuard {
         return changed
     }
 
-    /** Every preference file a plugin's setting could live in. */
-    private fun prefFiles(context: Context): List<SharedPreferences> = listOfNotNull(
+    /**
+     * Every preference file a plugin's setting could live in: the two files the
+     * jar's key store is known to use, the default file, and then EVERY `*.xml`
+     * in the app's `shared_prefs` directory — an extension that uses
+     * `context.getSharedPreferences("xdmovies_prefs", …)` names its own file,
+     * and that file is exactly as visible to us as the jar's.
+     */
+    private fun prefFiles(context: Context): List<SharedPreferences> {
+        val out = LinkedHashSet<SharedPreferences>()
         runCatching {
-            context.getSharedPreferences(CloudStreamApp.CS_PREFS_NAME, Context.MODE_PRIVATE)
-        }.getOrNull(),
+            out += context.getSharedPreferences(CloudStreamApp.CS_PREFS_NAME, Context.MODE_PRIVATE)
+        }
         runCatching {
-            context.getSharedPreferences(CloudStreamApp.HK_PREFS_NAME, Context.MODE_PRIVATE)
-        }.getOrNull(),
-        runCatching { PreferenceManager.getDefaultSharedPreferences(context) }.getOrNull(),
-    )
+            out += context.getSharedPreferences(CloudStreamApp.HK_PREFS_NAME, Context.MODE_PRIVATE)
+        }
+        runCatching { out += PreferenceManager.getDefaultSharedPreferences(context) }
+        runCatching {
+            val dir = File(context.dataDir, "shared_prefs")
+            val xmls = dir.listFiles { f -> f.isFile && f.name.endsWith(".xml") } ?: return@runCatching
+            for (f in xmls) {
+                val name = f.name.removeSuffix(".xml")
+                if (name.isBlank()) continue
+                runCatching { out += context.getSharedPreferences(name, Context.MODE_PRIVATE) }
+            }
+        }
+        return out.toList()
+    }
 
     /**
      * Existing keys across [prefFiles] that look like an extension's own
      * Cloudflare-WebView toggle. CINEMACITY_CF_WEBVIEW_ENABLED is exactly this
      * shape, which is what makes it a safe rule to generalise.
      */
-    private fun discoveredToggleKeys(context: Context): List<String> {
-        val out = LinkedHashSet<String>()
+    private fun discoveredToggles(context: Context): List<Pair<SharedPreferences?, String>> {
+        val out = LinkedHashSet<Pair<SharedPreferences?, String>>()
         for (file in prefFiles(context)) {
             val keys = runCatching { file.all.keys }.getOrNull() ?: continue
             for (key in keys) {
-                if (key.isBlank()) continue
-                if (CLOUDFLARE_WORD.containsMatchIn(key) && WEBVIEW_WORD.containsMatchIn(key)) {
-                    out += key
-                }
+                if (key.isBlank() || !looksLikeVerifyToggle(key)) continue
+                out += (file to key)
             }
         }
         return out.toList()
@@ -138,8 +181,19 @@ object ExtensionVerifyGuard {
      * default preferences file gets the same bare literal in case this build of
      * the jar's `DataStore.getSharedPrefs` resolves to it.
      */
-    private fun writeToggle(context: Context, key: String, value: Boolean) {
+    private fun writeToggle(
+        context: Context,
+        key: String,
+        value: Boolean,
+        file: SharedPreferences? = null,
+    ) {
         runCatching { CloudStreamApp.setKey(key, value) }
+        // A key that lives in some extension's own file has to be written back
+        // into THAT file: the extension reads it directly, not through the
+        // jar's key store.
+        if (file != null) {
+            runCatching { file.edit().putString(key, value.toString()).apply() }
+        }
         runCatching {
             PreferenceManager.getDefaultSharedPreferences(context)
                 .edit()

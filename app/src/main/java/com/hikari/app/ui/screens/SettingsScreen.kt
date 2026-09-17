@@ -106,6 +106,7 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.Routes
@@ -210,7 +211,6 @@ fun SettingsScreen(nav: NavHostController) {
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
 
-    var themeKey by remember { mutableStateOf(HikariThemeMode.DARK.key) }
     var themeMenuOpen by remember { mutableStateOf(false) }
     var checkingUpdates by remember { mutableStateOf(false) }
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
@@ -224,6 +224,13 @@ fun SettingsScreen(nav: NavHostController) {
     // View-based player will use.
     val appAccentFlow = remember { app.store.appAccentFlow() }
     val appAccentKey by appAccentFlow.collectAsState(initial = HikariAccent.DEFAULT_APP.key)
+    // The chosen theme is persisted, so it must be read back from the store:
+    // starting from DARK made a saved AMOLED/Dark Glass/Light show as
+    // "Hikari Dark" until the user re-picked it in the same session.
+    val themeFlow = remember { app.store.themeFlow() }
+    val storedThemeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
+    var themeKey by remember { mutableStateOf(storedThemeKey) }
+    LaunchedEffect(storedThemeKey) { themeKey = storedThemeKey }
     val playerAccentFlow = remember { app.store.playerAccentFlow() }
     val playerAccentKey by playerAccentFlow.collectAsState(
         initial = HikariAccent.DEFAULT_PLAYER.key
@@ -301,7 +308,7 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
                     item {
-                        SettingsCard(top = 2.dp) {
+                        SettingsCard {
                             Box {
                                 ListItem(
                                     leadingContent = {
@@ -1420,7 +1427,7 @@ private fun UniversalExtractionCard(app: HikariApp) {
 
 @Composable
 private fun LanguageCard(app: HikariApp, current: String) {
-    var menuOpen by remember { mutableStateOf(false) }
+    var pickerOpen by remember { mutableStateOf(false) }
     val selected = LanguageManager.ALL.firstOrNull { it.tag == current } ?: LanguageManager.SYSTEM
     // The System-default entry is deliberately NOT translated: its job is to say
     // "unless you pick otherwise, this app speaks English", and that reads best
@@ -1429,6 +1436,8 @@ private fun LanguageCard(app: HikariApp, current: String) {
     // nonsense) in every language but English.
     val systemLabel = "System default (English)"
     val selectedName = if (selected.tag.isBlank()) systemLabel else selected.name
+    val glass = rememberGlassTokens()
+    val pillShape = RoundedCornerShape(16.dp)
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1442,62 +1451,91 @@ private fun LanguageCard(app: HikariApp, current: String) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(10.dp))
-        Box {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { menuOpen = true }
-                    .padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Filled.Translate,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    selected.flag,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    selectedName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
-                )
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                LanguageManager.ALL.forEach { lang ->
-                    DropdownMenuItem(
-                        text = { Text("${lang.flag}  ${if (lang.tag.isBlank()) systemLabel else lang.name}") },
-                        onClick = {
-                            menuOpen = false
-                            // Persist FIRST (in memory + on the app scope), then
-                            // hand the locale to the platform: the apply recreates
-                            // the activity, and a write launched on the dying
-                            // composition's scope was cancelled by it — which is
-                            // why the same language had to be picked twice.
-                            LanguageManager.choose(app, lang.tag)
-                        },
-                        leadingIcon = {
-                            if (lang.tag == selected.tag) {
-                                Icon(
-                                    Icons.Filled.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(pillShape)
+                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                .border(1.dp, glass.border, pillShape)
+                .clickable { pickerOpen = true }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Translate,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                selected.flag,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                selectedName,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    // The picker is a glass panel like every other surface in the app (it used
+    // to be a bare Material dropdown, which looked nothing like Hikari), and a
+    // whole-panel tap-to-dismiss target so cancelling never needs a precise aim.
+    if (pickerOpen) {
+        GlassDialog(
+            onDismiss = { pickerOpen = false },
+            title = tr("Choose a language"),
+        ) {
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(LanguageManager.ALL.size) { index ->
+                    val lang = LanguageManager.ALL[index]
+                    val isOn = lang.tag == selected.tag
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                else Color.Transparent
+                            )
+                            .clickable {
+                                pickerOpen = false
+                                // Persist FIRST (in memory + on the app scope), then
+                                // hand the locale to the platform: the apply recreates
+                                // the activity, and a write launched on the dying
+                                // composition's scope was cancelled by it — which is
+                                // why the same language had to be picked twice.
+                                LanguageManager.choose(app, lang.tag)
                             }
-                        },
-                    )
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(lang.flag, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            if (lang.tag.isBlank()) systemLabel else lang.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (isOn) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isOn) {
+                            Icon(
+                                Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -151,6 +151,13 @@ class CloudStreamApp : Application() {
         }
 
         private fun read(key: String): Any? {
+            // Extensions' own "bypass Cloudflare in a WebView" switches are
+            // forced off while the user keeps extension verification pages
+            // blocked (Settings → Privacy & Browsing) — see ExtensionVerifyGuard.
+            // Intercepting the READ as well as the stored value covers a switch
+            // that defaults to enabled inside the extension, which would
+            // otherwise open its verification page on its own.
+            if (com.hikari.app.net.ExtensionVerifyGuard.forcesOff(key)) return false
             prefs?.getString(key, null)?.let { raw ->
                 decodeEnvelope(raw)?.let { return it }
                 parseLiteral(raw)?.let { return it }

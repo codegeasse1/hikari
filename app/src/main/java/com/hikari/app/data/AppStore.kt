@@ -696,15 +696,56 @@ class AppStore(private val ctx: Context) {
     suspend fun repos(): List<Cs3Repo> = reposFlow().first()
 
     suspend fun addCs3Repo(r: Cs3Repo) {
-        saveRepos(repos().filter { it.url != r.url } + r)
+        val key = SourceUrls.canonical(r.url)
+        val existing = repos().firstOrNull { SourceUrls.canonical(it.url) == key }
+        // The same repo under a different spelling (refs/heads vs plain branch,
+        // the jsDelivr mirror, a trailing slash) is the SAME repo: keep the one
+        // entry already there instead of storing a second copy. A second copy
+        // used to show every extension of that repo as uninstalled again, while
+        // the originals kept working on Home. The stored URL is upgraded to the
+        // origin spelling when the existing entry is only a mirror.
+        val merged = if (existing == null || existing.url == r.url) r
+        else existing.copy(
+            name = r.name.ifBlank { existing.name },
+            description = r.description.ifBlank { existing.description },
+            url = if (SourceUrls.isMirror(existing.url)) r.url else existing.url,
+        )
+        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key } + merged)
     }
 
     suspend fun removeCs3Repo(url: String) {
-        saveRepos(repos().filter { it.url != url })
+        // Remove by identity, not by spelling: a repo stored twice under two
+        // URL spellings (from an older build) would otherwise reappear as soon
+        // as the list is read back.
+        val key = SourceUrls.canonical(url)
+        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key })
     }
 
     private suspend fun saveRepos(list: List<Cs3Repo>) {
-        store.edit { it[K.CS3_REPOS] = encodeRepos(list) }
+        store.edit { it[K.CS3_REPOS] = encodeRepos(dedupeRepos(list)) }
+    }
+
+    /**
+     * One entry per repo whatever the spelling of its URL — the canonical
+     * form is the identity (see [SourceUrls]). The origin spelling wins over
+     * a jsDelivr mirror; otherwise the first entry seen is kept, so the repo
+     * list's order is stable.
+     */
+    private fun dedupeRepos(list: List<Cs3Repo>): List<Cs3Repo> {
+        val out = ArrayList<Cs3Repo>(list.size)
+        val index = HashMap<String, Int>()
+        for (r in list) {
+            if (r.url.isBlank()) continue
+            val key = SourceUrls.canonical(r.url)
+            val at = index[key]
+            if (at == null) {
+                index[key] = out.size
+                out.add(r)
+            } else if (SourceUrls.isMirror(out[at].url) && !SourceUrls.isMirror(r.url)) {
+                out[at] = r
+            }
+        }
+        return out
     }
 
     // ---- Collections (name → folders → catalog sources) ----
@@ -1115,6 +1156,7 @@ class AppStore(private val ctx: Context) {
                         .getOrDefault(RepoKind.CS3),
                 )
             }.filter { it.url.isNotBlank() }
+                .let { dedupeRepos(it) }
         } catch (e: Exception) {
             emptyList()
         }

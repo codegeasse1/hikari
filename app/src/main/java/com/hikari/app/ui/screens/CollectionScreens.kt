@@ -1258,7 +1258,10 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
             }
             Column(Modifier.weight(1f)) {
                 Text(
-                    title,
+                    // Preset/catalog names are translated; a user-typed
+                    // collection name isn't in the i18n files, so tr() hands it
+                    // back unchanged.
+                    tr(title),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
