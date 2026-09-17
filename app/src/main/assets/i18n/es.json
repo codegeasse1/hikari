@@ -289,5 +289,9 @@
  "A\\u3042": "A\\u3042",
  "GitHub": "GitHub",
  "Hikari": "Hikari",
- "Nuvio": "Nuvio"
+ "Nuvio": "Nuvio",
+ "Extension verification pages": "Páginas de verificación de las extensiones",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari solo abre una página de verificación de Cloudflare cuando tú mismo pulsas el botón WebView. Algunas extensiones traen su propia página de verificación y la abren solas mientras cargan las fuentes.",
+ "Let extensions open their own verification page": "Permitir que las extensiones abran su propia página de verificación",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Desactivado: el interruptor de la extensión se fuerza a apagado, así que su página nunca puede aparecer sin que la pidas."
 }

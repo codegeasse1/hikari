@@ -289,5 +289,9 @@
  "Pause": "Pause",
  "Version": "Version",
  "Version ": "Version",
- "alpha": "alpha"
+ "alpha": "alpha",
+ "Extension verification pages": "Pages de vérification des extensions",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari n'ouvre une page de vérification Cloudflare que lorsque vous appuyez vous-même sur le bouton WebView. Certaines extensions embarquent leur propre page de vérification et l'ouvrent d'elles-mêmes pendant le chargement des sources.",
+ "Let extensions open their own verification page": "Autoriser les extensions à ouvrir leur propre page de vérification",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Désactivé : le réglage de l'extension est forcé sur désactivé, donc sa page ne peut jamais s'afficher sans que vous le demandiez."
 }

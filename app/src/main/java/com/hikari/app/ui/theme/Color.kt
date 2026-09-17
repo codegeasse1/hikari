@@ -33,3 +33,11 @@ val GlassBackground = Color.Transparent
 val GlassSurface = Color(0xCC171E38)
 val GlassSurfaceVariant = Color(0x2EFFFFFF)
 val GlassScrim = Color(0x99000000)
+
+// AMOLED — for OLED panels, where a lit pixel is a pixel that costs battery
+// and never goes fully black. Pure #000000 page, near-black surfaces, and the
+// same translucent white cards as the other dark themes (see
+// com.hikari.app.ui.theme.rememberGlassTokens) so it still reads as Hikari.
+val AmoledBg = Color(0xFF000000)
+val AmoledSurface = Color(0xFF0A0A0C)
+val AmoledSurfaceVariant = Color(0xFF141418)

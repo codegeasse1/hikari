@@ -290,5 +290,9 @@
  "App → player": "แอพ → ผู้เล่น",
  "Player → app": "ผู้เล่น → แอพ",
  "Home": "บ้าน",
- "GitHub": "GitHub"
+ "GitHub": "GitHub",
+ "Extension verification pages": "หน้าตรวจสอบของส่วนเสริม",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari จะเปิดหน้าตรวจสอบ Cloudflare เฉพาะเมื่อคุณกดปุ่ม WebView เองเท่านั้น ส่วนเสริมบางตัวมีหน้าตรวจสอบของตัวเองและเปิดขึ้นเองขณะค้นหาแหล่งวิดีโอ",
+ "Let extensions open their own verification page": "อนุญาตให้ส่วนเสริมเปิดหน้าตรวจสอบของตัวเอง",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "ปิด: สวิตช์ของส่วนเสริมจะถูกบังคับให้ปิด หน้าของมันจึงไม่มีทางเปิดเองได้"
 }

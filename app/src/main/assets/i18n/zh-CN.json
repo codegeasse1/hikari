@@ -290,5 +290,9 @@
  "Home": "首页",
  "A\\u3042": "A\\u3042",
  "GitHub": "GitHub",
- "Mozilla/5.0 …": "Mozilla/5.0 …"
+ "Mozilla/5.0 …": "Mozilla/5.0 …",
+ "Extension verification pages": "扩展程序的验证页面",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "只有当你自己点击 WebView 按钮时，Hikari 才会打开 Cloudflare 验证页面。部分扩展自带验证页面，并会在加载片源时自行打开。",
+ "Let extensions open their own verification page": "允许扩展打开自己的验证页面",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "关闭时：扩展自身的开关会被强制关闭，因此它的页面永远不会擅自出现。"
 }

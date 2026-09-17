@@ -290,5 +290,9 @@
  "CloudStream": "CloudStream",
  "GitHub": "GitHub",
  "Mozilla/5.0 …": "Mozilla/5.0 …",
- "Nuvio": "Nuvio"
+ "Nuvio": "Nuvio",
+ "Extension verification pages": "דפי אימות של תוספים",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari פותח דף אימות של Cloudflare רק כשאתה לוחץ בעצמך על כפתור ה-WebView. חלק מהתוספים כוללים דף אימות משלהם ופותחים אותו בעצמם בזמן טעינת המקורות.",
+ "Let extensions open their own verification page": "לאפשר לתוספים לפתוח דף אימות משלהם",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "כבוי: המתג של התוסף נכפה לכבוי, כך שהדף שלו לעולם לא יופיע בלי שביקשת."
 }

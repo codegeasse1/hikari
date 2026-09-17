@@ -289,5 +289,9 @@
  "Roadmap": "Roadmap",
  "Version": "Version",
  "Version ": "Version",
- "Whitelist": "Whitelist"
+ "Whitelist": "Whitelist",
+ "Extension verification pages": "Verifizierungsseiten von Erweiterungen",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari öffnet eine Cloudflare-Verifizierungsseite nur, wenn du selbst auf die WebView-Schaltfläche tippst. Manche Erweiterungen bringen ihre eigene Verifizierungsseite mit und öffnen sie beim Laden der Quellen von allein.",
+ "Let extensions open their own verification page": "Erweiterungen dürfen ihre eigene Verifizierungsseite öffnen",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Aus: Der Schalter der Erweiterung wird auf Aus gezwungen, ihre Seite kann also nie ungefragt erscheinen."
 }

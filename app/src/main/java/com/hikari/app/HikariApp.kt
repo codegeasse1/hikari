@@ -12,6 +12,7 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
+import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
@@ -131,6 +132,17 @@ class HikariApp : Application() {
         // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
         // verification page opens only when the user taps the WebView (globe)
         // button themselves (see CloudflareVerifier).
+        //
+        // Extensions don't have to play by that rule — Cinemacity opens its own
+        // Cloudflare WebView in the middle of loading sources — so the switches
+        // that gate those pages are forced off here (and again whenever a
+        // plugin's settings sheet closes). Settings → Privacy & Browsing can
+        // let them back through.
+        appScope.launch {
+            runCatching {
+                ExtensionVerifyGuard.apply(this@HikariApp, store.extensionVerifyWebview())
+            }
+        }
         // "Your connection looks slow?" tip: measures in the background while a
         // play is starting and only speaks up with real evidence (see SlowNetTip).
         SlowNetTip.init(this)

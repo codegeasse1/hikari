@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.Density
 enum class HikariThemeMode(val key: String, val label: String) {
     DARK("dark", "Hikari Dark"),
     GLASS("glass", "Dark Glass UI"),
+    AMOLED("amoled", "AMOLED Black"),
     LIGHT("light", "Hikari Light");
 
     companion object {
@@ -80,6 +81,31 @@ private fun glassColors(accent: HikariAccent) = darkColorScheme(
     scrim = GlassScrim,
 )
 
+/**
+ * AMOLED: the dark scheme with the page and its surfaces dropped to true black,
+ * so an OLED phone lights only the pixels that carry content. Everything else
+ * (accent, text, muted, error) is the same as [darkColors] on purpose — the
+ * "pure black" theme must not look like a different app, just a darker one.
+ */
+private fun amoledColors(accent: HikariAccent) = darkColorScheme(
+    primary = accent.start,
+    onPrimary = inkOn(accent.start),
+    primaryContainer = AmoledSurfaceVariant,
+    onPrimaryContainer = HikariText,
+    secondary = HikariSecondary,
+    onSecondary = HikariOnSecondary,
+    tertiary = HikariTertiary,
+    background = AmoledBg,
+    onBackground = HikariText,
+    surface = AmoledSurface,
+    onSurface = HikariText,
+    surfaceVariant = AmoledSurfaceVariant,
+    onSurfaceVariant = HikariMuted,
+    error = HikariError,
+    outline = HikariMuted,
+    scrim = Color.Black,
+)
+
 @Composable
 fun HikariTheme(
     mode: HikariThemeMode = HikariThemeMode.DARK,
@@ -115,6 +141,7 @@ fun HikariTheme(
                 HikariThemeMode.DARK -> darkColors(accent)
                 HikariThemeMode.LIGHT -> lightColors(accent)
                 HikariThemeMode.GLASS -> glassColors(accent)
+                HikariThemeMode.AMOLED -> amoledColors(accent)
             },
             typography = Typography,
             content = content,

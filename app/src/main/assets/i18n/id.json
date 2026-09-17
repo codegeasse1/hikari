@@ -290,5 +290,9 @@
  "GitHub": "GitHub",
  "Hikari": "Hikari",
  "Mozilla/5.0 …": "Mozilla/5.0 …",
- "Nuvio": "Nuvio"
+ "Nuvio": "Nuvio",
+ "Extension verification pages": "Halaman verifikasi ekstensi",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari hanya membuka halaman verifikasi Cloudflare saat kamu sendiri menekan tombol WebView. Sebagian ekstensi membawa halaman verifikasinya sendiri dan membukanya sendiri saat memuat sumber.",
+ "Let extensions open their own verification page": "Izinkan ekstensi membuka halaman verifikasinya sendiri",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Mati: sakelar milik ekstensi dipaksa mati, jadi halamannya tidak akan pernah muncul tanpa kamu minta."
 }

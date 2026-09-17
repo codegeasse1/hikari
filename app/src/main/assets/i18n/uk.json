@@ -289,5 +289,9 @@
  "CloudStream": "CloudStream",
  "GitHub": "GitHub",
  "Mozilla/5.0 …": "Mozilla/5.0 …",
- "Nuvio repos": "Nuvio repos"
+ "Nuvio repos": "Nuvio repos",
+ "Extension verification pages": "Сторінки перевірки розширень",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari відкриває сторінку перевірки Cloudflare лише коли ви самі натискаєте кнопку WebView. Деякі розширення мають власну сторінку перевірки й відкривають її самі під час пошуку джерел.",
+ "Let extensions open their own verification page": "Дозволити розширенням відкривати власну сторінку перевірки",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Вимкнено: власний перемикач розширення примусово вимикається, тож його сторінка ніколи не з'явиться сама."
 }

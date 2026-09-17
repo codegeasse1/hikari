@@ -290,5 +290,9 @@
  "Mozilla/5.0 …": "Mozilla/5.0 …",
  "Nuvio": "Nuvio",
  "Nuvio repos": "Nuvio repos",
- "Telegram": "Telegram"
+ "Telegram": "Telegram",
+ "Extension verification pages": "Verificatiepagina's van extensies",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari opent alleen een Cloudflare-verificatiepagina als je zelf op de WebView-knop tikt. Sommige extensies hebben hun eigen verificatiepagina en openen die zelf tijdens het laden van bronnen.",
+ "Let extensions open their own verification page": "Extensies hun eigen verificatiepagina laten openen",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Uit: de schakelaar van de extensie wordt gedwongen uitgeschakeld, dus die pagina verschijnt nooit ongevraagd."
 }

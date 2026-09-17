@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.UiScale
@@ -61,6 +62,7 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
         val CF_AUTO_SOLVE = booleanPreferencesKey("cfAutoSolve")
+        val EXT_VERIFY_WEBVIEW = booleanPreferencesKey("extVerifyWebview")
         val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
@@ -454,6 +456,33 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setCfAutoSolve(enabled: Boolean) {
         store.edit { it[K.CF_AUTO_SOLVE] = enabled }
+    }
+
+    /**
+     * Whether EXTENSIONS may open their own Cloudflare verification page.
+     *
+     * OFF (the default) is Hikari's rule: the only thing that can open a
+     * verification page is the user tapping the app's own WebView (globe)
+     * button. Some extensions ship their own Cloudflare WebView and open it in
+     * the middle of loading sources (Cinemacity does — see
+     * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof), so
+     * while this is off the app forces those extensions' own switches to `false`
+     * at launch, again whenever a plugin's settings sheet closes, and whenever
+     * this switch changes.
+     *
+     * ON leaves those extensions alone (and flips the known toggles on), for the
+     * rare case where an extension only works through its own bypass screen.
+     */
+    fun extensionVerifyWebviewFlow(): Flow<Boolean> =
+        store.data.map { it[K.EXT_VERIFY_WEBVIEW] ?: false }
+
+    suspend fun extensionVerifyWebview(): Boolean = extensionVerifyWebviewFlow().first()
+
+    suspend fun setExtensionVerifyWebview(allowed: Boolean) {
+        store.edit { it[K.EXT_VERIFY_WEBVIEW] = allowed }
+        // Apply immediately (not just on the next launch) so the choice takes
+        // effect for the very next source search.
+        runCatching { ExtensionVerifyGuard.apply(ctx, allowed) }
     }
 
     /** Hosts the user allowed redirects to (blocked-elsewhere hosts allowed

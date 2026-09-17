@@ -290,5 +290,9 @@
  "GitHub": "GitHub",
  "Hikari": "Hikari",
  "Nuvio": "Nuvio",
- "Telegram": "Telegram"
+ "Telegram": "Telegram",
+ "Extension verification pages": "Strony weryfikacji rozszerzeń",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari otwiera stronę weryfikacji Cloudflare tylko wtedy, gdy sam naciśniesz przycisk WebView. Niektóre rozszerzenia mają własną stronę weryfikacji i otwierają ją same podczas wyszukiwania źródeł.",
+ "Let extensions open their own verification page": "Pozwól rozszerzeniom otwierać własną stronę weryfikacji",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Wyłączone: przełącznik rozszerzenia jest wymuszony na wyłączony, więc jego strona nigdy nie pojawi się samoczynnie."
 }

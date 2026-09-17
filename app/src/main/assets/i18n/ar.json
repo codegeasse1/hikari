@@ -290,5 +290,9 @@
  "App → player": "التطبيق → المشغل",
  "Player → app": "المشغل → التطبيق",
  "Home": "الرئيسية",
- "CloudStream": "CloudStream"
+ "CloudStream": "CloudStream",
+ "Extension verification pages": "صفحات التحقق الخاصة بالإضافةات",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "لا يفتح Hikari صفحة تحقق Cloudflare إلا عندما تضغط زر WebView بنفسك. بعض الإضافات تأتي بصفحة تحقق خاصة بها وتفتحها من تلقاء نفسها أثناء جلب المصادر.",
+ "Let extensions open their own verification page": "السماح للإضافات بفتح صفحة التحقق الخاصة بها",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "مغلق: يتم إجبار مفتاح الإضافة على الإغلاق، لذا لا يمكن لصفحتها أن تظهر دون طلبك."
 }

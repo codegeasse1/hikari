@@ -289,5 +289,9 @@
  "CloudStream": "CloudStream",
  "GitHub": "GitHub",
  "Hikari": "Hikari",
- "Nuvio": "Nuvio"
+ "Nuvio": "Nuvio",
+ "Extension verification pages": "Pagine di verifica delle estensioni",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari apre una pagina di verifica di Cloudflare solo quando tocchi tu il pulsante WebView. Alcune estensioni includono la propria pagina di verifica e la aprono da sole mentre caricano le fonti.",
+ "Let extensions open their own verification page": "Consenti alle estensioni di aprire la propria pagina di verifica",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Disattivato: l'interruttore dell'estensione viene forzato su off, così la sua pagina non può mai comparire senza che tu la apra."
 }

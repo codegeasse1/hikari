@@ -289,5 +289,9 @@
  "No playable sources found.": "Oynatılabilir kaynak bulunamadı.",
  "Nuvio": "Nuvio",
  "Open site in web view (Cloudflare verification)": "Siteyi web görünümünde aç (Cloudflare doğrulaması)",
- "Opens in the ad-free web view": "Reklamsız web görünümünde açılır"
+ "Opens in the ad-free web view": "Reklamsız web görünümünde açılır",
+ "Extension verification pages": "Eklenti doğrulama sayfaları",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari, Cloudflare doğrulama sayfasını yalnızca sen WebView düğmesine dokunduğunda açar. Bazı eklentiler kendi doğrulama sayfasını taşır ve kaynak ararken onu kendiliğinden açar.",
+ "Let extensions open their own verification page": "Eklentiler kendi doğrulama sayfasını açabilsin",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Kapalı: eklentinin kendi anahtarı zorla kapatılır, böylece o sayfa izinsiz asla görünmez."
 }

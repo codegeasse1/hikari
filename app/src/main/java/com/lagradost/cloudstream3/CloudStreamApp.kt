@@ -34,9 +34,45 @@ import java.lang.ref.WeakReference
 class CloudStreamApp : Application() {
 
     companion object {
+        /**
+         * The SharedPreferences file the jar's OWN
+         * `com.lagradost.cloudstream3.utils.DataStore` is hard-wired to
+         * (`PREFERENCES_NAME` in DataStoreKt.class — read straight out of the
+         * shipped jar's bytecode).
+         *
+         * This matters because not every plugin reads its settings through this
+         * class. Cinemacity, for example, gates its whole Cloudflare flow on
+         * `CinemacityPlugin.getCfWebviewEnabled()`, which does:
+         *
+         *     CloudStreamApp.context
+         *       ?.let { DataStore.getSharedPrefs(it).getString(KEY, null) }
+         *       ?.let { AppUtils.parseJson<Boolean>(it) }
+         *       ?: false
+         *
+         * i.e. it reads that file DIRECTLY and JSON-decodes the stored literal.
+         * Writing only into our own file below made those reads always fall
+         * back to their default, so a plugin's stored setting never round-
+         * tripped. Every write now lands in both files.
+         */
+        const val CS_PREFS_NAME = "rebuild_preference"
+
+        /** Hikari's own key file: one JSON envelope per key, which is what the
+         *  first version of this shadow wrote. Kept as the primary store so the
+         *  meaning of everything an existing install already wrote is
+         *  unchanged. */
+        const val HK_PREFS_NAME = "cloudstream_keys"
+
         private val prefs by lazy {
             runCatching {
-                HikariApp.instance.getSharedPreferences("cloudstream_keys", Context.MODE_PRIVATE)
+                HikariApp.instance.getSharedPreferences(HK_PREFS_NAME, Context.MODE_PRIVATE)
+            }.getOrNull()
+        }
+
+        /** The file the jar's DataStore reads (and plugins that bypass this
+         *  class read) — see [CS_PREFS_NAME]. */
+        private val csPrefs by lazy {
+            runCatching {
+                HikariApp.instance.getSharedPreferences(CS_PREFS_NAME, Context.MODE_PRIVATE)
             }.getOrNull()
         }
 
@@ -67,46 +103,90 @@ class CloudStreamApp : Application() {
 
         // ---- persisted key/value store (mirrors CloudStream's plugin prefs) ----
 
-        private fun read(key: String): Any? {
-            val p = prefs ?: return null
-            val raw = p.getString(key, null) ?: return null
-            return try {
-                val o = JSONObject(raw)
-                when {
-                    o.has("s") -> o.optString("s")
-                    o.has("n") -> o.opt("n")
-                    o.has("a") -> {
-                        val arr = o.optJSONArray("a")
-                        (0 until arr.length()).map { arr.opt(it) }
-                    }
-                    else -> o.opt("v")
+        /** Decodes our own envelope (`{s|n|a|v}`). Returns null when [raw] is
+         *  not one (e.g. a CloudStream literal some other writer left behind),
+         *  so the caller can fall through to [parseLiteral]. */
+        private fun decodeEnvelope(raw: String): Any? = try {
+            val o = JSONObject(raw)
+            when {
+                o.has("s") -> o.optString("s")
+                o.has("n") -> o.opt("n")
+                o.has("a") -> {
+                    val arr = o.optJSONArray("a")
+                    (0 until (arr?.length() ?: 0)).map { arr?.opt(it) }
                 }
-            } catch (_: Throwable) {
-                raw
+                o.has("v") -> o.opt("v")
+                else -> null
             }
+        } catch (_: Throwable) {
+            null
+        }
+
+        /**
+         * Parses a CloudStream JSON literal (`AppUtils.toJsonLiteral`): a
+         * double-quoted string, a bare number or boolean, or a JSON array/object.
+         * Anything that is not valid JSON is handed back as the raw string, so a
+         * value written by some other writer is never lost.
+         */
+        private fun parseLiteral(raw: String?): Any? {
+            val t = raw?.trim() ?: return null
+            if (t.isEmpty()) return ""
+            if (t == "null") return null
+            val v = runCatching { JSONArray("[$t]").opt(0) }.getOrNull()
+            return if (v == null || v == JSONObject.NULL) t else v
+        }
+
+        /** Encodes [value] the way the jar's `AppUtils.toJsonLiteral` does, so
+         *  the value is readable by a plugin that parses the prefs file itself. */
+        private fun csLiteral(value: Any?): String? = when (value) {
+            null -> null
+            is Boolean, is Number -> value.toString()
+            is String -> JSONObject.quote(value)
+            is List<*> -> {
+                val arr = JSONArray()
+                value.forEach { arr.put(it as? Any ?: JSONObject.NULL) }
+                arr.toString()
+            }
+            else -> JSONObject.quote(value.toString())
+        }
+
+        private fun read(key: String): Any? {
+            prefs?.getString(key, null)?.let { raw ->
+                decodeEnvelope(raw)?.let { return it }
+                parseLiteral(raw)?.let { return it }
+            }
+            return parseLiteral(csPrefs?.getString(key, null))
         }
 
         private fun write(key: String, value: Any?) {
-            val p = prefs ?: return
-            if (value == null) {
-                p.edit().remove(key).apply()
-                return
-            }
-            val o = JSONObject()
-            try {
-                when (value) {
-                    is String -> o.put("s", value)
-                    is Number, is Boolean -> o.put("n", value)
-                    is List<*> -> {
-                        val arr = JSONArray()
-                        value.forEach { arr.put(it as? Any ?: JSONObject.NULL) }
-                        o.put("a", arr)
+            val p = prefs
+            if (p != null) {
+                if (value == null) {
+                    p.edit().remove(key).apply()
+                } else {
+                    val o = JSONObject()
+                    try {
+                        when (value) {
+                            is String -> o.put("s", value)
+                            is Number, is Boolean -> o.put("n", value)
+                            is List<*> -> {
+                                val arr = JSONArray()
+                                value.forEach { arr.put(it as? Any ?: JSONObject.NULL) }
+                                o.put("a", arr)
+                            }
+                            else -> o.put("s", value.toString())
+                        }
+                        p.edit().putString(key, o.toString()).apply()
+                    } catch (_: Throwable) {
                     }
-                    else -> o.put("s", value.toString())
                 }
-                p.edit().putString(key, o.toString()).apply()
-            } catch (_: Throwable) {
             }
+            // Mirror into the file the jar's DataStore reads, in ITS encoding —
+            // see CS_PREFS_NAME above for why one file is not enough.
+            val cs = csPrefs ?: return
+            val literal = csLiteral(value)
+            if (literal == null) cs.edit().remove(key).apply()
+            else cs.edit().putString(key, literal).apply()
         }
 
         fun setKey(key: String, value: Any?) = write(key, value)
@@ -126,10 +206,11 @@ class CloudStreamApp : Application() {
         fun getKeyClass(key: String, clazz: Class<*>): Any? = read(key)
 
         fun getKeys(key: String): List<Any?> =
-            read(key) as? List<*> ?: emptyList()
+            (read(key) as? List<*>) ?: emptyList()
 
         fun removeKey(key: String) {
             prefs?.edit()?.remove(key)?.apply()
+            csPrefs?.edit()?.remove(key)?.apply()
         }
 
         fun removeKey(key: String, subKey: String) {
@@ -138,6 +219,7 @@ class CloudStreamApp : Application() {
             p.all.keys.filter {
                 it.startsWith("$key$subKey") || it.startsWith("$key.") || it.startsWith("$key$")
             }.forEach { p.edit().remove(it).apply() }
+            csPrefs?.edit()?.remove(key)?.apply()
         }
 
         /**
@@ -151,6 +233,7 @@ class CloudStreamApp : Application() {
             val p = prefs ?: return 0
             val toRemove = p.all.keys.filter { it == key || it.startsWith("$key.") || it.startsWith("$key$") }
             toRemove.forEach { p.edit().remove(it).apply() }
+            csPrefs?.edit()?.remove(key)?.apply()
             return toRemove.size
         }
 

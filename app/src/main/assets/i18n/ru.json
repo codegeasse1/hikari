@@ -290,5 +290,9 @@
  "App → player": "Приложение → плеер",
  "Player → app": "Плеер → приложение",
  "Home": "Главная",
- "GitHub": "GitHub"
+ "GitHub": "GitHub",
+ "Extension verification pages": "Страницы проверки расширений",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari открывает страницу проверки Cloudflare только когда вы сами нажимаете кнопку WebView. Некоторые расширения содержат собственную страницу проверки и открывают её сами во время поиска источников.",
+ "Let extensions open their own verification page": "Разрешить расширениям открывать свою страницу проверки",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Выключено: собственный переключатель расширения принудительно отключается, поэтому его страница никогда не появится без вашего действия."
 }

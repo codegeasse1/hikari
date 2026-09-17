@@ -552,9 +552,11 @@ class PlayerActivity : ComponentActivity() {
                     return true
                 }
                 if (controlsLocked) {
-                    // Brightness/volume swipes and playback carry on working
-                    // while locked; only the controls stay hidden. Say so once
-                    // in a while so a tap doesn't look like a dead screen.
+                    // Locked = watch only: playback carries on and the small
+                    // lock icon stays touchable, but nothing else reacts — no
+                    // controls, no double-tap seek, no brightness/volume drags.
+                    // Say so once in a while so a tap doesn't look like a dead
+                    // screen.
                     if (System.currentTimeMillis() - lockToastAt > 4_000L) {
                         lockToastAt = System.currentTimeMillis()
                         Toast.makeText(this@PlayerActivity, "Locked — tap the small lock icon to unlock", Toast.LENGTH_SHORT).show()
@@ -940,7 +942,10 @@ class PlayerActivity : ComponentActivity() {
                         // A mostly-vertical drag takes over from the tap/hold
                         // gestures: cancel the pending speed-up, drop the
                         // controls and bring up the brightness/volume HUD.
-                        if (abs(dy) > slop && abs(dy) > abs(dx)) {
+                        // NOT while locked: the lock is "watch only", so a
+                        // stray drag must not change the brightness or the
+                        // volume either (only the small unlock button reacts).
+                        if (!controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
                             holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                             holdSpeedTimer = null
                             if (holdingFast) {

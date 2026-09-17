@@ -289,5 +289,9 @@
  "A\\u3042": "A\\u3042",
  "CloudStream": "CloudStream",
  "GitHub": "GitHub",
- "Hikari": "Hikari"
+ "Hikari": "Hikari",
+ "Extension verification pages": "Páginas de verificação das extensões",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "O Hikari só abre uma página de verificação do Cloudflare quando você mesmo toca no botão WebView. Algumas extensões trazem a própria página de verificação e a abrem sozinhas enquanto carregam as fontes.",
+ "Let extensions open their own verification page": "Deixar as extensões abrirem a própria página de verificação",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Desligado: a opção da própria extensão é forçada a desligar, então a página dela nunca aparece sem você pedir."
 }

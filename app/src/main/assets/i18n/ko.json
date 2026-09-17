@@ -290,5 +290,9 @@
  "Player → app": "플레이어 → 앱",
  "Home": "홈",
  "A\\u3042": "A\\u3042",
- "GitHub": "GitHub"
+ "GitHub": "GitHub",
+ "Extension verification pages": "확장 프로그램 인증 페이지",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari는 사용자가 직접 WebView 버튼을 누를 때만 Cloudflare 인증 페이지를 엽니다. 일부 확장 프로그램은 자체 인증 페이지를 포함하고 있으며 소스를 불러오는 동안 스스로 엽니다.",
+ "Let extensions open their own verification page": "확장 프로그램이 자체 인증 페이지를 열도록 허용",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "꺼짐: 확장 프로그램의 자체 스위치가 강제로 꺼지므로, 그 페이지가 저절로 나타나는 일은 없습니다."
 }

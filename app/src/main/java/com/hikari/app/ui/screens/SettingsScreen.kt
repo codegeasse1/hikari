@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -102,6 +104,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
+import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
@@ -358,6 +361,7 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.PRIVACY -> {
                     item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
+                    item { SettingsCard { ExtensionVerifyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
                 }
                 SettingsFolder.LOGS -> {
@@ -560,12 +564,39 @@ fun SettingsScreen(nav: NavHostController) {
 }
 
 /**
+ * The round accent badge a settings row leads with: a circle of accent wash with
+ * a hairline ring, so the icon reads as a glass token rather than a flat square.
+ * One composable for every one of them, so the index, the folder headers and the
+ * shortcut cards can never drift apart.
+ */
+@Composable
+private fun SettingsIconBadge(icon: ImageVector, size: Dp = 46.dp) {
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(accent.copy(alpha = 0.14f))
+            .border(1.dp, accent.copy(alpha = 0.22f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = accent,
+            modifier = Modifier.size(size * 0.46f),
+        )
+    }
+}
+
+/**
  * The folder page's own header: a back button, the folder's badge and name, and
  * a one-line explanation of what is inside, so a page always says where you are
  * without repeating the settings tab's title.
  */
 @Composable
 private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
+    val glass = rememberGlassTokens()
     Column(
         Modifier
             .fillMaxWidth()
@@ -575,8 +606,9 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
             Box(
                 Modifier
                     .size(40.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                    .clip(CircleShape)
+                    .background(glass.fillTop)
+                    .border(1.dp, glass.border, CircleShape)
                     .clickable(onClick = onBack),
                 contentAlignment = Alignment.Center
             ) {
@@ -588,20 +620,7 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Box(
-                Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    folder.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+            SettingsIconBadge(folder.icon, 44.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -639,24 +658,11 @@ private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(15.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    folder.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(23.dp)
-                )
-            }
-            Spacer(Modifier.width(14.dp))
+            SettingsIconBadge(folder.icon)
+            Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     tr(folder.title),
@@ -671,20 +677,12 @@ private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -1550,6 +1548,63 @@ private fun WebViewSafetyCard(app: HikariApp) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Extensions' own Cloudflare verification pages.
+ *
+ * Hikari's rule is that verification is tap-only — nothing loads a challenge
+ * until the user taps the app's WebView (globe) button. Extensions don't have to
+ * follow it: several ship their own Cloudflare WebView and a few open it by
+ * themselves while they load sources (Cinemacity does, gated on its own
+ * CINEMACITY_CF_WEBVIEW_ENABLED switch). This is the single opt-in for letting
+ * them; while it is off the app forces those switches off at launch, after a
+ * plugin settings sheet closes, and whenever this changes — see
+ * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof of the
+ * Cinemacity path.
+ */
+@Composable
+private fun ExtensionVerifyCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var allowed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { allowed = app.store.extensionVerifyWebview() }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Extension verification pages"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Let extensions open their own verification page"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    tr("Off: the extension's own switch is forced off, so its page can never appear uninvited."),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = allowed,
+                onCheckedChange = {
+                    allowed = it
+                    scope.launch { runCatching { app.store.setExtensionVerifyWebview(it) } }
+                }
+            )
         }
     }
 }

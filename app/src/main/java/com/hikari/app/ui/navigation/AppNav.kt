@@ -3,6 +3,7 @@ import com.hikari.app.i18n.tr
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -68,6 +69,7 @@ import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.theme.HikariThemeMode
+import com.hikari.app.ui.theme.rememberGlassTokens
 import androidx.compose.runtime.collectAsState
 
 object Routes {
@@ -204,6 +206,9 @@ private fun AppBottomBar(
     // slots, so the base size drops a notch to keep every label whole.
     val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
     val labelSp = if (Tabs.size > 6) 8f else 9f
+    // The bar is a floating glass pill: semi-transparent so the page (and its
+    // top glow) shows through, ringed by the same hairline every card uses.
+    val glass = rememberGlassTokens()
     Box(
         Modifier
             .fillMaxWidth()
@@ -211,12 +216,17 @@ private fun AppBottomBar(
             // system bars are visible (they are hidden while immersive, so this
             // is 0 in the normal case and simply lifts the bar when they show).
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 8.dp, vertical = 10.dp)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            shadowElevation = 10.dp,
+            shape = RoundedCornerShape(26.dp),
+            color = if (glass.dark) {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+            border = BorderStroke(1.dp, glass.border),
+            shadowElevation = if (glass.dark) 0.dp else 8.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -232,8 +242,10 @@ private fun AppBottomBar(
                         Modifier
                             .weight(1f)
                             .height(48.dp)
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(if (selected) primary.copy(alpha = 0.16f) else Color.Transparent)
+                            // A fully round pill, not a rounded square — that is
+                            // what marks the active tab in the reference design.
+                            .clip(RoundedCornerShape(50))
+                            .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
                             .clickable { onNavigate(tab.route) },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
@@ -299,36 +311,67 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        // Dark Glass UI backdrop — a vivid gradient sits behind the translucent
-        // surfaces so cards/nav bar read as frosted glass. Solid themes draw
-        // nothing (the Scaffold's background color covers it).
-        if (themeKey == HikariThemeMode.GLASS.key) {
-            // The backdrop is tinted by the app accent, so the glass theme
-            // follows whatever colour the user picked in Appearance instead of
-            // being stuck on the old fixed purple.
-            val accent = MaterialTheme.colorScheme.primary
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                androidx.compose.ui.graphics.lerp(
-                                    Color(0xFF120E1F), accent, 0.38f
+        // The page backdrop, drawn here rather than by the Scaffold so the
+        // translucent cards have something to be glass OVER (the Scaffold below
+        // is transparent for exactly that reason).
+        //
+        //  * Dark Glass UI — the accent-tinted gradient that the theme is named
+        //    for, behind every frosted panel.
+        //  * Hikari Dark — the near-black page plus one soft accent glow across
+        //    the top third. A flat page made the translucent cards look like
+        //    grey boxes; a lit top is what makes the same cards read as glass,
+        //    and it keeps the page dim where the eye actually reads.
+        //  * AMOLED — nothing. The theme's whole point is a pixel that is off.
+        //  * Light — nothing; the flat paper background is the design.
+        val scheme = MaterialTheme.colorScheme
+        val accent = scheme.primary
+        Box(Modifier.fillMaxSize().background(scheme.background))
+        when (HikariThemeMode.fromKey(themeKey)) {
+            HikariThemeMode.GLASS -> {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    androidx.compose.ui.graphics.lerp(
+                                        Color(0xFF120E1F), accent, 0.38f
+                                    ),
+                                    androidx.compose.ui.graphics.lerp(
+                                        Color(0xFF151A33), accent, 0.16f
+                                    ),
+                                    Color(0xFF0B0E1A),
                                 ),
-                                androidx.compose.ui.graphics.lerp(
-                                    Color(0xFF151A33), accent, 0.16f
-                                ),
-                                Color(0xFF0B0E1A),
-                            ),
-                            start = Offset.Zero,
-                            end = Offset.Infinite,
+                                start = Offset.Zero,
+                                end = Offset.Infinite,
+                            )
                         )
-                    )
-            )
+                )
+            }
+            HikariThemeMode.DARK -> {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to androidx.compose.ui.graphics.lerp(
+                                    scheme.background, accent, 0.20f
+                                ),
+                                0.34f to androidx.compose.ui.graphics.lerp(
+                                    scheme.background, accent, 0.06f
+                                ),
+                                0.75f to scheme.background,
+                                1f to scheme.background,
+                            )
+                        )
+                )
+            }
+            else -> Unit
         }
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            // Transparent: the backdrop above is the page, so the cards' glass
+            // has something to sit on (see the comment on the backdrop).
+            containerColor = Color.Transparent,
             // The app is edge-to-edge/immersive (MainActivity hides the system
             // bars), so the Scaffold must NOT pad the content down by the status
             // bar inset. It used to: on any device where the bars were showing,

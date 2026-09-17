@@ -1,3 +1,37 @@
+## 0.3.87
+
+**The verification page can no longer open on its own — the cause was found in
+the extension's own code this time — and the whole app has been restyled to the
+soft, rounded glass look.**
+
+- **The verification WebView that kept appearing by itself is closed at the
+  source.** This was not Hikari opening it: CinemaCity's own code calls
+  `showCinemacityCFBypassDialogAndWait()` the instant a request comes back
+  Cloudflare-blocked, and that page is the one you were seeing (it even tagged
+  itself `cinemacity_cf_bypass_auto`). It was gated on one of the extension's own
+  settings — a `CINEMACITY_CF_WEBVIEW_ENABLED` switch. Two things were wrong:
+  Hikari had no way to turn that switch off, and the plugin setting store it
+  reads from was one Hikari was not writing to, so the extension never saw the
+  value Hikari had. Both are fixed: a new **Extension verification pages** switch
+  (Settings → Privacy & Browsing, **off by default**) forces every known
+  verification-page switch off, and plugin settings now round-trip through the
+  store the extensions actually read.
+- **New setting: Extension verification pages.** Off — an extension cannot open
+  its own verification page, no matter what it decides during a source load.
+  On — extensions may open their own page as they were designed to. Hikari's own
+  WebView (globe) button is unaffected either way: it still opens a verification
+  page when, and only when, you tap it.
+- **New theme: AMOLED Black.** True-black backgrounds with the same soft cards,
+  for panels that look best with the backlight fully off.
+- **The rounded glass look, everywhere.** Cards are 24–26dp with a 1px hairline
+  border and a frosted fill, the app has a soft accent glow behind the top of
+  the screen, the bottom bar is a floating rounded bar whose active tab is a
+  filled pill, and list/setting icons sit in circular badges. The light theme
+  keeps a real drop shadow so the same shapes still read as raised.
+- **Lock now also stops the brightness and volume swipes.** While the player is
+  locked, dragging up or down no longer changes brightness or volume — only the
+  small lock icon reacts.
+
 ## 0.3.86
 
 **The crash is fixed at its source, a verification page can never open on its own

@@ -292,9 +292,22 @@ class MainActivity : AppCompatActivity() {
         // focus shows the system bars again; re-hide them the moment we get
         // focus back so the UI stays fullscreen.
         applyImmersiveMode()
+        val app = application as HikariApp
+        // Focus coming back is also the one moment an extension can flip its own
+        // Cloudflare-WebView switch — a plugin's settings sheet writes plugin
+        // prefs straight through CloudStreamApp.setKey. Re-assert the user's
+        // choice, so closing a plugin's settings can never leave an extension
+        // able to open a verification page on its own (see ExtensionVerifyGuard).
+        app.appScope.launch {
+            runCatching {
+                com.hikari.app.net.ExtensionVerifyGuard.apply(
+                    app,
+                    app.store.extensionVerifyWebview(),
+                )
+            }
+        }
         val path = com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload ?: return
         com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload = null
-        val app = application as HikariApp
         app.appScope.launch {
             runCatching {
                 val file = java.io.File(path)

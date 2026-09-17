@@ -289,5 +289,9 @@
  "Hikari": "Hikari",
  "Mozilla/5.0 …": "Mozilla/5.0 …",
  "Nuvio": "Nuvio",
- "alpha": "alpha"
+ "alpha": "alpha",
+ "Extension verification pages": "Trang xác minh của tiện ích",
+ "Hikari only opens a Cloudflare verification page when you tap the WebView button yourself. Some extensions ship their own verification page and open it on their own while loading sources.": "Hikari chỉ mở trang xác minh Cloudflare khi chính bạn nhấn nút WebView. Một số tiện ích có trang xác minh riêng và tự mở nó trong khi tìm nguồn.",
+ "Let extensions open their own verification page": "Cho phép tiện ích tự mở trang xác minh",
+ "Off: the extension's own switch is forced off, so its page can never appear uninvited.": "Tắt: công tắc của tiện ích bị buộc tắt, nên trang của nó không bao giờ tự hiện ra."
 }

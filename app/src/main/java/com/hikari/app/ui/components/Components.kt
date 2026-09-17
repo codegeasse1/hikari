@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
@@ -71,6 +73,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -226,18 +229,25 @@ fun HeroArtwork(
 
 @Composable
 fun PosterCard(item: MediaItem, onClick: () -> Unit) {
+    val glass = rememberGlassTokens()
+    val cardShape = RoundedCornerShape(14.dp)
     Column(
         Modifier
             .width(120.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(cardShape)
             .clickable(onClick = onClick)
     ) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .clip(cardShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                // Same hairline as every other surface, so a poster reads as a
+                // card on the page instead of a floating rectangle. A border
+                // always draws over its node's content, so this rings the
+                // artwork itself.
+                .border(1.dp, glass.border, cardShape),
             contentAlignment = Alignment.Center,
         ) {
             // Sits behind the artwork: when the extension's image 403s/404s (or
@@ -349,11 +359,13 @@ fun GlassSearchField(
      *  screen's translate button). Shown after the clear button. */
     trailing: (@Composable () -> Unit)? = null,
 ) {
+    val glass = rememberGlassTokens()
+    val fieldShape = RoundedCornerShape(30.dp)
     Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
-        shadowElevation = 4.dp,
-        modifier = modifier
+        shape = fieldShape,
+        color = if (glass.dark) glass.fillTop else MaterialTheme.colorScheme.surface,
+        shadowElevation = if (glass.dark) 0.dp else 4.dp,
+        modifier = modifier.border(1.dp, glass.border, fieldShape)
     ) {
         Row(
             Modifier
@@ -716,29 +728,25 @@ private fun fmtRemaining(ms: Long): String {
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(22.dp),
+    shape: Shape = RoundedCornerShape(26.dp),
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val glass = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
-    if (onClick != null) {
-        Surface(
-            onClick = onClick,
-            shape = shape,
-            color = glass,
-            shadowElevation = 4.dp,
-            modifier = modifier,
-        ) {
-            Column(Modifier.fillMaxWidth(), content = content)
-        }
-    } else {
-        Surface(
-            shape = shape,
-            color = glass,
-            shadowElevation = 4.dp,
-            modifier = modifier,
-        ) {
-            Column(Modifier.fillMaxWidth(), content = content)
-        }
-    }
+    val glass = rememberGlassTokens()
+    Column(
+        modifier
+            .fillMaxWidth()
+            // The shadow is for the LIGHT theme only: there a translucent card
+            // would otherwise float with no edge against the paper background.
+            // On the dark themes the shadow would simply mud the translucent
+            // fill, and the hairline below does the separating instead.
+            .then(if (glass.dark) Modifier else Modifier.shadow(3.dp, shape, clip = false))
+            .clip(shape)
+            // A whisper of white at the top falling to half of that at the
+            // bottom — the falloff is what reads as glass (see GlassTokens).
+            .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)), shape)
+            .border(1.dp, glass.border, shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        content = content,
+    )
 }
