@@ -38,6 +38,14 @@ interface HikariProvider {
 A minimal extension implements `search` + `getStreams` (or `catalogs` +
 `getCatalog` for a catalog-only source). Everything else has a safe default.
 
+**`page` is 1-based.** The first page is `1`, and every caller passes `1` (the
+catalog pager starts at 1, `skip` is computed as `(page - 1) * 100`). An
+extension that has no real pagination should return its content for `page <= 1`
+and an empty list for anything higher — guarding on `page > 0` makes the
+provider look permanently empty (this exact off-by-one made every installed
+SkyStream extension report "Couldn't load …" on Home and answer every search in
+5ms with "no matching title").
+
 ## The SDK helpers (`HikariNet`)
 
 ```kotlin
