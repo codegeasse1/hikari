@@ -1,3 +1,73 @@
+## 0.5.2
+
+**A SkyStream extension's catalog loads now. The extension list stopped showing
+grey puzzle pieces, and loading extensions no longer waits in a queue behind
+each other.**
+
+- **SkyStream catalogs load again — the real cause, not Cloudflare.** A SkyStream
+  extension fetches all of its home rows with
+  `Promise.all(categories.map(...))`, but the engine's HTTP bridge was
+  *synchronous*: each of the 8 requests blocked the JavaScript thread until it
+  finished, so one home page took the *sum* of eight round-trips (16-40s) instead
+  of the time of its slowest one. That ran past the engine's 45s call budget, so
+  `getHome` was killed before it ever answered and every installed SkyStream
+  extension showed an empty catalog. There is now an asynchronous fetch bridge:
+  the request is fired on the worker pool, the promise is resolved when the
+  response lands, and the pump loop delivers each answer back into the engine
+  between rounds — so `Promise.all` is genuinely parallel and a home page
+  arrives in one round-trip. The per-extension catalog budget also went up
+  (40s → 55s, and the outer Home cap 70s → 85s) so a slow-but-working site has
+  room, and a timeout is now recorded per engine, so the empty state can say
+  *which* extension timed out instead of showing the generic Cloudflare note.
+  (The Cloudflare line on Home is unchanged — it is only shown when an extension
+  really did report a Cloudflare wall.)
+- **Extensions load side by side instead of one at a time.** Both plugin
+  runtimes guarded every load with a *single* lock for the whole process, so on a
+  device with a few hundred extensions a cold Home, a cross-extension search and
+  an install all queued behind whichever archive happened to be loading — and one
+  slow plugin could hold that queue for its whole 45s budget. Loads are now
+  serialised per plugin file and capped at six at a time (with re-entrancy, so a
+  plugin that loads another plugin cannot deadlock), and the load-error buffer is
+  per thread instead of shared, so two plugins loading at once can no longer
+  write over each other's error text.
+- **A host that needs verification is skipped, not waited on.** When a page
+  turned out to be a Cloudflare interstitial, the WebView resolver still waited
+  out its full 60-second timeout on it — and every later attempt on the same host
+  paid the same wait. The resolver now recognises a challenge by the page title
+  the moment it appears and stops immediately, records the host, and every
+  later attempt (resolver, stream probe, fetch bridge) skips that host in
+  milliseconds instead of re-discovering the wall. The host's record is dropped
+  the instant your own verify WebView earns the clearance. The resolver's own
+  timeout is also down to 30s — a real player fires its stream request in a few
+  seconds, and the only pages that need longer were ones that were never going
+  to play.
+- **Cross-extension search is quicker.** More extensions are asked at once
+  (28 → 48) and each pass spends less time waiting for the stragglers before it
+  shows what it has, while an extension that has already answered "no such
+  title" for a query is remembered for a few minutes — so re-opening the same
+  sources sheet no longer re-asks all 240 extensions to hear the same no.
+- **Extension icons, for real this time.** Every row in a repository listing
+  showed the same grey puzzle-piece glyph because the icon was read from a
+  single field name and SkyStream listings mostly don't use it: their icon lives
+  in the extension's *first addon manifest* (`logo`), and their `baseUrl` is
+  often a placeholder (`stremio-hub.local`). Icons are now resolved in order —
+  the listing's own `iconUrl`/`icon`/`logo` (relative and protocol-relative
+  paths are made absolute), else the addon manifest's logo (saved at install
+  time, so installed extensions keep it), else the site's favicon (placeholder
+  hosts skipped) — and **SVG icons decode at last** (Coil ships no SVG support;
+  many logos, e.g. dramayo's, are `.svg`, which decoded to a failure and landed
+  on the placeholder). The `%exact_size%` URL template used by some CloudStream
+  repos is substituted too.
+- **Smoother.** Every log line used to append to the log file *and* stat it for
+  the roll-over check **on the calling thread** — i.e. on the main thread, for
+  every tracked event. File writes now happen on one daemon writer thread, and
+  the screens that read the logs flush first, so nothing about logging can cost
+  a frame any more.
+- **The extension picker matches the rest of the app.** Its search box is the
+  translucent pill used elsewhere, and the rows and category chips are the same
+  roundy glass cards as the settings panels instead of flat charcoal strips; the
+  icon tile on each row is a glass tile as well.
+
 ## 0.5.1
 
 **One Play tap searches everywhere, and keeps filling the server list while the

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.content.res.Resources
 import com.hikari.app.HikariApp
+import com.hikari.app.core.LoadGate
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
@@ -15,7 +16,6 @@ import com.lagradost.cloudstream3.utils.extractorApis
 import java.io.File
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
-
 /**
  * Loads compiled CloudStream `.cs3` plugin archives exactly the way the real
  * CloudStream app does (see CloudStream-3 `PluginManager.loadPlugin`):
@@ -57,12 +57,11 @@ object Cs3PluginManager {
     @Volatile
     var pendingSettingsReload: String? = null
 
-    // Files whose load() is currently running (re-entrancy guard). Loading
-    // itself is serialized under loadLock; the set just lets a re-entrant call
-    // from inside load() detect that it is mid-load.
+    // Files whose load() is currently running (re-entrancy guard). Loading of a
+    // given path is serialised under that path's LoadGate lock; this set only
+    // lets a re-entrant call from inside a plugin's own load() detect that it is
+    // mid-load and report "not loaded yet" instead of recursing.
     private val loading = ConcurrentHashMap.newKeySet<String>()
-
-    private val loadLock = java.util.concurrent.locks.ReentrantLock()
 
     // Paths whose load() just failed, with the failure timestamp. A failed
     // load is NOT retried hot — every attempt can block for up to
@@ -76,7 +75,16 @@ object Cs3PluginManager {
     var lastError: String? = null
         private set
 
-    private val errorDetails = StringBuilder()
+    /**
+     * Per-thread record of the CURRENT load's failures. This used to be one
+     * shared StringBuilder, which meant two plugins loading at once appended to
+     * the same buffer and [lastError] could report a completely different
+     * plugin's failure than the one that was just asked about. `loadFile` is
+     * synchronous on its calling thread, so a ThreadLocal is exactly the right
+     * scope: the details collected for one load are the details that load
+     * reports.
+     */
+    private val errorDetails = ThreadLocal.withInitial { StringBuilder() }
 
     // Plugins run real code in load() and some do network work there (a couple
     // of repos' plugins fetch repo lists on load). A hung load() must never
@@ -125,8 +133,8 @@ object Cs3PluginManager {
             // class nor the line that failed.
             for (f in e.stackTrace.take(4)) append("\n    at $f")
         }
-        if (errorDetails.length < 4000) {
-            errorDetails.append(line).append("\n")
+        if (errorDetails.get().length < 4000) {
+            errorDetails.get().append(line).append("\n")
         }
         android.util.Log.e("Cs3PluginManager", line, e)
         // And into Hikari's own log file, with the full stack trace. A plugin's
@@ -153,17 +161,28 @@ object Cs3PluginManager {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return emptyList()
         val failAt = lastFail[path]
         if (failAt != null && System.currentTimeMillis() - failAt < FAIL_RETRY_MS) return emptyList()
-        loadLock.lock()
+        // One lock PER PLUGIN, not one for the whole runtime: with a few hundred
+        // extensions installed, a single global lock made every load — Home
+        // warm-up, cross-extension search, an install — queue behind the longest
+        // one (a plugin that does network work in load() can hold it 45s).
+        val lock = LoadGate.lockFor(path)
+        if (!LoadGate.acquire(lock)) {
+            record("waiting for another load of ${file.name}", RuntimeException("lock wait timed out"))
+            return emptyList()
+        }
         try {
             cache[path]?.let { return it }
             if (path in loading) {
-                // Re-entrant call from inside a plugin load() — report "not
-                // loaded yet" rather than deadlock on our own lock.
+                // Re-entrant call from inside a plugin's own load() — report
+                // "not loaded yet" rather than deadlock on our own lock.
                 return emptyList()
             }
             loading.add(path)
             try {
-                val apis = loadFile(context, file)
+                // The dex commit itself is one of the process-wide slots, so a
+                // Home warm-up and an install can run side by side without
+                // loading two dozen archives into memory at once.
+                val apis = LoadGate.withSlot { loadFile(context, file) }
                 if (apis.isNotEmpty()) {
                     cache[path] = apis
                     lastFail.remove(path)
@@ -175,18 +194,22 @@ object Cs3PluginManager {
                 loading.remove(path)
             }
         } finally {
-            loadLock.unlock()
+            lock.unlock()
         }
     }
 
     /** Re-loads after an install/uninstall. The installer runs on IO, so it
-     *  may wait for a previous load to finish. */
+     *  may wait for a previous load of the SAME plugin to finish. */
     fun reload(context: Context, file: File): List<MainAPI> {
         val path = file.absolutePath
-        loadLock.lock()
+        val lock = LoadGate.lockFor(path)
+        if (!LoadGate.acquire(lock)) {
+            record("waiting to reload ${file.name}", RuntimeException("lock wait timed out"))
+            return emptyList()
+        }
         try {
             loading.add(path)
-            val apis = loadFile(context, file)
+            val apis = LoadGate.withSlot { loadFile(context, file) }
             if (apis.isNotEmpty()) {
                 cache[path] = apis
                 lastFail.remove(path)
@@ -197,12 +220,12 @@ object Cs3PluginManager {
             return apis
         } finally {
             loading.remove(path)
-            loadLock.unlock()
+            lock.unlock()
         }
     }
 
     private fun loadFile(context: Context, file: File): List<MainAPI> {
-        errorDetails.setLength(0)
+        errorDetails.get().setLength(0)
         lastError = null
         val path = file.absolutePath
 
@@ -354,7 +377,7 @@ object Cs3PluginManager {
             }
         }
         if (apis.isEmpty()) {
-            val details = errorDetails.toString().trim()
+            val details = errorDetails.get().toString().trim()
             lastError = if (details.isNotBlank()) {
                 details
             } else {
@@ -422,7 +445,7 @@ object Cs3PluginManager {
             lastError = "no activity is available to show its settings screen"
             return false
         }
-        errorDetails.setLength(0)
+        errorDetails.get().setLength(0)
         lastError = null
         return try {
             callback.invoke(host)
@@ -430,7 +453,7 @@ object Cs3PluginManager {
             true
         } catch (e: Throwable) {
             record("openSettings threw", e)
-            lastError = errorDetails.toString().trim().ifBlank { e.message ?: "settings failed" }
+            lastError = errorDetails.get().toString().trim().ifBlank { e.message ?: "settings failed" }
             false
         }
     }
@@ -497,7 +520,7 @@ object Cs3PluginManager {
     }
 
     private fun fail(): List<MainAPI> {
-        val details = errorDetails.toString().trim()
+        val details = errorDetails.get().toString().trim()
         lastError = if (details.isNotBlank()) details else "Unknown error loading plugin"
         return emptyList()
     }

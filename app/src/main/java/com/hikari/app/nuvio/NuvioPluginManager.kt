@@ -324,7 +324,14 @@ object NuvioPluginManager {
             // filename as-is when it's already absolute.
             url = if (filename.startsWith("http://") || filename.startsWith("https://")) filename
             else "$baseUrl/$filename",
-            iconUrl = o.optString("logo").ifBlank { null },
+            // `logo` is the documented field (usually a Google-favicon URL for
+            // the scraper's site), but manifests in the wild also use
+            // `iconUrl`/`icon` — reading only `logo` left those rows on the
+            // placeholder glyph.
+            iconUrl = o.optString("logo")
+                .ifBlank { o.optString("iconUrl") }
+                .ifBlank { o.optString("icon") }
+                .ifBlank { null },
             version = version,
             tvTypes = types,
         )

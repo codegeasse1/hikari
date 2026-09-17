@@ -6,11 +6,13 @@ import com.hikari.app.cs3.YtDlpResolver
 import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.NetTuning
 import com.hikari.app.nuvio.EpisodeTitles
+import com.hikari.app.nuvio.NuvioScraper
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.providers.StremioAddon
 import com.hikari.app.providers.UniversalScraper
+import com.hikari.app.skystream.SkyStreamProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -62,6 +64,27 @@ class ContentRepository(private val manager: ProviderManager) {
         val crossAsked = ConcurrentHashMap<String, String>()
         val crossFound = ConcurrentHashMap<String, String>()
         val crossInstalled = ConcurrentHashMap<String, Int>()
+
+        /**
+         * Session-scoped NEGATIVE cache for the cross-extension pass:
+         * `providerId|query` → the time that extension answered "no such title".
+         *
+         * A pass asks EVERY installed extension, and the same title is looked up
+         * several times in a session (re-open the sheet, pick another server,
+         * jump to the next episode). Re-running 200+ identical searches each time
+         * is a large part of why the chooser's hint sat on "still searching" for
+         * minutes — so a genuine empty-page answer is remembered briefly.
+         *
+         * ONLY that case is cached. A search that timed out or a plugin that
+         * failed to load says nothing about the repo's catalogue and must be
+         * retried (see [searchBestMatch]).
+         */
+        val crossEmpty = ConcurrentHashMap<String, Long>()
+
+        const val CROSS_EMPTY_TTL_MS = 5 * 60 * 1000L
+
+        fun crossEmptyKey(providerId: String, query: String): String =
+            providerId + "|" + query.trim().lowercase()
 
         @Volatile
         var crossStatusVersion: Long = 0L
@@ -217,7 +240,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  never asked at all — and the pass still reported "all done, none with
      *  servers", which is exactly how a repo the user KNOWS carries the title
      *  went missing. */
-    private val CROSS_EXT_SEARCH_PHASE_MS get() = NetTuning.timeout(60_000L)
+    private val CROSS_EXT_SEARCH_PHASE_MS get() = NetTuning.timeout(45_000L)
 
     /** How many searches may still be pending when phase 2 (extraction) is
      *  allowed to start anyway. Searching is cheap next to extracting, so once
@@ -245,7 +268,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  few seconds), while the narrow one keeps only a handful of extractors
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
-    private val CROSS_EXT_SEARCH_CONCURRENCY = 28
+    private val CROSS_EXT_SEARCH_CONCURRENCY = 48
     /** How many extensions may extract at the same time. Six was low enough
      *  that, on a phone with a dozen installed repos, most targets queued behind
      *  the budget and never ran at all; with ~50 installed repos the searches
@@ -347,6 +370,24 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
+     * Records *why* a provider's catalog came up empty when the whole provider
+     * job hit the ceiling below. Without this the provider produced no entry in
+     * any `catalogErrors` map, so Home fell back to its generic "it returned no
+     * content … if the site is stuck behind a Cloudflare check" text — which
+     * sent people chasing a verification wall when the real cause was simply
+     * that the extension ran out of time.
+     */
+    private fun noteCatalogTimeout(p: ContentProvider, ms: Long) {
+        val msg = "Timed out after ${ms / 1000}s loading this extension's catalog."
+        when (p) {
+            is SkyStreamProvider -> SkyStreamProvider.catalogErrors[p.config.id] = msg
+            is NuvioScraper -> NuvioScraper.catalogErrors[p.config.id] = msg
+            is StremioAddon -> StremioAddon.catalogErrors[p.config.id] = msg
+            is Cs3MainApiProvider -> Cs3MainApiProvider.catalogErrors[p.config.id] = msg
+        }
+    }
+
+    /**
      * Loads Home rows. Catalogs inside a provider are fetched IN PARALLEL but
      * through a small semaphore so a slow network can't flood the IO pool with
      * hundreds of simultaneous requests (which froze the UI on weak devices).
@@ -372,11 +413,13 @@ class ContentRepository(private val manager: ProviderManager) {
                     cancellableCatching {
                         providerGate.withPermit {
                             // Tight budgets: a healthy catalog answers in a few
-                            // seconds, so a 40s provider / 15s catalog ceiling
+                            // seconds, so a 55s provider / 15s catalog ceiling
                             // keeps one dead host from stalling the whole home
                             // feed for two minutes while still tolerating slow
-                            // provider manifest loads.
-                            withTimeoutOrNull(40_000) {
+                            // provider manifest loads (a SkyStream extension
+                            // boots a whole JS engine before its first byte,
+                            // and its own home page can fetch a dozen sections).
+                            val loaded = withTimeoutOrNull(55_000) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -402,6 +445,10 @@ class ContentRepository(private val manager: ProviderManager) {
                                     }
                                 }.awaitAll().filterNotNull()
                             }
+                            if (loaded == null) {
+                                noteCatalogTimeout(p, 55_000)
+                                emptyList()
+                            } else loaded
                         } ?: emptyList()
                         }
                     }.getOrDefault(emptyList())
@@ -447,7 +494,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 scope.async {
                     try {
                         providerGate.withPermit {
-                            withTimeoutOrNull(40_000) {
+                            val settled = withTimeoutOrNull(55_000) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -483,6 +530,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     }
                                 }.awaitAll()
                             }
+                            if (settled == null) noteCatalogTimeout(p, 55_000)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -501,7 +549,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     emit(snapshot)
                 }
                 if (jobs.all { it.isCompleted }) break
-                if (System.currentTimeMillis() - started > 70_000L) break
+                if (System.currentTimeMillis() - started > 85_000L) break
                 delay(100)
             }
             val finalSnapshot = placed.entries.sortedBy { it.key }.map { it.value }
@@ -741,6 +789,10 @@ class ContentRepository(private val manager: ProviderManager) {
             crossAsked.clear()
             crossFound.clear()
             crossInstalled.clear()
+            // Drop expired "no such title" answers (see [crossEmpty]); the live
+            // ones are what make the NEXT pass over the same title cheap.
+            val emptyNow = System.currentTimeMillis()
+            crossEmpty.entries.removeAll { emptyNow - it.value >= CROSS_EMPTY_TTL_MS }
             // How many repos of each engine are installed, so the hint can say
             // "asked 32 of 48 CloudStream" — the difference between "not
             // installed" and "silently skipped" at a glance.
@@ -1214,7 +1266,7 @@ class ContentRepository(private val manager: ProviderManager) {
             attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH)
         }
         var best = attempt.best
-        if (best == null && attempt.why == null) {
+        if (best == null && attempt.why == null && !attempt.cachedEmpty) {
             // Repos name titles their own way ("Foo: Bar Baz", "Foo - Season 2"),
             // and searching the full string can come back empty even though the
             // repo DOES carry the show. One retry with the shortest meaningful
@@ -1228,6 +1280,11 @@ class ContentRepository(private val manager: ProviderManager) {
                 // the retry is more informative than "the full title missed".
                 if (second.why != null) attempt = second
             }
+        }
+        if (best == null && attempt.cachedEmpty) {
+            // Answered (and remembered) "no such title" moments ago — report it
+            // without re-recording a note or re-asking this repo.
+            return null to "no matching title for \"$title\""
         }
         if (best == null) {
             // What the extension itself said while we searched (a plugin that
@@ -1432,7 +1489,7 @@ class ContentRepository(private val manager: ProviderManager) {
      * matching title", which is exactly how a repo that DOES carry the title
      * could look like a repo that does not.
      */
-    private class SearchAttempt(val best: MediaItem?, val why: String?)
+    private class SearchAttempt(val best: MediaItem?, val why: String?, val cachedEmpty: Boolean = false)
 
     /**
      * Searches one extension and returns its best matching entry, or null when
@@ -1447,6 +1504,17 @@ class ContentRepository(private val manager: ProviderManager) {
         minMatch: Int,
         onStart: (() -> Unit)? = null,
     ): SearchAttempt = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
+        // Already answered "no such title" for this exact query a moment ago
+        // (see [crossEmpty]): don't spend a slot — or a cold plugin load — on
+        // the same question again.
+        val cacheKey = crossEmptyKey(p.config.id, query)
+        val cachedAt = crossEmpty[cacheKey]
+        if (cachedAt != null) {
+            if (System.currentTimeMillis() - cachedAt < CROSS_EMPTY_TTL_MS) {
+                return@withPermit SearchAttempt(null, null, cachedEmpty = true)
+            }
+            crossEmpty.remove(cacheKey)
+        }
         // The search is about to RUN (a slot has been acquired). Reporting
         // "asked" any earlier counted merely-queued repos as searched (see
         // [markCrossSearchStarted]).
@@ -1466,7 +1534,9 @@ class ContentRepository(private val manager: ProviderManager) {
             // The repo answered, and the answer was an empty page: it genuinely
             // has no title remotely like this one. Zero results and a FAILED
             // search used to look identical in the log (see
-            // [crossExtensionSearch]).
+            // [crossExtensionSearch]). Remember the answer so the next pass over
+            // the same title skips this repo entirely.
+            crossEmpty[cacheKey] = System.currentTimeMillis()
             SearchAttempt(null, null)
         } else {
             // Scored against the REAL title, never against the shortened query,

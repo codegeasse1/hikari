@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 117
-        versionName = "0.5.1"
+        versionCode = 118
+        versionName = "0.5.2"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -201,6 +201,11 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.jsoup)
     implementation(libs.coil.compose)
+    // SVG decoding for extension logos: plenty of plugin/addon icons are
+    // `.svg` (e.g. SkyStream's dramayo → dramayo.stream/static/dramayo.svg),
+    // and Coil 2 answers those with a decode failure — i.e. the monochrome
+    // glyph placeholder on every row. Registered in HikariApp's ImageLoader.
+    implementation(libs.coil.svg)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlin.reflect)
     implementation(libs.jackson.databind)

@@ -126,13 +126,23 @@ object SkyStreamPluginManager {
                 else "it doesn't export getHome/search/load/loadStreams"
                 return@withContext Result.failure(Exception("Not a valid SkyStream extension: $detail"))
             }
+            val icon = iconUrl
+                ?: manifest.optString("iconUrl")
+                    .ifBlank { manifest.optString("logo") }
+                    .ifBlank { manifest.optString("icon") }
+                    .ifBlank { null }
+                // The .sky format declares no icon at all, so the real logo
+                // lives in the extension's first addon manifest. Resolving it
+                // HERE means the installed row keeps its real icon forever
+                // instead of falling back to the site favicon on every launch.
+                ?: addonIcon(manifest)
             HikariApp.instance.store.addProvider(
                 ProviderConfig(
                     id = "sky|" + packageName,
                     name = displayName,
                     type = ProviderType.SKYSTREAM,
                     url = jsFile.absolutePath,
-                    iconUrl = iconUrl ?: manifest.optString("iconUrl").ifBlank { null },
+                    iconUrl = icon,
                     extra = sourceUrl ?: packageName,
                 )
             )
@@ -168,9 +178,12 @@ object SkyStreamPluginManager {
     private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
-     * A SkyStream extension whose repo entry carried no icon: use the one its own
-     * `plugin.json` declares, else the `baseUrl` site's favicon (the same Google
-     * favicon service the CloudStream plugins use). Never throws.
+     * A SkyStream extension whose repo entry carried no icon: the logo its
+     * first addon manifest declares (the `.sky` format has no icon field of its
+     * own — the Stremio manifest is the only place a real logo exists), else a
+     * declared `iconUrl`/`logo`/`icon`, else the site's favicon (the same
+     * Google favicon service the CloudStream plugins use). Never throws —
+     * BLOCKING on the addon-manifest lookup, so call it off the main thread.
      */
     fun iconFallback(config: ProviderConfig): String? {
         iconCache[config.id]?.let { return it }
@@ -179,16 +192,50 @@ object SkyStreamPluginManager {
             if (!json.exists()) return@runCatching null
             val o = runCatching { JSONObject(json.readText()) }.getOrNull() ?: return@runCatching null
             val declared = o.optString("iconUrl")
-                .ifBlank { o.optString("logo").ifBlank { o.optString("icon") } }
-            if (declared.startsWith("http")) return@runCatching declared
-            val base = o.optString("baseUrl").takeIf { it.startsWith("http") }
-                ?: return@runCatching null
-            val host = java.net.URI(base).host ?: return@runCatching null
+                .ifBlank { o.optString("logo") }
+                .ifBlank { o.optString("icon") }
+            when {
+                declared.startsWith("http") -> return@runCatching declared
+                declared.startsWith("//") -> return@runCatching "https:$declared"
+                else -> {}
+            }
+            addonIcon(o)?.let { return@runCatching it }
+            val host = iconHostOf(o) ?: return@runCatching null
             "https://www.google.com/s2/favicons?domain=$host&sz=64"
         }.getOrNull()
         // ConcurrentHashMap forbids null values — only cache hits.
         if (result != null) iconCache[config.id] = result
         return result
+    }
+
+    /**
+     * The real logo of a `.sky`, read from the manifest of its FIRST Stremio
+     * addon: the `.sky`'s plugin.json declares no icon field at all, but it
+     * does list `addons`, and those manifests carry a `logo` (e.g. dramayo →
+     * `https://dramayo.stream/static/dramayo.svg`). Relative addon URLs (and a
+     * relative logo path) are resolved against the plugin's `baseUrl`. Returns
+     * null when there is no usable addon/logo — never throws. BLOCKING.
+     */
+    private fun addonIcon(manifest: JSONObject): String? {
+        val addons = runCatching { manifest.getJSONArray("addons") }.getOrNull() ?: return null
+        if (addons.length() == 0) return null
+        val base = manifest.optString("baseUrl").takeIf { it.startsWith("http") }
+        for (i in 0 until addons.length()) {
+            val raw = addons.optString(i).ifBlank { null } ?: continue
+            val url = when {
+                raw.startsWith("//") -> "https:$raw"
+                raw.startsWith("http://") || raw.startsWith("https://") -> raw
+                base != null -> runCatching { java.net.URI("$base/").resolve(raw).toString() }.getOrNull()
+                else -> null
+            } ?: continue
+            val logo = runCatching {
+                JSONObject(Http.getString(url) ?: "").let { m ->
+                    m.optString("logo").ifBlank { m.optString("icon") }.ifBlank { null }
+                }
+            }.getOrNull() ?: continue
+            return runCatching { java.net.URI(url).resolve(logo).toString() }.getOrNull()
+        }
+        return null
     }
 
     /**
@@ -217,14 +264,64 @@ object SkyStreamPluginManager {
             ?: runCatching { o.getJSONArray("types") }.getOrNull()
                 ?.let { a -> (0 until a.length()).mapNotNull { i -> a.optString(i).ifBlank { null } } }
             ?: emptyList()
+        // SkyStream listings carry a Stremio `addons` array; the first addon's
+        // manifest `logo` is the extension's real icon (the .sky's own
+        // plugin.json declares no icon field at all). Captured here so the row
+        // can resolve it lazily — see ExtensionIcons.forRepoPlugin.
+        val addons = runCatching { o.getJSONArray("addons") }.getOrNull()
+            ?.let { a -> (0 until a.length()).mapNotNull { i -> a.optString(i).ifBlank { null } } }
+            ?: emptyList()
         return Cs3RepoPlugin(
             name = name,
             description = o.optString("description"),
             url = url,
-            iconUrl = o.optString("iconUrl").ifBlank { o.optString("logo").ifBlank { null } },
+            iconUrl = o.optString("iconUrl")
+                .ifBlank { o.optString("logo") }
+                .ifBlank { o.optString("icon") }
+                .ifBlank { null },
             version = version,
             tvTypes = types,
+            iconManifest = addons.firstOrNull(),
+            iconHost = iconHostOf(o),
         )
+    }
+
+    /**
+     * Placeholder hosts SkyStream listings publish in `baseUrl` — the real
+     * extension repo ships `https://stremio-hub.local` for 20 of its 25
+     * entries. A favicon lookup against one of those can never resolve, so
+     * they must never be used as an icon source (they would produce a broken
+     * image request per row, all of them useless).
+     */
+    private val PLACEHOLDER_HOSTS = listOf(
+        ".local", ".invalid", ".test", ".example", "localhost", "stremio-hub",
+    )
+
+    /**
+     * The extension's own site host, used as the LAST-resort icon source: the
+     * first real entry in `domains`, else the `baseUrl`/`url` host, with
+     * placeholder hosts (see [PLACEHOLDER_HOSTS]) skipped. Null when the
+     * listing names only a placeholder — better no icon than a guaranteed 404.
+     */
+    private fun iconHostOf(o: JSONObject): String? {
+        val candidates = mutableListOf<String>()
+        runCatching { o.getJSONArray("domains") }.getOrNull()?.let { a ->
+            for (i in 0 until a.length()) {
+                a.optString(i).ifBlank { null }?.let { candidates.add(it) }
+            }
+        }
+        o.optString("baseUrl").ifBlank { null }?.let { candidates.add(it) }
+        o.optString("url").ifBlank { null }?.let { candidates.add(it) }
+        for (c in candidates) {
+            val host = runCatching {
+                val withScheme = if (c.startsWith("http")) c else "https://$c"
+                java.net.URI(withScheme).host?.lowercase()
+            }.getOrNull() ?: continue
+            if (host.isBlank() || !host.contains(".")) continue
+            if (PLACEHOLDER_HOSTS.any { host.contains(it) }) continue
+            return host
+        }
+        return null
     }
 
     /**

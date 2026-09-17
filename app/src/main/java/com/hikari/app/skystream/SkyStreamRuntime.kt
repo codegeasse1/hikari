@@ -3,6 +3,7 @@ package com.hikari.app.skystream
 import android.content.Context
 import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.function
+import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.DohDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +21,9 @@ import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Runs SkyStream plugins (`.sky` files: plugin.json + plugin.js) inside a fresh
@@ -43,16 +46,17 @@ import java.util.concurrent.TimeUnit
  * http_parallel / fetch, the DigitalOcean-style `parseHtml` DOM facade,
  * `parse_html`, `getAndUnpack`, `crypto.decryptAES`, `getPreference`,
  * `setPreference`, the MultimediaItem/Episode/StreamResult classes and the
- * timers. Everything that touches the network goes through the synchronous
- * `__hikariFetch` bridge (OkHttp), so the engine needs no WebView.
+ * timers. Everything that touches the network goes through the bridges this
+ * file registers (OkHttp, on a pool — see [AsyncFetches]), so the engine needs
+ * no WebView.
  *
  * Timing: the plugin's own `await`s resolve on the engine's microtask queue,
- * which QuickJS drains while `evaluate` runs — a plugin whose fetches are all
- * plain awaits therefore reports its result inside the initial call. Plugins
- * that use `setTimeout` (anti-bot delays, retry backoff, ~26 of the 36 official
- * plugins do) park a callback in the shim's timer registry instead; the loop
- * below fires those timers between `evaluate` rounds until the plugin answers
- * or the call budget runs out.
+ * which QuickJS drains while `evaluate` runs. Plugins that use `setTimeout`
+ * (anti-bot delays, retry backoff, `Promise.race` guards — ~26 of the 36
+ * official plugins do) park a callback in the shim's timer registry instead;
+ * the loop below fires those timers when they come due between `evaluate`
+ * rounds — and resolves each in-flight fetch as its response lands — until the
+ * plugin answers or the call budget runs out.
  */
 object SkyStreamRuntime {
 
@@ -163,7 +167,34 @@ object SkyStreamRuntime {
         evaluate<Any?>("$js\n;void 0;\n", name, false)
     }
 
-    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(6)
+    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(12)
+
+    /**
+     * Per-engine state for the ASYNCHRONOUS fetch bridge.
+     *
+     * A SkyStream plugin's `http_get` calls are *supposed* to run concurrently:
+     * nearly every published extension fetches its categories with
+     * `await Promise.all(categories.map(t => http_get(t.url)))` (8 category
+     * pages for the `akash` sites, up to 24 for the `dev.cookie.*` ones). The old
+     * bridge ([bridgeFetch] via `__hikariFetch`) is synchronous — it blocks the
+     * QuickJS thread on OkHttp — so those "parallel" fetches actually ran one
+     * after another: 8 pages at 2-5s each is 16-40s, which blew straight past
+     * the Home row timeout and made EVERY installed SkyStream extension look
+     * like it had no catalogue at all.
+     *
+     * `__hikariFetchAsync` instead hands the request to [fetchExecutor] and
+     * returns at once; the pump loop in [invoke] drains [results] and resolves
+     * the matching JS promise as each response lands, so a plugin's `Promise.all`
+     * really is parallel and a whole home page arrives in the time of its
+     * slowest request instead of the sum of all of them.
+     */
+    private class AsyncFetches {
+        /** `promiseId` → the JSON payload `__skyResolveFetch` hands back to JS. */
+        val results = LinkedBlockingQueue<Pair<String, String>>()
+
+        /** Requests handed to the pool that have not been queued yet. */
+        val pending = AtomicInteger(0)
+    }
 
     private val client by lazy {
         OkHttpClient.Builder()
@@ -189,6 +220,7 @@ object SkyStreamRuntime {
         manifestJson: String,
         source: String,
         prefs: Prefs,
+        fetches: AsyncFetches,
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
@@ -200,6 +232,39 @@ object SkyStreamRuntime {
             val body = args.getOrNull(3)?.toString() ?: ""
             val followRedirects = args.getOrNull(4) as? Boolean ?: true
             bridgeFetch(url, method, headersJson, body, followRedirects)
+        }
+        // The asynchronous bridge the shim prefers: fire the request on the pool,
+        // return immediately, and let the pump loop in [invoke] resolve the
+        // plugin's promise when the response lands — so `Promise.all` over several
+        // http_get calls is genuinely concurrent (see [AsyncFetches]).
+        qjs.function("__hikariFetchAsync") { args ->
+            val url = args.getOrNull(0)?.toString() ?: ""
+            val method = (args.getOrNull(1)?.toString() ?: "GET").uppercase()
+            val headersJson = args.getOrNull(2)?.toString() ?: "{}"
+            val body = args.getOrNull(3)?.toString() ?: ""
+            val followRedirects = args.getOrNull(4) as? Boolean ?: true
+            val promiseId = args.getOrNull(5)?.toString().orEmpty()
+            if (promiseId.isNotEmpty()) {
+                fetches.pending.incrementAndGet()
+                fetchExecutor.submit {
+                    val json = runCatching {
+                        fetchOnce(url, method, headersJson, body, System.currentTimeMillis())
+                    }.getOrElse { e ->
+                        val o = JSONObject()
+                        o.put("ok", false)
+                        o.put("status", 0)
+                        o.put("statusText", e.message ?: "network error")
+                        o.put("url", url)
+                        o.put("headers", JSONObject())
+                        o.put("body", "")
+                        o.put("error", e.message ?: "network error")
+                        o.toString()
+                    }
+                    fetches.results.add(promiseId to json)
+                    fetches.pending.decrementAndGet()
+                }
+            }
+            ""
         }
         // http_parallel in one native call, so a plugin's batch really is
         // parallel (the single-fetch bridge blocks the engine thread).
@@ -279,22 +344,56 @@ object SkyStreamRuntime {
                 withContext(Dispatchers.Default) {
                     val deferred = CompletableDeferred<String>()
                     val prefs = Prefs(settingsFile(pluginId))
+                    val fetches = AsyncFetches()
                     var qjs: QuickJs? = null
                     try {
-                        qjs = createEngine(deferred, pluginId, manifestJson, source, prefs)
+                        qjs = createEngine(deferred, pluginId, manifestJson, source, prefs, fetches)
                         qjs.evaluate<Any?>(buildCall(fnName, argsJson), "call.js", false)
                         val deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS
+                        // Each round: fire one due timer, deliver every async fetch
+                        // that finished since the last round, then sleep. A plugin
+                        // waiting on `Promise.all` keeps [AsyncFetches.pending]
+                        // above zero, which is what holds the loop open while its
+                        // requests are in flight.
+                        var idleRounds = 0
                         while (!deferred.isCompleted && System.currentTimeMillis() < deadline) {
                             val next = qjs.evaluate<Any?>("__skyFireTimer()", "timer.js", false)
+                            deliverFetches(qjs, fetches)
                             // A timer callback usually does its fetch + completes
                             // inside this very evaluate: return the answer now
                             // instead of sleeping out the timer's delay first
                             // (that wait was pure latency on the player's
                             // "instant play" path).
                             if (deferred.isCompleted) break
+                            // __skyFireTimer: -1 = no timers parked, 0 = one just
+                            // fired, >0 = ms until the next one is due. Never fires
+                            // a timer early, so a plugin's `Promise.race` guard (or
+                            // a retry backoff) can't trip while a fetch is in flight.
                             val wait = (next as? Number)?.toLong() ?: -1L
-                            if (wait < 0) break
-                            delay(wait.coerceAtMost(TIMER_MAX_WAIT_MS))
+                            val busy = fetches.pending.get() > 0 || fetches.results.isNotEmpty()
+                            when {
+                                busy -> {
+                                    idleRounds = 0
+                                    // Stay responsive while requests are in flight.
+                                    delay(if (wait >= 1 && wait <= 50) wait else 8)
+                                }
+                                wait > 0 -> {
+                                    idleRounds = 0
+                                    delay(wait.coerceAtMost(TIMER_MAX_WAIT_MS))
+                                }
+                                wait == 0L -> {
+                                    idleRounds = 0
+                                    delay(1)
+                                }
+                                else -> {
+                                    // Nothing parked and nothing in flight: give
+                                    // the pool a few rounds to notice a request
+                                    // that was just submitted before ending the call.
+                                    idleRounds++
+                                    if (idleRounds >= 4) break
+                                    delay(12)
+                                }
+                            }
                         }
                         if (deferred.isCompleted) normalise(deferred.await())
                         else failure("timed out after ${CALL_TIMEOUT_MS / 1000}s")
@@ -307,6 +406,22 @@ object SkyStreamRuntime {
                     }
                 }
             } ?: failure("timed out after ${CALL_TIMEOUT_MS / 1000}s")
+        }
+    }
+
+    /** Hands every finished async fetch to its JS promise, one `evaluate` per
+     *  response so QuickJS drains the microtask queue (and the plugin's `await`
+     *  chain, including any follow-up requests) between deliveries. */
+    private suspend fun deliverFetches(qjs: QuickJs, fetches: AsyncFetches) {
+        while (true) {
+            val item = fetches.results.poll() ?: break
+            runCatching {
+                qjs.evaluate<Any?>(
+                    "__skyResolveFetch(${quote(item.first)}, ${quote(item.second)})",
+                    "resolve.js",
+                    false,
+                )
+            }
         }
     }
 
@@ -324,7 +439,7 @@ object SkyStreamRuntime {
             try {
                 val deferred = CompletableDeferred<String>()
                 val prefs = Prefs(settingsFile(pluginId))
-                qjs = createEngine(deferred, pluginId, manifestJson, source, prefs)
+                qjs = createEngine(deferred, pluginId, manifestJson, source, prefs, AsyncFetches())
                 // The plugin's own top-level code is done by now; the export
                 // check must be instant, so give QuickJS a tight budget here
                 // (an install a user is watching waits on this call).
@@ -551,11 +666,27 @@ object SkyStreamRuntime {
             resp.use { r ->
                 val bytes = r.body?.bytes() ?: ByteArray(0)
                 val extra = StringBuilder()
-                if (r.code == 403 || r.code == 503) {
-                    val low = String(bytes, Charsets.ISO_8859_1).lowercase()
-                    if (low.contains("just a moment") || low.contains("attention required") ||
-                        low.contains("cf-chl") || low.contains("checking your browser")
-                    ) extra.append(" CF-CHALLENGE-UNSOLVED")
+                // A Cloudflare challenge — the 403/503 interstitial, or a
+                // managed challenge served as an HTTP 200 HTML page — is not
+                // "this extension is broken": it needs the user's own
+                // verification. Record the host in the shared verifier so every
+                // other part of the app stops waiting on it (the source probe,
+                // the WebView resolver, later fetches all skip a host recorded
+                // here), and flag it in the fetch log the extension reads.
+                // Bounded to small bodies: a multi-MB catalog JSON is never a
+                // challenge page and must not be scanned for markers.
+                if (bytes.size <= 200_000) {
+                    val ct = r.headers["Content-Type"] ?: ""
+                    val cfWorthScanning =
+                        r.code == 403 || r.code == 503 ||
+                            (r.code in 200..299 && ct.contains("html", ignoreCase = true))
+                    if (cfWorthScanning) {
+                        val low = String(bytes, Charsets.ISO_8859_1).lowercase()
+                        if (CloudflareVerifier.isCloudflareChallenge(r, low)) {
+                            extra.append(" CF-CHALLENGE-UNSOLVED")
+                            CloudflareVerifier.markBlocked(url)
+                        }
+                    }
                 }
                 val ce = r.headers["Content-Encoding"]
                 if (ce != null && ce.isNotBlank()) extra.append(" CE=").append(ce)
@@ -600,51 +731,72 @@ object SkyStreamRuntime {
 
     /**
      * SkyStream's timer globals, reimplemented for QuickJS. `setTimeout` parks
-     * its callback in a registry; the host fires them one per round through
-     * `__skyFireTimer`, which returns the delay it slept for (or -1 when no
-     * timer is pending, which ends the pumping). `setInterval` re-arms itself.
+     * its callback in a registry with a due time; the host calls
+     * `__skyFireTimer` between engine rounds, which returns:
+     *
+     *   -1  nothing parked
+     *    0  a timer was due and has just been fired
+     *   >0  milliseconds until the next timer is due (never early)
+     *
+     * Returning the remaining time instead of firing whatever is at the head of
+     * the list matters: plugins use `setTimeout` for `Promise.race` timeouts and
+     * retry backoff, and the host polls this function every few milliseconds
+     * while a request is in flight — firing an early timer there would abort a
+     * perfectly healthy fetch or truncate a phase budget. `setInterval`
+     * re-arms itself.
      */
     private val TIMER_JS = """
         if (typeof globalThis.setTimeout !== 'function') {
           globalThis.__skyTimers = {};
-          globalThis.__skyTimerDelays = {};
           globalThis.__skyTimerSeq = 0;
           globalThis.setTimeout = function (callback, delay) {
             var id = 't_' + (++globalThis.__skyTimerSeq);
-            globalThis.__skyTimers[id] = function () {
-              if (!globalThis.__skyTimers[id]) return;
-              delete globalThis.__skyTimers[id];
-              try { callback(); } catch (e) { try { console.error('Timeout error:', e); } catch (e2) {} }
+            globalThis.__skyTimers[id] = {
+              due: Date.now() + (Number(delay) || 0),
+              fn: function () {
+                if (!globalThis.__skyTimers[id]) return;
+                delete globalThis.__skyTimers[id];
+                try { callback(); } catch (e) { try { console.error('Timeout error:', e); } catch (e2) {} }
+              }
             };
-            globalThis.__skyTimerDelays[id] = delay || 0;
             return id;
           };
           globalThis.clearTimeout = function (id) {
             if (!id) return;
             delete globalThis.__skyTimers[id];
-            delete globalThis.__skyTimerDelays[id];
           };
           globalThis.setInterval = function (callback, delay) {
             var id = 'i_' + (++globalThis.__skyTimerSeq);
-            globalThis.__skyTimers[id] = function () {
-              if (!globalThis.__skyTimers[id]) return;
-              try { callback(); } catch (e) { try { console.error('Interval error:', e); } catch (e2) {} }
-              if (globalThis.__skyTimers[id]) globalThis.__skyTimerDelays[id] = delay || 0;
+            var period = Number(delay) || 0;
+            globalThis.__skyTimers[id] = {
+              due: Date.now() + period,
+              fn: function () {
+                if (!globalThis.__skyTimers[id]) return;
+                try { callback(); } catch (e) { try { console.error('Interval error:', e); } catch (e2) {} }
+                var t = globalThis.__skyTimers[id];
+                if (t) t.due = Date.now() + period;
+              }
             };
-            globalThis.__skyTimerDelays[id] = delay || 0;
             return id;
           };
           globalThis.clearInterval = globalThis.clearTimeout;
         }
         globalThis.__skyFireTimer = function () {
-          var ids = Object.keys(globalThis.__skyTimers);
+          var ids = Object.keys(globalThis.__skyTimers || {});
           if (!ids.length) return -1;
-          var id = ids[0];
-          var delay = globalThis.__skyTimerDelays[id] || 0;
-          delete globalThis.__skyTimerDelays[id];
-          var fn = globalThis.__skyTimers[id];
+          var now = Date.now();
+          var best = null;
+          var bestDue = Infinity;
+          for (var i = 0; i < ids.length; i++) {
+            var t = globalThis.__skyTimers[ids[i]];
+            if (!t) continue;
+            if (t.due < bestDue) { bestDue = t.due; best = ids[i]; }
+          }
+          if (best === null) return -1;
+          if (bestDue > now) return Math.max(1, Math.round(bestDue - now));
+          var fn = globalThis.__skyTimers[best] && globalThis.__skyTimers[best].fn;
           try { if (fn) fn(); } catch (e) {}
-          return delay;
+          return 0;
         };
     """.trimIndent()
 

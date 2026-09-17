@@ -52,6 +52,22 @@ data class Cs3RepoPlugin(
     val version: Int = 1,
     val tvTypes: List<String> = emptyList(),
     val fileHash: String? = null,
+    /**
+     * Where to find this entry's icon when the repo listing itself declares
+     * none. SkyStream `.sky` entries carry an `addons` array of Stremio
+     * manifest URLs, and that manifest's `logo` is the extension's real icon
+     * (the `.sky`'s own plugin.json has no icon field at all) — the first
+     * addon URL is captured here so the row can resolve a logo lazily.
+     */
+    val iconManifest: String? = null,
+    /**
+     * The extension's own site host (`domains[0]`, else the `baseUrl` host),
+     * used as the LAST-resort icon via Google's favicon service — the same
+     * trick the plugin repos themselves use. Null when the listing only names
+     * a placeholder host (`stremio-hub.local` and friends), where a favicon
+     * lookup could never resolve.
+     */
+    val iconHost: String? = null,
 )
 
 /** Per-repo plugin-list loading state shown in the Extensions screen. */

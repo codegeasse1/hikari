@@ -176,6 +176,43 @@ object CloudflareVerifier {
         }
     }
 
+    /**
+     * Public form of [noteBlocked] for callers that hold a URL rather than a
+     * host: the SkyStream fetch bridge (which spots a challenge body in its own
+     * fetch log) and the WebView resolver (which spots one in the page title).
+     * Recording it here is what lets [needsVerification] short-circuit every
+     * LATER attempt at the same host — the whole point of the record.
+     */
+    fun markBlocked(url: String) {
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return
+        if (host.isNotBlank()) noteBlocked(host)
+    }
+
+    /**
+     * True when a WebView page TITLE is a Cloudflare interstitial. The title is
+     * the earliest reliable signal a challenge is on screen — it is set before
+     * the challenge script finishes, and on a hard block it is the only thing
+     * that ever changes — so the resolver uses it to stop waiting immediately
+     * instead of burning its whole timeout on a page that will never play.
+     */
+    fun isChallengeTitle(title: String?): Boolean {
+        val t = title?.lowercase()?.trim() ?: return false
+        if (t.isBlank()) return false
+        return CHALLENGE_TITLES.any { t.contains(it) }
+    }
+
+    /** Titles Cloudflare's interstitials use (blocks and managed challenges). */
+    private val CHALLENGE_TITLES = listOf(
+        "just a moment",
+        "attention required",
+        "checking your browser",
+        "performing security verification",
+        "verify you are human",
+        "one more step",
+        "ddos protection",
+        "security check",
+    )
+
     /** The most recently challenged host we could not clear, or null when
      *  nothing was blocked within [maxAgeMs]. Lets the search UI say
      *  "Cloudflare check needed on X" instead of "no matching title". */

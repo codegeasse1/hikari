@@ -447,6 +447,16 @@ class HikariApp : Application() {
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
+                // Extension logos and addon icons are frequently `.svg`
+                // (SkyStream addon manifests point at e.g.
+                // dramayo.stream/static/dramayo.svg, several CS3 repos ship
+                // vector icons), and Coil 2 has no SVG support at all — every
+                // one of those decodes to a failure, which is why such rows
+                // showed the monochrome puzzle-piece glyph. The decoder is
+                // registered here (once, for the whole app) so repository
+                // listings, installed-extension rows and Stremio addon icons
+                // all render their real logo.
+                .components { add(coil.decode.SvgDecoder.Factory()) }
                 // Posters whose CDN sends no cache headers (very common on the
                 // aggregator hosts) should still land in Coil's disk cache.
                 .respectCacheHeaders(false)

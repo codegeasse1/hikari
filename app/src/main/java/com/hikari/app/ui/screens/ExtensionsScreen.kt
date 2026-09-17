@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -108,6 +110,7 @@ import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1309,7 +1312,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             name = name,
             description = o.optString("description"),
             url = url,
-            iconUrl = o.optString("iconUrl").ifBlank { null },
+            // Repos spell this field three ways depending on who wrote them
+            // (CloudStream → iconUrl, SkyStream/Nuvio → logo, others → icon).
+            // Reading only `iconUrl` left most listings icon-less.
+            iconUrl = o.optString("iconUrl")
+                .ifBlank { o.optString("icon") }
+                .ifBlank { o.optString("logo") }
+                .ifBlank { null },
             authors = strings("authors"),
             version = o.optInt("version", 1),
             tvTypes = strings("tvTypes"),
@@ -2842,6 +2851,8 @@ private fun LazyListScope.extensionsSearchItems(
                         ?.let { target -> { onOpenSettings(target) } },
                     updateAvailable = p.url in outdatedUrls,
                     onUpdate = { onUpdatePlugin(p, repo.kind) },
+                    kind = repo.kind,
+                    repoUrl = repo.url,
                 )
             }
         }
@@ -3072,6 +3083,8 @@ private fun RepoPluginsView(
                             ?.let { target -> { onOpenSettings(target) } },
                         updateAvailable = p.url in outdatedUrls,
                         onUpdate = { onUpdate(p) },
+                        kind = repo.kind,
+                        repoUrl = repo.url,
                     )
                 }
             }
@@ -3081,9 +3094,16 @@ private fun RepoPluginsView(
 
 @Composable
 private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
+    // Repo icon URLs are templates in the wild: CloudStream repos serve
+    // `…/icon.png?size=%size%` (and the `%exact_size%` variant), and plenty of
+    // listings use protocol-relative `//host/icon.png`. Neither survives being
+    // handed straight to Coil from an Android app, so normalize first — an
+    // unfetchable URL is exactly how a perfectly good icon degrades into the
+    // placeholder glyph.
     val safe = url
+        ?.replace("%exact_size%", "48")
         ?.replace("%size%", "48")
-        ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        ?.let { com.hikari.app.ui.ExtensionIcons.absolute(it, null) }
     if (safe == null) {
         Icon(
             Icons.Filled.Extension,
@@ -3113,6 +3133,32 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
             else -> SubcomposeAsyncImageContent()
         }
     }
+}
+
+@Composable
+private fun RepoPluginIcon(
+    p: Cs3RepoPlugin,
+    kind: RepoKind,
+    repoUrl: String,
+    modifier: Modifier = Modifier,
+) {
+    // A repo listing is resolved before anything is installed, so the row only
+    // has what the listing declared — and most SkyStream listings declare no
+    // icon at all (1 of 25 entries in the community repo carries an `iconUrl`,
+    // and 20 of 25 carry a placeholder `baseUrl`), which is why every row fell
+    // back to the puzzle-piece glyph. Resolve the rest lazily off the main
+    // thread: the entry's own image fields, else its first addon manifest's
+    // logo, else the site favicon. ExtensionIcons caches per entry, so
+    // scrolling the listing never refetches.
+    var icon by remember(p.url, kind) { mutableStateOf(p.iconUrl) }
+    LaunchedEffect(p.url, kind) {
+        if (icon.isNullOrBlank()) {
+            icon = withContext(Dispatchers.IO) {
+                com.hikari.app.ui.ExtensionIcons.forRepoPlugin(p, kind, repoUrl)
+            }
+        }
+    }
+    ExtensionIcon(url = icon, modifier = modifier)
 }
 
 @Composable
@@ -3267,15 +3313,19 @@ private fun ProviderCard(
     onSettings: (() -> Unit)? = null,
     updateAvailable: Boolean = false,
     onUpdate: (() -> Unit)? = null,
-) {    GlassCard(Modifier
+) {
+    val glass = rememberGlassTokens()
+    val tileShape = RoundedCornerShape(12.dp)
+    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
                     .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .clip(tileShape)
+                    .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                    .border(1.dp, glass.border, tileShape),
                 contentAlignment = Alignment.Center
             ) {
                 ProviderIcon(
@@ -3701,7 +3751,11 @@ private fun PluginRow(
     onSettings: (() -> Unit)? = null,
     updateAvailable: Boolean = false,
     onUpdate: (() -> Unit)? = null,
+    kind: RepoKind = RepoKind.CS3,
+    repoUrl: String = "",
 ) {
+    val glass = rememberGlassTokens()
+    val tileShape = RoundedCornerShape(12.dp)
     Row(
         Modifier
             .fillMaxWidth()
@@ -3710,17 +3764,20 @@ private fun PluginRow(
     ) {
         Box(
             Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .size(40.dp)
+                .clip(tileShape)
+                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                .border(1.dp, glass.border, tileShape),
             contentAlignment = Alignment.Center
         ) {
-            ExtensionIcon(
-                url = p.iconUrl,
+            RepoPluginIcon(
+                p = p,
+                kind = kind,
+                repoUrl = repoUrl,
                 modifier = Modifier.size(28.dp)
             )
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 p.name,

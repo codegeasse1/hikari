@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -73,9 +75,11 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.ContinueWatchingRow
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassDialog
+import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
+import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.web.WebViewActivity
@@ -800,13 +804,11 @@ private fun ProviderPickerSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
             )
-            OutlinedTextField(
+            GlassSearchField(
                 value = query,
                 onValueChange = { query = it },
-                singleLine = true,
-                placeholder = { Text(tr("Search extensions…")) },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth()
+                placeholder = tr("Search extensions…"),
+                modifier = Modifier.fillMaxWidth(),
             )
             // Categories: All first, then one chip per engine that is actually
             // installed. Picking one only NARROWS the list below.
@@ -895,15 +897,34 @@ private fun ProviderPickerSheet(
     }
 }
 
-/** One engine chip in the picker ("All", "CloudStream", "Nuvio", …). */
+/** One engine chip in the picker ("All", "CloudStream", "Nuvio", …) — a glass
+ *  pill, so the filter row reads as part of the same roundy material as the
+ *  rows below it instead of flat grey blocks. */
 @Composable
 private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit) {
+    val glass = rememberGlassTokens()
+    val shape = RoundedCornerShape(50)
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(50),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        modifier = Modifier.padding(vertical = 2.dp),
+        shape = shape,
+        color = Color.Transparent,
+        modifier = Modifier
+            .padding(vertical = 2.dp)
+            .clip(shape)
+            .background(
+                if (selected) {
+                    Brush.horizontalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.34f else 0.20f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.20f else 0.12f),
+                        )
+                    )
+                } else {
+                    Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom))
+                },
+                shape,
+            )
+            .border(1.dp, if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else glass.border, shape),
     ) {
         Text(
             label,
@@ -911,11 +932,18 @@ private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
     }
 }
 
+/**
+ * One row of the extension picker. Glassy by design: the same translucent
+ * top-to-bottom fill and 1px hairline the settings cards use (see
+ * [rememberGlassTokens]), with a 18dp radius and a small vertical gap between
+ * rows — so the list reads as separate round cards floating over the sheet
+ * rather than a wall of flat charcoal rows.
+ */
 @Composable
 private fun PickerRow(
     label: String,
@@ -923,12 +951,30 @@ private fun PickerRow(
     supporting: String? = null,
     onClick: () -> Unit,
 ) {
+    val glass = rememberGlassTokens()
+    val shape = RoundedCornerShape(18.dp)
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-        else MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth()
+        shape = shape,
+        color = Color.Transparent,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(shape)
+            .background(
+                if (isSelected) {
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.28f else 0.16f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.16f else 0.09f),
+                        )
+                    )
+                } else {
+                    Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom))
+                },
+                shape,
+            )
+            .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else glass.border, shape),
     ) {
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 14.dp),

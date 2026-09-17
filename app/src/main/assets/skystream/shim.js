@@ -91,15 +91,33 @@
   };
 
   // ── HTTP ─────────────────────────────────────────────────────────────────
-  // Every call is SYNCHRONOUS inside the engine (the native bridge blocks on
-  // OkHttp), so the promise resolves on the microtask queue the engine drains
-  // while it awaits the plugin's own async function.
+  // Two bridges are available from the host:
+  //   __hikariFetchAsync(url, method, headersJson, body, followRedirects, id)
+  //     — fires the request on the host's pool and RETURNS AT ONCE; the host
+  //     later calls __skyResolveFetch(id, json) to settle the promise.
+  //   __hikariFetch(...) — the legacy synchronous bridge (blocks the engine
+  //     thread on the socket). Kept as the fallback.
+  // The async one is the default because almost every published extension
+  // fetches its categories with `await Promise.all(xs.map(t => http_get(t)))`;
+  // through the synchronous bridge those all ran one-by-one and 8 category
+  // pages took 20-40s, which timed out the whole extension's home page.
   function decodeResponse(json) {
     var res;
     try { res = JSON.parse(json); } catch (e) { res = { status: 0, body: '', headers: {} }; }
     if (res == null || typeof res !== 'object') res = { status: 0, body: String(res || ''), headers: {} };
     return res;
   }
+
+  /** Settled promises, keyed by the id the host hands back. */
+  var __skyPending = {};
+  var __skyFetchSeq = 0;
+
+  g.__skyResolveFetch = function (id, json) {
+    var resolve = __skyPending[id];
+    if (!resolve) return;
+    delete __skyPending[id];
+    try { resolve(decodeResponse(json)); } catch (e) {}
+  };
 
   function request(method, url, headers, body) {
     // Two shapes are in the wild: http_get(url, {"User-Agent": …}) and the
@@ -111,8 +129,21 @@
     }
     var headersJson = '{}';
     try { headersJson = JSON.stringify(headers || {}); } catch (e) { headersJson = '{}'; }
-    var raw = g.__hikariFetch(String(url), String(method || 'GET'), headersJson,
-      body == null ? '' : String(body), true);
+    var m = String(method || 'GET');
+    var bodyStr = body == null ? '' : String(body);
+    if (typeof g.__hikariFetchAsync === 'function') {
+      return new Promise(function (resolve) {
+        var id = 'f_' + (++__skyFetchSeq);
+        __skyPending[id] = resolve;
+        try {
+          g.__hikariFetchAsync(String(url), m, headersJson, bodyStr, true, id);
+        } catch (e) {
+          delete __skyPending[id];
+          resolve({ status: 0, body: '', headers: {} });
+        }
+      });
+    }
+    var raw = g.__hikariFetch(String(url), m, headersJson, bodyStr, true);
     return Promise.resolve(decodeResponse(raw));
   }
 
