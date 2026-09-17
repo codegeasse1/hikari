@@ -104,7 +104,7 @@ class WorkService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_work)
             .setContentTitle(label)
-            .setContentText("Hikari keeps running while you use other apps")
+            .setContentText(I18n.t("Hikari keeps running while you use other apps"))
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setSilent(true)

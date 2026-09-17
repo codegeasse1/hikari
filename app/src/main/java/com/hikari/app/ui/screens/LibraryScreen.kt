@@ -83,8 +83,8 @@ fun LibraryScreen(nav: NavHostController) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    if (saved.isEmpty()) "Titles you save from the player show up here."
-                    else "${saved.size} ${if (saved.size == 1) "title" else "titles"} saved",
+                    if (saved.isEmpty()) I18n.t("Titles you save from the player show up here.")
+                    else I18n.t(if (saved.size == 1) "%s title saved" else "%s titles saved").replace("%s", saved.size.toString()),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

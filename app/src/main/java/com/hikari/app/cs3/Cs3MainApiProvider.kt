@@ -267,6 +267,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return Cs3PluginManager.ensureSettingsLoaded(HikariApp.instance, file)
     }
 
+    /** Hard rebuild: drops the cached plugin instance so the next
+     *  [prepareSettings] re-runs the plugin's `load()` against the CURRENT
+     *  activity (see [ContentProvider.rebuildSettings]). Used when a plugin's
+     *  settings screen failed with a stale-activity error. */
+    override fun rebuildSettings(context: android.content.Context): Boolean {
+        val file = File(config.url)
+        if (!file.exists()) return false
+        return runCatching { Cs3PluginManager.reload(context, file) }.isSuccess &&
+            Cs3PluginManager.hasSettings(file)
+    }
+
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
     /**

@@ -135,15 +135,45 @@ object FallbackResolver {
             }
         }
 
-        return raws.values.map { r ->
-            StreamSource(
-                name = r.name,
-                url = r.url,
-                headers = mapOf("Referer" to r.referer, "User-Agent" to Http.UA),
-                subtitles = subs.distinctBy { it.url },
-                isM3u8 = r.isM3u8 || r.url.contains(".m3u8", true) || r.url.contains("master.txt", true),
-            )
+        return toSources(raws, subs)
+    }
+
+    /**
+     * Resolves ONE embed URL — the shape a SkyStream plugin's `loadExtractor(url,
+     * cb)` hands us — with the same engine [resolve] runs per embed: fetch with
+     * the video page as Referer, unpack the player config, scan for HLS/MP4, run
+     * the dood/rumble dances, and finally the jar's own extractor registry.
+     *
+     * SkyStream's CLI tree-shakes its extractor library INTO the plugin, so this
+     * is the legacy call — but plugins written against the older API still reach
+     * for it, and answering with Hikari's own stack is strictly better than the
+     * "no sources" those plugins would otherwise report.
+     *
+     * Time-boxed: the caller (a QuickJS bridge) blocks a plugin thread on it.
+     */
+    suspend fun resolveEmbedUrl(embedUrl: String, referer: String? = null): List<StreamSource> {
+        if (!embedUrl.startsWith("http")) return emptyList()
+        val raws = java.util.Collections.synchronizedMap(LinkedHashMap<String, RawStream>())
+        val subs = java.util.Collections.synchronizedList(mutableListOf<SubtitleSource>())
+        runCatching {
+            withTimeoutOrNull(20_000) { resolveEmbed(embedUrl, referer ?: embedUrl, raws, subs) }
         }
+        return toSources(raws, subs)
+    }
+
+    /** The shared raw-scan → [StreamSource] mapping used by [resolve] and
+     *  [resolveEmbedUrl]. */
+    private fun toSources(
+        raws: Map<String, RawStream>,
+        subs: List<SubtitleSource>,
+    ): List<StreamSource> = raws.values.map { r ->
+        StreamSource(
+            name = r.name,
+            url = r.url,
+            headers = mapOf("Referer" to r.referer, "User-Agent" to Http.UA),
+            subtitles = subs.distinctBy { it.url },
+            isM3u8 = r.isM3u8 || r.url.contains(".m3u8", true) || r.url.contains("master.txt", true),
+        )
     }
 
     private suspend fun resolveEmbed(

@@ -33,6 +33,8 @@ object ExtensionIcons {
                 icon
             }
             ProviderType.CS3 -> Cs3MainApiProvider.iconFallback(config)
+            ProviderType.SKYSTREAM ->
+                com.hikari.app.skystream.SkyStreamPluginManager.iconFallback(config)
             else -> null
         }
     }

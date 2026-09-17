@@ -55,7 +55,7 @@ fun TelegramDialog(
             Column {
                 Text(
                     tr("For any query, support, bug reports, title requests or feature " + "ideas — or just to keep up with new releases — join the Hikari ") +
-                        "group on Telegram. It's the fastest way to reach me."
+                        I18n.t("group on Telegram. It's the fastest way to reach me.")
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

@@ -1,7 +1,7 @@
 package com.hikari.app.data
 
 enum class ProviderType {
-    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO;
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM;
 
     /**
      * Which section of the player's server chooser a source from this engine
@@ -16,6 +16,7 @@ enum class ProviderType {
             STREMIO -> "Stremio"
             NUVIO -> "Nuvio"
             CS3 -> "CloudStream"
+            SKYSTREAM -> "SkyStream"
             HIKARI, UNIVERSAL -> "Hikari"
         }
 }
@@ -31,7 +32,7 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
-enum class RepoKind { CS3, HIKARI, NUVIO }
+enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM }
 
 /** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(

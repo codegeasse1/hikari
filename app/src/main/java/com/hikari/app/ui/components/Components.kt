@@ -283,7 +283,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
 
 @Composable
 fun ShimmerRow() {
-    val transition = rememberInfiniteTransition(label = "shimmer")
+    val transition = rememberInfiniteTransition(label = I18n.t("shimmer"))
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
         targetValue = 1f,
@@ -703,7 +703,7 @@ private fun ContinueWatchingCard(
                         .padding(8.dp),
                 ) {
                     Text(
-                        "${fmtRemaining(remaining)} left",
+                        I18n.t("%s left").replace("%s", fmtRemaining(remaining)),
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.White,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),

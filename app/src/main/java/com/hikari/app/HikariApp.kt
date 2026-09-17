@@ -208,6 +208,12 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
             }
+            // First run: seed the community SkyStream extension repos too, so
+            // SkyStream extensions are installable from the Extensions screen
+            // without hunting for a repo URL.
+            runCatching {
+                com.hikari.app.skystream.SkyStreamPluginManager.seedDefaults(this@HikariApp, store)
+            }
             // First run only: add the bundled Hikari (.hiki) and CloudStream
             // extension repos, so the Extensions screen ("Sources, repos &
             // providers") is never empty on a fresh install and the built-in
@@ -242,6 +248,13 @@ class HikariApp : Application() {
             }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
+            // Re-assert the chosen launcher icon. The enabled `activity-alias` is
+            // part of the installed app, not of the restored preferences, so a
+            // backup restore / device copy would otherwise leave the user with
+            // the default icon while Settings still shows their pick.
+            runCatching {
+                com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
+            }
             Logs.log("App", "startup complete (${providers.providers.value.size} providers)")
         }
     }

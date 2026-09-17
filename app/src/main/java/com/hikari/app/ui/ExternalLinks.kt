@@ -47,7 +47,7 @@ fun openYouTubeVideo(context: Context, videoId: String, title: String? = null): 
     }
     if (launch(context, webView)) return true
 
-    Toast.makeText(context, "Couldn't open YouTube", Toast.LENGTH_SHORT).show()
+    Toast.makeText(context, I18n.t("Couldn't open YouTube"), Toast.LENGTH_SHORT).show()
     return false
 }
 
@@ -71,7 +71,7 @@ fun openTelegram(context: Context, url: String = TELEGRAM_CHANNEL_URL): Boolean 
     }
     if (launch(context, Intent(Intent.ACTION_VIEW, Uri.parse(url)))) return true
 
-    Toast.makeText(context, "Couldn't open Telegram", Toast.LENGTH_SHORT).show()
+    Toast.makeText(context, I18n.t("Couldn't open Telegram"), Toast.LENGTH_SHORT).show()
     return false
 }
 

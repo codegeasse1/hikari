@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -222,9 +223,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             val tokenCache = HashMap<String, CatalogRow>()
             var latest: List<CatalogRow> = emptyList()
             val rowFlow = if (loadedCollection != null) {
-                // A collection's own feed: one row per folder of the collection,
-                // each already merged across that folder's catalogs.
-                collections.collectionRows(loadedCollection)
+                // A collection pick: one shelf per CATALOG when the collection
+                // has a single folder (the user grouped sources, not shelves),
+                // one shelf per folder when it has several. See
+                // [CollectionsRepository.pickRows].
+                collections.pickRows(loadedCollection)
             } else {
                 repo.homeRowsStreaming(_selectedProvider.value)
             }
@@ -412,11 +415,21 @@ fun HomeScreen(nav: NavHostController) {
             } else {
                 Toast.makeText(
                     context,
-                    "Couldn't determine this extension's site",
+                    I18n.t("Couldn't determine this extension's site"),
                     Toast.LENGTH_SHORT
                 ).show()
             }
         }
+    }
+
+    // Settings is reachable through the bottom bar unless the user switched that
+    // button off (Settings → Taskbar buttons); when it is off, Home's top bar
+    // carries a gear instead so the screen can never become unreachable.
+    val hiddenTabs by remember { app.store.hiddenTabsFlow() }.collectAsState(initial = emptySet())
+    val openSettings: (() -> Unit)? = if (Routes.SETTINGS in hiddenTabs) {
+        { Routes.safeNavigate(nav, Routes.SETTINGS) }
+    } else {
+        null
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -449,6 +462,7 @@ fun HomeScreen(nav: NavHostController) {
                             onTranslate = { showTranslate = true },
                             onVerify = openVerify,
                             overlay = true,
+                            onSettings = openSettings,
                             modifier = Modifier.align(Alignment.TopCenter),
                         )
                     }
@@ -459,6 +473,7 @@ fun HomeScreen(nav: NavHostController) {
                         onTranslate = { showTranslate = true },
                         onVerify = openVerify,
                         overlay = false,
+                        onSettings = openSettings,
                     )
                 }
             }
@@ -500,15 +515,14 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         },
                         onShowAll = {
-                            // A collection row is a FOLDER: its "Show All" opens
-                            // the folder (one row per catalog inside it) rather
-                            // than a single extension catalog's grid.
+                            // "Show all" while browsing a collection shows the
+                            // WHOLE collection: every folder and every catalog
+                            // in it, as one scrollable grid (a folder row used
+                            // to open just that folder, which left the user
+                            // unable to see the rest of the collection).
                             val collection = selectedCollection
-                            if (row.rawType == "collection" && collection != null) {
-                                Routes.safeNavigate(
-                                    nav,
-                                    Routes.collectionView(collection.id, row.catalogId)
-                                )
+                            if (collection != null) {
+                                Routes.safeNavigate(nav, Routes.collectionGrid(collection.id))
                             } else {
                                 Routes.safeNavigate(
                                     nav,
@@ -546,6 +560,7 @@ fun HomeScreen(nav: NavHostController) {
                             com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
                                 ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
                                 ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[selected]
+                                ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[selected]
                         // A verification wall is the one failure worth naming on
                         // screen: the user picked this provider, so this is where
                         // telling them what to do actually helps. Everywhere else
@@ -559,7 +574,7 @@ fun HomeScreen(nav: NavHostController) {
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
                         if (streamOnly) {
                             EmptyState(
-                                title = "No catalog from ${selectedName ?: "this addon"}",
+                                title = I18n.t("No catalog from %s").replace("%s", selectedName ?: "this addon"),
                                 subtitle = tr("This addon doesn't provide a catalog to browse — it only " + "adds playback sources to titles opened from other addons. ") +
                                     "Pick any movie or series and its streams will show up.",
                                 actionLabel = tr("Browse all"),
@@ -867,7 +882,7 @@ private fun ProviderPickerSheet(
                 if (filtered.isEmpty() && query.isNotBlank()) {
                     item {
                         Text(
-                            "No extension matches \"$query\"",
+                            I18n.t("No extension matches \"$query\""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 16.dp)
@@ -999,6 +1014,10 @@ private fun HomeHeader(
     onTranslate: () -> Unit,
     onVerify: () -> Unit,
     overlay: Boolean,
+    /** Non-null only while the Settings tab is switched off in the bottom bar
+     *  (Settings → Taskbar buttons): the bar then has no way into Settings, so
+     *  this gear keeps the screen reachable instead of locking the user out. */
+    onSettings: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val accent = MaterialTheme.colorScheme.primary
@@ -1054,6 +1073,17 @@ private fun HomeHeader(
                 Icon(
                     Icons.Filled.Public,
                     contentDescription = tr("Open site in web view (Cloudflare verification)"),
+                    tint = iconTint
+                )
+            }
+        }
+        // Only shown while the Settings tab is hidden from the bottom bar — see
+        // the parameter comment.
+        onSettings?.let { open ->
+            IconButton(onClick = open) {
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = tr("Settings"),
                     tint = iconTint
                 )
             }

@@ -318,6 +318,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             it.config.enabled &&
                 (it.config.type == ProviderType.STREMIO ||
                     it.config.id == item.providerId ||
+                    // SkyStream plugins carry their own search, so every
+                    // installed one is asked by title through the cross pass
+                    // (see ContentRepository.crossExtensionTargets).
+                    it.config.type == ProviderType.SKYSTREAM ||
                     (it.config.type == ProviderType.NUVIO &&
                         com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)))
         }
@@ -341,6 +345,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.providers.UniversalScraper.streamErrors[item.providerId]
                 ProviderType.NUVIO ->
                     com.hikari.app.nuvio.NuvioScraper.streamErrors[item.providerId]
+                ProviderType.SKYSTREAM ->
+                    com.hikari.app.skystream.SkyStreamProvider.lastOutcome[item.providerId]
+                        ?: com.hikari.app.skystream.SkyStreamProvider.streamErrors[item.providerId]
                 else -> null
             }
             // A Cloudflare wall is never surfaced here: the Home screen reports
@@ -635,6 +642,9 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.streamErrors[p.config.id]
         ProviderType.HIKARI -> com.hikari.app.providers.HikariProviderAdapter.streamErrors[p.config.id]
         ProviderType.UNIVERSAL -> com.hikari.app.providers.UniversalScraper.streamErrors[p.config.id]
+        ProviderType.SKYSTREAM ->
+            com.hikari.app.skystream.SkyStreamProvider.lastOutcome[p.config.id]
+                ?: com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
         else -> null
     }
     return msg?.takeIf { !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it) }
@@ -649,12 +659,16 @@ private const val PREFERRED_GRACE_MS = 10_000L
 
 /** How long the player holds playback at the start of a fresh search, waiting
  *  for a server from the extension the title was opened from, before it takes
- *  whichever other extension answered first. Short: the promise is "your own
- *  extension goes first", not "wait for it" — the search keeps running behind
- *  the player either way. Passed to the player as the `originGraceMs` extra, and
- *  set to 0 when the origin is disabled or gone, so a dead extension can never
- *  cost a wait. See PlayerActivity's live collector. */
-private const val ORIGIN_PLAY_GRACE_MS = 8_000L
+ *  whichever other extension answered first. Keep this SHORT: the promise is
+ *  "your own extension goes first", not "wait for it", and the search already
+ *  gives the origin a real head start on the repo side (ORIGIN_HEAD_START_MS).
+ *  With default settings the user's rule is "start playing the instant ANY
+ *  server is found", so this is a nudge, not a hold — long values here were
+ *  what made a tap sit on "Checking your own extension first…" while a working
+ *  server was already in hand. Passed to the player as the `originGraceMs`
+ *  extra, and set to 0 when the origin is disabled or gone, so a dead extension
+ *  can never cost a wait. See PlayerActivity's live collector. */
+private const val ORIGIN_PLAY_GRACE_MS = 1_200L
 
 /** How long a prefetched source list may be reused before it must be resolved
  *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
@@ -1029,24 +1043,27 @@ fun DetailScreen(
         // while the screen is alive.
         var found: List<StreamSource> = emptyList()
         val playableEvery = { list: List<StreamSource> ->
-            list.filter { s ->
-                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) &&
-                    // Servers behind a Cloudflare "verify you are human" wall are
-                    // withheld until that host's clearance cookie exists — i.e.
-                    // until the user has actually done the verification for it
-                    // (manually in the extension's WebView). Before, such a
-                    // server was listed and failed with "Cloudflare challenge
-                    // active" the moment it was picked, while the servers that
-                    // play sat further down the list.
-                    !com.hikari.app.net.CloudflareVerifier.needsVerification(s.url)
+            val basic = list.filter { s ->
+                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
+                // Servers behind a Cloudflare "verify you are human" wall are
+                // SORTED AFTER the ones that play, but never allowed to empty
+                // the list: with a few dozen extensions reporting challenges at
+                // once, withholding every challenged host turned a lookup that
+                // found servers into "No playable server found". A challenged
+                // server the player can at least TRY (and that works once the
+                // user verifies that host) beats an empty result.
+                val cleared = basic.filterNot {
+                    com.hikari.app.net.CloudflareVerifier.needsVerification(it.url)
+                }
+                val ordered = if (cleared.isNotEmpty()) cleared else basic
                 // Archive links (.zip/.rar/.7z …) are not videos: providers
                 // (4KHDHub's isDirectVideo only checks the hostname, so its
                 // ".mkv.zip" hubcloud links leak through) sometimes hand them
                 // out, and they cost a full prepare+error cycle before the
                 // player falls through. A stable sort keeps arrival order but
                 // pushes archives to the back, so they are never server #1.
-                .sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
+                ordered.sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
         // NOTE: application scope, NOT the composition's. See [screenAlive].
         app.appScope.launch {
@@ -1282,11 +1299,25 @@ fun DetailScreen(
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
+                    // A Cloudflare challenge is the one "empty" cause the user
+                    // can actually act on, so it goes first and names the host.
+                    val cfHost = com.hikari.app.net.CloudflareVerifier
+                        .blockedHost(com.hikari.app.net.CloudflareVerifier.VERIFY_WINDOW_MS)
                     val note = buildString {
                         append("No playable server found after searching $enabledN ")
                         append(if (enabledN == 1) "extension" else "extensions")
                         if (enabledN < installedN) {
                             append(" — only $enabledN of your $installedN installed extensions are enabled")
+                        }
+                        if (cfHost != null) {
+                            append("\nCloudflare check needed on $cfHost — open a source or use the globe button to verify, then search again.")
+                        }
+                        // Across the whole pass: how many extensions were asked,
+                        // how many answered with servers, and why the rest came
+                        // back empty. This is what separates "no extension has
+                        // this title" from "most of them could not load".
+                        com.hikari.app.data.ContentRepository.crossSummary()?.let {
+                            append("\n").append(it)
                         }
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
@@ -1850,7 +1881,10 @@ fun DetailScreen(
                     }
                     if (searchedProviders > 0) {
                         Text(
-                            "Searched $searchedProviders addon${if (searchedProviders == 1) "" else "s"} for sources.",
+                            I18n.t(
+                                    if (searchedProviders == 1) "Searched %s addon for sources."
+                                    else "Searched %s addons for sources."
+                                ).replace("%s", searchedProviders.toString()),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 8.dp)

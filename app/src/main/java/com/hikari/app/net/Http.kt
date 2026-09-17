@@ -46,12 +46,14 @@ object Http {
             // The user opens it by tapping the globe button, and the requests
             // retry with the cookie that tap earned (see CloudflareVerifier).
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
+            .dns(DohDns)
             .build()
         quietClient = OkHttpClient.Builder()
             .followRedirects(true)
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .dns(DohDns)
             .build()
     }
 

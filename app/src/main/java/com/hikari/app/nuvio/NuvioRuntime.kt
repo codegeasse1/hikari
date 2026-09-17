@@ -4,6 +4,7 @@ import android.util.Base64
 import android.content.Context
 import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.function
+import com.hikari.app.net.DohDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
@@ -154,6 +155,7 @@ object NuvioRuntime {
             // sit behind an interactive Cloudflare challenge simply won't
             // resolve (they don't in nuvio either); the fetch log records the
             // challenge so it's diagnosable.
+            .dns(DohDns)
             .build()
     }
 

@@ -579,7 +579,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             store.providers().forEach { p ->
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
-                    ProviderType.CS3, ProviderType.NUVIO -> extra
+                    ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM -> extra
                     ProviderType.HIKARI -> extra.substringBeforeLast('|')
                     else -> return@forEach
                 }
@@ -637,6 +637,71 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
         }
         reloadInstalled()
+    }
+
+    /** Registers a SkyStream extension repository (`repo.json`). A bare
+     *  shortcode is resolved through [SkyStreamPluginManager.resolveRepoUrl]
+     *  first, mirroring the official app's "type myrepo" flow. */
+    suspend fun addSkyStreamRepo(rawUrl: String): Result<Cs3Repo> {
+        val trimmed = rawUrl.trim()
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            val resolved = com.hikari.app.skystream.SkyStreamPluginManager.resolveRepoUrl(trimmed)
+                ?: return Result.failure(
+                    Exception("Must start with http(s):// — or a SkyStream shortcode")
+                )
+            return addRepo(resolved, RepoKind.SKYSTREAM)
+        }
+        return addRepo(trimmed, RepoKind.SKYSTREAM)
+    }
+
+    suspend fun installSkyStreamPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        withContext(Dispatchers.IO) {
+            val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+                ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
+            com.hikari.app.skystream.SkyStreamPluginManager.install(
+                getApplication<Application>(),
+                bytes,
+                sourceUrl = plugin.url,
+                iconUrl = plugin.iconUrl,
+            ).also { manager.refresh(); reloadInstalled() }
+        }
+
+    /** Removes every SKYSTREAM extension that came from [pluginUrl]. */
+    suspend fun uninstallSkyStreamPlugin(pluginUrl: String) {
+        val app = getApplication<Application>()
+        val stored = store.providers()
+            .filter { it.type == ProviderType.SKYSTREAM && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.skystream.SkyStreamPluginManager.uninstall(app, source)
+        }
+        reloadInstalled()
+    }
+
+    suspend fun installSkyStreamFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            return@withContext Result.failure(Exception("Must start with http(s)://"))
+        }
+        val bytes = Http.fetchBytesRobust(clean)
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        com.hikari.app.skystream.SkyStreamPluginManager.install(
+            getApplication<Application>(),
+            bytes,
+            sourceUrl = clean,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    suspend fun installSkyStreamFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = runCatching {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
+        com.hikari.app.skystream.SkyStreamPluginManager.install(
+            getApplication<Application>(),
+            bytes,
+        ).also { manager.refresh(); reloadInstalled() }
     }
 
     suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
@@ -807,6 +872,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val mooncrown = nuvio("https://raw.githubusercontent.com/mooncrown04/nuviotr/refs/heads/main/manifest.json")
         val kenneth = nuvio("https://raw.githubusercontent.com/KennethJYS/Nuvio-Providers-Latino/refs/heads/main/manifest.json")
         val eclipsia = nuvio("https://plugin.eclipsia.dpdns.org/manifest.json")
+        fun sky(url: String) = RepoAlias(url, RepoKind.SKYSTREAM)
+        val skyOfficial = sky("https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json")
+        val skyRouge = sky("https://raw.githubusercontent.com/rougegz/SkystreamPlugins/main/repo.json")
         val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
@@ -873,6 +941,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("kennethjys", listOf(kenneth))
         put("latino", listOf(kenneth))
         put("eclipsia", listOf(eclipsia))
+        put("skystream", listOf(skyOfficial))
+        put("skystreamplugins", listOf(skyOfficial))
+        put("akash", listOf(skyOfficial))
+        put("akashdh11", listOf(skyOfficial))
+        put("sky", listOf(skyOfficial))
+        put("skyourge", listOf(skyRouge))
+        put("rougegz", listOf(skyRouge))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -1026,6 +1101,53 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             for (i in 0 until arr.length()) {
                 arr.optJSONObject(i)?.let { parsePlugin(it)?.let { p -> out[p.url] = p } }
             }
+        }
+        if (repo.kind == RepoKind.SKYSTREAM) {
+            // A SkyStream repo lists its extensions either inline (`plugins`),
+            // through one or more `pluginLists` files (the official repo's
+            // dist/plugins.json), or as nested `repos` (repo.json URLs). Each
+            // entry names a `.sky` to download; entries only carry a
+            // `packageName` when they have no `name`, which is why they are
+            // mapped through the SkyStream manager rather than parsePlugin.
+            val sky = LinkedHashMap<String, Cs3RepoPlugin>()
+            fun addSky(arr: JSONArray?) {
+                if (arr == null) return
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { o ->
+                        com.hikari.app.skystream.SkyStreamPluginManager.repoPlugin(o, "")
+                            ?.let { p -> sky[p.url] = p }
+                    }
+                }
+            }
+            addSky(root.optJSONArray("plugins"))
+            root.optJSONArray("pluginLists")?.let { lists ->
+                for (i in 0 until lists.length()) {
+                    val listUrl = lists.optString(i).ifBlank { null } ?: continue
+                    val listText = Http.fetchStringRobust(listUrl).getOrNull() ?: continue
+                    addSky(runCatching { JSONArray(listText) }.getOrNull())
+                }
+            }
+            root.optJSONArray("repos")?.let { nested ->
+                for (i in 0 until nested.length()) {
+                    val nestedUrl = nested.optString(i).ifBlank { null } ?: continue
+                    val nestedText = Http.fetchStringRobust(nestedUrl).getOrNull() ?: continue
+                    val nestedRoot = runCatching { JSONObject(nestedText) }.getOrNull() ?: continue
+                    addSky(nestedRoot.optJSONArray("plugins"))
+                    nestedRoot.optJSONArray("pluginLists")?.let { lists ->
+                        for (j in 0 until lists.length()) {
+                            val listUrl = lists.optString(j).ifBlank { null } ?: continue
+                            val listText = Http.fetchStringRobust(listUrl).getOrNull() ?: continue
+                            addSky(runCatching { JSONArray(listText) }.getOrNull())
+                        }
+                    }
+                }
+            }
+            val name = niceRepoName(repo.url, root.optString("name"))
+            val description = root.optString("description")
+            val meta = if (name != repo.name || description != repo.description)
+                repo.copy(name = name, description = description)
+            else null
+            return sky.values.toList() to meta
         }
         root.optJSONArray("pluginLists")?.let { lists ->
             for (i in 0 until lists.length()) {
@@ -1275,6 +1397,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val unit = when (kind) {
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
+            RepoKind.SKYSTREAM -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         val pending = plugins.filter { it.url !in installedUrls }
@@ -1296,6 +1419,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                             RepoKind.CS3 -> installCs3Plugin(p)
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
+                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                         }
                     }
                 }.getOrNull()
@@ -1380,6 +1504,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                             RepoKind.CS3 -> installCs3Plugin(p)
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
+                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                         }
                     }
                 }.getOrNull()
@@ -1424,6 +1549,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
     url.endsWith(".cs3", ignoreCase = true) -> RepoKind.CS3
     url.endsWith(".hiki", ignoreCase = true) -> RepoKind.HIKARI
+    url.endsWith(".sky", ignoreCase = true) -> RepoKind.SKYSTREAM
     else -> default
 }
 
@@ -1444,10 +1570,12 @@ fun ExtensionsScreen() {
     var showRepoDialog by remember { mutableStateOf(false) }
     var repoDialogKind by remember { mutableStateOf(RepoKind.CS3) }
     var showHikiUrl by remember { mutableStateOf(false) }
+    var showSkyUrl by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
     var cs3Url by remember { mutableStateOf("") }
     var hikiUrl by remember { mutableStateOf("") }
+    var skyUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
     val busy by vm.busy.collectAsState()
     val busyMsg by vm.busyMsg.collectAsState()
@@ -1503,6 +1631,12 @@ fun ExtensionsScreen() {
         }
     }
 
+    val skyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            vm.runInstall("Installing .sky extension…") { vm.installSkyStreamFromUri(uri) }
+        }
+    }
+
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runInstall(
             "Installing ${p.name}…",
@@ -1512,6 +1646,7 @@ fun ExtensionsScreen() {
                 RepoKind.CS3 -> vm.installCs3Plugin(p)
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
+                RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
             }
         }
     }
@@ -1522,6 +1657,7 @@ fun ExtensionsScreen() {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
                 RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)
+                RepoKind.SKYSTREAM -> vm.uninstallSkyStreamPlugin(p.url)
             }
         }
     }
@@ -1612,6 +1748,7 @@ fun ExtensionsScreen() {
                 repoDialogKind = when (folder) {
                     SourceFolder.HIKARI -> RepoKind.HIKARI
                     SourceFolder.NUVIO -> RepoKind.NUVIO
+                    SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -1677,6 +1814,7 @@ fun ExtensionsScreen() {
             onAddRepo = { vm.clearStatus(); repoDialogKind = RepoKind.CS3; showRepoDialog = true },
             onAddHikiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
             onAddNuvioRepo = { vm.clearStatus(); repoDialogKind = RepoKind.NUVIO; showRepoDialog = true },
+            onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
@@ -1713,6 +1851,11 @@ fun ExtensionsScreen() {
             onPickHikiFile = {
                 vm.clearStatus()
                 hikiPicker.launch(arrayOf("application/octet-stream", "*/*"))
+            },
+            onAddSkyStreamUrl = { vm.clearStatus(); showSkyUrl = true },
+            onPickSkyStreamFile = {
+                vm.clearStatus()
+                skyPicker.launch(arrayOf("application/octet-stream", "*/*"))
             },
             onAddSite = { vm.clearStatus(); showSite = true },
             onOpenSite = { site ->
@@ -1753,6 +1896,7 @@ fun ExtensionsScreen() {
     if (showRepoDialog) {
         val isHikari = repoDialogKind == RepoKind.HIKARI
         val isNuvio = repoDialogKind == RepoKind.NUVIO
+        val isSky = repoDialogKind == RepoKind.SKYSTREAM
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
             title = {
@@ -1760,6 +1904,7 @@ fun ExtensionsScreen() {
                     when (repoDialogKind) {
                         RepoKind.HIKARI -> "Add Hikari repo"
                         RepoKind.NUVIO -> "Add Nuvio repo"
+                        RepoKind.SKYSTREAM -> "Add SkyStream repo"
                         RepoKind.CS3 -> "Add CloudStream repo"
                     }
                 )
@@ -1774,6 +1919,10 @@ fun ExtensionsScreen() {
                             isNuvio ->
                                 "Paste a Nuvio provider repo URL (a manifest.json). For example:\n" +
                                     "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json"
+                            isSky ->
+                                "Paste a SkyStream repo URL (a repo.json), or just its short " +
+                                    "code. For example:\n" +
+                                    "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json"
                             else ->
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
@@ -1788,7 +1937,8 @@ fun ExtensionsScreen() {
                                 "indostream, skillshare, luna712, redowan, dogior, cskarma, " +
                                 "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
                                 "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
-                                "mooncrown, kennethjys, eclipsia."
+                                "mooncrown, kennethjys, eclipsia. SkyStream repos: skystream, " +
+                                "akash, skyourge, rougegz."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1821,6 +1971,7 @@ fun ExtensionsScreen() {
                                 when (repoDialogKind) {
                                     RepoKind.HIKARI -> vm.addHikiRepo(repoUrl)
                                     RepoKind.NUVIO -> vm.addNuvioRepo(repoUrl)
+                                    RepoKind.SKYSTREAM -> vm.addSkyStreamRepo(repoUrl)
                                     RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
                                 }
                             },
@@ -2035,6 +2186,58 @@ fun ExtensionsScreen() {
         )
     }
 
+    if (showSkyUrl) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showSkyUrl = false },
+            title = { Text(tr("Install .sky extension")) },
+            text = {
+                Column {
+                    Text(
+                        tr(
+                            "Paste a direct link to a SkyStream extension (.sky) — the " +
+                                "zip that contains plugin.js + plugin.json. Look for a " +
+                                "\"SkyStream repo\" in the list above instead if you want " +
+                                "to browse a whole repository."
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = skyUrl,
+                        onValueChange = { skyUrl = it },
+                        placeholder = { Text(tr("https://…/dev.akash.stars.yts.sky")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
+                                showSkyUrl = false
+                                skyUrl = ""
+                            },
+                        ) { vm.installSkyStreamFromUrl(skyUrl) }
+                    }
+                ) { Text(tr("Install")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showSkyUrl = false }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
     if (showSite) {
         AlertDialog(
             onDismissRequest = { if (!busy) showSite = false },
@@ -2224,6 +2427,8 @@ private fun RepoBrowserView(
     onPickCs3File: () -> Unit,
     onAddHikiUrl: () -> Unit,
     onPickHikiFile: () -> Unit,
+    onAddSkyStreamUrl: () -> Unit,
+    onPickSkyStreamFile: () -> Unit,
     onRemoveRepo: (String) -> Unit,
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
@@ -2302,9 +2507,10 @@ private fun RepoBrowserView(
                                 style = MaterialTheme.typography.titleSmall
                             )
                             Text(
-                                "${outdatedUrls.size} installed " +
-                                    "extension${if (outdatedUrls.size == 1) "" else "s"} " +
-                                    "can be updated",
+                                I18n.t(
+                                        if (outdatedUrls.size == 1) "%s installed extension can be updated"
+                                        else "%s installed extensions can be updated"
+                                    ).replace("%s", outdatedUrls.size.toString()),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -2399,12 +2605,12 @@ private fun RepoBrowserView(
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            providers.size.toString() + " extension" + (if (providers.size == 1) "" else "s") + " installed",
+                            I18n.t(if (providers.size == 1) "%s extension installed" else "%s extensions installed").replace("%s", providers.size.toString()),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            repos.size.toString() + " repo" + (if (repos.size == 1) "" else "s") + " · " + enabledCount + " enabled",
+                            I18n.t(if (repos.size == 1) "%s repo" else "%s repos").replace("%s", repos.size.toString()) + " · " + I18n.t("%s enabled").replace("%s", enabledCount.toString()),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2448,6 +2654,13 @@ private fun RepoBrowserView(
                     )
                     SourceDivider()
                     SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("SkyStream repos"),
+                        subtitle = tr("repo.json · SkyStream extensions"),
+                        onClick = { onOpenFolder(SourceFolder.SKYSTREAM) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
                         icon = Icons.Filled.PlayArrow,
                         title = tr("Stremio addons"),
                         subtitle = tr("manifest.json · Stremio addons"),
@@ -2477,6 +2690,15 @@ private fun RepoBrowserView(
                         onClick = onAddHikiUrl,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickHikiFile
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Add,
+                        title = tr("Install .sky extension"),
+                        subtitle = tr("SkyStream plugin · from a URL or a local file"),
+                        onClick = onAddSkyStreamUrl,
+                        trailingIcon = Icons.Filled.FolderOpen,
+                        onTrailing = onPickSkyStreamFile
                     )
                     SourceDivider()
                     SourceActionRow(
@@ -2704,6 +2926,7 @@ private fun RepoPluginsView(
         val unit = when (repo.kind) {
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
+            RepoKind.SKYSTREAM -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         Row(
@@ -2821,10 +3044,11 @@ private fun RepoPluginsView(
                     TextButton(onClick = onRefresh) { Text(tr("Retry")) }
                 }
                 plugins.isEmpty() && isBundle -> item {
-                    Text(
-                        "This is a bundle repo — it holds no ${unit}s of its own. " +
-                            "Its repos were added to your repo list: open Phisher, CNC, CSX… " +
-                            "and install ${unit}s from there.",
+                        Text(
+                            I18n.t(
+                                "This is a bundle repo — it holds no %s of its own. Its repos were " +
+                                    "added to your repo list: open Phisher, CNC, CSX… and install %s from there."
+                            ).replace("%s", "${unit}s"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -2832,7 +3056,7 @@ private fun RepoPluginsView(
                 }
                 plugins.isEmpty() -> item {
                     Text(
-                        "No ${unit}s found in this repo.",
+                        I18n.t("No %s found in this repo.").replace("%s", "${unit}s"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -2952,7 +3176,7 @@ private fun openProviderSettingsSafely(
         return
     }
     if (!p.settingsReady) {
-        Toast.makeText(context, "Loading ${p.config.name}…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, I18n.t("Loading %s…").replace("%s", p.config.name), Toast.LENGTH_SHORT).show()
     }
     scope.launch {
         var ready = withContext(Dispatchers.IO) {
@@ -2964,14 +3188,27 @@ private fun openProviderSettingsSafely(
         // A plugin's settings screen is third-party code, and some of them bail
         // out on a transient condition (an activity that was briefly stopped
         // while the plugin was being loaded, a sheet that was left behind).
-        // Reload the plugin and try once more before reporting a failure.
+        // The commonest real cause is a STALE activity: the plugin's
+        // `openSettings` closure captured an activity that has since been
+        // destroyed and then throws "FragmentManager has been destroyed" the
+        // moment it shows its DialogFragment. Retrying the same instance just
+        // re-runs that closure, so the plugin is REBUILT here (dropping the
+        // cached instance) and then retried against a live activity.
         if (!opened) {
-            kotlinx.coroutines.delay(300)
+            kotlinx.coroutines.delay(250)
+            withContext(Dispatchers.IO) {
+                runCatching { p.rebuildSettings(context) }
+            }
+            kotlinx.coroutines.delay(250)
             ready = withContext(Dispatchers.IO) {
                 runCatching { p.prepareSettings() }.getOrDefault(false)
             }
             opened = ready && withContext(Dispatchers.Main) {
-                runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
+                runCatching {
+                    val live = HikariApp.mainActivity
+                        ?.takeIf { !it.isFinishing && !it.isDestroyed }
+                    p.openSettings(live)
+                }.getOrDefault(false)
             }
         }
         if (opened) return@launch
@@ -3170,7 +3407,7 @@ private fun NuvioSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${provider.config.name} " + tr("Settings")) },
+        title = { Text(I18n.t("%s settings").replace("%s", provider.config.name)) },
         text = {
             when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3397,6 +3634,7 @@ private fun RepoCard(
                             RepoKind.CS3 -> "CloudStream"
                             RepoKind.HIKARI -> "Hikari"
                             RepoKind.NUVIO -> "Nuvio"
+                            RepoKind.SKYSTREAM -> "SkyStream"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -3412,7 +3650,11 @@ private fun RepoCard(
                         state?.loading == true -> "Loading plugins…"
                         state?.error != null -> "Load failed — tap refresh to retry"
                         pluginCount > 0 -> {
-                            val unit = if (repo.kind == RepoKind.NUVIO) "provider" else "plugin"
+                            val unit = when (repo.kind) {
+                                RepoKind.NUVIO -> "provider"
+                                RepoKind.SKYSTREAM -> "extension"
+                                else -> "plugin"
+                            }
                             "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
                         }
                         else -> repo.description.ifBlank { "No plugins found" }
@@ -3581,6 +3823,17 @@ private fun pluginStatus(p: ContentProvider): String? {
         }
         return null
     }
+    if (p.config.type == ProviderType.SKYSTREAM) {
+        if (com.hikari.app.skystream.SkyStreamPluginManager.fileMissing(p.config)) {
+            return "Extension file missing — reinstall this extension"
+        }
+        val err = com.hikari.app.skystream.SkyStreamProvider.catalogErrors[p.config.id]
+        if (err != null && com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)) {
+            return "Site needs a Cloudflare verification — open this extension on Home " +
+                "and tap the WebView (globe) icon."
+        }
+        return err?.take(200)
+    }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
     if (err != null) {
@@ -3640,8 +3893,8 @@ private fun SitesFolder(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        if (sites.isEmpty()) "No sites added yet — tap to expand"
-                        else "${sites.size} site${if (sites.size == 1) "" else "s"}",
+                        if (sites.isEmpty()) I18n.t("No sites added yet — tap to expand")
+                        else I18n.t(if (sites.size == 1) "%s site" else "%s sites").replace("%s", sites.size.toString()),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3732,7 +3985,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, STREMIO }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, STREMIO }
 
 @Composable
 private fun SourceFolderView(
@@ -3759,18 +4012,21 @@ private fun SourceFolderView(
         SourceFolder.CLOUDSTREAM -> RepoKind.CS3
         SourceFolder.HIKARI -> RepoKind.HIKARI
         SourceFolder.NUVIO -> RepoKind.NUVIO
+        SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
         SourceFolder.STREMIO -> null
     }
     val (title, subtitle) = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream repos" to "repo.json · CloudStream extensions"
         SourceFolder.HIKARI -> "Hikari repos" to "repo.json · Hikari extensions"
         SourceFolder.NUVIO -> "Nuvio repos" to "manifest.json · Nuvio providers"
+        SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
     }
     val kindLabel = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream"
         SourceFolder.HIKARI -> "Hikari"
         SourceFolder.NUVIO -> "Nuvio"
+        SourceFolder.SKYSTREAM -> "SkyStream"
         SourceFolder.STREMIO -> "Stremio"
     }
     val folderRepos = if (kind != null) repos.filter { it.kind == kind } else emptyList()
@@ -3805,9 +4061,9 @@ private fun SourceFolderView(
             }
             Text(
                 if (folder == SourceFolder.STREMIO)
-                    "${stremioProviders.size} addon${if (stremioProviders.size == 1) "" else "s"}"
+                    I18n.t(if (stremioProviders.size == 1) "%s addon" else "%s addons").replace("%s", stremioProviders.size.toString())
                 else
-                    "${folderRepos.size} repo${if (folderRepos.size == 1) "" else "s"}",
+                    I18n.t(if (folderRepos.size == 1) "%s repo" else "%s repos").replace("%s", folderRepos.size.toString()),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -3847,8 +4103,8 @@ private fun SourceFolderView(
                 if (folderRepos.isEmpty()) {
                     item {
                         EmptyState(
-                            title = "No $title yet",
-                            subtitle = "Tap \"Add repo\" below to add your first $kindLabel repo.",
+                            title = I18n.t("No %s yet").replace("%s", title),
+                            subtitle = I18n.t("Tap \"Add repo\" below to add your first %s repo.").replace("%s", kindLabel),
                             actionLabel = null,
                             action = null
                         )
@@ -3908,6 +4164,7 @@ private fun SourcesOverviewView(
     onAddRepo: () -> Unit,
     onAddHikiRepo: () -> Unit,
     onAddNuvioRepo: () -> Unit,
+    onAddSkyStreamRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -3920,6 +4177,7 @@ private fun SourcesOverviewView(
     val cs3GroupTitle = tr("CloudStream")
     val hikiGroupTitle = tr("Hikari")
     val nuvioGroupTitle = tr("Nuvio")
+    val skyGroupTitle = tr("SkyStream")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3933,7 +4191,7 @@ private fun SourcesOverviewView(
             Column(Modifier.weight(1f)) {
                 Text(tr("All sources"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${providers.size} extensions · ${repos.size} repos",
+                    I18n.t("%s extensions").replace("%s", providers.size.toString()) + " · " + I18n.t("%s repos").replace("%s", repos.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3996,6 +4254,16 @@ private fun SourcesOverviewView(
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
                 onAdd = onAddNuvioRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = skyGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.SKYSTREAM },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddSkyStreamRepo,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onRemoveRepo = onRemoveRepo,
@@ -4122,7 +4390,7 @@ private fun LazyListScope.repoGroup(
     if (groupRepos.isEmpty()) {
         item {
             Text(
-                "No $title repos yet",
+                I18n.t("No %s repos yet").replace("%s", title),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -4185,7 +4453,7 @@ private fun AllReposView(
             Column(Modifier.weight(1f)) {
                 Text(tr("All installed repos"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${repos.size} repo${if (repos.size == 1) "" else "s"} added",
+                    I18n.t(if (repos.size == 1) "%s repo added" else "%s repos added").replace("%s", repos.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4281,7 +4549,7 @@ private fun InstalledExtensionsView(
             Column(Modifier.weight(1f)) {
                 Text(tr("Installed extensions"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${providers.size} extension${if (providers.size == 1) "" else "s"} installed",
+                    I18n.t(if (providers.size == 1) "%s extension installed" else "%s extensions installed").replace("%s", providers.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

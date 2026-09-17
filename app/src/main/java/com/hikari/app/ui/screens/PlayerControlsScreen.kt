@@ -152,8 +152,8 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                 Spacer(Modifier.height(10.dp))
                 Text(
                     tr("Pick where each button lives in the player. Buttons you never " + "use can be hidden completely — the layout below shows the ") +
-                        "result. The back button, the play/pause circle and the " +
-                        "title are always shown.",
+                        I18n.t("result. The back button, the play/pause circle and the ") +
+                        I18n.t("title are always shown."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

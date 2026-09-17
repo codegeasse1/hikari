@@ -104,6 +104,39 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
+        val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
+        val APP_ICON = stringPreferencesKey("appIcon")
+    }
+
+    // ---- The launcher icon the user picked (see AppIconManager) ----
+
+    /** Key of the launcher-icon variant in use — one of
+     *  [com.hikari.app.ui.AppIconVariants]. The choice lives in the manifest as
+     *  the enabled `activity-alias`, so this mirror is what lets the app put the
+     *  manifest back in sync after a backup restore drops the setting. */
+    fun appIconFlow(): Flow<String> =
+        store.data.map { it[K.APP_ICON] ?: com.hikari.app.ui.AppIconManager.DEFAULT_KEY }
+
+    suspend fun appIcon(): String = appIconFlow().first()
+
+    suspend fun setAppIcon(key: String) {
+        store.edit { it[K.APP_ICON] = key }
+    }
+
+    // ---- The floating bottom bar: which tab buttons the user keeps ----
+
+    /** Routes of the bottom-bar tabs the user has switched off (see
+     *  [com.hikari.app.ui.navigation.BottomTabs]). Hiding one only removes its
+     *  button — the screen itself stays reachable from inside the app. */
+    fun hiddenTabsFlow(): Flow<Set<String>> =
+        store.data.map { parseStringList(it[K.HIDDEN_TABS]).toSet() }
+
+    suspend fun hiddenTabs(): Set<String> = hiddenTabsFlow().first()
+
+    suspend fun setTabHidden(route: String, hidden: Boolean) {
+        val cur = hiddenTabs()
+        val next = if (hidden) cur + route else cur - route
+        store.edit { it[K.HIDDEN_TABS] = encodeStringList(next.toList()) }
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe

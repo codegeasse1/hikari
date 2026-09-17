@@ -1,12 +1,17 @@
 package com.hikari.app.ui.screens
 import com.hikari.app.i18n.tr
 
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.annotation.DrawableRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -86,10 +91,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
@@ -105,10 +115,13 @@ import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
+import com.hikari.app.ui.AppIconManager
+import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
+import com.hikari.app.ui.navigation.BottomTabs
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
@@ -119,6 +132,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -358,6 +372,8 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UiScaleCard(app) } }
+                    item { SettingsCard { TaskbarCard(app) } }
+                    item { SettingsCard { AppIconCard(app) } }
                     item {
                         SettingsCard { CollectionsCard(onOpen = { Routes.safeNavigate(nav, Routes.COLLECTIONS) }) }
                     }
@@ -404,7 +420,7 @@ fun SettingsScreen(nav: NavHostController) {
                                     supportingContent = {
                                         Text(
                                             tr("Two rolling app logs and the last crash " + "log. Share them directly instead of ") +
-                                                "sending screenshots."
+                                                I18n.t("sending screenshots.")
                                         )
                                     },
                                     trailingContent = {
@@ -445,7 +461,7 @@ fun SettingsScreen(nav: NavHostController) {
                                     },
                                     headlineContent = { Text(tr("Version")) },
                                     supportingContent = {
-                                        Text(BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")")
+                                        Text(BuildConfig.VERSION_NAME + I18n.t(" (build ") + BuildConfig.VERSION_CODE + ")")
                                     }
                                 )
                                 SettingsDivider()
@@ -794,8 +810,8 @@ private fun ContinueWatchingCard(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     tr("Show the Continue Watching shelf on Home. It collects " + "progress from every extension you've watched, so an ") +
-                        "episode started on one extension still shows up after " +
-                        "you switch to another.",
+                        I18n.t("episode started on one extension still shows up after ") +
+                        I18n.t("you switch to another."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -822,12 +838,13 @@ private fun RoadmapCard() {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("✓ Stremio addons\n" + "✓ Universal scrapers\n") +
-                "✓ HLS/DASH player with headers + subtitles\n" +
-                "✓ CloudStream .cs3 plugin loader\n" +
-                "✓ Torrent engine for infoHash streams\n" +
-                "✓ Watch history + Continue Watching (all extensions)\n" +
-                "✓ Downloads — offline copies, export to phone storage, concurrent limit\n" +
-                "• SkyStream extensions, scriptable scrapers (planned)",
+                I18n.t("✓ HLS/DASH player with headers + subtitles\n") +
+                I18n.t("✓ CloudStream .cs3 plugin loader\n") +
+                I18n.t("✓ Torrent engine for infoHash streams\n") +
+                I18n.t("✓ Watch history + Continue Watching (all extensions)\n") +
+                I18n.t("✓ Downloads — offline copies, export to phone storage, concurrent limit\n") +
+                I18n.t("✓ SkyStream .sky extensions (scriptable JS providers)\n") +
+                I18n.t("• Trakt integration (planned)"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1013,8 +1030,8 @@ private fun UiScaleCard(app: HikariApp) {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("Turning OFF applies your phone's Font size and Display size settings " + "to the app. Turning ON ignores those two phone settings and follows ") +
-                "the in-app UI scale size below instead, so the app looks the same on " +
-                "every device.",
+                I18n.t("the in-app UI scale size below instead, so the app looks the same on ") +
+                I18n.t("every device."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1076,6 +1093,197 @@ private fun UiScaleCard(app: HikariApp) {
     }
 }
 
+/**
+ * The floating bottom bar, one switch per tab (the list is [BottomTabs], i.e.
+ * the same list the bar itself draws).
+ *
+ * Hiding a tab only hides its *button* — the screen stays reachable from inside
+ * the app (Home's search icon, a Continue Watching row, a download button …),
+ * so nobody can lock themselves out of History or Downloads by tidying the bar.
+ * The one hard rule is that the bar never becomes empty: the last visible tab
+ * cannot be switched off. If that last tab is Settings, a gear appears in
+ * Home's top bar so this screen stays reachable.
+ */
+@Composable
+private fun TaskbarCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val hiddenFlow = remember { app.store.hiddenTabsFlow() }
+    val hidden by hiddenFlow.collectAsState(initial = emptySet())
+    val visible = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Taskbar buttons"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            tr("Choose which tabs the bottom bar shows. Turn one off and its " + "button disappears — the others share the space. ") +
+                I18n.t("The screen itself still opens from inside the app, and the last remaining tab always stays."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        BottomTabs.forEach { tab ->
+            val shown = tab.route !in hidden
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    tab.icon,
+                    contentDescription = null,
+                    tint = if (shown) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    tr(tab.label),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = shown,
+                    // A hidden tab can always be brought back; a shown one only
+                    // while at least one other tab is still on.
+                    enabled = !shown || visible.size > 1,
+                    onCheckedChange = { on -> scope.launch { app.store.setTabHidden(tab.route, !on) } }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Rasterises a launcher icon resource into a square bitmap. Needed because
+ * `painterResource` only understands `<vector>` and raster XML: the v2…v11
+ * launcher icons resolve to `mipmap-anydpi-v26/*.xml`, which is an
+ * `<adaptive-icon>` and sends Compose's vector loader into an
+ * IllegalArgumentException. Drawing the Drawable the way the launcher would is
+ * also the more faithful preview — it covers the adaptive layer, a plain
+ * vector (the pre-API-26 fallback for the official icon) and a plain bitmap
+ * identically. Null on any failure, so a missing icon can never crash Settings.
+ */
+private fun rasterizeIcon(context: Context, @DrawableRes resId: Int): ImageBitmap? =
+    runCatching {
+        val drawable = context.getDrawable(resId) ?: return@runCatching null
+        // The tile is drawn at 96dp (108/72 × the 64dp box), so one pixel per
+        // dp of that is exactly the resolution the screen can show.
+        val px = (96 * context.resources.displayMetrics.density).toInt().coerceIn(144, 640)
+        val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, px, px)
+        drawable.draw(canvas)
+        bitmap.asImageBitmap()
+    }.getOrNull()
+
+/**
+ * Launcher-icon picker. Each tile is drawn from the launcher mipmap itself,
+ * masked like a home-screen icon, so what the user taps is what they get.
+ *
+ * Switching writes the choice to the store and then flips the enabled
+ * activity-alias in [AppIconManager]; the app is not restarted, and some
+ * launchers only repaint their cached icon after a moment (or a restart), which
+ * the note at the bottom warns about.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AppIconCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val currentFlow = remember { app.store.appIconFlow() }
+    val current by currentFlow.collectAsState(initial = AppIconManager.DEFAULT_KEY)
+    val tile = 64.dp
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("App icon"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            tr("Pick the icon your launcher shows for Hikari."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(14.dp))
+        FlowRow(horizontalArrangement = Arrangement.Start) {
+            AppIconVariants.forEach { v ->
+                val selected = v.key == current
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .padding(end = 10.dp, bottom = 12.dp)
+                        .width(tile + 6.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(tile)
+                            .clip(CircleShape)
+                            .clickable {
+                                if (!selected) {
+                                    scope.launch {
+                                        runCatching { app.store.setAppIcon(v.key) }
+                                        withContext(Dispatchers.IO) {
+                                            AppIconManager.apply(context, v.key)
+                                        }
+                                    }
+                                    Toast.makeText(context, tr("Icon updated"), Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            .border(
+                                width = if (selected) 2.dp else 1.dp,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                                shape = CircleShape
+                            )
+                    ) {
+                        // An adaptive icon is a 108dp layer whose visible area is
+                        // its centre 72dp, so the tile is drawn at 108/72 × the
+                        // box — exactly what a home screen ends up showing.
+                        // Drawn from a rasterised drawable rather than through
+                        // painterResource: the v2…v11 icons resolve to an
+                        // `<adaptive-icon>` XML on API 26+, which painterResource
+                        // refuses to load.
+                        val icon = remember(v.key) { rasterizeIcon(context, v.drawable) }
+                        if (icon != null) {
+                            Image(
+                                bitmap = icon,
+                                contentDescription = v.label,
+                                contentScale = ContentScale.FillBounds,
+                                modifier = Modifier.size(tile * (108f / 72f))
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        tr(v.label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            tr("Some launchers take a moment to refresh the icon. If yours keeps the old one, restart it or remove and re-add the shortcut."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @Composable
 private fun SlowConnectionCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -1096,8 +1304,8 @@ private fun SlowConnectionCard(app: HikariApp) {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("Gives every source search much more time and retries extensions " + "that time out, so a weak connection doesn't end in ") +
-                "\"No playable sources found\". Only turn it on if you need it — " +
-                "fast connections stay quick with it off.",
+                I18n.t("\"No playable sources found\". Only turn it on if you need it — ") +
+                I18n.t("fast connections stay quick with it off."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1136,7 +1344,7 @@ private fun SlowConnectionCard(app: HikariApp) {
                 )
                 Text(
                     tr("When a video looks slow to start, the player offers to switch " + "Slow connection mode on. Turn this off if it keeps guessing ") +
-                        "wrong on a connection that is actually fine.",
+                        I18n.t("wrong on a connection that is actually fine."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1208,7 +1416,7 @@ private fun PlaybackStartCard(app: HikariApp) {
                 )
                 Text(
                     tr("Playback starts once the number chosen below has been found — or " + "when every installed extension has finished searching, ") +
-                        "whichever happens first.",
+                        I18n.t("whichever happens first."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1252,8 +1460,8 @@ private fun PlaybackStartCard(app: HikariApp) {
             )
             Text(
                 tr("Slide to 3 to start once three servers are ready. If the whole " + "search finds fewer than that (say only 2), playback starts with ") +
-                    "everything that was found the moment every extension has " +
-                    "finished — it never waits forever for a server that doesn't exist.",
+                    I18n.t("everything that was found the moment every extension has ") +
+                    I18n.t("finished — it never waits forever for a server that doesn't exist."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1396,7 +1604,7 @@ private fun UniversalExtractionCard(app: HikariApp) {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("When a provider's own extractors find no playable source, the " + "built-in yt-dlp engine takes over and tries to pull a direct ") +
-                "stream from the page. Adds ~60 MB to the APK.",
+                I18n.t("stream from the page. Adds ~60 MB to the APK."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1565,7 +1773,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("Stops sites from redirecting or popping you out to ad pages. " + "Only pages/popups that belong to the site itself are allowed. ") +
-                "Turn off if a site's player opens in another tab on a different domain.",
+                I18n.t("Turn off if a site's player opens in another tab on a different domain."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1959,8 +2167,8 @@ private fun WebViewUserAgentCard(app: HikariApp) {
         Spacer(Modifier.height(6.dp))
         Text(
             tr("Some sites (Cloudflare) block the WebView when it advertises a " + "desktop browser it doesn't match. The stock Android user agent ") +
-                "passes verification on most sites; a custom one is for sites " +
-                "that need a specific desktop/mobile UA.",
+                I18n.t("passes verification on most sites; a custom one is for sites ") +
+                I18n.t("that need a specific desktop/mobile UA."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2000,7 +2208,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                 ) { Text(tr("Save")) }
             }
             Text(
-                "Currently used: ${app.effectiveWebViewUa().take(70)}…",
+                I18n.t("Currently used: %s…").replace("%s", app.effectiveWebViewUa().take(70)),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2056,7 +2264,7 @@ private fun UserscriptsCard(app: HikariApp) {
                             maxLines = 1
                         )
                         Text(
-                            if (s.enabled) "Active in WebView" else "Paused",
+                            if (s.enabled) I18n.t("Active in WebView") else I18n.t("Paused"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2091,7 +2299,7 @@ private fun UserscriptsCard(app: HikariApp) {
     if (adding || editing != null) {
         AlertDialog(
             onDismissRequest = { adding = false; editing = null },
-            title = { Text(if (editing != null) "Edit userscript" else "Add userscript") },
+            title = { Text(if (editing != null) I18n.t("Edit userscript") else I18n.t("Add userscript")) },
             text = {
                 Column {
                     Text(
@@ -2228,7 +2436,7 @@ private fun AdBlockingCard(app: HikariApp) {
                             }
                         }
                     ) {
-                        Text(if (isAdded) "✓ ${preset.name}" else "+ ${preset.name}")
+                        Text((if (isAdded) "✓ " else "+ ") + preset.name)
                     }
                 }
             }
@@ -2597,7 +2805,7 @@ private fun VideoEnhanceCard(app: HikariApp) {
         Spacer(Modifier.height(8.dp))
         Text(
             tr("Natural applies nothing at all — enhancement only runs while a preset " + "is picked. HDR videos ignore the tint part of a preset, and effects ") +
-                "are applied with no quality loss to the source.",
+                I18n.t("are applied with no quality loss to the source."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

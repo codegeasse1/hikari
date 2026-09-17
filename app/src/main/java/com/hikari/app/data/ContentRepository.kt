@@ -94,6 +94,29 @@ class ContentRepository(private val manager: ProviderManager) {
             verdict.contains("has the title") -> "title found, no links"
             else -> "other"
         }
+
+        /**
+         * One short line summarising the last cross-extension pass, for the
+         * "no playable server found" note: how many extensions were asked, how
+         * many came back with servers, and the dominant reasons the rest were
+         * empty ("asked 253 · 2 with servers · 180 no such title · 40 could not
+         * load"). Null when no pass has run yet, so callers can just append it.
+         */
+        fun crossSummary(limit: Int = 3): String? {
+            if (crossVerdict.isEmpty() && crossFound.isEmpty()) return null
+            val counts = crossVerdict.values
+                .groupingBy { crossReasonBucket(it) }
+                .eachCount()
+                .entries
+                .sortedByDescending { it.value }
+                .take(limit)
+                .joinToString(" · ") { "${it.value} ${it.key}" }
+            return buildString {
+                append("asked ${crossAsked.size}")
+                if (crossFound.isNotEmpty()) append(" · ${crossFound.size} with servers")
+                if (counts.isNotEmpty()) append(" · ").append(counts)
+            }
+        }
     }
 
     /** Messages THIS app wrote into a provider's error map (see
@@ -728,6 +751,8 @@ class ContentRepository(private val manager: ProviderManager) {
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
             com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
             com.hikari.app.nuvio.NuvioRuntime.resetRunTracking()
+            com.hikari.app.skystream.SkyStreamProvider.lastOutcome.clear()
+            com.hikari.app.skystream.SkyStreamRuntime.resetFetchLog()
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
@@ -1075,6 +1100,7 @@ class ContentRepository(private val manager: ProviderManager) {
             t == ProviderType.HIKARI -> 1
             t == ProviderType.CS3 -> 2
             t == ProviderType.UNIVERSAL -> 3
+            t == ProviderType.SKYSTREAM -> 3
             else -> 4
         }
         val families = manager.providers.value
@@ -1083,7 +1109,14 @@ class ContentRepository(private val manager: ProviderManager) {
                 when (p.config.type) {
                     ProviderType.CS3,
                     ProviderType.HIKARI,
-                    ProviderType.UNIVERSAL -> true
+                    ProviderType.UNIVERSAL,
+                    // SkyStream plugins carry their OWN search + details, so a
+                    // title opened anywhere else can still be found by name and
+                    // its streams extracted through the same
+                    // search → load → loadStreams path. They are asked like any
+                    // other site-scraper family; the plugin's own opaque token
+                    // stays inside the provider (see SkyStreamProvider).
+                    ProviderType.SKYSTREAM -> true
                     ProviderType.STREMIO -> !originIsStremio
                     ProviderType.NUVIO -> false
                     else -> false
@@ -1364,6 +1397,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.HIKARI -> HikariProviderAdapter.streamErrors[p.config.id]
         ProviderType.UNIVERSAL -> UniversalScraper.streamErrors[p.config.id]
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
+        ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
     }
 
     /** Minimal head start for the repos of the origin's own family — extended
@@ -1560,6 +1594,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.HIKARI -> HikariProviderAdapter.streamErrors
             ProviderType.UNIVERSAL -> UniversalScraper.streamErrors
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
+            ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
         }
         if (message == null) map.remove(id) else map[id] = message
         // Mirrored into the on-device log: a "why were this repo's servers

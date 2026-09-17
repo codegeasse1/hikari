@@ -417,9 +417,7 @@ object Cs3PluginManager {
             lastError = "this plugin exposes no settings screen"
             return false
         }
-        val host = activity
-            ?: HikariApp.mainActivity
-            ?: runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
+        val host = liveHost(activity)
         if (host == null) {
             lastError = "no activity is available to show its settings screen"
             return false
@@ -435,6 +433,23 @@ object Cs3PluginManager {
             lastError = errorDetails.toString().trim().ifBlank { e.message ?: "settings failed" }
             false
         }
+    }
+
+    /**
+     * The activity a plugin's settings screen should attach its dialogs and
+     * fragments to. A destruction check matters here: a plugin that shows a
+     * `DialogFragment` throws `IllegalStateException: FragmentManager has been
+     * destroyed` when it is handed an activity that has already gone (the gear
+     * is often tapped after a rotation/theme change), so a stale
+     * [HikariApp.mainActivity] must never win over a live one.
+     */
+    private fun liveHost(preferred: android.app.Activity?): android.app.Activity? {
+        fun ok(a: android.app.Activity?): Boolean = a != null && !a.isFinishing && !a.isDestroyed
+        if (ok(preferred)) return preferred
+        if (ok(HikariApp.mainActivity)) return HikariApp.mainActivity
+        val common = runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
+        if (ok(common)) return common
+        return null
     }
 
     private const val ACTIVITY_WAIT_MS = 12_000L

@@ -357,7 +357,7 @@ internal fun shareFiles(context: Context, files: List<File>, subject: String) {
         }
     }
     if (uris.isEmpty()) {
-        Toast.makeText(context, "Nothing to share", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, I18n.t("Nothing to share"), Toast.LENGTH_SHORT).show()
         return
     }
     val intent = Intent(
@@ -379,7 +379,7 @@ internal fun shareFiles(context: Context, files: List<File>, subject: String) {
     runCatching {
         context.startActivity(Intent.createChooser(intent, "Share logs"))
     }.onFailure {
-        Toast.makeText(context, "No app available to share", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, I18n.t("No app available to share"), Toast.LENGTH_SHORT).show()
     }
 }
 

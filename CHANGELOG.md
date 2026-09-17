@@ -1,3 +1,73 @@
+## 0.5.0
+
+**Hikari speaks SkyStream. `.sky` scriptable extensions run next to every other
+source — install, browse, search, play, download — and the "no playable source"
+regression is gone.**
+
+- **SkyStream `.sky` extensions.** A new provider family beside Stremio addons,
+  universal scrapers, Nuvio and CloudStream. A `.sky` file is a JavaScript
+  streaming extension written against a small helper library (`http_get` /
+  `http_post` / `http_parallel`, `parseHtml`, `getAndUnpack`, AES helpers,
+  `solveCaptcha`, `loadExtractor`, …). Hikari runs it in an embedded QuickJS
+  engine with a cheerio-backed DOM facade, so an unmodified plugin believes it
+  is running under Node — `getHome`, `search`, `load`, `loadStreams` and the
+  `getSettings`-driven preference store all work through a bridged `fetch`.
+- **Install them wherever you install anything else.** A SkyStream repo
+  (`repo.json` with a `pluginLists` chain, an inline `plugins` array, or nested
+  repos), a single `.sky` from a URL, or a `.sky` file from your phone —
+  Extensions → *Install .sky extension*. Each installed plugin shows its own
+  icon (from its manifest, falling back to the repo's favicon), and can be
+  toggled, uninstalled and updated like any other extension.
+- **Wired everywhere.** SkyStream providers feed Home catalogs, Home's
+  collection shelves, Search, the detail page, episodes, the server sheet,
+  cross-extension lookup (Hikari / Nuvio / CloudStream ↔ SkyStream) and
+  Downloads. When an extension answers, its result is in.
+- **`loadExtractor` is real.** When a plugin hands back an embed URL instead of
+  a direct link, Hikari now resolves it through its own extractor stack
+  (CloudStream-style resolvers and the WebView resolver) rather than failing —
+  which is what most SkyStream plugins depend on for the final video URL.
+- **Instant play covers SkyStream too.** The first server a plugin's
+  `loadStreams` answers with starts playing at once; the rest of the pool keeps
+  resolving in the background.
+- **Pick the icon your launcher shows.** Settings → Appearance → *App icon* has
+  eleven tiles — the official Hikari icon plus ten alternatives — each drawn
+  from the launcher icon itself, masked like a home-screen icon so the tile is
+  what you get. Switching flips the enabled `activity-alias` with the app
+  running: no restart, no reinstall, and your choice survives updates and
+  restores (the icon is re-asserted at startup if it ever drifts).
+- **Hide the bottom-bar buttons you never use.** Settings → Appearance →
+  *Taskbar buttons* switches off Home, Discover, Search, Library, Downloads,
+  Settings — individually. Nothing becomes unreachable: the top bar keeps a gear
+  (Settings), a magnifier (Search) and the verify globe whenever their button is
+  off.
+
+**Fixes on top of 0.4.1:**
+
+- **A nuvio repo your phone's DNS refuses now loads.** Some devices/ISPs answer
+  specific hosts with *"No address associated with hostname"* — the host itself
+  is fine and answers 200 from any public resolver (the Eclipsia nuvio repo is
+  the one that hit this) — so Hikari now falls back to DNS-over-HTTPS: when the
+  platform resolver throws, the host is re-resolved over HTTPS against a
+  hard-coded resolver IP, which needs no working DNS of its own. Applies to
+  repo manifests, extension installs and both plugin runtimes.
+
+- **"No playable source found" is fixed.** A Cloudflare / withholding-looking
+  page is no longer read as proof that an extension had nothing to play — only
+  an extension that genuinely came back empty counts as empty. A title that
+  plays in one extension plays again.
+- **Play is instant again.** The origin-play grace window was cut from 8 seconds
+  to 1.2, so the first direct stream starts immediately instead of waiting for
+  the whole provider pool to finish before it is allowed on screen.
+- **The settings gear opens.** Opening a plugin's own settings screen retries
+  when the host is stale, and names the exception when it still cannot — instead
+  of dropping you back on the Extensions list with a bare error.
+- **A collection's shelves match what you built.** A collection with a *single*
+  folder now shows one shelf per catalog inside it — your Netflix, Hulu and
+  Disney+ lists side by side — because a one-folder collection is a grouping of
+  catalogs, not a merged jumble. Two or more folders keep the folder-per-shelf
+  layout, named after each folder. (0.4.0 merged a single folder's catalogs into
+  one row and hid what you had picked.)
+
 ## 0.4.1
 
 **An extension you installed stays installed, a repo can only be added once, and

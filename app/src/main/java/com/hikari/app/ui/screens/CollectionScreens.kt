@@ -1259,7 +1259,7 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(
                     // Preset/catalog names are translated; a user-typed
-                    // collection name isn't in the i18n files, so tr() hands it
+                    // collection name isnI18n.t('t in the i18n files, so tr() hands it
                     // back unchanged.
                     tr(title),
                     style = MaterialTheme.typography.titleLarge,
@@ -1285,7 +1285,7 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
 /**
  * One TMDB preset as a full, paged grid — the "Show All" of a preset row.
  *
- * Paging is TMDB's own (20 items a page), and the grid is deliberately the same
+ * Paging is TMDB')s own (20 items a page), and the grid is deliberately the same
  * component the extension catalogs use, so a preset and an extension catalog
  * look and behave identically.
  */
@@ -1456,5 +1456,110 @@ private fun TmdbGridCard(item: MediaItem, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
         )
+    }
+}
+
+
+/**
+ * The whole collection as ONE grid — the destination of every "Show all" while
+ * a collection is being browsed.
+ *
+ * The rows arrive per catalog ([CollectionsRepository.allRows]) and each one is
+ * painted as a full-width shelf heading followed by its own posters, so a
+ * single scroll shows everything the collection holds while still saying which
+ * folder and which catalog a title came from.
+ */
+@Composable
+fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
+    val app = LocalContext.current.applicationContext as HikariApp
+    var collection by remember(collectionId) { mutableStateOf<Collection?>(null) }
+    var rows by remember(collectionId) { mutableStateOf<List<CatalogRow>?>(null) }
+
+    LaunchedEffect(collectionId) {
+        val c = withContext(Dispatchers.IO) { app.store.collection(collectionId) }
+        collection = c
+        if (c == null) {
+            rows = emptyList()
+            return@LaunchedEffect
+        }
+        runCatching {
+            CollectionsRepository(app.providers).allRows(c).collect { r ->
+                rows = withContext(Dispatchers.IO) {
+                    r.map { row -> row.copy(items = row.items.map { it.tokenized() }) }
+                }
+            }
+        }
+    }
+
+    val loaded = rows
+    Column(Modifier.fillMaxSize()) {
+        val titleCount = loaded?.sumOf { it.items.size } ?: 0
+        val catalogCount = loaded?.size ?: 0
+        PageHeader(
+            title = collection?.name ?: tr("Loading…"),
+            subtitle = if (loaded == null) "" else
+                "$titleCount " + (if (titleCount == 1) "title" else "titles") + " · " +
+                    "$catalogCount " + (if (catalogCount == 1) "catalog" else "catalogs"),
+            onBack = { nav.popBackStack() },
+        )
+        if (loaded == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@Column
+        }
+        if (loaded.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                EmptyState(
+                    title = tr("Nothing here right now"),
+                    subtitle = tr(
+                        "This collection's catalogs returned no content. Check the " +
+                            "extension's site, or pick another catalog for its folder."
+                    ),
+                )
+            }
+            return@Column
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 84.dp),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            loaded.forEach { row ->
+                item(key = "shelf|" + row.key, span = { GridItemSpan(maxLineSpan) }) {
+                    Column(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp)) {
+                        Text(
+                            row.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (row.providerName.isNotBlank()) {
+                            Text(
+                                row.providerName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+                items(row.items, key = { item -> row.key + "|" + item.uniqueId }) { item ->
+                    TmdbGridCard(item) {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.detail(
+                                item.providerId, item.type, item.id,
+                                item.title, item.posterUrl, item.rawType
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 }

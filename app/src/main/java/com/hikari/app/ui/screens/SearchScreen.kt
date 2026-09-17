@@ -313,8 +313,8 @@ fun SearchScreen(
                     }
                 }
                 Text(
-                    if (selected.isEmpty()) "Searching every source"
-                    else "${selected.size} source${if (selected.size == 1) "" else "s"} selected",
+                    if (selected.isEmpty()) I18n.t("Searching every source")
+                    else I18n.t(if (selected.size == 1) "%s source selected" else "%s sources selected").replace("%s", selected.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
@@ -334,7 +334,7 @@ fun SearchScreen(
         } else if (!searching && results.isEmpty()) {
             EmptyState(
                 title = tr("No results"),
-                subtitle = "Nothing matched \"$query\". Try a different title, or deselect providers in the row above.",
+                subtitle = I18n.t("Nothing matched \"$query\". Try a different title, or deselect providers in the row above."),
                 actionLabel = null,
                 action = null
             )

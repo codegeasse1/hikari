@@ -192,26 +192,29 @@ object CloudflareVerifier {
         if (host != null) blockedHosts.remove(host)
     }
 
+    /** The window a Cloudflare challenge is remembered for — see [needsVerification]. */
+    const val VERIFY_WINDOW_MS = 10 * 60_000L
+
     /**
      * True when playing [url] would need the "verify you are human" step first:
      * its host answered a Cloudflare challenge we could not clear, and no
-     * `cf_clearance` cookie for it is in the jar. The source search withholds
-     * such servers (see the detail screen) — listing one only gave the user a
-     * server that failed with "Cloudflare challenge active" the moment it was
-     * picked, while the ones that actually play sat further down the list.
+     * `cf_clearance` cookie for it is in the jar.
      *
-     * Once the user HAS done the verification (the extension WebView's globe
-     * button), the clearance cookie exists and the host's servers are listed
-     * normally again — which is exactly the rule asked for: hide what still
-     * needs verification, show what does not.
+     * The host has to match EXACTLY. A blocked parent (or child) domain used to
+     * withhold every source whose host merely sat under it — one challenged
+     * `example.com` API hid `cdn3.example.com` media that needed no clearance
+     * at all, and with a few dozen extensions reporting challenges at once that
+     * could withhold a whole lookup's worth of perfectly playable servers.
+     *
+     * The source search uses this to SORT what still needs verification to the
+     * end of the list, never to empty it: a challenged host must not be able to
+     * make a lookup that found servers report "no playable server found".
      */
-    fun needsVerification(url: String, maxAgeMs: Long = 30 * 60_000L): Boolean {
+    fun needsVerification(url: String, maxAgeMs: Long = VERIFY_WINDOW_MS): Boolean {
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
         if (host.isBlank()) return false
         val now = System.currentTimeMillis()
-        val challenged = blockedHosts.entries.any { (h, at) ->
-            (host == h || host.endsWith(".$h") || h.endsWith(".$host")) && now - at <= maxAgeMs
-        }
+        val challenged = blockedHosts.entries.any { (h, at) -> host == h && now - at <= maxAgeMs }
         if (!challenged) return false
         return clearanceFor(url) == null
     }

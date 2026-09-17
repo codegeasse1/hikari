@@ -60,7 +60,7 @@ fun UpdateDialog(
     AlertDialog(
         onDismissRequest = { if (downloading == null && !checking) onDismiss() },
         title = {
-            Text(if (s?.available == true) "Update available" else "Hikari updates")
+            Text(if (s?.available == true) I18n.t("Update available") else I18n.t("Hikari updates"))
         },
         text = {
             Column {
@@ -98,12 +98,12 @@ fun UpdateDialog(
                     s.available -> Column {
                         Text(
                             tr("A new version is available " + "(v${s.latestVersion} — you're on v${s.currentVersion}).\n\n") +
-                                "Download and install it right here, or grab the APK from GitHub."
+                                I18n.t("Download and install it right here, or grab the APK from GitHub.")
                         )
                     }
 
                     else -> Text(
-                        "You're on the latest version (v${s.currentVersion})."
+                        I18n.t("You're on the latest version (v%s).").replace("%s", s.currentVersion)
                     )
                 }
             }
@@ -160,7 +160,7 @@ fun UpdateDialog(
                         )
                     }
                     onDismiss()
-                }) { Text(if (s?.available == true) "Open GitHub" else "Close") }
+                }) { Text(if (s?.available == true) I18n.t("Open GitHub") else I18n.t("Close")) }
             }
         }
     )

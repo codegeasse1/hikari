@@ -1262,7 +1262,7 @@ class PlayerActivity : ComponentActivity() {
         // "wait for the first server", not "nothing to play".
         val awaitLive = sources.isEmpty() && liveId != null
         if (sources.isEmpty() && !awaitLive) {
-            showError("No playable sources received.", false)
+            showError(I18n.t("No playable sources received."), false)
             return
         }
 
@@ -1324,7 +1324,7 @@ class PlayerActivity : ComponentActivity() {
                         // Give up on the search: close a still-empty chooser
                         // first so the error isn't buried behind it.
                         runCatching { serverChooserDialog?.dismiss() }
-                        showError("No playable sources received.", false)
+                        showError(I18n.t("No playable sources received."), false)
                     }
                 } else null
                 // Nothing will call [tryStart] again once the servers stop
@@ -1382,7 +1382,7 @@ class PlayerActivity : ComponentActivity() {
                             // player does). Close it before showing the error,
                             // so the message isn't buried behind an empty sheet.
                             runCatching { serverChooserDialog?.dismiss() }
-                            showError("No playable sources received.", false)
+                            showError(I18n.t("No playable sources received."), false)
                         } else {
                             tryStart()
                         }
@@ -1426,7 +1426,7 @@ class PlayerActivity : ComponentActivity() {
                     ) {
                         liveSearchDone = true
                         runCatching { serverChooserDialog?.dismiss() }
-                        showError("No playable sources received.", false)
+                        showError(I18n.t("No playable sources received."), false)
                     }
                 }
             }
@@ -1654,7 +1654,7 @@ class PlayerActivity : ComponentActivity() {
         requestedOrientation = next
         Toast.makeText(
             this,
-            if (next == SCREEN_ORIENTATION_PORTRAIT) "Portrait" else "Landscape",
+            if (next == SCREEN_ORIENTATION_PORTRAIT) I18n.t("Portrait") else I18n.t("Landscape"),
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -2292,7 +2292,7 @@ class PlayerActivity : ComponentActivity() {
                 "Player",
                 "arming video effects pipeline for ${preset.key} (reopening current source)"
             )
-            Toast.makeText(this, "Applying ${preset.label}…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("Applying %s…").replace("%s", preset.label), Toast.LENGTH_SHORT).show()
             playSource(currentIndex)
             lifecycleScope.launch {
                 runCatching {
@@ -2305,11 +2305,11 @@ class PlayerActivity : ComponentActivity() {
         if (enhanceUnsupported && preset != EnhancePreset.NATURAL) {
             Toast.makeText(
                 this,
-                "This device can't apply video effects — the preset was skipped.",
+                I18n.t("This device can't apply video effects — the preset was skipped."),
                 Toast.LENGTH_SHORT
             ).show()
         } else if (needsPipeline) {
-            Toast.makeText(this, "${preset.label} applied", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("%s applied").replace("%s", preset.label), Toast.LENGTH_SHORT).show()
         }
         lifecycleScope.launch {
             runCatching {
@@ -2323,7 +2323,7 @@ class PlayerActivity : ComponentActivity() {
         val presets = EnhancePreset.entries
         val current = EnhancePreset.fromKey(enhancePresetKey)
         showGlassMenu(
-            "Video enhance",
+            I18n.t("Video enhance"),
             presets.map { p ->
                 GlassOption(
                     label = p.label,
@@ -3113,7 +3113,7 @@ class PlayerActivity : ComponentActivity() {
     private fun showEpisodesDialog() {
         val item = favouriteItem ?: return
         val repo = contentRepo
-        Toast.makeText(this, "Loading episodes…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, I18n.t("Loading episodes…"), Toast.LENGTH_SHORT).show()
         lifecycleScope.launch {
             val eps = runCatching { repo.episodesFor(item) }.getOrNull().orEmpty()
             if (eps.isEmpty()) {
@@ -3137,9 +3137,9 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
             showGlassMenu(
-                "Episodes",
+                I18n.t("Episodes"),
                 options,
-                hint = "Switching keeps you inside the player.",
+                hint = I18n.t("Switching keeps you inside the player."),
                 iconRes = R.drawable.ic_episodes,
             ) { which ->
                 eps.getOrNull(which)?.let { switchToEpisode(it) }
@@ -3166,7 +3166,7 @@ class PlayerActivity : ComponentActivity() {
             if (cancelled) return@launch
             if (streams.isEmpty()) {
                 Toast.makeText(
-                    this@PlayerActivity, "No servers found for this episode", Toast.LENGTH_SHORT
+                    this@PlayerActivity, I18n.t("No servers found for this episode"), Toast.LENGTH_SHORT
                 ).show()
                 return@launch
             }
@@ -3818,8 +3818,8 @@ class PlayerActivity : ComponentActivity() {
         val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
         val options = mutableListOf(
             GlassOption(
-                "Auto (adaptive)",
-                "Automatically adjusts to your connection",
+                I18n.t("Auto (adaptive)"),
+                I18n.t("Automatically adjusts to your connection"),
                 selected = !overrideSelected,
             )
         )
@@ -3835,9 +3835,9 @@ class PlayerActivity : ComponentActivity() {
             )
         }
         showGlassMenu(
-            "Video quality",
+            I18n.t("Video quality"),
             options,
-            hint = "Higher quality uses more data",
+            hint = I18n.t("Higher quality uses more data"),
             iconRes = R.drawable.ic_quality,
         ) { which ->
             if (which == 0) {
@@ -3930,9 +3930,9 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         val options = mutableListOf(
-            GlassOption("Off", "Hide captions completely", selected = textDisabled && !overrideSelected),
+            GlassOption(I18n.t("Off"), I18n.t("Hide captions completely"), selected = textDisabled && !overrideSelected),
             GlassOption(
-                "Auto", "Follow the stream's default captions",
+                I18n.t("Auto"), I18n.t("Follow the stream's default captions"),
                 selected = !textDisabled && !overrideSelected,
             ),
         )
@@ -4169,7 +4169,7 @@ class PlayerActivity : ComponentActivity() {
             "Subtitles",
             root,
             1000f,
-            hint = "Applies while captions are on.",
+            hint = I18n.t("Applies while captions are on."),
             iconRes = R.drawable.ic_subtitles,
             rowHosts = listOf(trackList, controls),
         )
@@ -4249,8 +4249,8 @@ class PlayerActivity : ComponentActivity() {
         val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
         val options = mutableListOf(
             GlassOption(
-                "Default (adaptive)",
-                "Use the track this stream marks as default",
+                I18n.t("Default (adaptive)"),
+                I18n.t("Use the track this stream marks as default"),
                 selected = !overrideSelected,
             )
         )
@@ -4273,9 +4273,9 @@ class PlayerActivity : ComponentActivity() {
             options.add(
                 GlassOption(
                     label = tag,
-                    sub = if (index == currentIndex) "Playing now \u2014 " + sources[index].name
+                    sub = if (index == currentIndex) I18n.t("Playing now \u2014 %s").replace("%s", sources[index].name)
                     else sources[index].name,
-                    badge = "Server",
+                    badge = I18n.t("Server"),
                     selected = index == currentIndex,
                 )
             )
@@ -4285,10 +4285,10 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         showGlassMenu(
-            "Audio",
+            I18n.t("Audio"),
             options,
-            hint = if (variantMap.isEmpty()) "Some releases ship more than one audio track."
-            else "Pick a language \u2014 some servers carry the audio.",
+            hint = if (variantMap.isEmpty()) I18n.t("Some releases ship more than one audio track.")
+            else I18n.t("Pick a language \u2014 some servers carry the audio."),
             iconRes = R.drawable.ic_audio,
         ) { which ->
             variantMap[which]?.let { switchAudioVariant(it); return@showGlassMenu }
@@ -4393,7 +4393,7 @@ class PlayerActivity : ComponentActivity() {
         noSubsRetry = false
         val name = sources[index].name
         playSource(index)
-        Toast.makeText(this, "Switching audio \u2014 $name", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, I18n.t("Switching audio \u2014 %s").replace("%s", name), Toast.LENGTH_SHORT).show()
     }
 
     /** Resets the per-server header walk, so the next attempt starts from the
@@ -4408,7 +4408,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun playSource(index: Int) {
         if (index < 0 || index >= sources.size) {
-            showError("No more servers to try.", false)
+            showError(I18n.t("No more servers to try."), false)
             return
         }
         if (index != currentIndex) headerVariant = 0
@@ -4502,7 +4502,7 @@ class PlayerActivity : ComponentActivity() {
                 notifySourcesChanged()
                 Toast.makeText(
                     this@PlayerActivity,
-                    "Torrent ready — streaming from peers",
+                    I18n.t("Torrent ready — streaming from peers"),
                     Toast.LENGTH_SHORT
                 ).show()
                 playDirect(index)
@@ -4515,7 +4515,7 @@ class PlayerActivity : ComponentActivity() {
                     Toast.makeText(this@PlayerActivity, I18n.t("Torrent failed — trying next"), Toast.LENGTH_SHORT).show()
                     playSource(currentIndex + 1)
                 } else {
-                    showError("Torrent playback failed:\n$msg", false)
+                    showError(I18n.t("Torrent playback failed:\n%s").replace("%s", msg), false)
                 }
             }
         }
@@ -4746,7 +4746,7 @@ class PlayerActivity : ComponentActivity() {
                 noSubsRetry = false
                 playSource(index + 1)
             } else {
-                showError("Playback failed to start:\n${rootMessage(t)}", false)
+                showError(I18n.t("Playback failed to start:\n%s").replace("%s", rootMessage(t)), false)
             }
         }
     }
@@ -4827,7 +4827,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun playDirectInner(index: Int) {
         if (index < 0 || index >= sources.size) {
-            showError("No more servers to try.", false)
+            showError(I18n.t("No more servers to try."), false)
             return
         }
         dismissSlowDialog()
@@ -5038,11 +5038,11 @@ class PlayerActivity : ComponentActivity() {
                     playSource(currentIndex + 1)
                 } else if (!firstFrameRetried) {
                     firstFrameRetried = true
-                    Toast.makeText(this@PlayerActivity, "Video stuck — restarting", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@PlayerActivity, I18n.t("Video stuck — restarting"), Toast.LENGTH_SHORT).show()
                     noSubsRetry = false
                     playSource(currentIndex)
                 } else {
-                    showError("Playback started but no video frame was rendered.", false)
+                    showError(I18n.t("Playback started but no video frame was rendered."), false)
                 }
             }
             firstFrameTask = task
@@ -5105,8 +5105,8 @@ class PlayerActivity : ComponentActivity() {
     private fun promptSlowServer(torrent: Boolean) {
         if (currentIndex + 1 >= sources.size) {
             showError(
-                if (torrent) "Torrent did not start streaming (no peers?)"
-                else "Server is not responding (still buffering after 20s).",
+                if (torrent) I18n.t("Torrent did not start streaming (no peers?)")
+                else I18n.t("Server is not responding (still buffering after 20s)."),
                 false
             )
             return
@@ -5114,24 +5114,24 @@ class PlayerActivity : ComponentActivity() {
         if (slowDialog != null) return
         var countdown: TextView? = null
         val dialog = showGlassMenu(
-            "Server too slow",
+            I18n.t("Server too slow"),
             listOf(
                 GlassOption(
-                    "Switch now",
-                    "Jump to the next server",
+                    I18n.t("Switch now"),
+                    I18n.t("Jump to the next server"),
                     iconRes = R.drawable.ic_server,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
                 GlassOption(
-                    "Wait 30s",
-                    "Give this server more time",
+                    I18n.t("Wait 30s"),
+                    I18n.t("Give this server more time"),
                     iconRes = R.drawable.ic_speed,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
             ),
-            hint = "Switching to the next server in 3s…",
+            hint = I18n.t("Switching to the next server in 3s…"),
             iconRes = R.drawable.ic_server,
             cancelable = false,
             onHint = { countdown = it },
@@ -5139,7 +5139,7 @@ class PlayerActivity : ComponentActivity() {
             dismissSlowDialog()
             noSubsRetry = false
             if (which == 0) {
-                Toast.makeText(this@PlayerActivity, "Switching server", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PlayerActivity, I18n.t("Switching server"), Toast.LENGTH_SHORT).show()
                 playSource(currentIndex + 1)
             } else {
                 // Stay on this server; the same prompt reappears after 30s if
@@ -5158,7 +5158,7 @@ class PlayerActivity : ComponentActivity() {
                     noSubsRetry = false
                     Toast.makeText(
                         this@PlayerActivity,
-                        "Server too slow — switching to next",
+                        I18n.t("Server too slow — switching to next"),
                         Toast.LENGTH_SHORT
                     ).show()
                     playSource(currentIndex + 1)
@@ -5220,7 +5220,7 @@ class PlayerActivity : ComponentActivity() {
                 ),
                 GlassOption(
                     I18n.t("Choose another server"),
-                    I18n.t("All servers found so far") + " ($count)",
+                    I18n.t("All servers found so far (%s)").replace("%s", count.toString()),
                     iconRes = R.drawable.ic_server,
                     chevron = true,
                     marker = RowMarker.ICON,
@@ -5934,7 +5934,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 Toast.makeText(
                     this@PlayerActivity,
-                    "This device can't apply video effects — turning them off.",
+                    I18n.t("This device can't apply video effects — turning them off."),
                     Toast.LENGTH_LONG
                 ).show()
                 noSubsRetry = false
@@ -6017,7 +6017,7 @@ class PlayerActivity : ComponentActivity() {
                 val keepPosition = player?.currentPosition?.takeIf { it > 2_000L } ?: 0L
                 Toast.makeText(
                     this@PlayerActivity,
-                    "Reconnecting — $wantName",
+                    I18n.t("Reconnecting — %s").replace("%s", wantName),
                     Toast.LENGTH_SHORT
                 ).show()
                 liveSessionId?.let { StreamsLive.requestRefresh(it) }
@@ -6311,33 +6311,32 @@ class PlayerActivity : ComponentActivity() {
         if (isFinishing || isDestroyed || renderedFirstFrame) return
         if (slowNetDialog?.isShowing == true) return
         val dialog = showGlassMenu(
-            "Your connection looks slow",
+            I18n.t("Your connection looks slow"),
             listOf(
                 GlassOption(
-                    "Turn on",
-                    "Keep waiting for slow sources",
+                    I18n.t("Turn on"),
+                    I18n.t("Keep waiting for slow sources"),
                     iconRes = R.drawable.ic_speed,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
                 GlassOption(
-                    "Not now",
-                    "Ask me again later",
+                    I18n.t("Not now"),
+                    I18n.t("Ask me again later"),
                     iconRes = R.drawable.ic_skip,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
                 GlassOption(
-                    "Don't ask again",
-                    "Only the Settings switch turns it back on",
+                    I18n.t("Don't ask again"),
+                    I18n.t("Only the Settings switch turns it back on"),
                     iconRes = R.drawable.ic_close,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
             ),
-            message = "Sources and video are taking a long time to answer. Slow " +
-                "connection mode lets Hikari keep waiting for them instead of giving up.",
-            hint = "You can change this any time in Settings.",
+            message = I18n.t("Sources and video are taking a long time to answer. Slow connection mode lets Hikari keep waiting for them instead of giving up."),
+            hint = I18n.t("You can change this any time in Settings."),
             iconRes = R.drawable.ic_settings,
             onDialog = { it.setOnCancelListener { dismissSlowNetTip(remember = true) } },
         ) { which ->
@@ -6444,7 +6443,7 @@ class PlayerActivity : ComponentActivity() {
             // Nothing new arrived — report the failure we were already holding.
             showError(
                 originalError
-                    ?: "Servers expired and no fresh sources were found.\nTry again in a moment.",
+                    ?: I18n.t("Servers expired and no fresh sources were found.\nTry again in a moment."),
                 false
             )
         }
@@ -6489,20 +6488,20 @@ class PlayerActivity : ComponentActivity() {
         // dismiss it causes doesn't close the player out from under the flow.
         var picked = false
         showGlassMenu(
-            "Download",
+            I18n.t("Download"),
             listOf(
                 GlassOption(
-                    "In Hikari", "Kept offline inside the app",
+                    I18n.t("In Hikari"), I18n.t("Kept offline inside the app"),
                     iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
                 ),
                 GlassOption(
-                    "Phone storage", "Saved to your device's Downloads folder",
+                    I18n.t("Phone storage"), I18n.t("Saved to your device's Downloads folder"),
                     iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
                 ),
             ),
             message = (if (label.isBlank()) "" else "$label\n") +
-                "Where do you want to save this video?",
-            hint = "The in-app copy plays without internet.",
+                I18n.t("Where do you want to save this video?"),
+            hint = I18n.t("The in-app copy plays without internet."),
             iconRes = R.drawable.ic_download,
             onDialog = { dlg ->
                 dlg.setOnDismissListener { if (!picked && downloadPickMode) leaveAfterDownloadPick() }
@@ -6670,8 +6669,8 @@ class PlayerActivity : ComponentActivity() {
         requestNotificationPermission()
         Toast.makeText(
             this,
-            if (kind == DownloadKind.EXPORT) "Downloading to phone storage…"
-            else "Downloading for offline watch…",
+            if (kind == DownloadKind.EXPORT) I18n.t("Downloading to phone storage…")
+            else I18n.t("Downloading for offline watch…"),
             Toast.LENGTH_SHORT,
         ).show()
         // A download picked from outside the player is done: hand the user back
@@ -6878,24 +6877,24 @@ class PlayerActivity : ComponentActivity() {
         if (isFinishing || isDestroyed) return
         val clock = fmtResumeClock(positionMs)
         showGlassMenu(
-            "Continue from where you left off?",
+            I18n.t("Continue from where you left off?"),
             listOf(
                 GlassOption(
-                    "Resume",
-                    "Pick up at $clock",
+                    I18n.t("Resume"),
+                    I18n.t("Pick up at %s").replace("%s", clock),
                     iconRes = R.drawable.hikari_play,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
                 GlassOption(
-                    "Start over",
-                    "Play this video from the beginning",
+                    I18n.t("Start over"),
+                    I18n.t("Play this video from the beginning"),
                     iconRes = R.drawable.ic_back,
                     chevron = true,
                     marker = RowMarker.ICON,
                 ),
             ),
-            hint = "You can seek to $clock any time.",
+            hint = I18n.t("You can seek to %s any time.").replace("%s", clock),
             iconRes = R.drawable.ic_skip,
         ) { which ->
             if (which == 0) applyResume(positionMs)

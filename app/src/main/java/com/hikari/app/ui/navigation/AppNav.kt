@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
@@ -115,10 +116,15 @@ object Routes {
      */
     const val COLLECTIONS = "collections"
     const val COLLECTION_VIEW = "collection-view?cid={cid}&fid={fid}"
+    const val COLLECTION_GRID = "collection-grid?cid={cid}"
     const val TMDB_GRID = "tmdb-grid?preset={preset}&title={title}"
 
     fun collectionView(collectionId: String, folderId: String = ""): String =
         "collection-view?cid=${Uri.encode(collectionId)}&fid=${Uri.encode(folderId)}"
+
+    /** The whole collection as one grid: every folder, every catalog. */
+    fun collectionGrid(collectionId: String): String =
+        "collection-grid?cid=${Uri.encode(collectionId)}"
 
     fun tmdbGrid(presetKey: String, title: String): String =
         "tmdb-grid?preset=${Uri.encode(presetKey)}&title=${Uri.encode(title)}"
@@ -210,10 +216,16 @@ object Routes {
 @Composable
 private fun AppBottomBar(
     currentRoute: String?,
+    hidden: Set<String>,
     onNavigate: (String) -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    // Only the buttons the user kept, in their fixed order (Settings →
+    // Appearance → Taskbar buttons). Hiding one re-flows the remaining slots
+    // instead of leaving a gap. The bar can never end up empty: if the stored
+    // set somehow covers every tab, the full list comes back.
+    val tabs = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
     // Equal slots are not much room, and the labels ("Downloads", "Extensions")
     // are the longest text in the app. On a phone whose accessibility Font size
     // AND/OR Display size is turned up, the labels grew past their slot and were
@@ -221,10 +233,10 @@ private fun AppBottomBar(
     // the SAME physical size — dividing out the font scale — and the worst case
     // is then a full word in a slightly tight slot. (When "In-app UI scale" is
     // on, fontScale is 1 here and the scale rides on the density, so the labels
-    // still scale with that setting.) With the Library tab there are seven
-    // slots, so the base size drops a notch to keep every label whole.
+    // still scale with that setting.) With most of the tabs shown there are
+    // seven slots, so the base size drops a notch to keep every label whole.
     val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
-    val labelSp = if (Tabs.size > 6) 8f else 9f
+    val labelSp = if (tabs.size > 6) 8f else 9f
     // The bar is a floating glass pill: semi-transparent so the page (and its
     // top glow) shows through, ringed by the same hairline every card uses.
     val glass = rememberGlassTokens()
@@ -255,7 +267,7 @@ private fun AppBottomBar(
                     .padding(horizontal = 2.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Tabs.forEach { tab ->
+                tabs.forEach { tab ->
                     val selected = currentRoute == tab.route
                     Column(
                         Modifier
@@ -294,20 +306,23 @@ private fun AppBottomBar(
     }
 }
 
-private data class Tab(
+/** One button on the floating bottom bar. Public so Settings can render a
+ *  switch per tab (Settings → Appearance → Taskbar buttons) from the very same
+ *  list the bar draws, instead of a copy that could drift out of step. */
+data class BottomTab(
     val route: String,
     val label: String,
     val icon: ImageVector,
 )
 
-private val Tabs = listOf(
-    Tab(Routes.HOME, "Home", Icons.Filled.Home),
-    Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
-    Tab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
-    Tab(Routes.HISTORY, "History", Icons.Filled.History),
-    Tab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
-    Tab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
-    Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
+val BottomTabs = listOf(
+    BottomTab(Routes.HOME, "Home", Icons.Filled.Home),
+    BottomTab(Routes.SEARCH, "Search", Icons.Filled.Search),
+    BottomTab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
+    BottomTab(Routes.HISTORY, "History", Icons.Filled.History),
+    BottomTab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
+    BottomTab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
+    BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
 
 @Composable
@@ -319,12 +334,19 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // tab (so the bar shows and Search highlights); everything else matches on
     // its base path.
     val tabRoute = Routes.tabBaseOf(currentRoute)
-    val showBar = tabRoute in Tabs.map { it.route }
+    // The bar still shows on a tab whose button the user hid (they can be
+    // standing on it via an in-app link, and the bar is how they leave), so
+    // this stays keyed on every tab, not just the visible ones.
+    val showBar = tabRoute in BottomTabs.map { it.route }
 
     // The WebView's "Go to app home" menu item bumps this — landing on the
     // app's own Home tab (not the website's home page).
     val context = LocalContext.current
-    val homeRequest by (context.applicationContext as HikariApp).homeTabRequest.collectAsState()
+    val app = context.applicationContext as HikariApp
+    val homeRequest by app.homeTabRequest.collectAsState()
+    // Which taskbar buttons to draw (Settings → Appearance → Taskbar buttons).
+    val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
+    val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
     LaunchedEffect(homeRequest) {
         if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
     }
@@ -410,6 +432,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             if (showBar) {
                 AppBottomBar(
                     currentRoute = tabRoute,
+                    hidden = hiddenTabs,
                     onNavigate = { route -> Routes.navigateTab(nav, route) }
                 )
             }
@@ -451,6 +474,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val cid = Uri.decode(entry.arguments?.getString("cid").orEmpty())
                 val fid = Uri.decode(entry.arguments?.getString("fid").orEmpty())
                 CollectionViewScreen(nav, cid, fid)
+            }
+            composable(
+                route = Routes.COLLECTION_GRID,
+                arguments = listOf(
+                    navArgument("cid") { type = NavType.StringType },
+                )
+            ) { entry ->
+                val cid = Uri.decode(entry.arguments?.getString("cid").orEmpty())
+                CollectionGridScreen(nav, cid)
             }
             composable(
                 route = Routes.TMDB_GRID,

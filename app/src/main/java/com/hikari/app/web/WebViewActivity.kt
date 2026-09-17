@@ -221,7 +221,7 @@ class WebViewActivity : ComponentActivity() {
         }
 
         videoChip = TextView(this).apply {
-            text = "\u25B6 Play video"
+            text = I18n.t("\u25B6 Play video")
             visibility = View.GONE
             setBackgroundColor(0xFF3D5AFE.toInt())
             setTextColor(Color.WHITE)
@@ -243,7 +243,7 @@ class WebViewActivity : ComponentActivity() {
         // control. Tapping it opens a small menu (Back/Forward/Reload/Player) so
         // the app never draws a header bar over the site's own header or search.
         val togglePill = TextView(this).apply {
-            text = "\u22EF"
+            text = I18n.t("\u22EF")
             textSize = 18f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -865,7 +865,7 @@ class WebViewActivity : ComponentActivity() {
                             runCatching { com.hikari.app.data.Translator.enable(pid, false) }
                         }
                     }
-                    Toast.makeText(this, "Translation off", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, I18n.t("Translation off"), Toast.LENGTH_SHORT).show()
                 }
             }
             true
@@ -886,8 +886,8 @@ class WebViewActivity : ComponentActivity() {
             val active = res?.trim()?.trim('"') == "true"
             Toast.makeText(
                 this@WebViewActivity,
-                if (active) "Blocker ON — tap an element to select it, tap it again to block"
-                else "Element blocker OFF",
+                if (active) I18n.t("Blocker ON — tap an element to select it, tap it again to block")
+                else I18n.t("Element blocker OFF"),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -899,7 +899,7 @@ class WebViewActivity : ComponentActivity() {
                 .getOrNull()
             runOnUiThread {
                 if (sel == null) {
-                    Toast.makeText(this@WebViewActivity, "Nothing to undo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@WebViewActivity, I18n.t("Nothing to undo"), Toast.LENGTH_SHORT).show()
                 } else {
                     blockedSelectors.remove(sel)
                     (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
@@ -908,7 +908,7 @@ class WebViewActivity : ComponentActivity() {
                             jsString(sel) + "):null",
                         null
                     )
-                    Toast.makeText(this@WebViewActivity, "Last block reverted", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@WebViewActivity, I18n.t("Last block reverted"), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -924,7 +924,7 @@ class WebViewActivity : ComponentActivity() {
                     "window.__hikariRestoreAll?window.__hikariRestoreAll():null",
                     null
                 )
-                Toast.makeText(this@WebViewActivity, "All element blocks cleared", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@WebViewActivity, I18n.t("All element blocks cleared"), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1190,7 +1190,7 @@ class WebViewActivity : ComponentActivity() {
             webView.evaluateJavascript(VIDEO_SCAN_JS) { res ->
                 val urls = extractUrls(res)
                 if (urls.isEmpty()) {
-                    Toast.makeText(this, "No video found on this page", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, I18n.t("No video found on this page"), Toast.LENGTH_SHORT).show()
                 } else {
                     launchPlayer(urls, ref)
                 }
@@ -1214,7 +1214,7 @@ class WebViewActivity : ComponentActivity() {
     private fun launchPlayer(urls: List<String>, referer: String?) {
         val unique = urls.distinct().filter { it.startsWith("http") }
         if (unique.isEmpty()) {
-            Toast.makeText(this, "No playable video found", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("No playable video found"), Toast.LENGTH_SHORT).show()
             return
         }
         val cookie = runCatching {
@@ -1300,7 +1300,7 @@ class WebViewActivity : ComponentActivity() {
                     safe("blockElement.ui") {
                         blockedSelectors.add(selector)
                         (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
-                        Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT)
+                        Toast.makeText(this@WebViewActivity, I18n.t("Element blocked"), Toast.LENGTH_SHORT)
                             .show()
                         lifecycleScope.launch(Dispatchers.IO) {
                             runCatching {

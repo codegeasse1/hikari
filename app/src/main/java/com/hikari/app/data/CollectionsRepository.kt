@@ -92,6 +92,54 @@ class CollectionsRepository(private val manager: ProviderManager) {
     suspend fun folderRowsOnce(collection: Collection, folder: CollectionFolder): List<CatalogRow> =
         folderRows(collection, folder).lastOrNull().orEmpty()
 
+    /**
+     * The rows Home shows for a collection pick.
+     *
+     * One folder => that folder's own CATALOGS, one shelf each ("Netflix",
+     * "Hulu", "Pixar" side by side), because a collection with a single folder
+     * is just a grouping of sources the user picked — collapsing them into one
+     * mixed shelf hides exactly what they chose. Two or more folders => one
+     * shelf per folder, so the folder names are the shelves and the content
+     * stays where the user filed it.
+     */
+    fun pickRows(collection: Collection): Flow<List<CatalogRow>> {
+        val only = collection.folders.singleOrNull()
+        return if (only != null) folderRows(collection, only) else collectionRows(collection)
+    }
+
+    /**
+     * Every catalog of every folder as its own row — the "Show all" page of a
+     * whole collection. Rows land as each source answers, in folder-then-source
+     * order, and each row's title carries its folder's name when the collection
+     * has more than one (so a flat grid still says where a shelf came from).
+     */
+    fun allRows(collection: Collection): Flow<List<CatalogRow>> = channelFlow flow@{
+        val slots = ArrayList<Pair<CollectionFolder, CatalogSource>>()
+        collection.folders.forEach { f -> f.sources.forEach { s -> slots += f to s } }
+        if (slots.isEmpty()) {
+            send(emptyList())
+            return@flow
+        }
+        val placed = HashMap<Int, CatalogRow>()
+        val work = com.hikari.app.work.BackgroundWork.begin("Loading " + collection.name)
+        try {
+            slots.forEachIndexed { i, (folder, source) ->
+                launch {
+                    val loaded = withContext(Dispatchers.IO) {
+                        gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
+                    }
+                    val row = loaded?.takeIf { it.items.isNotEmpty() }?.let { r ->
+                        if (collection.folders.size > 1) r.copy(title = folder.name + " · " + r.title) else r
+                    }
+                    synchronized(placed) { if (row != null) placed[i] = row }
+                    publish(this@flow, placed, slots.size)
+                }
+            }
+        } finally {
+            com.hikari.app.work.BackgroundWork.end(work)
+        }
+    }
+
     /** Publish what has arrived so far, in slot order, so late rows slot in
      *  where they belong instead of jumping to the end of the list. */
     private suspend fun publish(
