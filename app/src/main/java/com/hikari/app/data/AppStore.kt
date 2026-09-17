@@ -57,6 +57,9 @@ class AppStore(private val ctx: Context) {
         val PROVIDERS = stringPreferencesKey("providers")
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
+        /** User-made collections (name + folders of catalog sources), stored as
+         *  one JSON array. See [Collection]. */
+        val COLLECTIONS = stringPreferencesKey("collections")
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
@@ -704,6 +707,38 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.CS3_REPOS] = encodeRepos(list) }
     }
 
+    // ---- Collections (name → folders → catalog sources) ----
+
+    /** Every user-made collection, in creation order. */
+    fun collectionsFlow(): Flow<List<Collection>> =
+        store.data.map { parseCollections(it[K.COLLECTIONS]) }
+
+    suspend fun collections(): List<Collection> = collectionsFlow().first()
+
+    suspend fun collection(id: String): Collection? = collections().firstOrNull { it.id == id }
+
+    /** Replaces the whole list — the editor always hands back the full set, so
+     *  a create/rename/reorder is one atomic write. */
+    suspend fun saveCollections(list: List<Collection>) {
+        store.edit { it[K.COLLECTIONS] = encodeCollections(list) }
+    }
+
+    /** Adds [c] (or replaces the same-id entry) and returns the saved list. */
+    suspend fun upsertCollection(c: Collection): List<Collection> {
+        val next = collections().filter { it.id != c.id } + c
+        saveCollections(next)
+        return next
+    }
+
+    suspend fun removeCollection(id: String) {
+        saveCollections(collections().filter { it.id != id })
+    }
+
+    /** A stable, URL/JSON-safe id for a new collection or folder. */
+    fun newId(prefix: String): String =
+        prefix + "-" + Long.toString(System.currentTimeMillis(), 36) +
+            "-" + (1000 + (Math.random() * 8999).toInt())
+
     // ---- First-run extension-repo seeding ----
 
     /** True once the bundled default extension repos have been added. Kept so a
@@ -1080,6 +1115,97 @@ class AppStore(private val ctx: Context) {
                         .getOrDefault(RepoKind.CS3),
                 )
             }.filter { it.url.isNotBlank() }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodeCollections(list: List<Collection>): String {
+        val arr = JSONArray()
+        for (c in list) {
+            val folders = JSONArray()
+            for (f in c.folders) {
+                val sources = JSONArray()
+                for (s in f.sources) {
+                    sources.put(
+                        JSONObject()
+                            .put("kind", s.kind.name)
+                            .put("title", s.title)
+                            .put("pid", s.providerId)
+                            .put("cid", s.catalogId)
+                            .put("type", s.type.name)
+                            .put("raw", s.rawType)
+                            .put("preset", s.tmdbPreset)
+                    )
+                }
+                folders.put(
+                    JSONObject()
+                        .put("id", f.id)
+                        .put("name", f.name)
+                        .put("sources", sources)
+                )
+            }
+            arr.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("name", c.name)
+                    .put("folders", folders)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun parseCollections(s: String?): List<Collection> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                val name = o.optString("name")
+                if (id.isBlank() || name.isBlank()) return@mapNotNull null
+                val foldersArr = o.optJSONArray("folders")
+                val folders = ArrayList<CollectionFolder>()
+                if (foldersArr != null) {
+                    for (j in 0 until foldersArr.length()) {
+                        val fo = foldersArr.optJSONObject(j) ?: continue
+                        val fid = fo.optString("id")
+                        val fname = fo.optString("name")
+                        if (fid.isBlank() || fname.isBlank()) continue
+                        val sourcesArr = fo.optJSONArray("sources")
+                        val sources = ArrayList<CatalogSource>()
+                        if (sourcesArr != null) {
+                            for (k in 0 until sourcesArr.length()) {
+                                val so = sourcesArr.optJSONObject(k) ?: continue
+                                val kind = runCatching {
+                                    CatalogSourceKind.valueOf(so.optString("kind", "TMDB"))
+                                }.getOrDefault(CatalogSourceKind.TMDB)
+                                val source = CatalogSource(
+                                    kind = kind,
+                                    title = so.optString("title"),
+                                    providerId = so.optString("pid"),
+                                    catalogId = so.optString("cid"),
+                                    type = runCatching { MediaType.valueOf(so.optString("type")) }
+                                        .getOrDefault(MediaType.UNKNOWN),
+                                    rawType = so.optString("raw"),
+                                    tmdbPreset = so.optString("preset"),
+                                )
+                                // A source that can't resolve to anything is a
+                                // row that would never load: drop it, but keep
+                                // the folder itself.
+                                val usable = if (kind == CatalogSourceKind.TMDB) {
+                                    TmdbPresets.byKey(source.tmdbPreset) != null
+                                } else {
+                                    source.providerId.isNotBlank() && source.catalogId.isNotBlank()
+                                }
+                                if (usable) sources.add(source)
+                            }
+                        }
+                        folders.add(CollectionFolder(id = fid, name = fname, sources = sources))
+                    }
+                }
+                Collection(id = id, name = name, folders = folders)
+            }
         } catch (e: Exception) {
             emptyList()
         }

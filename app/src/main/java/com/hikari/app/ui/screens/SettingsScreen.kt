@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
@@ -350,6 +351,9 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UiScaleCard(app) } }
+                    item {
+                        SettingsCard { CollectionsCard(onOpen = { Routes.safeNavigate(nav, Routes.COLLECTIONS) }) }
+                    }
                     item {
                         SettingsCard {
                             AccentCard(
@@ -920,6 +924,49 @@ private fun DownloadSettingsCard(app: HikariApp) {
             tr("Slide to 3 to run three downloads at once, 4 for four, and so on (max 10). " + "Videos beyond the limit stay queued and start automatically as slots free up."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun CollectionsCard(onOpen: () -> Unit) {
+    val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
+    val flow = remember { app.store.collectionsFlow() }
+    val collections by flow.collectAsState(initial = emptyList())
+    val folders = collections.sumOf { it.folders.size }
+    val catalogs = collections.sumOf { c -> c.folders.sumOf { it.sources.size } }
+    Box {
+        ListItem(
+            leadingContent = {
+                Icon(
+                    Icons.Filled.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            headlineContent = { Text(tr("Collections")) },
+            supportingContent = {
+                Text(
+                    if (collections.isEmpty()) {
+                        tr("Group the catalogs you actually watch into folders, then pick the " +
+                            "collection on Home to browse only those.")
+                    } else {
+                        collections.size.toString() + " " +
+                            (if (collections.size == 1) tr("collection") else tr("collections")) +
+                            " · " + folders + " " + (if (folders == 1) tr("folder") else tr("folders")) +
+                            " · " + catalogs + " " + (if (catalogs == 1) tr("catalog") else tr("catalogs"))
+                    }
+                )
+            },
+            trailingContent = {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            modifier = Modifier.clickable(onClick = onOpen)
         )
     }
 }
@@ -1654,6 +1701,26 @@ private fun BackupCard(app: HikariApp) {
         }
     }
 
+    // CloudStream's own backup file (.txt) goes through the same picker
+    // machinery: it is only ever *read*, and all it can add is repositories.
+    val csPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        status = ""
+        scope.launch {
+            val result = runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }
+                if (bytes == null) BackupManager.Report(false, "Could not read that file.")
+                else BackupManager.restoreCloudStream(app, bytes)
+            }.getOrElse { BackupManager.Report(false, "Import failed.", it.message.orEmpty()) }
+            report(result)
+        }
+    }
+
     fun backup() {
         busy = true
         status = ""
@@ -1717,6 +1784,15 @@ private fun BackupCard(app: HikariApp) {
             action = tr("Restore"),
             enabled = !busy,
             onClick = { picker.launch(arrayOf("application/json", "text/plain", "*/*")) },
+        )
+        Spacer(Modifier.height(10.dp))
+        BackupRow(
+            icon = Icons.Filled.SettingsBackupRestore,
+            title = tr("Coming from CloudStream?"),
+            subtitle = tr("Pick a CloudStream backup file to add the repositories it contains."),
+            action = tr("Import"),
+            enabled = !busy,
+            onClick = { csPicker.launch(arrayOf("text/plain", "application/json", "*/*")) },
         )
         if (status.isNotBlank()) {
             Spacer(Modifier.height(10.dp))

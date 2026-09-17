@@ -462,6 +462,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     ex?.details?.imdbId,
                     ex?.details?.rating,
                     ex?.details?.voteCount,
+                    // A source that had nothing to say just now is re-asked in
+                    // the background; when it finally answers, the strip grows
+                    // instead of staying frozen on the first attempt's misses.
+                    onUpdate = { _ratings.value = it },
                 )
             }.getOrDefault(emptyList()).let { _ratings.value = it }
             _related.value = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
@@ -2410,25 +2414,28 @@ private fun DetailsBlock(
     }
 }
 
-/** The age rating ("PG-13", "R", "TV-MA") in a bordered box, the way IMDb and
- *  the store listings print it. Drawn in the theme's on-surface colour with an
- *  outline rather than a fixed grey, so it stays readable on Hikari Dark, Dark
- *  Glass and AMOLED alike. */
+/** The age rating ("PG-13", "R", "TV-MA") as a pill in the same tinted-glass
+ *  style as the review badges next to it, so the two rows read as one family —
+ *  but coloured by what the rating MEANS rather than by a site's brand:
+ *  green for everyone, amber for guidance/teens, red for adults only, grey when
+ *  no rating was published. The colour is the "can my kid watch this" signal at
+ *  a glance; the letters are still the authority. */
 @Composable
 private fun AgeChip(label: String) {
-    val scheme = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(4.dp)
+    val tint = ageTint(label)
+    val shape = RoundedCornerShape(9.dp)
     Box(
         Modifier
             .clip(shape)
-            .border(1.dp, scheme.onSurface.copy(alpha = 0.55f), shape)
-            .padding(horizontal = 6.dp, vertical = 1.dp)
+            .background(tint.copy(alpha = 0.16f))
+            .border(1.dp, tint.copy(alpha = 0.40f), shape)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
         Text(
             label,
-            color = scheme.onSurface,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
+            color = tint,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
             maxLines = 1
         )
     }
@@ -2446,6 +2453,45 @@ private val MetacriticGreen = Color(0xFF00CE7A)
 private val MetacriticYellow = Color(0xFFFFBD3F)
 private val MetacriticRed = Color(0xFFFF6871)
 private val LetterboxdGreen = Color(0xFF00C030)
+
+// The age-rating chip's four bands. Not brand colours: the point is that the
+// chip says the same thing on every title, whatever board issued the rating
+// (MPAA "R", BBFC "18", FSK "16", TV-MA …).
+private val AgeGreen = Color(0xFF34C759)
+private val AgeAmber = Color(0xFFFFB020)
+private val AgeRed = Color(0xFFE5484D)
+private val AgeNeutral = Color(0xFF8A94A6)
+
+/** The colour of an age rating: red = adults only, amber = guidance/teens,
+ *  green = for everyone, grey = no rating published (NR, "Unrated", "N/A", or a
+ *  board whose label this build doesn't know).
+ *
+ *  The named bands a viewer recognises come first ("R", "TV-MA", "PG-13" …);
+ *  anything else falls back to the NUMBER in the label, which is how most
+ *  boards outside the US grade — "FSK 16", "MA15+", "R18", "TV-14" — so a rating
+ *  from a region this build has never seen still lands in the right band (18+
+ *  red, 12–17 amber, 11 and under green) instead of coming out grey. */
+private fun ageTint(label: String): Color {
+    val v = label.trim().uppercase(java.util.Locale.US)
+    when {
+        // Adults only.
+        v == "R" || v == "NC-17" || v == "X" || v == "XXX" || v == "TV-MA" ||
+            v == "MA" || v == "M18" || v.startsWith("R18") -> return AgeRed
+        // Guidance / teens: the US "PG" family, the MPAA-style "M", and the
+        // certificate boards whose own word means "watch it with them".
+        v.startsWith("PG") || v == "M" || v == "ATP" -> return AgeAmber
+        // For everyone.
+        v.startsWith("G") || v.startsWith("TV-Y") || v == "U" || v == "E" ||
+            v == "ALL" || v == "TP" -> return AgeGreen
+    }
+    val number = Regex("\\d+").find(v)?.value?.toIntOrNull()
+    return when {
+        number == null -> AgeNeutral
+        number >= 18 -> AgeRed
+        number >= 12 -> AgeAmber
+        else -> AgeGreen
+    }
+}
 
 /** True when a tomatometer score sits in the site's "rotten" band. The band
  *  comes from the lookup itself (it reads RT's own sentiment), with the 60%

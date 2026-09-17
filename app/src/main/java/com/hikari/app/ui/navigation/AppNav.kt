@@ -60,6 +60,8 @@ import androidx.navigation.navArgument
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.screens.CatalogScreen
+import com.hikari.app.ui.screens.CollectionViewScreen
+import com.hikari.app.ui.screens.CollectionsScreen
 import com.hikari.app.ui.screens.DetailScreen
 import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
@@ -68,6 +70,7 @@ import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
+import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
 import androidx.compose.runtime.collectAsState
@@ -103,6 +106,22 @@ object Routes {
     const val DETAIL = "detail?providerId={providerId}&type={type}&mediaId={mediaId}&title={title}&poster={poster}&rawType={rawType}&episodeId={episodeId}&startPos={startPos}"
     // "Show All" catalog browser: every item of one provider catalog, paged.
     const val CATALOG = "catalog?providerId={providerId}&catalogId={catalogId}&title={title}&providerName={providerName}&type={type}&rawType={rawType}"
+    /**
+     * Collections: the manager (Settings → Appearance → Collections), one
+     * collection's page (folders, or one folder's catalogs when `fid` is set),
+     * and one TMDB preset as a full grid. Kept as real destinations so the
+     * system back button walks the folder hierarchy and the player can open on
+     * top of any of them.
+     */
+    const val COLLECTIONS = "collections"
+    const val COLLECTION_VIEW = "collection-view?cid={cid}&fid={fid}"
+    const val TMDB_GRID = "tmdb-grid?preset={preset}&title={title}"
+
+    fun collectionView(collectionId: String, folderId: String = ""): String =
+        "collection-view?cid=${Uri.encode(collectionId)}&fid=${Uri.encode(folderId)}"
+
+    fun tmdbGrid(presetKey: String, title: String): String =
+        "tmdb-grid?preset=${Uri.encode(presetKey)}&title=${Uri.encode(title)}"
 
     fun catalog(
         providerId: String,
@@ -419,6 +438,31 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
+            composable(Routes.COLLECTIONS) {
+                CollectionsScreen(nav, onBack = { nav.popBackStack() })
+            }
+            composable(
+                route = Routes.COLLECTION_VIEW,
+                arguments = listOf(
+                    navArgument("cid") { type = NavType.StringType },
+                    navArgument("fid") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val cid = Uri.decode(entry.arguments?.getString("cid").orEmpty())
+                val fid = Uri.decode(entry.arguments?.getString("fid").orEmpty())
+                CollectionViewScreen(nav, cid, fid)
+            }
+            composable(
+                route = Routes.TMDB_GRID,
+                arguments = listOf(
+                    navArgument("preset") { type = NavType.StringType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val preset = Uri.decode(entry.arguments?.getString("preset").orEmpty())
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                TmdbGridScreen(nav, preset, title)
+            }
             composable(
                 route = Routes.CATALOG,
                 arguments = listOf(

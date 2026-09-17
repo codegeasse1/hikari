@@ -1,3 +1,76 @@
+## 0.4.0
+
+**A rating row that fills itself in, a colour-coded age rating, a download that
+no longer closes the player, a one-file migration path for anyone coming from
+CloudStream, and collections that turn your extensions into the shelves you
+actually watch.**
+
+- **The score row now fills itself in.** Every badge comes from a different
+  site (IMDb via OMDb/Wikidata/Cinemeta, Rotten Tomatoes, Metacritic,
+  Letterboxd, TMDB) and each one is independently optional, so a title that was
+  looked up while one of those sites was rate-limited, slow, or simply had no
+  page for it yet was cached *without* that badge for a whole day — which is why
+  one film showed IMDb and the next did not, no matter how often it was
+  re-opened. A missing source is now re-asked in the background on its own
+  schedule (every 15 minutes for the IMDb mirrors, every 3 hours for the review
+  sites) and the row grows the moment it answers, without the page waiting. Each
+  source also has its own 9-second ceiling, so one hanging site can never hold
+  up the others, and the attempt times are persisted with the cache, so the
+  schedule survives a restart. Titles that TMDB gives no IMDb id for are also
+  resolved one step harder: after IMDb's own suggestion endpoint, Cinemeta's
+  keyless search index is asked for the `tt` id, so a brand-new release gets an
+  IMDb badge (and a Letterboxd one) the moment IMDb has a page for it.
+- **The age rating is colour-coded.** `PG`, `R`, `TV-MA`, `G`, … used to be
+  plain white text. It is now the same tinted-glass pill as the score badges:
+  green for all-ages certificates (`G`, `TV-Y`, `U`, `TP`, `ALL`), amber for the
+  guidance bands (`PG`, `PG-13`, `M`, `12`) and red for the adult ones (`R`,
+  `NC-17`, `TV-MA`, `18`, `R18`), with any age number the certificate carries
+  used as a fallback when the label is one we do not know.
+- **Downloading from outside the app no longer crashes.** In download mode
+  nothing ever plays, so the player's "I finished playing, close myself"
+  cleanup saw the server chooser being dismissed (which is what the row tap
+  does) as the user backing out and finished the Activity while the download
+  sheet was still opening — which is what threw you back to the home tab. The
+  chooser now distinguishes "a server was picked, the next sheet is coming" from
+  "the user backed out", the glass dialogs refuse to show on a finishing
+  Activity, and a failed queue attempt reports itself instead of taking the
+  player down with it. This covers both the server list and the quality list.
+- **Import your CloudStream repositories.** Backup & Restore has a third row —
+  *Coming from CloudStream?* — that reads a CloudStream backup file
+  (`.txt`/`.json`) and adds every repository in it here, so a migration is one
+  tap instead of re-typing forty repo URLs. CloudStream's backup holds its
+  *repo list* (a JSON array inside `datastore._String.REPOSITORIES_KEY`); its
+  installed extensions live in its own database and are not in the file at all,
+  so the import brings the repos over and the Extensions screen then lists each
+  repo's plugins, with its per-repo *Install all* button. Watch positions, home
+  preferences and cookies are deliberately not imported — this app has its own.
+  URLs already in your list are skipped, and the reader is layered (known key →
+  any repos-looking preference → the largest repo-shaped array anywhere in the
+  file) so a fork's differently-shaped backup still works.
+- **Collections.** *Settings → Appearance → Collections* lets you build your own
+  shelves out of the catalogs you already have. Make a collection, name it, then
+  add a folder for each kind of content you want inside it — *Movies*, *Anime*,
+  *Kids*, whatever you like — and fill each folder with either a ready-made TMDB
+  list (Marvel Studios, Pixar, A24, Warner Bros., DC and friends for films; the
+  Netflix, HBO, Prime Video, Disney+ and other networks for series) or any
+  catalog from any installed extension. A folder holds as many catalogs as you
+  want: its row merges them all and drops the duplicates, and its *Show All*
+  opens that single catalog full-screen with paging. Pick a collection in Home's
+  provider picker and Home loads only its folders — nothing else — which is the
+  fast path to the handful of shelves you actually watch. Everything inside
+  behaves like any other row: tapping a title opens the normal detail page and
+  plays through the normal sources, TMDB lists included, because their titles
+  are matched back onto your installed extensions. Collections are stored in the
+  app's own settings, so editing or deleting one never touches an extension.
+- **The provider picker can filter by engine.** Home's provider picker now
+  carries a row of chips — *All*, *CloudStream*, *Hikari*, *Nuvio*, *Stremio* —
+  and picking one narrows the list to extensions of that kind, which is the
+  difference between scanning a hundred rows and three. *All* stays the default
+  and the provider you picked is still remembered across restarts.
+- **The new strings are translated.** The CloudStream import row, collections,
+  the provider filter chips and the rest of this release's English have entries
+  in all 20 languages plus the pseudo-locale.
+
 ## 0.3.89
 
 **Black text on dark themes is gone, the age rating now sits on every film and

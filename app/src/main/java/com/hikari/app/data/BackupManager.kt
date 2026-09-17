@@ -226,6 +226,248 @@ object BackupManager {
         )
     }
 
+    // ------------------------------------------- CloudStream backup import --
+
+    /** The key CloudStream's own backup/restore round-trips its repo list under. */
+    private const val CS_REPOS_KEY = "REPOSITORIES_KEY"
+
+    /** The typed maps a CloudStream DataStore dump is made of. Their presence is
+     *  what identifies the file as a CloudStream backup. */
+    private val CS_MAP_TYPES = listOf("_String", "_Int", "_Bool", "_Long", "_Float", "_StringSet")
+
+    /** Nothing sane reaches this; the cap stops a hand-edited file from turning
+     *  into thousands of DataStore writes. */
+    private const val CS_MAX_REPOS = 500
+
+    /**
+     * Imports the repositories out of a **CloudStream** backup so a user
+     * migrating from CloudStream does not have to re-type every repo URL.
+     *
+     * What CloudStream's backup file actually contains (checked against real
+     * files): a dump of its DataStore with two typed maps per preference bucket
+     * (`_String`, `_Int`, `_Bool`, …), where `datastore._String
+     * .REPOSITORIES_KEY` holds a JSON string — an array of
+     * `{iconUrl, name, url}`. The *installed* extensions are NOT in it: they
+     * live in CloudStream's own database, so no backup file can carry them.
+     * This therefore restores the repo list only, and the user then opens
+     * Sources & Extensions, where each imported repo lists its extensions
+     * (with the per-repo "Install all" button) ready to install.
+     *
+     * The layout is not a documented API, so the search is layered rather than
+     * positional: the known key, then any repos-looking preference, then any
+     * array anywhere in the file whose entries carry an `http` url. A file that
+     * resembles a CloudStream backup but carries no repos is reported as such
+     * instead of being silently accepted. Like [restore] it never throws.
+     */
+    suspend fun restoreCloudStream(app: HikariApp, bytes: ByteArray): Report =
+        withContext(Dispatchers.IO) {
+            val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+                ?: return@withContext Report(false, "Could not read that file.")
+            val root = runCatching {
+                JSONObject(text.trimStart('\uFEFF', ' ', '\n', '\r', '\t'))
+            }.getOrNull()
+                ?: return@withContext Report(false, "That file is not a CloudStream backup.")
+            if (!looksLikeCloudStream(root)) {
+                return@withContext Report(false, "That file is not a CloudStream backup.")
+            }
+
+            val repos = cloudStreamRepos(root)
+            if (repos.isEmpty()) {
+                return@withContext Report(
+                    false,
+                    "No repositories found in that CloudStream backup.",
+                    "Nothing to import — the file has no repo list in it.",
+                )
+            }
+
+            val known = runCatching { app.store.repos() }.getOrDefault(emptyList())
+                .mapTo(HashSet()) { normRepoUrl(it.url) }
+            var added = 0
+            var duplicates = 0
+            for (repo in repos) {
+                val key = normRepoUrl(repo.url)
+                if (key.isBlank() || !known.add(key)) {
+                    duplicates++
+                    continue
+                }
+                if (runCatching { app.store.addCs3Repo(repo) }.isSuccess) added++ else duplicates++
+            }
+            if (added > 0) {
+                // The repo list is live in the store, but the plugin lists
+                // behind each repo are what the Extensions screen shows.
+                runCatching { app.providers.refresh() }
+            }
+
+            val detail = "cloudstream: found ${repos.size}, added $added, already present $duplicates"
+            Logs.log("Backup", "cloudstream restore — $detail")
+            Report(
+                true,
+                when {
+                    added == 0 -> "Those ${repos.size} repositories are already in your list."
+                    added == 1 -> "Added 1 repository from CloudStream."
+                    else -> "Added $added repositories from CloudStream."
+                } + " Open Sources & Extensions to install their plugins.",
+                detail,
+            )
+        }
+
+    /** True when the file has the shape of a CloudStream DataStore dump (either
+     *  bucket's typed maps, the repo key, or a bare repos array for a file
+     *  someone extracted by hand). */
+    private fun looksLikeCloudStream(root: JSONObject): Boolean {
+        for (bucket in listOf("datastore", "settings")) {
+            val map = root.optJSONObject(bucket) ?: continue
+            if (CS_MAP_TYPES.any { map.optJSONObject(it) != null }) return true
+        }
+        if (root.has(CS_REPOS_KEY)) return true
+        return root.optJSONArray("repositories") != null || root.optJSONArray("repos") != null
+    }
+
+    /**
+     * Every repo in a CloudStream backup, in file order, deduplicated by URL.
+     *
+     * Layered deliberately: the known `REPOSITORIES_KEY` is tried first, then
+     * every preference whose *name* mentions repositories (CloudStream has
+     * renamed keys between forks), then a bounded scan of every string in the
+     * file for the largest array of objects carrying a url — which is what saves
+     * this when a fork stores its repo list under a name we have never seen.
+     */
+    private fun cloudStreamRepos(root: JSONObject): List<Cs3Repo> {
+        val found = LinkedHashMap<String, Cs3Repo>()
+        var usedFallback = false
+
+        fun offer(value: Any?) {
+            for (repo in reposIn(value)) {
+                val key = normRepoUrl(repo.url)
+                if (key.isNotBlank() && !found.containsKey(key)) found[key] = repo
+            }
+        }
+
+        // 1. The key CloudStream itself uses, in either bucket (and any other
+        //    top-level object, in case a fork nests it differently).
+        for (bucket in listOf("datastore", "settings")) {
+            val map = root.optJSONObject(bucket) ?: continue
+            for (type in CS_MAP_TYPES) {
+                val typed = map.optJSONObject(type) ?: continue
+                val names = typed.names() ?: continue
+                for (i in 0 until names.length()) {
+                    val name = names.optString(i)
+                    if (name == CS_REPOS_KEY || name.contains("repositor", ignoreCase = true)) {
+                        offer(typed.opt(name))
+                    }
+                }
+            }
+        }
+
+        // 2. Some forks/older formats keep the array at the top level.
+        offer(root.opt("repositories"))
+        offer(root.opt("repos"))
+
+        // 3. Last resort: the biggest repo-shaped JSON array anywhere in the
+        //    file. Marked, because it is a guess, and only used when the
+        //    targeted lookups came up empty.
+        if (found.isEmpty()) {
+            largestRepoArray(root)?.let { scanned ->
+                offer(scanned)
+                if (found.isNotEmpty()) {
+                    Logs.log("Backup", "cloudstream repos found by scanning the file")
+                }
+            }
+        }
+        return found.values.take(CS_MAX_REPOS)
+    }
+
+    /** The `{iconUrl, name, url}` objects inside [value], which may be the array
+     *  itself, a JSON string holding it (how CloudStream stores it), a
+     *  `_StringSet` wrapper, or an object with a list field. */
+    private fun reposIn(value: Any?): List<Cs3Repo> {
+        val arr = asRepoArray(value) ?: return emptyList()
+        val out = ArrayList<Cs3Repo>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val url = listOf("url", "apiUrl", "repoUrl", "repo")
+                .firstNotNullOfOrNull { field ->
+                    o.optString(field).trim().takeIf { it.startsWith("http", ignoreCase = true) }
+                } ?: continue
+            val name = listOf("name", "displayName", "title")
+                .firstNotNullOfOrNull { o.optString(it).trim().takeIf { v -> v.isNotBlank() } }
+                .orEmpty()
+            // The repo file itself is what Hikari fetches, so the URL is kept
+            // exactly as CloudStream had it (a fork's URL may not end in
+            // `repo.json` and rewriting it would break it).
+            out.add(Cs3Repo(url = url, name = name.ifBlank { url }, kind = RepoKind.CS3))
+        }
+        return out
+    }
+
+    /** [value] as a repo-shaped [JSONArray], or null. */
+    private fun asRepoArray(value: Any?): JSONArray? {
+        if (value == null || value == JSONObject.NULL) return null
+        if (value is JSONArray) return value.takeIf { looksLikeRepoArray(it) }
+        if (value is JSONObject) {
+            value.optJSONArray("_StringSet")?.let { return asRepoArray(it) }
+            for (field in listOf("repositories", "repos", "list", "items", "value")) {
+                value.opt(field)?.let { return asRepoArray(it) }
+            }
+            return null
+        }
+        val s = value.toString().trim()
+        if (!s.startsWith("[")) return null
+        return runCatching { JSONArray(s) }.getOrNull()?.takeIf { looksLikeRepoArray(it) }
+    }
+
+    /** An array where at least half the entries are objects with an http url. */
+    private fun looksLikeRepoArray(arr: JSONArray): Boolean {
+        if (arr.length() == 0) return false
+        var hits = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val url = listOf("url", "apiUrl", "repoUrl", "repo")
+                .firstNotNullOfOrNull { o.optString(it).trim().takeIf { v -> v.isNotBlank() } }
+                .orEmpty()
+            if (url.startsWith("http", ignoreCase = true)) hits++
+        }
+        return hits > 0 && hits * 2 >= arr.length()
+    }
+
+    /**
+     * The repo array with the most entries, found by walking the file's strings
+     * (the walk is depth- and count-bounded — a backup is ~10 KB but a hand-made
+     * file could be huge). Used only as a last resort; see [cloudStreamRepos].
+     */
+    private fun largestRepoArray(root: JSONObject): JSONArray? {
+        var best: JSONArray? = null
+        var visited = 0
+
+        fun walk(value: Any?, depth: Int) {
+            if (depth > 8 || visited > 20_000) return
+            visited++
+            when (value) {
+                is JSONObject -> {
+                    val names = value.names() ?: return
+                    for (i in 0 until names.length()) walk(value.opt(names.optString(i)), depth + 1)
+                }
+                is JSONArray -> {
+                    for (i in 0 until value.length()) walk(value.opt(i), depth + 1)
+                }
+                is String -> {
+                    val s = value.trim()
+                    if (s.length < 3 || !s.startsWith("[")) return
+                    val arr = runCatching { JSONArray(s) }.getOrNull() ?: return
+                    if (!looksLikeRepoArray(arr)) return
+                    if ((best?.length() ?: -1) < arr.length()) best = arr
+                }
+            }
+        }
+        walk(root, 0)
+        return best
+    }
+
+    /** URL identity for the duplicate check: no surrounding space, no trailing
+     *  slash, host case folded. */
+    private fun normRepoUrl(url: String): String =
+        url.trim().trimEnd('/').lowercase(Locale.US)
+
     /**
      * A restore happens under a running app, and several settings are copied
      * into plain fields/globals once at startup rather than read per use (the

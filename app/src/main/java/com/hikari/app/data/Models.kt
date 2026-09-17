@@ -226,6 +226,68 @@ data class CatalogRef(
     val rawType: String = "",
 )
 
+/**
+ * Where one catalog source inside a folder comes from.
+ *
+ * [TMDB] sources ask TMDB's discovery API for a ready-made slice of its
+ * catalogue (a production company's films, a network's series) — no extension
+ * has to be installed for those to work. [PROVIDER] sources point at one
+ * catalog of an installed extension, so a folder is not limited to TMDB: any
+ * catalog an addon exposes can sit next to a preset.
+ */
+enum class CatalogSourceKind { TMDB, PROVIDER }
+
+/** One catalog inside a folder: either a TMDB preset or an installed catalog. */
+data class CatalogSource(
+    val kind: CatalogSourceKind = CatalogSourceKind.TMDB,
+    /** Display name of the source ("HBO", "Trending Now"). */
+    val title: String = "",
+    /** [CatalogSourceKind.PROVIDER] only: the installed extension's id. */
+    val providerId: String = "",
+    /** [CatalogSourceKind.PROVIDER] only: the catalog's own id + type. */
+    val catalogId: String = "",
+    val type: MediaType = MediaType.UNKNOWN,
+    val rawType: String = "",
+    /** [CatalogSourceKind.TMDB] only: the key of a [com.hikari.app.data.TmdbPresets] entry. */
+    val tmdbPreset: String = "",
+) {
+    val key: String
+        get() = if (kind == CatalogSourceKind.TMDB) "tmdb|$tmdbPreset"
+        else "prov|$providerId|$type|$catalogId"
+}
+
+/**
+ * One folder inside a collection — a named group of catalog sources. The
+ * reference client's "folders" are what make a collection useful for a user
+ * who only watches one kind of thing: instead of one long mixed feed, each
+ * folder answers exactly one question ("Marvel films", "HBO series").
+ */
+data class CollectionFolder(
+    val id: String,
+    val name: String,
+    val sources: List<CatalogSource> = emptyList(),
+)
+
+/**
+ * A user-made collection: a name plus one or more folders of catalog sources.
+ *
+ * Selecting a collection in Home's extension picker replaces the feed with the
+ * collection's folders (one row per folder, each holding that folder's
+ * catalogs), so the user sees only what they asked for instead of every
+ * installed extension's home page. The collection itself is stored in
+ * [AppStore] and is what "abc" in the reference screenshots is.
+ */
+data class Collection(
+    val id: String,
+    val name: String,
+    val folders: List<CollectionFolder> = emptyList(),
+) {
+    val isEmpty: Boolean get() = folders.isEmpty()
+    /** Every source of every folder, deduped — the collection's whole diet. */
+    val allSources: List<CatalogSource>
+        get() = folders.flatMap { it.sources }.distinctBy { it.key }
+}
+
 data class CatalogRow(
     val providerId: String = "",
     val providerName: String,

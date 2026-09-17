@@ -2,10 +2,15 @@ package com.hikari.app.data
 
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -34,7 +39,8 @@ import kotlin.math.roundToInt
  *     body and IMDb's own GraphQL endpoint is Cloudflare-guarded, so a mirror is
  *     the only way to get a number at all; three of them make it reliable.
  *     When nothing knows the `tt` id, IMDb's own keyless suggestion endpoint
- *     resolves one from the title and year.
+ *     resolves one from the title and year, and Cinemeta's search index is the
+ *     fallback for a network where that host is blocked.
  *  2. **Rotten Tomatoes** `/{m|tv}/{slug}` — the page's `media-scorecard-json`
  *     carries the tomatometer AND the popcornmeter, each with its review count,
  *     average and sentiment: two badges from one request.
@@ -93,7 +99,33 @@ object Ratings {
      *  what lets the scores appear once the site answers. */
     private const val EMPTY_TTL_MS = 2 * 60 * 60 * 1000L
 
+    /** How long a source that published nothing is left alone before it is
+     *  re-asked. The IMDb mirrors fail transiently (a rate-limited public key, a
+     *  lazily-mirrored release), so they are re-asked soon; a missing review page
+     *  or Metascore is usually the truth about a title, so those wait longer. */
+    private const val RETRY_IMDB_MS = 15 * 60 * 1000L
+    private const val RETRY_OTHER_MS = 3 * 60 * 60 * 1000L
+
+    /** Per-source ceiling for a lookup. One site that hangs must cost a few
+     *  seconds of one badge, never the whole strip. */
+    private const val SOURCE_TIMEOUT_MS = 9_000L
+
     private val memory = ConcurrentHashMap<String, List<TitleRating>>()
+
+    /** `key → source → when it was last asked`, so a source that answered
+     *  nothing can be re-asked on a schedule instead of being frozen into the
+     *  cached answer for a day. Persisted with the cache. */
+    private val attempts = ConcurrentHashMap<String, ConcurrentHashMap<RatingSource, Long>>()
+
+    /** Titles with a re-ask in flight, so re-opening a screen doesn't stack
+     *  them. */
+    private val refreshing = ConcurrentHashMap.newKeySet<String>()
+
+    /** Re-asks run here rather than on a screen's scope: their job is to fix the
+     *  cache for the next look, so they must not die with the screen that
+     *  happened to trigger one. */
+    private val refresher = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val lock = Any()
     private var disk: JSONObject? = null
 
@@ -103,42 +135,222 @@ object Ratings {
      * Every badge known for [item]. [imdbId] comes from TMDB's `external_ids`
      * when it has one; [tmdbScore]/[tmdbVotes] are the values that lookup
      * already returned, so the TMDB badge costs no request.
+     *
+     * [onUpdate] (optional) is called with a LONGER list if a source that had
+     * nothing to say at lookup time has since been re-asked and answered — the
+     * strip grows instead of staying frozen on whatever the first attempt found
+     * (see [missingSources]).
      */
     suspend fun load(
         item: MediaItem,
         imdbId: String?,
         tmdbScore: Double?,
         tmdbVotes: Int?,
+        onUpdate: ((List<TitleRating>) -> Unit)? = null,
     ): List<TitleRating> = withContext(Dispatchers.IO) {
         val tmdb = tmdbBadge(tmdbScore, tmdbVotes, item)
         val key = cacheKey(item)
-        memory[key]?.let { return@withContext finish(it, tmdb) }
-        readDisk(key)?.let {
-            memory[key] = it
-            return@withContext finish(it, tmdb)
+        memory[key]?.let { cached ->
+            refreshInBackground(key, item, imdbId, cached, tmdb, onUpdate)
+            return@withContext finish(cached, tmdb)
+        }
+        readDisk(key)?.let { cached ->
+            memory[key] = cached
+            refreshInBackground(key, item, imdbId, cached, tmdb, onUpdate)
+            return@withContext finish(cached, tmdb)
         }
 
-        var imdb = imdbId?.trim()?.takeIf { isImdbId(it) }
-            ?: item.id.trim().takeIf { isImdbId(it) }
-        // No id from TMDB: ask IMDb itself for one. This is what makes the IMDb
-        // badge appear on titles TMDB has no `external_ids` for.
-        if (imdb == null) imdb = imdbSuggestionId(item)
+        // Nothing cached: one full pass. The scraped values are put in FIRST so
+        // a fresher tomatometer/Metascore wins over Wikidata's (which is
+        // user-maintained and can lag by years); the first source to claim a
+        // slot keeps it (see [runSources]).
+        val imdb = resolveImdb(item, imdbId)
+        val want = applicableSources(item)
+        val found = runSources(item, imdb, want)
+        markAttempts(key, want)
+        val list = found.values.sortedBy { it.source.ordinal }
+        memory[key] = list
+        writeDisk(key, list)
+        finish(list, tmdb)
+    }
+
+    /** Every source that could contribute a badge for [item] — the set the
+     *  refresh logic checks a cached answer against. */
+    private fun applicableSources(item: MediaItem): Set<RatingSource> {
+        val want = LinkedHashSet<RatingSource>(5)
+        want.add(RatingSource.IMDB)
+        want.add(RatingSource.TOMATOMETER)
+        want.add(RatingSource.POPCORN)
+        want.add(RatingSource.METACRITIC)
+        // Letterboxd has no TV pages at all, so it is never "missing" on a
+        // series — asking forever would be pure waste.
+        if (item.type != MediaType.SERIES) want.add(RatingSource.LETTERBOXD)
+        return want
+    }
+
+    /**
+     * The cached badges that have not been published yet, but only where the
+     * source has not been asked recently ([RETRY_IMDB_MS] for the IMDb mirrors,
+     * [RETRY_OTHER_MS] for the review sites).
+     *
+     * This is what makes the strip grow instead of freezing. Every source is
+     * independently optional, so a lookup that ran while one of them was
+     * rate-limited, timed out, or simply had no page for a two-day-old release
+     * used to be cached as-is for a whole day — which is why one title showed
+     * IMDb and the next did not, no matter how many times it was re-opened.
+     */
+    private fun missingSources(
+        key: String,
+        item: MediaItem,
+        cached: List<TitleRating>,
+    ): Set<RatingSource> {
+        val have = cached.mapTo(HashSet()) { it.source }
+        val seen = attempts[key]
+        val now = System.currentTimeMillis()
+        return applicableSources(item).filterNot { it in have }.filter { src ->
+            val last = seen?.get(src) ?: 0L
+            val window = if (src == RatingSource.IMDB) RETRY_IMDB_MS else RETRY_OTHER_MS
+            now - last >= window
+        }.toSet()
+    }
+
+    /**
+     * Re-asks the sources a cached answer is still missing, off the caller's
+     * thread, and hands the longer list to [onUpdate] when it lands.
+     *
+     * Deliberately NOT awaited: the screen already has the badges it had before,
+     * so the extra work must never cost the user a wait — and if it finds
+     * nothing (the usual case for a genuinely unrated or unreleased title) the
+     * cache simply records the attempt and tries again in a few hours.
+     */
+    private fun refreshInBackground(
+        key: String,
+        item: MediaItem,
+        imdbId: String?,
+        cached: List<TitleRating>,
+        tmdb: TitleRating?,
+        onUpdate: ((List<TitleRating>) -> Unit)?,
+    ) {
+        val missing = missingSources(key, item, cached)
+        if (missing.isEmpty()) return
+        // One re-ask per title at a time: the detail screen can be re-opened (or
+        // recomposed) while a refresh is still in flight.
+        if (!refreshing.add(key)) return
+        refresher.launch {
+            try {
+                val imdb = resolveImdb(item, imdbId)
+                val found = runSources(item, imdb, missing)
+                markAttempts(key, missing)
+                if (found.isEmpty()) return@launch
+                val merged = LinkedHashMap<RatingSource, TitleRating>()
+                for (r in cached) merged[r.source] = r
+                for ((source, r) in found) if (!merged.containsKey(source)) merged[source] = r
+                val list = merged.values.sortedBy { it.source.ordinal }
+                memory[key] = list
+                writeDisk(key, list)
+                runCatching { onUpdate?.invoke(finish(list, tmdb)) }
+            } catch (e: Exception) {
+                // A failed re-ask is not news: the next open tries again.
+            } finally {
+                refreshing.remove(key)
+            }
+        }
+    }
+
+    /** The `tt` id to look IMDb up with: the one TMDB gave us, an id the item
+     *  itself carries, or IMDb's own keyless suggestion endpoint. Re-run on every
+     *  refresh, so a title that had no id at first (a brand-new release TMDB had
+     *  no `external_ids` for yet) starts showing an IMDb badge once one exists. */
+    private suspend fun resolveImdb(item: MediaItem, imdbId: String?): String? {
+        imdbId?.trim()?.takeIf { isImdbId(it) }?.let { return it }
+        item.id.trim().takeIf { isImdbId(it) }?.let { return it }
+        return imdbSuggestionId(item) ?: cinemetaSearchId(item)
+    }
+
+    /**
+     * The `tt` id from Cinemeta's own search index — the last way to get one when
+     * TMDB published no `external_ids` and IMDb's suggestion endpoint is
+     * unreachable (it is a `media-imdb.com` host, which some networks block).
+     *
+     * Without an id there is no IMDb badge at all, which is the other half of why
+     * some titles showed one and others did not: this endpoint answers any title
+     * with a keyless search, so a brand-new release now gets an id — and with it
+     * an IMDb, a Letterboxd and a Wikidata lookup — the moment IMDb has a page.
+     * The same guards as the suggestion endpoint apply (right kind, a close
+     * enough name, the year within one), because a search for a common title
+     * happily returns the wrong film.
+     */
+    private fun cinemetaSearchId(item: MediaItem): String? {
+        val kind = if (item.type == MediaType.SERIES) "series" else "movie"
+        val q = URLEncoder.encode(
+            TmdbMeta.queryVariants(item.title).firstOrNull() ?: item.title, "UTF-8"
+        ).replace("+", "%20")
+        val body = Http.getStringQuiet("https://v3-cinemeta.strem.io/catalog/$kind/top/search=$q.json")
+            ?: return null
+        val arr = runCatching { JSONObject(body).optJSONArray("metas") }.getOrNull() ?: return null
+        var best: String? = null
+        var bestScore = -1
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("imdb_id").trim().ifBlank { o.optString("id").trim() }
+            if (!isImdbId(id)) continue
+            // The year the row prints: "2026" for a film, "2008-2013" for a show
+            // (so the first four characters are the year it started).
+            val shown = o.optString("releaseInfo").trim().take(4).toIntOrNull()
+                ?: (o.opt("year") as? Number)?.toInt()
+            var score = TmdbMeta.titleScore(item.title, o.optString("name"))
+            if (shown != null && item.year != null) {
+                val diff = abs(shown - item.year)
+                if (diff > 1) continue
+                if (diff == 0) score += 20
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = id
+            }
+        }
+        return if (bestScore >= 25) best else null
+    }
+
+    /** Runs the sources that can contribute to any source in [want], and returns
+     *  what they published. The job order IS the precedence: the first source to
+     *  claim a slot keeps it. */
+    private suspend fun runSources(
+        item: MediaItem,
+        imdb: String?,
+        want: Set<RatingSource>,
+    ): LinkedHashMap<RatingSource, TitleRating> {
+        if (want.isEmpty()) return LinkedHashMap()
         val isSeries = item.type == MediaType.SERIES
+        fun need(vararg sources: RatingSource) = sources.any { it in want }
+        // Wikidata carries an IMDb score, a tomatometer, a Metascore and a
+        // Letterboxd average, so any of those being wanted is enough to ask it.
+        val wantWikidata = need(
+            RatingSource.IMDB, RatingSource.TOMATOMETER,
+            RatingSource.METACRITIC, RatingSource.LETTERBOXD,
+        ) && imdb != null
 
         val found = LinkedHashMap<RatingSource, TitleRating>()
-        // Scraped values are put in FIRST so a fresher tomatometer/Metascore
-        // wins over Wikidata's (which is user-maintained and can lag by years);
-        // the jobs are awaited in the order below, and the first source to
-        // claim a slot keeps it.
         coroutineScope {
-            val jobs = listOf(
-                async { guarded { rtScores(item, isSeries) } },
-                async { guarded { metacriticScore(item, isSeries) } },
-                async { if (imdb != null && !isSeries) guarded { letterboxd(imdb) } else emptyList() },
-                async { if (imdb != null) guarded { omdb(imdb) } else emptyList() },
-                async { if (imdb != null) guarded { wikidata(imdb) } else emptyList() },
-                async { if (imdb != null) guarded { cinemeta(imdb, isSeries) } else emptyList() },
-            )
+            val jobs = ArrayList<Deferred<List<TitleRating>>>(5)
+            if (need(RatingSource.TOMATOMETER, RatingSource.POPCORN)) {
+                jobs += async { guarded { rtScores(item, isSeries) } }
+            }
+            if (need(RatingSource.METACRITIC)) {
+                jobs += async { guarded { metacriticScore(item, isSeries) } }
+            }
+            if (!isSeries && imdb != null && need(RatingSource.LETTERBOXD)) {
+                jobs += async { guarded { letterboxd(imdb) } }
+            }
+            if (imdb != null && need(RatingSource.IMDB)) {
+                jobs += async { guarded { omdb(imdb) } }
+            }
+            if (wantWikidata) {
+                jobs += async { guarded { wikidata(imdb!!) } }
+            }
+            if (imdb != null && need(RatingSource.IMDB)) {
+                jobs += async { guarded { cinemeta(imdb, isSeries) } }
+            }
             for (job in jobs) {
                 for (r in job.await()) {
                     if (r.value.isNotBlank() && !found.containsKey(r.source)) {
@@ -147,15 +359,23 @@ object Ratings {
                 }
             }
         }
-        val list = found.values.sortedBy { it.source.ordinal }
-        memory[key] = list
-        writeDisk(key, list)
-        finish(list, tmdb)
+        return found
     }
 
-    /** Never let one source's failure cancel the whole strip. */
+    /** Records that [sources] were asked for [key] just now — the clock the
+     *  re-ask window is measured against. */
+    private fun markAttempts(key: String, sources: Collection<RatingSource>) {
+        if (sources.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val row = attempts.getOrPut(key) { ConcurrentHashMap() }
+        for (s in sources) row[s] = now
+    }
+
+    /** Never let one source's failure — or one site that simply hangs — cancel
+     *  or hold up the whole strip. */
     private suspend fun guarded(block: suspend () -> List<TitleRating>): List<TitleRating> =
-        runCatching { block() }.getOrDefault(emptyList())
+        runCatching { withTimeoutOrNull(SOURCE_TIMEOUT_MS) { block() } ?: emptyList() }
+            .getOrDefault(emptyList())
 
     /** Adds the TMDB badge (which needs no request) to a cached result. */
     private fun finish(cached: List<TitleRating>, tmdb: TitleRating?): List<TitleRating> {
@@ -622,6 +842,19 @@ object Ratings {
 
     private fun readDisk(key: String): List<TitleRating>? {
         val entry = runCatching { load().optJSONObject(key) }.getOrNull() ?: return null
+        // When each source was last asked, restored alongside the badges so the
+        // re-ask schedule survives a restart. An entry written by an older build
+        // has no "t" block: every source then reads as "asked a long time ago",
+        // which gives each already-cached title exactly one self-heal pass after
+        // the update and then settles onto the normal windows.
+        entry.optJSONObject("t")?.let { times ->
+            val row = attempts.getOrPut(key) { ConcurrentHashMap() }
+            for (i in 0 until times.length()) {
+                val name = times.names()?.optString(i) ?: continue
+                val src = runCatching { RatingSource.valueOf(name) }.getOrNull() ?: continue
+                row[src] = times.optLong(name)
+            }
+        }
         val arr = entry.optJSONArray("r") ?: return null
         val ttl = if (arr.length() == 0) EMPTY_TTL_MS else CACHE_TTL_MS
         if (System.currentTimeMillis() - entry.optLong("at") > ttl) return null
@@ -667,6 +900,11 @@ object Ratings {
                 )
             }
             entry.put("r", arr)
+            attempts[key]?.let { times ->
+                val obj = JSONObject()
+                for ((src, at) in times) obj.put(src.name, at)
+                entry.put("t", obj)
+            }
             root.put(key, entry)
             // Bound the file: a title that was looked up days ago is worth less
             // than the write, and this is a cache, not a database.

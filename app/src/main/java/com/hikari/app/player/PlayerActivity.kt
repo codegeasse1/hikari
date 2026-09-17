@@ -210,6 +210,16 @@ class PlayerActivity : ComponentActivity() {
      *  caused by the user's own tap must NOT also trigger that fallback. */
     private var startChoicePending = false
 
+    /** Set the instant a server row is TAPPED in the chooser, before the dismiss
+     *  it triggers. The dismiss listener runs on the next loop turn (the
+     *  dismissal is posted), so it cannot tell "the user picked a row and moved
+     *  on" from "the user backed out" by looking at playback state alone — and in
+     *  download mode nothing ever plays, so `playbackCommitted` stays false and
+     *  every tap looked like a back-out. That made the player finish itself while
+     *  the download sheet was still coming up, which is the crash-out-to-home bug
+     *  on download-from-outside. This flag is the answer the row tap gives. */
+    private var serverPickActed = false
+
     /** The startMode chooser is presented at most once per Activity. The live
      *  search keeps appending servers, and a late [startOrAsk] used to re-open
      *  the chooser the user had already answered (or backed out of), which is
@@ -2909,7 +2919,13 @@ class PlayerActivity : ComponentActivity() {
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
-        dialog.show()
+        // A panel can be asked for in the same turn the Activity is going away
+        // (the download flow closes the player once its task is queued, and a
+        // queued tap can land after that). Adding a window to a finished
+        // Activity throws BadTokenException, so the show is guarded and a
+        // refusal is simply "no panel" rather than a crash.
+        if (isFinishing || isDestroyed) return null
+        if (runCatching { dialog.show() }.isFailure) return null
         // Narrower than a stock dialog: the reference panel is ~3/4 of the window
         // height wide and never spans the full width, which is a large part of
         // why it reads as a lightweight overlay instead of a full-screen sheet.
@@ -3079,7 +3095,9 @@ class PlayerActivity : ComponentActivity() {
         dialog.setCanceledOnTouchOutside(false)
         dialog.setCancelable(cancelable)
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
-        dialog.show()
+        // Same guard as presentGlass: never add a window to a dying Activity.
+        if (isFinishing || isDestroyed) return dialog
+        runCatching { dialog.show() }
         dialog.window?.apply {
             setLayout(w + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -3516,8 +3534,11 @@ class PlayerActivity : ComponentActivity() {
                         addOptionRow(list, serverOption(src, i)) {
                             // The tap IS the answer: never let the
                             // dismiss-induced fallback start a different server
-                            // on the way out.
+                            // on the way out, and never let it finish the player
+                            // out from under the download flow (see
+                            // [serverPickActed]).
                             startChoicePending = false
+                            serverPickActed = true
                             dialog.dismiss()
                             if (forDownload) {
                                 // Download step 1: remember the chosen server and
@@ -3645,9 +3666,12 @@ class PlayerActivity : ComponentActivity() {
             }
             // Backed out of the DOWNLOAD chooser without picking a server: there
             // is no playback to fall back to, so leave the player instead of
-            // stranding the user on a loading card. (Dismissal caused by a row
-            // tap has already moved on to the download.)
-            if (forDownload && !playbackCommitted && !isFinishing) finish()
+            // stranding the user on a loading card. A row tap is NOT a back-out
+            // — it has already set [serverPickActed] and moved on to the
+            // download sheet, which must be allowed to finish (that flow leaves
+            // the player itself, via leaveAfterDownloadPick, once the task is
+            // queued or the pick is abandoned).
+            if (forDownload && !serverPickActed && !playbackCommitted && !isFinishing) finish()
         }
         val baseHint = if (forDownload) {
             I18n.t("Pick the server to download from \u2014 nothing starts playing.")
@@ -6448,6 +6472,10 @@ class PlayerActivity : ComponentActivity() {
     /** Offers the two download destinations: an in-app copy kept for offline
      *  viewing, or a copy dropped into the phone's Downloads folder. */
     private fun showDownloadDialog() {
+        // A queued tap can arrive after the player has already been closed (the
+        // download flow finishes it as soon as its task is queued): showing a
+        // sheet then would be a window on a dead Activity.
+        if (isFinishing || isDestroyed) return
         val src = sources.getOrNull(currentIndex)
         if (src == null || src.url.isBlank() || src.isTorrent || src.torrentStream) {
             Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
@@ -6455,6 +6483,11 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val label = episodeLabel()
+        // Backing out of this sheet in download-pick mode means the whole
+        // download was abandoned: close the player rather than leaving the user
+        // on a screen playing nothing. A row tap sets [picked] first, so the
+        // dismiss it causes doesn't close the player out from under the flow.
+        var picked = false
         showGlassMenu(
             "Download",
             listOf(
@@ -6471,7 +6504,11 @@ class PlayerActivity : ComponentActivity() {
                 "Where do you want to save this video?",
             hint = "The in-app copy plays without internet.",
             iconRes = R.drawable.ic_download,
+            onDialog = { dlg ->
+                dlg.setOnDismissListener { if (!picked && downloadPickMode) leaveAfterDownloadPick() }
+            },
         ) { which ->
+            picked = true
             chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
         }
     }
@@ -6553,12 +6590,17 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
         }
+        var picked = false
         showGlassMenu(
             I18n.t("Choose quality"),
             options,
             hint = I18n.t("Used only for this download."),
             iconRes = R.drawable.ic_quality,
+            onDialog = { dlg ->
+                dlg.setOnDismissListener { if (!picked && downloadPickMode) leaveAfterDownloadPick() }
+            },
         ) { which ->
+            picked = true
             if (which == 0) {
                 startDownload(kind, 0, 0L)
             } else {
@@ -6617,7 +6659,14 @@ class PlayerActivity : ComponentActivity() {
             createdAt = System.currentTimeMillis(),
             resumePartial = false,
         )
-        DownloadsRepository.enqueue(this, task)
+        val queued = runCatching { DownloadsRepository.enqueue(this, task) }
+        if (queued.isFailure) {
+            // Never let a queueing failure take the app down with it; the user
+            // gets a sentence instead.
+            Toast.makeText(this, "Could not start the download.", Toast.LENGTH_SHORT).show()
+            leaveAfterDownloadPick()
+            return
+        }
         requestNotificationPermission()
         Toast.makeText(
             this,

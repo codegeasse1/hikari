@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,6 +58,7 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
+import com.hikari.app.data.Collection
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.Logs
 import com.hikari.app.data.MediaItem
@@ -76,10 +79,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class HomeViewModel(app: Application) : AndroidViewModel(app) {
-    private val manager = (app as HikariApp).providers
+/**
+ * A Home pick is stored as one string in the `homeProvider` preference: either
+ * an extension's id, or — with this prefix — the id of a saved collection. One
+ * preference (and one picker) therefore carries both kinds of choice.
+ */
+private const val COLLECTION_PREFIX = "collection:"
+
+class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val manager = (app as HikariApp).providers
     private val store = (app as HikariApp).store
     private val repo = ContentRepository(manager)
+    private val collections = com.hikari.app.data.CollectionsRepository(manager)
 
     private val _rows = MutableStateFlow<List<CatalogRow>>(emptyList())
     val rows: StateFlow<List<CatalogRow>> = _rows.asStateFlow()
@@ -94,6 +104,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private var loadJob: kotlinx.coroutines.Job? = null
 
+    /** The collection the current feed was built from — lets the collections
+     *  store (edited in Settings) invalidate exactly the affected feed. */
+    private var lastLoadedCollection: Collection? = null
+
     // Last successful home feed per selected-provider key ("all" when the user
     // is on the combined feed). Returning to Home, or re-picking the same
     // provider, paints this INSTANTLY and refreshes in the background instead
@@ -107,21 +121,45 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            // Restore the user's last pick ("All" when never picked).
+            // Restore the user's last pick ("All" when never picked). A pick can
+            // be an installed extension OR a collection ("collection:<id>") —
+            // the same stored preference carries both.
             _selectedProvider.value = store.homeProvider().ifBlank { null }
             loadInternal()
         }
         viewModelScope.launch {
             manager.providers.collect { ps ->
                 val sel = _selectedProvider.value
-                if (sel != null && ps.none { it.config.enabled && it.config.id == sel }) {
+                // Only an EXTENSION pick can be invalidated by the installed
+                // list changing; a collection pick is resolved against the
+                // collections store instead (see loadInternal).
+                if (sel != null && !isCollectionKey(sel) &&
+                    ps.none { it.config.enabled && it.config.id == sel }
+                ) {
                     _selectedProvider.value = null
                     store.setHomeProvider("")
                 }
                 loadInternal()
             }
         }
+        viewModelScope.launch {
+            // Collections are edited in Settings; re-picking the same one from
+            // the picker would otherwise show the OLD folders from the cache.
+            // Watching the store means an edit (or a delete) lands on Home by
+            // itself.
+            store.collectionsFlow().collect { list ->
+                val sel = _selectedProvider.value
+                if (sel == null || !isCollectionKey(sel)) return@collect
+                val current = list.firstOrNull { it.id == collectionIdOf(sel) }
+                if (current != lastLoadedCollection) loadInternal()
+            }
+        }
     }
+
+    /** True when a stored Home pick refers to a collection, not an extension. */
+    private fun isCollectionKey(key: String): Boolean = key.startsWith(COLLECTION_PREFIX)
+
+    private fun collectionIdOf(key: String): String = key.removePrefix(COLLECTION_PREFIX)
 
     fun selectProvider(id: String?) {
         if (_selectedProvider.value == id) return
@@ -132,7 +170,22 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadInternal() {
         loadJob?.cancel()
-        val key = _selectedProvider.value ?: "all"
+        val pick = _selectedProvider.value
+        // A collection pick resolves to a saved collection; when it has been
+        // deleted (or its id is stale) fall back to All instead of leaving the
+        // user on an empty screen.
+        var collection: Collection? = null
+        if (pick != null && isCollectionKey(pick)) {
+            collection = runCatching { store.collection(collectionIdOf(pick)) }.getOrNull()
+            if (collection == null) {
+                _selectedProvider.value = null
+                viewModelScope.launch { store.setHomeProvider("") }
+            }
+        }
+        val pickedCollection = collection
+        val key = if (pickedCollection != null) COLLECTION_PREFIX + pickedCollection.id
+        else (_selectedProvider.value ?: "all")
+        lastLoadedCollection = pickedCollection
         val cached = homeCache[key]
         if (cached != null) {
             // Stale-while-revalidate: show the previous feed immediately (no
@@ -147,9 +200,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         // mid-load used to freeze the app and stop every catalog dead. See
         // [com.hikari.app.work.BackgroundWork].
         val work = com.hikari.app.work.BackgroundWork.begin(
-            if (key == "all") "Loading Home catalogs"
-            else "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
+            when {
+                pickedCollection != null -> "Loading " + pickedCollection.name
+                key == "all" -> "Loading Home catalogs"
+                else -> "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
+            }
         )
+        val loadedCollection = pickedCollection
         loadJob = viewModelScope.launch {
             // Row key -> poster-tokenized copy, so a partial update only
             // tokenizes the rows that just arrived. MRDS/51CG catalogs carry
@@ -158,7 +215,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             // disk-cache token ([PosterLoader.model] resolves it back to bytes).
             val tokenCache = HashMap<String, CatalogRow>()
             var latest: List<CatalogRow> = emptyList()
-            repo.homeRowsStreaming(_selectedProvider.value).collect { rows ->
+            val rowFlow = if (loadedCollection != null) {
+                // A collection's own feed: one row per folder of the collection,
+                // each already merged across that folder's catalogs.
+                collections.collectionRows(loadedCollection)
+            } else {
+                repo.homeRowsStreaming(_selectedProvider.value)
+            }
+            rowFlow.collect { rows ->
                 val tokenized = withContext(Dispatchers.IO) {
                     rows.map { row ->
                         val ck = row.key.ifBlank { "${row.providerId}|${row.catalogId}|${row.title}" }
@@ -222,7 +286,9 @@ fun HomeScreen(nav: NavHostController) {
         it.config.enabled && (it.config.type != com.hikari.app.data.ProviderType.STREMIO ||
             com.hikari.app.providers.StremioAddon.streamOnlyAddons[it.config.id] != true)
     }
-    val selectedName = providers.firstOrNull { it.config.id == selected }?.config?.name
+    // The picker's engine filter ("All", "CloudStream", "Hikari", "Nuvio",
+    // "Stremio"). Purely a narrowing device: it never changes what Home shows.
+    var providerFilter by remember { mutableStateOf<com.hikari.app.data.ProviderType?>(null) }
     var showCrash by remember { mutableStateOf(HikariApp.lastCrash != null) }
     var showPicker by remember { mutableStateOf(false) }
     var showTranslate by remember { mutableStateOf(false) }
@@ -244,6 +310,20 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     val app = context.applicationContext as HikariApp
+    // User-made collections: offered in the same picker as the extensions, and
+    // a collection pick ("collection:<id>") swaps the feed for that
+    // collection's folders.
+    val collectionsFlow = remember { app.store.collectionsFlow() }
+    val collections by collectionsFlow.collectAsState(initial = emptyList())
+    val selectedCollection = collections.firstOrNull { selected == "$COLLECTION_PREFIX${it.id}" }
+    // The picker's label for the current pick: the extension's name, the
+    // collection's name, or nothing (All).
+    val selectedName = providers.firstOrNull { it.config.id == selected }?.config?.name
+        ?: selectedCollection?.name
+    // The header's per-extension actions (translate, Cloudflare verify) and the
+    // "search inside this extension?" prompt only make sense for an extension,
+    // so a collection pick leaves the header in its plain "All" shape.
+    val headerSelection = if (selectedCollection != null) null else selected
     // Continue Watching: history entries that were meaningfully started and
     // aren't within a minute of the end (those read as finished), newest first.
     // IMPORTANT: remember the Flow instances. Building `store.historyFlow()`
@@ -295,7 +375,7 @@ fun HomeScreen(nav: NavHostController) {
     // scoped to the extension you're looking at. With no extension selected
     // there's only one sensible answer, so it goes straight to global search.
     val openSearch: () -> Unit = {
-        if (selected != null) showSearchDialog = true else openGlobalSearch()
+        if (headerSelection != null) showSearchDialog = true else openGlobalSearch()
     }
     val openVerify: () -> Unit = {
         scope.launch {
@@ -397,7 +477,7 @@ fun HomeScreen(nav: NavHostController) {
                             },
                         )
                         HomeHeader(
-                            selected = selected,
+                            selected = headerSelection,
                             onSearch = openSearch,
                             onTranslate = { showTranslate = true },
                             onVerify = openVerify,
@@ -407,7 +487,7 @@ fun HomeScreen(nav: NavHostController) {
                     }
                 } else {
                     HomeHeader(
-                        selected = selected,
+                        selected = headerSelection,
                         onSearch = openSearch,
                         onTranslate = { showTranslate = true },
                         onVerify = openVerify,
@@ -453,20 +533,50 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         },
                         onShowAll = {
-                            Routes.safeNavigate(
-                                nav,
-                                Routes.catalog(
-                                    row.providerId, row.catalogId, row.title,
-                                    row.providerName, row.type, row.rawType
+                            // A collection row is a FOLDER: its "Show All" opens
+                            // the folder (one row per catalog inside it) rather
+                            // than a single extension catalog's grid.
+                            val collection = selectedCollection
+                            if (row.rawType == "collection" && collection != null) {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.collectionView(collection.id, row.catalogId)
                                 )
-                            )
+                            } else {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.catalog(
+                                        row.providerId, row.catalogId, row.title,
+                                        row.providerName, row.type, row.rawType
+                                    )
+                                )
+                            }
                         }
                     )
                 }
             }
             if (rows.isEmpty() && !loading) {
                 item {
-                    if (selected != null) {
+                    val collection = selectedCollection
+                    if (collection != null) {
+                        EmptyState(
+                            title = if (collection.folders.isEmpty()) {
+                                tr("This collection has no folders")
+                            } else {
+                                tr("Nothing loaded from this collection")
+                            },
+                            subtitle = if (collection.folders.isEmpty()) {
+                                tr("Add a folder in Settings → Appearance → Collections."),
+                            } else {
+                                tr(
+                                    "Its folders came back empty. Check the extension sites, or add " +
+                                        "another catalog to a folder."
+                                )
+                            },
+                            actionLabel = tr("Collections"),
+                            action = { Routes.safeNavigate(nav, Routes.COLLECTIONS) },
+                        )
+                    } else if (selected != null) {
                         val reason =
                             com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
                                 ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
@@ -549,7 +659,14 @@ fun HomeScreen(nav: NavHostController) {
     if (showPicker) {
         ProviderPickerSheet(
             providers = activeProviders,
+            collections = collections,
             selectedId = selected,
+            filter = providerFilter,
+            onFilter = { providerFilter = it },
+            onManageCollections = {
+                showPicker = false
+                Routes.safeNavigate(nav, Routes.COLLECTIONS)
+            },
             onPick = { id ->
                 showPicker = false
                 vm.selectProvider(id)
@@ -626,16 +743,31 @@ fun HomeScreen(nav: NavHostController) {
 @Composable
 private fun ProviderPickerSheet(
     providers: List<ContentProvider>,
+    collections: List<Collection>,
     selectedId: String?,
+    filter: ProviderType?,
+    onFilter: (ProviderType?) -> Unit,
+    onManageCollections: () -> Unit,
     onPick: (String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    // Engine filter: every kind that has at least one installed extension, in a
+    // stable order, so a user with dozens of installs can narrow the list to
+    // just their CloudStream plugins, just their Nuvio providers, and so on.
+    val kinds = remember(providers) {
+        providers.map { it.config.type }.distinct().sortedBy { it.groupLabel }
+    }
     // Alphabetical (by extension name), so the picker isn't "install order".
-    val filtered = remember(query) {
-        val sorted = providers.sortedBy { it.config.name.lowercase() }
+    val filtered = remember(providers, query, filter) {
+        val narrowed = providers.filter { filter == null || it.config.type == filter }
+        val sorted = narrowed.sortedBy { it.config.name.lowercase() }
         if (query.isBlank()) sorted
         else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
+    }
+    val shownCollections = remember(collections, query) {
+        if (query.isBlank()) collections
+        else collections.filter { it.name.contains(query, ignoreCase = true) }
     }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 16.dp)) {
@@ -658,11 +790,65 @@ private fun ProviderPickerSheet(
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 modifier = Modifier.fillMaxWidth()
             )
+            // Categories: All first, then one chip per engine that is actually
+            // installed. Picking one only NARROWS the list below.
+            if (kinds.isNotEmpty()) {
+                LazyRow(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item {
+                        FilterChipLine(
+                            label = tr("All"),
+                            selected = filter == null,
+                            onClick = { onFilter(null) },
+                        )
+                    }
+                    items(kinds, key = { it.name }) { kind ->
+                        FilterChipLine(
+                            label = kind.groupLabel,
+                            selected = filter == kind,
+                            onClick = { onFilter(if (filter == kind) null else kind) },
+                        )
+                    }
+                }
+            }
             LazyColumn(
                 Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp, bottom = 24.dp),
             ) {
+                if (shownCollections.isNotEmpty()) {
+                    item {
+                        Text(
+                            tr("Collections").uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+                        )
+                    }
+                    items(shownCollections, key = { "collection|${it.id}" }) { c ->
+                        PickerRow(
+                            label = c.name,
+                            isSelected = selectedId == "$COLLECTION_PREFIX${c.id}",
+                            supporting = if (c.folders.isEmpty()) tr("No folders yet")
+                            else c.folders.joinToString(" · ") { it.name },
+                        ) {
+                            onPick("$COLLECTION_PREFIX${c.id}")
+                        }
+                    }
+                    item {
+                        PickerRow(
+                            label = tr("Manage collections"),
+                            isSelected = false,
+                            onClick = onManageCollections,
+                        )
+                    }
+                    item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
+                }
                 item {
                     PickerRow("All providers", isSelected = selectedId == null) {
                         onPick(null)
@@ -691,8 +877,34 @@ private fun ProviderPickerSheet(
     }
 }
 
+/** One engine chip in the picker ("All", "CloudStream", "Nuvio", …). */
 @Composable
-private fun PickerRow(label: String, isSelected: Boolean, onClick: () -> Unit) {
+private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        modifier = Modifier.padding(vertical = 2.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun PickerRow(
+    label: String,
+    isSelected: Boolean,
+    supporting: String? = null,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),
@@ -704,12 +916,24 @@ private fun PickerRow(label: String, isSelected: Boolean, onClick: () -> Unit) {
             Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                modifier = Modifier.weight(1f)
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!supporting.isNullOrBlank()) {
+                    Text(
+                        supporting,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             if (isSelected) {
                 Icon(
                     Icons.Filled.Check,
@@ -834,3 +1058,4 @@ private fun HomeHeader(
         }
     }
 }
+import androidx.compose.ui.text.style.TextOverflow
