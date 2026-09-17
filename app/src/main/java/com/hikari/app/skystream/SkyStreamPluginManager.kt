@@ -175,6 +175,59 @@ object SkyStreamPluginManager {
         config.type == ProviderType.SKYSTREAM &&
             (config.url.isBlank() || !File(config.url).exists())
 
+    /**
+     * The site a SkyStream extension actually reads: the first real entry in its
+     * plugin.json `domains`, else its `baseUrl`. These extensions have no URL
+     * field of their own (a provider's `url` holds the local plugin.js path), so
+     * this is the only way the Home screen's WebView button can be pointed at
+     * the right place. Null when the manifest declares nothing usable.
+     * BLOCKING (reads plugin.json off disk).
+     */
+    fun siteUrlOf(config: ProviderConfig): String? =
+        siteUrlOf(scriptFile(HikariApp.instance, config.id.removePrefix("sky|")))
+
+    fun siteUrlOf(scriptFile: File): String? {
+        val o = manifestOf(scriptFile) ?: return null
+        runCatching { o.getJSONArray("domains") }.getOrNull()?.let { a ->
+            for (i in 0 until a.length()) {
+                hostUrl(a.optString(i))?.let { return it }
+            }
+        }
+        return hostUrl(o.optString("baseUrl"))
+    }
+
+    /** The bare host of [siteUrlOf] — the key the Cloudflare records use. */
+    fun siteHostOf(scriptFile: File): String? = siteUrlOf(scriptFile)
+        ?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }
+
+    /** The plugin.json sitting next to [scriptFile], or null. */
+    private fun manifestOf(scriptFile: File): JSONObject? = runCatching {
+        val dir = scriptFile.parentFile ?: return@runCatching null
+        val f = File(dir, "plugin.json")
+        if (!f.exists()) return@runCatching null
+        JSONObject(f.readText())
+    }.getOrNull()
+
+    /**
+     * A `https://host/` URL for a manifest-declared site, or null when the entry
+     * is empty/relative/not a real hostname. Placeholder hosts are refused for
+     * the same reason [iconHostOf] refuses them — the community listings ship
+     * `https://stremio-hub.local` for most of their entries.
+     */
+    private fun hostUrl(raw: String): String? {
+        val t = raw.trim()
+        if (t.isBlank()) return null
+        val withScheme = when {
+            t.startsWith("http://") || t.startsWith("https://") -> t
+            t.startsWith("//") -> "https:$t"
+            else -> "https://$t"
+        }
+        val host = runCatching { java.net.URI(withScheme).host?.lowercase() }.getOrNull() ?: return null
+        if (host.isBlank() || !host.contains(".")) return null
+        if (PLACEHOLDER_HOSTS.any { host.contains(it) }) return null
+        return "https://$host/"
+    }
+
     private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**

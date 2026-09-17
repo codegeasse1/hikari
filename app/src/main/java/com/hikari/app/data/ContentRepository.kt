@@ -211,7 +211,7 @@ class ContentRepository(private val manager: ProviderManager) {
     // the full slow-mode multiplier.
     private val SEARCH_PAGE_TIMEOUT_MS get() = minOf(NetTuning.timeout(25_000L), 30_000L)
     private val SEARCH_PROVIDER_BUDGET_MS get() = minOf(NetTuning.timeout(90_000L), 90_000L)
-    private val SEARCH_TOTAL_BUDGET_MS get() = minOf(NetTuning.timeout(100_000L), 100_000L)
+    private val SEARCH_TOTAL_BUDGET_MS get() = minOf(NetTuning.timeout(140_000L), 140_000L)
 
     // ---- Cross-extension fallback ----
     // The SAME title is asked of the other installed extensions (search → best
@@ -268,7 +268,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  which is how servers from a repo the user KNEW had them (MovieBox,
      *  4KHDHub's mirrors, …) stayed missing from the list. Results stream to the
      *  player as they land, so a longer tail costs nothing at play time. */
-    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(70_000L), 70_000L)
+    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(110_000L), 110_000L)
 
     /** Ceiling for PHASE 1 of the pass — asking every installed extension for
      *  the title. The phase ends the moment the last extension has answered, so
@@ -280,7 +280,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  never asked at all — and the pass still reported "all done, none with
      *  servers", which is exactly how a repo the user KNOWS carries the title
      *  went missing. */
-    private val CROSS_EXT_SEARCH_PHASE_MS get() = minOf(NetTuning.timeout(25_000L), 25_000L)
+    private val CROSS_EXT_SEARCH_PHASE_MS get() = minOf(NetTuning.timeout(45_000L), 45_000L)
 
     /** How many searches may still be pending when phase 2 (extraction) is
      *  allowed to start anyway. Searching is cheap next to extracting, so once
@@ -308,7 +308,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  few seconds), while the narrow one keeps only a handful of extractors
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
-    private val CROSS_EXT_SEARCH_CONCURRENCY = 48
+    private val CROSS_EXT_SEARCH_CONCURRENCY = 64
     /** How many extensions may extract at the same time. Six was low enough
      *  that, on a phone with a dozen installed repos, most targets queued behind
      *  the budget and never ran at all; with ~50 installed repos the searches

@@ -398,23 +398,28 @@ fun HomeScreen(nav: NavHostController) {
     }
     val openVerify: () -> Unit = {
         scope.launch {
-            // Prefer the host a search actually got CHALLENGED on: the whole
-            // point of this button is to clear the block that is stopping
-            // content, and that site may belong to a different repo than the one
-            // selected here (see CloudflareVerifier.blockedHost).
-            val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
-            val url = withContext(Dispatchers.IO) {
-                blocked?.let { "https://$it/" }
-                    ?: providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
+            // The globe sits in the SELECTED extension's header, so it opens the
+            // SELECTED extension's own site. It used to prefer the most recently
+            // challenged host in the whole app, which meant picking one
+            // extension and landing on an unrelated site (and, with a stale
+            // record around, on the same wrong site every time). The challenged
+            // host is the fallback, for the case where the selected extension
+            // declares no site of its own.
+            val own = withContext(Dispatchers.IO) {
+                providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
             }
+            val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
+            val url = own ?: blocked?.let { "https://$it/" }
+            val host = own?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }
+                ?: blocked
             if (url != null) {
                 verifyLauncher.launch(
                     Intent(context, WebViewActivity::class.java).apply {
                         putExtra("url", url)
-                        putExtra("title", "Verify: " + (blocked ?: selectedName ?: "site"))
+                        putExtra("title", "Verify: " + (host ?: selectedName ?: "site"))
                         putExtra("providerId", selected)
                         putExtra("autoCloseWhenCloudflarePassed", true)
-                        if (blocked != null) putExtra("verifyHost", blocked)
+                        if (host != null) putExtra("verifyHost", host)
                     }
                 )
             } else {
@@ -591,10 +596,9 @@ fun HomeScreen(nav: NavHostController) {
                                     else "Couldn't load ${selectedName ?: "this extension"}",
                                 subtitle = if (needsVerify) tr(VERIFY_NEEDED_HELP)
                                     else reason
-                                        ?: "It returned no content right now. If the site is stuck behind " +
-                                            "a Cloudflare check, tap the globe button at the top to verify — " +
-                                            "the catalog reloads by itself when you're done. Otherwise the " +
-                                            "site may be down — retry or browse another extension.",
+                                        ?: "Nothing came back from this extension. Retry, or open its " +
+                                            "site in the WebView to check whether it is up — otherwise " +
+                                            "browse another extension.",
                                 actionLabel = if (needsVerify) tr("Open WebView") else tr("Retry"),
                                 action = if (needsVerify) openVerify else vm::refresh
                             )
@@ -1018,6 +1022,11 @@ private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
         p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     ProviderType.HIKARI ->
         com.hikari.app.hiki.HikariRuntime.providerFor(p.config)?.mainUrl
+    // A SkyStream extension's `url` is the LOCAL plugin.js path, so the site it
+    // reads lives in its plugin.json (`domains[0]`, else `baseUrl`). Without
+    // this the globe button had no target at all for these extensions.
+    ProviderType.SKYSTREAM ->
+        com.hikari.app.skystream.SkyStreamPluginManager.siteUrlOf(p.config)
     ProviderType.CS3 -> runCatching {
         val file = java.io.File(p.config.url)
         if (!file.exists()) return@runCatching null
@@ -1043,12 +1052,10 @@ private const val VERIFY_NEEDED_HELP =
  *  back challenged for the very host this provider's site lives on. */
 private fun isVerificationWall(raw: String?, provider: ContentProvider?): Boolean {
     if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(raw)) return true
-    val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost() ?: return false
     val host = provider?.let { webUrlFor(it) }
         ?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }
         ?: return false
-    if (host.isBlank()) return false
-    return host == blocked || host.endsWith(".$blocked") || blocked.endsWith(".$host")
+    return com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)
 }
 
 /** The Home top bar. In [overlay] mode it is drawn on top of the hero banner
@@ -1113,13 +1120,13 @@ private fun HomeHeader(
                 )
             }
         }
-        // Cloudflare/verify: opens the extension's site in the WebView so the
-        // user can pass a WAF check once; the catalog reloads by itself after.
+        // WebView: opens this extension's own site in a WebView — for reading
+        // it directly, and for passing a WAF check once if it does present one.
         if (selected != null) {
             IconButton(onClick = onVerify) {
                 Icon(
                     Icons.Filled.Public,
-                    contentDescription = tr("Open site in web view (Cloudflare verification)"),
+                    contentDescription = tr("Open this extension's site in a web view"),
                     tint = iconTint
                 )
             }

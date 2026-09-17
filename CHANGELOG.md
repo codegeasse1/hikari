@@ -1,3 +1,57 @@
+## 0.5.4
+
+**SkyStream extension catalogs finally load — the real bug was a page-number
+mismatch, not Cloudflare. Hikari also stops blaming Cloudflare for extensions
+whose sites were never challenged.**
+
+- **Why every SkyStream extension said "Couldn't load …" on Home and answered
+  every search in ~5 milliseconds with "no matching title in this repo".** Page
+  numbers are 1-based across Hikari (`page.coerceAtLeast(1)`,
+  `skip=(page-1)*100`, the catalog pager starts at 1), but `SkyStreamProvider`
+  treated `page` as 0-based: `if (page > 0) return emptyList()` and
+  `if (page > 0) return emptyList()`. So the extension's `getHome` DID run and
+  DID return its categories — and then *every single row* was asked for as page
+  1 and instantly answered with an empty list, and every cross-extension search
+  returned an empty list instead of asking the plugin anything. Zero rows, no
+  error recorded, so Home showed its generic "nothing came back" card. Both
+  guards are now `page > 1`; a SkyStream plugin returns a whole row in one call,
+  so page 1 serves it and later pages are empty. (Verified against the real
+  plugins: `dev.akash.stars.animedekho` returns 6 categories / 90 items, and
+  finds 6 results for "Resident Evil" in one fetch.)
+- **The app no longer blames Cloudflare for a site that was never challenged.**
+  `SkyStreamProvider.catalogReason` asked `CloudflareVerifier.blockedHost()` —
+  the most recently challenged host in the *whole app* — so a single blocked site
+  anywhere made EVERY extension's empty catalog read as "Cloudflare wants a
+  verification on this site". It now compares only against the extension's OWN
+  site (read from its plugin.json `domains`/`baseUrl`), and the plain
+  "nothing came back" card no longer mentions Cloudflare at all.
+- **Cloudflare detection stopped firing on healthy pages.** The marker list
+  matched `turnstile`, `hcaptcha`, `cf-chl`, `access denied` and
+  `request blocked`, all of which appear on ordinary pages (a site that embeds a
+  captcha widget, a CDN's own 403, a footer). Any such page got recorded as a
+  challenged host, which poisoned the globe button, the catalog reason and the
+  source probe. Only genuinely Cloudflare-specific markers remain
+  (`just a moment`, `challenge-platform`, `cf_chl_opt`, `cf-error-details`,
+  `error 1020`, …).
+- **The globe button opens the extension you actually selected.** It preferred
+  the app-wide most-recently-challenged host, so it routinely opened an unrelated
+  site. It now opens the selected extension's own site, and SkyStream extensions
+  finally have one: their `url` is a local file path, so the site is read from
+  their plugin.json (`domains[0]`/`baseUrl`).
+- **A failed lookup says so instead of "no matching title".** When the plugin
+  file is missing or the engine returns nothing readable, Home and the sources
+  sheet now report that exact reason ("extension file missing — reinstall this
+  extension", "extension did not answer search() — check Logs") rather than
+  letting it read as "this repo doesn't carry the show". A stored plugin path
+  that no longer resolves also falls back to the canonical
+  `skystream/plugins/<packageName>/plugin.js` location instead of being declared
+  broken.
+- **The cross-extension sweep gets through more of the list.** With 245 installed
+  targets the pass hit its ceiling with 83 repos never asked: the search phase
+  goes 25s → 45s, the sweep 70s → 110s, the overall search budget 100s → 140s,
+  and search concurrency 48 → 64. Results still stream in as they land, so
+  nothing is slower to watch.
+
 ## 0.5.3
 
 **Search can no longer get stuck on "finding server", the provider chips and list

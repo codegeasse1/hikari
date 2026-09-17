@@ -58,12 +58,55 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_EPISODES = 800
         private const val MAX_STREAMS = 60
         private const val HOME_TTL_MS = 8 * 60 * 1000L
+
+        /** What Home says when this extension's site really is challenged. */
+        private const val CF_REASON =
+            "Cloudflare wants a verification on this site — tap the globe button at the top, then retry."
     }
 
     /** `sky|<packageName>` → the plugin's package name (also its manifest id). */
     private val packageName: String get() = config.id.removePrefix("sky|")
 
-    private val scriptFile: File get() = File(config.url)
+    /**
+     * The plugin's script. `config.url` holds the absolute path captured at
+     * install time; if that no longer resolves (a restored backup, a moved data
+     * dir, an app the OS relocated) fall back to the canonical location the
+     * manager writes to — `filesDir/skystream/plugins/<packageName>/plugin.js`.
+     * Reporting the extension as broken when its file is right there under the
+     * name it was installed with is never the right answer.
+     */
+    private val scriptFile: File get() {
+        val stored = File(config.url)
+        if (stored.exists()) return stored
+        val canonical = SkyStreamPluginManager.scriptFile(HikariApp.instance, packageName)
+        return if (canonical.exists()) canonical else stored
+    }
+
+    /**
+     * Why the last [invoke] produced nothing (file missing, unreadable payload).
+     * SkyStream's plugin API is one call per function with no pagination, so
+     * the ONLY honest way Home and search can tell "this extension is broken"
+     * apart from "this extension carries no such title" is to carry the real
+     * reason out of here instead of returning a bare null.
+     */
+    @Volatile
+    private var lastFailure: String? = null
+
+    /** This extension's own site host (`domains[0]`, else `baseUrl` from its
+     *  plugin.json), read once. Cloudflare is only ever blamed on this host. */
+    @Volatile
+    private var siteHostRead = false
+
+    @Volatile
+    private var siteHostValue: String? = null
+
+    private fun siteHost(): String? {
+        if (!siteHostRead) {
+            siteHostValue = runCatching { SkyStreamPluginManager.siteHostOf(scriptFile) }.getOrNull()
+            siteHostRead = true
+        }
+        return siteHostValue
+    }
 
     /** One plugin call at a time per provider: `getHome` is expensive (~1-3s of
      *  a fresh engine + the site's home page) and the dashboard asks for the
@@ -85,17 +128,24 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
     private val instantStreams = ConcurrentHashMap<String, List<StreamSource>>()
 
     private suspend fun invoke(fn: String, args: List<String>): JSONObject? = withContext(Dispatchers.IO) {
-        if (scriptFile.exists().not()) return@withContext null
+        val file = scriptFile
+        if (!file.exists()) {
+            lastFailure = "extension file missing — reinstall this extension"
+            return@withContext null
+        }
         val argsJson = JSONArray().apply { args.forEach { put(it) } }.toString()
-        if (!scriptFile.exists()) return@withContext null
         val payload = SkyStreamRuntime.invoke(
             HikariApp.instance,
             packageName,
-            scriptFile,
+            file,
             fn,
             argsJson,
         )
-        runCatching { JSONObject(payload) }.getOrNull()
+        val parsed = runCatching { JSONObject(payload) }.getOrNull()
+        lastFailure = if (parsed == null) {
+            "extension did not answer ${fn}() — check Logs"
+        } else null
+        parsed
     }
 
     private fun fail(msg: String): List<StreamSource> {
@@ -115,7 +165,14 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            if (page > 0) return@withContext emptyList()
+            // Page numbers are 1-BASED across Hikari (see ContentProvider and
+            // every other provider: `page.coerceAtLeast(1)`, `skip=(page-1)*100`).
+            // Treating page 1 as "not the first page" here made every SkyStream
+            // row come back empty the instant it was asked for, which is why
+            // these extensions showed "Couldn't load …" on Home and answered
+            // every cross-search in ~5ms with "no matching title". A SkyStream
+            // plugin returns its whole row in ONE call, so only page 1 has items.
+            if (page > 1) return@withContext emptyList()
             val home = home() ?: return@withContext emptyList()
             val name = ref.id.removePrefix("cat:")
             val arr = home.categories.firstOrNull { it.first == name }?.second
@@ -134,7 +191,8 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
             if (again != null && System.currentTimeMillis() - again.at < HOME_TTL_MS) return@withLock again
             val res = invoke("getHome", emptyList())
             if (res == null) {
-                catalogErrors[config.id] = "This extension did not answer (it may have crashed — check Logs)."
+                catalogErrors[config.id] = "Home failed: " +
+                    (lastFailure ?: "this extension did not answer (it may have crashed — check Logs).")
                 return@withLock null
             }
             if (!res.optBoolean("ok", false)) {
@@ -165,20 +223,28 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
     /**
      * Why this extension produced no catalog, in Hikari's own words.
      *
-     * A Cloudflare challenge is by far the most common cause and the most
-     * misleading one: the extension's site answers a plain HTTP client with a
-     * "Just a moment…" interstitial, the plugin parses that page as if it were a
-     * catalog and reports SUCCESS with zero items — so Home used to say "no
-     * catalog" for a site that was only waiting for a verification tap. Say that
-     * instead, and point at the globe button (the verify WebView's clearance is
-     * now reused by these fetches — see SkyStreamRuntime's OkHttp client).
+     * Cloudflare is named ONLY when it is genuinely the reason: this
+     * extension's own site is a host we could not pass a challenge on, or the
+     * plugin's own error text says it hit a verification wall. Otherwise the
+     * extension's real error is surfaced verbatim — a site that is down, a
+     * plugin that crashed and an extension that really has no catalog are three
+     * different stories, and telling the user the wrong one sends them to a
+     * WebView that cannot help. (The old version asked
+     * `CloudflareVerifier.blockedHost()` — the most recently challenged host in
+     * the whole app — so one blocked site anywhere made every extension's
+     * failure read as a Cloudflare wall.)
      */
     private fun catalogReason(err: String?, empty: Boolean): String {
         val e = err.orEmpty()
-        val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
-        if (blocked != null || com.hikari.app.net.CloudflareVerifier.isVerificationMessage(e)) {
-            return "Cloudflare wants a verification on this site — tap the globe button at the top, then retry."
-        }
+        // Cloudflare is named ONLY when this extension's OWN site is the host
+        // that was challenged (or its own error text says so). The old check
+        // asked `blockedHost()` — the most recently challenged host in the
+        // WHOLE app — so one blocked site anywhere made every extension's empty
+        // catalog read as "Cloudflare wants a verification", extensions that
+        // were never behind a challenge included.
+        if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(e)) return CF_REASON
+        val host = siteHost()
+        if (host != null && com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)) return CF_REASON
         if (e.isNotBlank()) return "Home failed: $e"
         return if (empty) "This extension returned an empty catalog (its site may have changed)."
         else "Home failed."
@@ -188,14 +254,23 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            if (query.isBlank() || page > 0) return@withContext emptyList()
+            // 1-based pages — see [getCatalog].
+            if (query.isBlank() || page > 1) return@withContext emptyList()
             val res = invoke("search", listOf(query))
             if (res == null || !res.optBoolean("ok", false)) {
-                res?.optString("error")?.takeIf { it.isNotBlank() }?.let {
-                    catalogErrors[config.id] = "Search failed: $it"
-                }
+                // A search that never ran must never be reported as "this repo
+                // has no such title" — say what actually happened.
+                val why = res?.optString("error")?.takeIf { it.isNotBlank() }
+                    ?: lastFailure
+                    ?: "the extension returned an unreadable result"
+                catalogErrors[config.id] = "Search failed: $why"
+                lastOutcome[config.id] = "✗ $why".take(80)
                 return@withContext emptyList()
             }
+            // It answered: any note left by an earlier failure of this pass is
+            // stale, and carrying it forward is what made a healthy repo read
+            // back as "couldn't be searched".
+            lastOutcome.remove(config.id)
             val data = res.opt("data")
             val arr = when (data) {
                 is JSONArray -> data

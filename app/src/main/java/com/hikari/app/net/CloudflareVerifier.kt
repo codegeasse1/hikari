@@ -56,39 +56,37 @@ object CloudflareVerifier {
             if (server != null && server.contains("cloudflare")) return true
         }
         if (bodyText.isEmpty()) return false
-        return HARD_BLOCK_MARKERS.any { bodyText.contains(it) } ||
-            CHALLENGE_MARKERS.any { bodyText.contains(it) }
+        return CF_MARKERS.any { bodyText.contains(it) }
     }
 
-    /** Body markers that mean a Cloudflare response is a HARD WAF block
-     *  ("Sorry, you have been blocked") rather than a solvable challenge. A
-     *  block can never be passed by the verify WebView — no cf_clearance will
-     *  ever be minted — so attempting to solve one would only waste time and
-     *  leave the request stuck on the blocked page. */
-    private val HARD_BLOCK_MARKERS = listOf(
-        "you have been blocked",
-        "sorry, you have been blocked",
-        "access denied",
-        "request blocked",
-        "cf-error-details",
-        "error 1020",
-        "cf-error-code",
-    )
-
-    /** Body markers that mean the response is a genuine solvable WAF challenge
-     *  (managed challenge / Turnstile) the verify WebView can actually pass. */
-    private val CHALLENGE_MARKERS = listOf(
+    /**
+     * Body markers that mean the response really IS a Cloudflare interstitial —
+     * a managed challenge ("Just a moment…", `challenge-platform`, `cf_chl_opt`)
+     * or a hard WAF block ("you have been blocked", `cf-error-details`).
+     *
+     * Deliberately EXCLUDES the loose strings an ordinary page can carry:
+     * `turnstile`, `hcaptcha`, `cf-chl` and `access denied`/`request blocked`
+     * all appear on perfectly healthy pages (a site that embeds a Turnstile or
+     * hCaptcha widget, a CDN's own 403, a copy-pasted footer), and matching them
+     * made Hikari record the site as "challenged" — which is how a working
+     * extension ended up reported as "Cloudflare wants a verification on this
+     * site". Every real CF interstitial above also carries `challenge-platform`
+     * or `cf-error-*`, so nothing genuine is lost.
+     */
+    private val CF_MARKERS = listOf(
         "just a moment",
         "attention required",
-        "challenges.cloudflare.com",
-        "challenge-platform",
-        "cf-chl",
-        "cf_chl_opt",
-        "turnstile",
-        "hcaptcha",
-        "verify you are human",
         "checking your browser",
         "performing security verification",
+        "verify you are human",
+        "challenge-platform",
+        "cf_chl_opt",
+        "cf-chl-opt",
+        "cf_chl_",
+        "you have been blocked",
+        "cf-error-details",
+        "cf-error-code",
+        "error 1020",
     )
 
     /** Peeks the first 64 KiB of the response body (without consuming it, so
@@ -222,6 +220,27 @@ object CloudflareVerifier {
             .filter { now - it.value <= maxAgeMs }
             .maxByOrNull { it.value }
             ?.key
+    }
+
+    /**
+     * True when [host] itself — not some unrelated site — is one we could not
+     * pass a challenge on inside [maxAgeMs]. The comparison is exact-or-subdomain
+     * in both directions, so `www.example.com` and `example.com` count as the
+     * same site while a different host never does.
+     *
+     * This is what lets a provider's empty catalog be blamed on Cloudflare only
+     * when that provider's OWN site was the one challenged: the UI used to ask
+     * [blockedHost] (the most recently challenged host in the entire app), so a
+     * single blocked site made every extension's failure read as a Cloudflare
+     * wall — including extensions that never saw a challenge.
+     */
+    fun isBlockedHost(host: String?, maxAgeMs: Long = VERIFY_WINDOW_MS): Boolean {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return false
+        val now = System.currentTimeMillis()
+        return blockedHosts.entries.any { (b, at) ->
+            now - at <= maxAgeMs && (h == b || h.endsWith(".$b") || b.endsWith(".$h"))
+        }
     }
 
     /** Drops a host's blocked record (called once its clearance is in hand). */
