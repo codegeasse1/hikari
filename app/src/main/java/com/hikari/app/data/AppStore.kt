@@ -546,7 +546,10 @@ class AppStore(private val ctx: Context) {
      * at launch, again whenever a plugin's settings sheet closes, and whenever
      * this switch changes.
      *
-     * ON leaves those extensions alone (and flips the known toggles on), for the
+     * ON stops the forcing and nothing else: every read answers whatever the
+     * extension stored, and the extension's own switch keeps its own value. It
+     * deliberately does NOT write `true` into those switches — that would turn
+     * the very page this setting exists to prevent ON, and leave it on. For the
      * rare case where an extension only works through its own bypass screen.
      */
     fun extensionVerifyWebviewFlow(): Flow<Boolean> =
