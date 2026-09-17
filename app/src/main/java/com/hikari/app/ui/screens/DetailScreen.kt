@@ -1359,8 +1359,12 @@ fun DetailScreen(
                     val note = buildString {
                         append("No playable server found after searching $enabledN ")
                         append(if (enabledN == 1) "extension" else "extensions")
-                        if (enabledN < installedN) {
-                            append(" — only $enabledN of your $installedN installed extensions are enabled")
+                        // Only worth saying when a real number of extensions is
+                        // switched off — "only 256 of your 257" is noise, and it
+                        // made a normal empty result read like a configuration
+                        // problem.
+                        if (installedN - enabledN >= 5) {
+                            append(" — ${installedN - enabledN} of your installed extensions are turned off")
                         }
                         // Across the whole pass: how many extensions were asked,
                         // how many answered with servers, and why the rest came

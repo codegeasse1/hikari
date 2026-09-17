@@ -1,4 +1,29 @@
-## 0.5.5
+## 0.5.6
+
+**The last pieces of Cloudflare wording are gone, the "no playable server"
+note stops nagging, and this build is published as a real release so the update
+button finds it.**
+
+- **Settings no longer names Cloudflare.** The WebView user-agent card said
+  "Some sites (Cloudflare) block the WebView…" and "Stock Android WebView UA —
+  passes Cloudflare checks"; both now describe the same behaviour without the
+  company name. The extension verification-pages card no longer says extensions
+  "ship their own Cloudflare verification page", and the `.hiki` install dialog
+  no longer advertises "Cloudflare solvers".
+- **"No playable server found" keeps quiet about one disabled extension.** The
+  message appended "— only 256 of your 257 installed extensions are enabled",
+  which reads like a broken configuration when a single extension is switched
+  off. That clause now appears only when 5 or more installed extensions are
+  turned off, and it says so plainly ("3 of your installed extensions are turned
+  off").
+- **Published as a versioned release.** Every earlier 0.5.x build existed only as
+  a CI artifact, while the update button and the releases page still pointed at
+  the older main-line build — so installing "the latest APK" from those places
+  handed back the old code and every fixed bug looked unfixed. 0.5.6 is the
+  first build published to the releases feed, so `Settings → Update` (and
+  `github.com/codegeasse1/hikari/releases`) now serve this one.
+
+
 
 **Extensions that need a browser verification are skipped instead of searched,
 the "stopped early" line is gone, and the engine filter chips are compact.**

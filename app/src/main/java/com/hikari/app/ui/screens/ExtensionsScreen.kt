@@ -2153,8 +2153,8 @@ fun ExtensionsScreen() {
                         tr(
                             "Paste a direct link to a compiled Hikari extension (.hiki). " +
                                 "Extensions run against Hikari's own SDK — no CloudStream " +
-                                "dependencies, Cloudflare solvers and WebView stream capture " +
-                                "built in. See docs/HIKARI_EXTENSIONS.md."
+                                "dependencies, no separate solver add-ons, with WebView " +
+                                "stream capture built in. See docs/HIKARI_EXTENSIONS.md."
                         )
                     )
                     Spacer(Modifier.height(8.dp))
