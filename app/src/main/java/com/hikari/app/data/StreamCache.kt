@@ -37,6 +37,13 @@ object StreamCache {
     fun get(key: String): Entry? = entries[key]
 
     fun put(key: String, list: List<StreamSource>) {
+        // An EMPTY result is never cached. It says nothing about the next lookup
+        // (a provider that timed out is simply asked again — see
+        // ContentRepository.searchBestMatch), and serving that emptiness back as
+        // a hit for the whole TTL is what made the second and third Play taps of
+        // the same title answer "no playable source" without a single provider
+        // being asked. A dead list must never be remembered as an answer.
+        if (list.isEmpty()) return
         entries[key] = Entry(System.currentTimeMillis(), list)
         if (entries.size > MAX_ENTRIES) {
             entries.entries

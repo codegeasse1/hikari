@@ -505,11 +505,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // A fresh list is safe to mirror onto the live feed, because those
             // signed links still work.
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
-            if (!force && (cached.list.isEmpty() || fresh)) {
+            // Only a FRESH, NON-EMPTY list is trusted without asking anyone. An
+            // empty entry can no longer exist (StreamCache.put refuses to store
+            // one), but the guard stays explicit: serving emptiness back as a
+            // "hit" is exactly the bug that made the next taps of the same title
+            // fail instantly instead of searching.
+            if (!force && fresh && cached.list.isNotEmpty()) {
                 com.hikari.app.data.Logs.log(
                     "Search",
-                    "cache hit \"${item.title}\" (${if (fresh) "fresh" else "empty"}) " +
-                        "→ ${cached.list.size} servers",
+                    "cache hit \"${item.title}\" (fresh) → ${cached.list.size} servers",
                 )
                 _liveStreams.value = cached.list
                 return cached.list
@@ -523,11 +527,34 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // the feed instead, and the player's title card covers the wait.
             // Callers that track their own "ready" state are still told what we
             // are holding, so the Play button never stalls on a stale entry.
+            // (The one thing allowed onto the feed before the search starts is
+            // the list that really worked here a few minutes ago — see the block
+            // below. That one is backed by an actual play, not by a timestamp.)
             com.hikari.app.data.Logs.log(
                 "Search",
-                "cache stale/forced \"${item.title}\" — re-extracting",
+                "cache " + (if (force) "forced" else if (cached.list.isEmpty()) "empty" else "stale") +
+                    " \"${item.title}\" — re-extracting",
             )
             if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
+        }
+        // The server that worked for this exact title+episode minutes ago goes
+        // onto the feed BEFORE the search below starts, so a Play tap begins
+        // playing instead of waiting out a fresh sweep — the servers the
+        // extraction finds replace them the moment it answers. Skipped when the
+        // caller FORCED the lookup (the player asking for fresh sources because
+        // every server it had is dead): putting those same links back would be a
+        // failover loop. See [ContentRepository.recentlyFoundStreams].
+        if (!force) {
+            val recent = repo.recentlyFoundStreams(item, ep)
+            if (recent.isNotEmpty()) {
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "recent \"${item.title}\" → ${recent.size} server(s) that worked before, " +
+                        "starting on them while the fresh pass runs",
+                )
+                _liveStreams.value = recent
+                onProgress?.invoke(recent)
+            }
         }
         // Someone (another instance of this screen for the same title, or a
         // prefetch that is still running) already owns this extraction: join it

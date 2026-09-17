@@ -847,6 +847,24 @@ class ContentRepository(private val manager: ProviderManager) {
         }
     }
 
+    /**
+     * Servers a RECENT pass produced for this exact title+episode, while they are
+     * still inside the remember window ([REMEMBERED_STREAMS_TTL_MS]).
+     *
+     * A hint for instant play, never a substitute for the fresh pass: the caller
+     * puts these on the live feed so a Play tap can start on the server that
+     * worked minutes ago, and the extraction that is already running replaces
+     * them as soon as it answers (see [streamsRemembered], which only ever holds
+     * NON-empty results — a lookup that found nothing remembers nothing). Empty
+     * when there is no recent success, or when the record has aged out, because
+     * these servers hand out signed links that rotate.
+     */
+    fun recentlyFoundStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
+        val record = streamsRemembered[streamsRememberedKey(item, episode)] ?: return emptyList()
+        if (System.currentTimeMillis() - record.at >= REMEMBERED_STREAMS_TTL_MS) return emptyList()
+        return record.list
+    }
+
     private suspend fun streamsForInner(
         item: MediaItem,
         episode: Episode?,

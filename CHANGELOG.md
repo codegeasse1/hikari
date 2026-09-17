@@ -1,3 +1,9 @@
+## 0.5.7
+
+Fixed:
+- Tapping Play again no longer answers "no playable source" without searching. A search that found nothing used to be remembered for a few minutes, so the next taps skipped the search and failed instantly. Every tap searches now.
+- A video you just played starts immediately the next time you open it — on the server that worked — while the search for fresh servers runs behind it.
+
 ## 0.5.6
 
 First release since 0.3.71, so a lot of this is new to you — the builds in between were test builds and never went out.
