@@ -3739,23 +3739,21 @@ class PlayerActivity : ComponentActivity() {
                 val total = ContentRepository.crossInstalled[e.key]
                 if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
             }
-        // Cloudflare verdicts are dropped: an extension's own wording
-        // ("Cloudflare blocked. Go to Settings 'n Bypass Cloudflare.") is not
-        // something to read in the server chooser — the Home screen reports a
-        // verification wall in Hikari's own words instead.
+        // Cloudflare verdicts are dropped, and so is anything that describes how
+        // far the PASS got rather than what a repo said (see
+        // [ContentRepository.CROSS_QUIET_BUCKETS]): the pass is time-bounded, so
+        // a tail of slow repos is normal, and putting that on screen as
+        // "stopped early (131 never finished)" reads as a broken search even
+        // when every repo that answered did so normally. The raw extension
+        // Cloudflare wording ("Cloudflare blocked. Go to Settings 'n Bypass
+        // Cloudflare.") is likewise not something to read in a server chooser.
         val allVerdicts = ContentRepository.crossVerdict.values.toList()
         val verdicts = allVerdicts.filterNot {
-            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it.substringAfter(" — ", it))
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it.substringAfter(" — ", it)) ||
+                ContentRepository.crossReasonBucket(it.substringAfter(" — ", it)) in
+                ContentRepository.CROSS_QUIET_BUCKETS
         }
-        val unfinished = verdicts.count {
-            val b = ContentRepository.crossReasonBucket(it.substringAfter(" — ", it))
-            b == "not reached (pass ended)" || b == "unfinished"
-        }
-        val state = when {
-            running > 0 -> "$running still searching"
-            unfinished > 0 -> "stopped early ($unfinished never finished)"
-            else -> "all done"
-        }
+        val state = if (running > 0) "$running still searching" else "done"
         val servers = if (found > 0) ", $found with servers" else ", none with servers"
         // When nothing came back, say WHAT the pass ran into, counted by kind —
         // "200 no such title, 28 could not load" answers "was it even asked? did

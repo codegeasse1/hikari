@@ -46,6 +46,17 @@ provider look permanently empty (this exact off-by-one made every installed
 SkyStream extension report "Couldn't load …" on Home and answer every search in
 5ms with "no matching title").
 
+## Extensions behind a verification wall are skipped silently
+
+If an extension answers with a browser-verification wall (its own error text is
+a challenge page, or its declared site is a host that already answered a
+challenge we could not pass), Hikari does **not** search it again for the rest
+of the session: no search slot, no cold plugin load, no entry in the server
+chooser's progress line, and no message about the block anywhere in the UI. The
+record expires after 10 minutes, so an extension becomes askable again on its
+own. The globe (WebView) button still opens the extension's own site if the user
+wants to look.
+
 ## The SDK helpers (`HikariNet`)
 
 ```kotlin

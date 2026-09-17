@@ -571,15 +571,13 @@ fun HomeScreen(nav: NavHostController) {
                                 ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
                                 ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[selected]
                                 ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[selected]
-                        // A verification wall is the one failure worth naming on
-                        // screen: the user picked this provider, so this is where
-                        // telling them what to do actually helps. Everywhere else
-                        // (per-extension diagnostics, the server chooser, the
-                        // player) the raw extension wording is dropped — see
-                        // CloudflareVerifier.isVerificationMessage.
-                        val needsVerify = isVerificationWall(
-                            reason, providers.firstOrNull { it.config.id == selected }
-                        )
+                        // No verification/Cloudflare story is ever told here: a
+                        // provider whose site answers with a challenge is simply
+                        // left out of searches (see ContentRepository.crossCfSkip),
+                        // and naming the wall on screen only added a scary,
+                        // unactionable message about a different site. The empty
+                        // state stays generic and the globe button (which opens
+                        // this extension's own site) is still one tap away.
                         val streamOnly =
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
                         if (streamOnly) {
@@ -592,15 +590,15 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         } else {
                             EmptyState(
-                                title = if (needsVerify) tr("Verification needed")
-                                    else "Couldn't load ${selectedName ?: "this extension"}",
-                                subtitle = if (needsVerify) tr(VERIFY_NEEDED_HELP)
-                                    else reason
-                                        ?: "Nothing came back from this extension. Retry, or open its " +
-                                            "site in the WebView to check whether it is up — otherwise " +
-                                            "browse another extension.",
-                                actionLabel = if (needsVerify) tr("Open WebView") else tr("Retry"),
-                                action = if (needsVerify) openVerify else vm::refresh
+                                title = "Couldn't load ${selectedName ?: "this extension"}",
+                                subtitle = reason?.takeIf {
+                                    !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it)
+                                }
+                                    ?: "Nothing came back from this extension. Retry, or open its " +
+                                        "site in the WebView to check whether it is up — otherwise " +
+                                        "browse another extension.",
+                                actionLabel = tr("Retry"),
+                                action = vm::refresh,
                             )
                         }
                     } else {
@@ -820,8 +818,8 @@ private fun ProviderPickerSheet(
                 LazyRow(
                     Modifier
                         .fillMaxWidth()
-                        .padding(top = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     item {
                         FilterChipLine(
@@ -903,7 +901,10 @@ private fun ProviderPickerSheet(
 
 /** One engine chip in the picker ("All", "CloudStream", "Nuvio", …) — a glass
  *  pill, so the filter row reads as part of the same roundy material as the
- *  rows below it instead of flat grey blocks. */
+ *  rows below it instead of flat grey blocks. Deliberately COMPACT: the row
+ *  carries one chip per installed engine (up to a handful), so a big pill
+ *  pushed the last ones off the right edge and made the filter look like a
+ *  primary action instead of a small narrowing control. */
 @Composable
 private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit) {
     val glass = rememberGlassTokens()
@@ -932,11 +933,11 @@ private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelSmall,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
         )
     }
 }
@@ -1035,27 +1036,6 @@ private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
             ?.takeIf { it.startsWith("http") }
     }.getOrNull()
     else -> null
-}
-
-/** What Hikari says when a provider's own error is a Cloudflare / "verify you
- *  are human" wall. Shown ONLY here on Home (and in the extensions list), and
- *  deliberately in Hikari's words rather than the extension's: the raw text
- *  ("Cloudflare blocked. Go to Settings 'n Bypass Cloudflare.") is a message
- *  about a different app's settings screen and means nothing here. */
-private const val VERIFY_NEEDED_HELP =
-    "This provider's site is behind a Cloudflare human-verification page, so it can't be loaded " +
-        "directly. Tap the WebView (globe) icon and complete the verification — the catalog " +
-        "reloads by itself once you're through."
-
-/** True when a provider's catalog failed because of a Cloudflare verification
- *  wall: either the extension said so in its own words, or the request came
- *  back challenged for the very host this provider's site lives on. */
-private fun isVerificationWall(raw: String?, provider: ContentProvider?): Boolean {
-    if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(raw)) return true
-    val host = provider?.let { webUrlFor(it) }
-        ?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }
-        ?: return false
-    return com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)
 }
 
 /** The Home top bar. In [overlay] mode it is drawn on top of the hero banner

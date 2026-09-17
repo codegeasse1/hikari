@@ -177,13 +177,13 @@ object StreamProbe {
     suspend fun resolve(url: String, headers: Map<String, String>): Resolved? =
         withContext(Dispatchers.IO) {
             if (url.isBlank()) return@withContext null
-            // A host already known to answer with an unsolved Cloudflare
-            // challenge is not worth a probe: the wrapper HEAD/GET would come
-            // back as the interstitial, the walk would burn its deadline, and
-            // the caller would stall the "Searching servers…" pass for nothing.
-            // Skip it here (WITHOUT caching anything — the host may well be
-            // fine once the user's own verify WebView has earned a clearance).
-            if (CloudflareVerifier.needsVerification(url)) return@withContext null
+            // A "needs a browser check" record is deliberately NOT used to
+            // refuse a probe any more. It is a guess made from an earlier
+            // response, and refusing on it meant a server that had already
+            // played could stop resolving minutes later for no visible reason
+            // (the caller just gets null → "Playback failed"). The walk below
+            // already detects a real challenge for itself and records it, so
+            // nothing is lost by trying.
             ensureLoaded()
             cache[url]?.let { return@withContext it }
             val mine = CompletableDeferred<Resolved?>()
@@ -271,10 +271,6 @@ object StreamProbe {
     suspend fun warm(sources: List<StreamSource>) {
         val targets = sources
             .filter { it.url.isNotBlank() && needsResolve(it.url, it.isTorrent, it.isM3u8, it.isMpd) }
-            // Never warm a host that needs the user's own verification: the
-            // probe could only fetch the interstitial, and the wasted walk
-            // would delay the sources that CAN resolve.
-            .filter { !CloudflareVerifier.needsVerification(it.url) }
         if (targets.isEmpty()) return
         ensureLoaded()
         val pending = targets.filter { cache[it.url] == null }

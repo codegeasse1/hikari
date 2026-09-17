@@ -1,3 +1,46 @@
+## 0.5.5
+
+**Extensions that need a browser verification are skipped instead of searched,
+the "stopped early" line is gone, and the engine filter chips are compact.**
+
+- **No more "stopped early".** The server chooser's progress line said
+  `… — stopped early (131 never finished)` whenever the time-bounded pass ended
+  while slow repos were still answering — which reads as a broken search even
+  when every repo that answered did so normally. How far the *pass* got is no
+  longer reported at all: the line now says how many repos were asked, how many
+  found servers, and (when nothing came back) what the repos actually said. Same
+  for the "no playable server found" summary, which used to read
+  `asked 242 · 131 unfinished · 107 no such title`. The one other place that
+  printed the phrase ("The search stopped early (X)") now says "The search hit a
+  problem (X)".
+- **Extensions behind a verification wall are skipped instantly — never
+  searched, never reported.** `ContentRepository.crossCfSkip` records any
+  extension whose own error is a browser-verification message, and every later
+  pass drops it before a search slot (or a cold plugin load) is spent on it. It
+  is left out of the chooser's count, gets no verdict, and produces no log line
+  in the user's face — because the block is not worth searching around and not
+  something to read in a server list. SkyStream extensions, which declare their
+  site in their manifest, are also filtered up front when that host is already
+  known to answer with a challenge.
+- **All Cloudflare wording is gone from the UI.** The playback-failed panel no
+  longer appends *"Cloudflare check needed on ‹host› — open a source or use the
+  globe button to verify"*, the Home empty state no longer shows a
+  "Verification needed" card, the extensions list no longer prints "Site needs a
+  Cloudflare verification", and the Stremio addon's own manifest error no longer
+  names Cloudflare. The globe (WebView) button stays, described simply as
+  opening the extension's site.
+- **A title that played once never comes back empty.** A repeat lookup of the
+  same title+episode is normally a fresh, cold, time-bounded sweep, so it could
+  come back with nothing minutes after the user watched that title with a full
+  server list — "no playable sources" right after a successful play. Servers a
+  recent pass actually produced are now remembered for 15 minutes and stand in
+  when a new pass finds nothing; any fresh non-empty result replaces them
+  (`ContentRepository.streamsRemembered`).
+- **The engine filter chips are compact.** "All / CloudStream / Hikari / Nuvio /
+  Sky" in the extension picker were `labelMedium` pills with 12×5dp padding,
+  wide enough to push the last engines off the right edge. They are now
+  `labelSmall` with 9×3dp padding and a 6dp gap.
+
 ## 0.5.4
 
 **SkyStream extension catalogs finally load — the real bug was a page-number

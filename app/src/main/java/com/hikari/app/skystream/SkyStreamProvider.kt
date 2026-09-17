@@ -59,9 +59,12 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_STREAMS = 60
         private const val HOME_TTL_MS = 8 * 60 * 1000L
 
-        /** What Home says when this extension's site really is challenged. */
+        /** What Home says when this extension's site would not load for us.
+         *  Deliberately neutral: Hikari never names the wall (see the project
+         *  rule that a blocked extension is skipped silently rather than
+         *  reported), it just points at the extension's own site. */
         private const val CF_REASON =
-            "Cloudflare wants a verification on this site — tap the globe button at the top, then retry."
+            "This extension's site wouldn't load — open it in the WebView from the globe button, then retry."
     }
 
     /** `sky|<packageName>` → the plugin's package name (also its manifest id). */

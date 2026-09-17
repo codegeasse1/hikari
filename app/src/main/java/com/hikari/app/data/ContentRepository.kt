@@ -116,6 +116,65 @@ class ContentRepository(private val manager: ProviderManager) {
          */
         val crossProven: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+        /**
+         * Extensions the session found sitting behind a Cloudflare verification
+         * wall: `provider id -> the time we noticed`. They are dropped from the
+         * cross-extension pass SILENTLY — not queued, not searched, not counted
+         * in the chooser's progress line, and given no verdict — because that is
+         * the requested behaviour: an extension that needs a verification is not
+         * worth searching, and the fact that it is blocked is not something to
+         * read in the server list. The record expires on its own (a verification
+         * the user later completes brings the extension back for the asking).
+         */
+        val crossCfSkip = ConcurrentHashMap<String, Long>()
+
+        const val CROSS_CF_SKIP_TTL_MS = 10 * 60 * 1000L
+
+        /** True while [providerId] should be left out of the pass entirely. */
+        fun isCfSkipped(providerId: String): Boolean {
+            val at = crossCfSkip[providerId] ?: return false
+            if (System.currentTimeMillis() - at < CROSS_CF_SKIP_TTL_MS) return true
+            crossCfSkip.remove(providerId)
+            return false
+        }
+
+        /** Verdict sentinel meaning "this extension was skipped — say nothing
+         *  about it anywhere". Never shown, never counted. */
+        const val CROSS_VERDICT_SKIPPED = "\u0000skipped"
+
+        /** Buckets that describe how far THE PASS got (its own timing) or a
+         *  verification wall, rather than what any repo actually said. They are
+         *  never surfaced in a summary the user reads: "unfinished" / "not
+         *  reached" read as a broken search, and a Cloudflare wording is not
+         *  something to put in a server list. */
+        val CROSS_QUIET_BUCKETS = setOf(
+            "unfinished",
+            "not reached (pass ended)",
+            "cloudflare check",
+            "skipped",
+        )
+
+        /**
+         * `title|episode -> the servers a pass actually produced`, kept briefly.
+         *
+         * A title that JUST played is normally looked up again (replay, another
+         * server, back out and in) and the second pass is a fresh, cold,
+         * time-bounded sweep: if it is slower — or simply gets unlucky with the
+         * sites it asks — the user saw a full server list a minute ago and now
+         * gets "no playable sources", which reads as the app being broken.
+         * The remembered list is MERGED INTO the fresh one (never instead of
+         * it), so it can only ever add servers back; anything the new pass found
+         * still wins, and a fresh non-empty result replaces the record.
+         */
+        class RememberedStreams(val list: List<StreamSource>, val at: Long)
+
+        val streamsRemembered = ConcurrentHashMap<String, RememberedStreams>()
+
+        const val REMEMBERED_STREAMS_TTL_MS = 15 * 60 * 1000L
+
+        fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
+            item.uniqueId + "|" + (episode?.id ?: "")
+
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
 
@@ -135,6 +194,7 @@ class ContentRepository(private val manager: ProviderManager) {
          *  found by any repo is a matcher/catalog story, while a pass where most
          *  repos could not load is a broken-extension story. */
         fun crossReasonBucket(verdict: String): String = when {
+            verdict == CROSS_VERDICT_SKIPPED -> "skipped"
             verdict.contains("never reached") -> "not reached (pass ended)"
             verdict.contains("still searching when the pass ended") -> "unfinished"
             verdict.contains("cloudflare", ignoreCase = true) -> "cloudflare check"
@@ -164,6 +224,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 .groupingBy { crossReasonBucket(it) }
                 .eachCount()
                 .entries
+                // Buckets the user asked never to read (the pass's own timing,
+                // and verification walls — see [CROSS_QUIET_BUCKETS]).
+                .filterNot { it.key in CROSS_QUIET_BUCKETS }
                 .sortedByDescending { it.value }
                 .take(limit)
                 .joinToString(" · ") { "${it.value} ${it.key}" }
@@ -1010,13 +1073,27 @@ class ContentRepository(private val manager: ProviderManager) {
                         val verdict = outcome.second
                         if (hit == null) {
                             val repo = p.config.name.ifBlank { p.config.id }
-                            crossVerdict[p.config.id] = "$repo — ${verdict ?: "no matching title"}"
-                            crossRunning.remove(p.config.id)
-                            bumpCrossStatus()
-                            com.hikari.app.data.Logs.log(
-                                "Search",
-                                "cross \"${item.title}\" → $repo: nothing ($verdict)",
-                            )
+                            if (verdict == CROSS_VERDICT_SKIPPED) {
+                                // Skipped on purpose (a verification wall — see
+                                // [crossCfSkip]): not asked, not counted, and
+                                // nothing about it is shown anywhere.
+                                crossVerdict.remove(p.config.id)
+                                crossAsked.remove(p.config.id)
+                                crossRunning.remove(p.config.id)
+                                bumpCrossStatus()
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "cross \"${item.title}\" → $repo: skipped (verification needed)",
+                                )
+                            } else {
+                                crossVerdict[p.config.id] = "$repo — ${verdict ?: "no matching title"}"
+                                crossRunning.remove(p.config.id)
+                                bumpCrossStatus()
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "cross \"${item.title}\" → $repo: nothing ($verdict)",
+                                )
+                            }
                         }
                         hit
                     }
@@ -1042,6 +1119,33 @@ class ContentRepository(private val manager: ProviderManager) {
                             val found = out.first
                             val verdict = out.second
                             val id = hit.provider.config.id
+                            // A verification wall is not a verdict. An extension
+                            // that answered with one is dropped SILENTLY — no
+                            // entry in the progress line, no verdict, and no
+                            // further search for it this session (see
+                            // [crossCfSkip]). `verdict == null` with nothing
+                            // found is the same story: the extractor recorded
+                            // the block as the provider's own error.
+                            if (found.isEmpty()) {
+                                val said = verdict?.takeIf { it == CROSS_VERDICT_SKIPPED }
+                                    ?: providerStreamMessage(hit.provider)
+                                if (said == CROSS_VERDICT_SKIPPED ||
+                                    com.hikari.app.net.CloudflareVerifier
+                                        .isVerificationMessage(said)
+                                ) {
+                                    crossCfSkip[id] = System.currentTimeMillis()
+                                    crossAsked.remove(id)
+                                    crossVerdict.remove(id)
+                                    crossRunning.remove(id)
+                                    bumpCrossStatus()
+                                    com.hikari.app.data.Logs.log(
+                                        "Search",
+                                        "cross \"${item.title}\" → ${hit.repo}: " +
+                                            "skipped (verification needed)",
+                                    )
+                                    return@async emptyList<StreamSource>()
+                                }
+                            }
                             if (verdict == null && found.isNotEmpty()) {
                                 crossVerdict.remove(id)
                                 crossFound[id] = hit.provider.config.type.groupLabel
@@ -1159,6 +1263,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 val neverReached = crossTargets.count { !crossAsked.containsKey(it.config.id) }
                 crossTargets.forEach { p ->
                     val id = p.config.id
+                    // Skipped extensions are left out of the record entirely:
+                    // nothing to count, nothing to show (see [crossCfSkip]).
+                    if (isCfSkipped(id)) return@forEach
                     if (crossVerdict.containsKey(id) || crossFound.containsKey(id)) return@forEach
                     val repo = p.config.name.ifBlank { id }
                     crossVerdict[id] = if (crossAsked.containsKey(id))
@@ -1210,6 +1317,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 // [crossVerdict]/[crossFound] and nothing is written twice.
                 crossTargets.forEach { p ->
                     val id = p.config.id
+                    // Skipped extensions are left out of the record entirely:
+                    // nothing to count, nothing to show (see [crossCfSkip]).
+                    if (isCfSkipped(id)) return@forEach
                     if (crossVerdict.containsKey(id) || crossFound.containsKey(id)) return@forEach
                     val repo = p.config.name.ifBlank { id }
                     crossVerdict[id] = if (crossAsked.containsKey(id))
@@ -1233,6 +1343,34 @@ class ContentRepository(private val manager: ProviderManager) {
             if (finalResult.isEmpty()) {
                 finalResult = ytdlpUniversalFallback(item, episode)
                     .filterNot { isGarbageUrl(it.url) }
+            }
+            // A title that JUST played is usually looked up again (replay,
+            // picking another server, backing out and in), and the second pass
+            // is a fresh, cold, time-bounded sweep — it can be slower, hit
+            // different sites, or simply get unlucky, and the user who had a
+            // full server list a minute ago then reads "no playable sources",
+            // which looks like the app broke. Servers a recent pass actually
+            // produced for this exact title+episode are remembered briefly and
+            // stand in when the new pass comes back with nothing, so a repeat
+            // lookup never empties a list it just had. The record is replaced by
+            // any fresh non-empty result, and it expires on its own.
+            val rememberKey = streamsRememberedKey(item, episode)
+            val remembered = streamsRemembered[rememberKey]?.takeIf {
+                System.currentTimeMillis() - it.at < REMEMBERED_STREAMS_TTL_MS
+            }
+            if (finalResult.isEmpty() && remembered != null) {
+                finalResult = remembered.list
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "done \"${item.title}\" → reusing ${finalResult.size} server(s) " +
+                        "from the previous lookup (this pass came back empty)",
+                )
+            } else if (finalResult.isNotEmpty()) {
+                streamsRemembered[rememberKey] = RememberedStreams(finalResult, System.currentTimeMillis())
+                if (streamsRemembered.size > 64) {
+                    val cutoff = System.currentTimeMillis() - REMEMBERED_STREAMS_TTL_MS
+                    streamsRemembered.entries.removeAll { it.value.at < cutoff }
+                }
             }
             com.hikari.app.data.Logs.log(
                 "Search",
@@ -1259,13 +1397,15 @@ class ContentRepository(private val manager: ProviderManager) {
     /** The other installed extensions worth asking by title: .cs3 / .hiki /
      *  universal providers all expose search + load() + loadLinks(), and a
      *  Stremio addon does too (search → meta → stream) — so a title opened from
-     *  a CloudStream plugin can also be rescued by a Stremio addon. Two groups
+     *  a CloudStream plugin can also be rescued by a Stremio addon. Some groups
      *  are deliberately left out:
      *   - the origin itself;
      *   - Stremio addons when the origin IS a Stremio addon, because the main
      *     pass already asked every addon in that case;
      *   - nuvio providers entirely, since the main pass already searched them
-     *     by TMDB id (they resolve without the title at all). */
+     *     by TMDB id (they resolve without the title at all);
+     *   - extensions known to sit behind a verification wall ([crossCfSkip]),
+     *     which are skipped before anything is queued for them. */
     private fun crossExtensionTargets(item: MediaItem, origin: ContentProvider?): List<ContentProvider> {
         val originType = origin?.config?.type
         val originIsStremio = originType == ProviderType.STREMIO
@@ -1285,6 +1425,37 @@ class ContentRepository(private val manager: ProviderManager) {
         val families = manager.providers.value
             .filter { p ->
                 if (!p.config.enabled || p.config.id == item.providerId) return@filter false
+                // An extension that answered with a Cloudflare verification wall
+                // is dropped BEFORE anything is queued for it — no search slot,
+                // no cold plugin load, no verdict, nothing in the progress line.
+                // Skipping it here (rather than searching it and then reporting
+                // the block) is the point: it is not worth searching, and its
+                // block is not something to read in the server list.
+                if (isCfSkipped(p.config.id)) return@filter false
+                // SkyStream extensions declare their site in their manifest, so
+                // a host already known to answer with a challenge can be ruled
+                // out BEFORE the extension is queued — its search would go to
+                // that same site. Reading the manifest is cheap (no plugin boot),
+                // unlike the cold plugin load a search would cost. Other engine
+                // types have no cheap "which site does this talk to" answer, so
+                // for them the record is learned from the pass itself (see
+                // [crossCfSkip]).
+                if (p.config.type == ProviderType.SKYSTREAM) {
+                    val host = runCatching {
+                        com.hikari.app.skystream.SkyStreamPluginManager.siteHostOf(
+                            com.hikari.app.skystream.SkyStreamPluginManager.scriptFile(
+                                com.hikari.app.HikariApp.instance,
+                                p.config.id.removePrefix("sky|"),
+                            )
+                        )
+                    }.getOrNull()
+                    if (host != null &&
+                        com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)
+                    ) {
+                        crossCfSkip[p.config.id] = System.currentTimeMillis()
+                        return@filter false
+                    }
+                }
                 when (p.config.type) {
                     ProviderType.CS3,
                     ProviderType.HIKARI,
@@ -1384,16 +1555,27 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
     ): Pair<CrossHit?, String?> {
         val repo = p.config.name.ifBlank { p.config.id }
-        // Queued: counted as "still searching" until the verdict lands.
-        crossRunning[p.config.id] = repo
-        bumpCrossStatus()
+        // Already known to need a verification wall this session: skipped
+        // silently — no search slot, no "still searching" entry, no verdict.
+        if (isCfSkipped(p.config.id)) return null to CROSS_VERDICT_SKIPPED
         val title = item.title.trim()
         if (title.isBlank()) return null to "no title to search for"
         // What this extension had to say BEFORE we asked it anything: if its own
         // words change while we search (a plugin that failed to load, a search
         // that blew up), that change is the reason it produced nothing — and it
         // is a very different story from "this repo does not carry the show".
+        // A verification wall ALREADY on record says the same thing before we
+        // start: leave this extension out of the pass entirely.
         val saidBefore = providerStreamMessage(p)
+        if (saidBefore != null &&
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(saidBefore)
+        ) {
+            crossCfSkip[p.config.id] = System.currentTimeMillis()
+            return null to CROSS_VERDICT_SKIPPED
+        }
+        // Queued: counted as "still searching" until the verdict lands.
+        crossRunning[p.config.id] = repo
+        bumpCrossStatus()
         var attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH) {
             markCrossSearchStarted(p, repo, title)
         }
@@ -1435,6 +1617,15 @@ class ContentRepository(private val manager: ProviderManager) {
             val id = p.config.id
             val said = providerStreamMessage(p)?.takeIf { it != saidBefore && selfNote[id] != it }
             if (said != null) {
+                if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(said)) {
+                    // A verification wall, not a search result. Remember the
+                    // extension and drop it silently — no note, no verdict, and
+                    // no further search for it this session (see [crossCfSkip]).
+                    crossCfSkip[id] = System.currentTimeMillis()
+                    crossVerdict.remove(id)
+                    crossAsked.remove(id)
+                    return null to CROSS_VERDICT_SKIPPED
+                }
                 recordStreamMessage(p, said)
                 return null to "couldn't be searched ($said)"
             }

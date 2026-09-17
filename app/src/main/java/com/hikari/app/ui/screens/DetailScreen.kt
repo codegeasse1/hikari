@@ -1096,24 +1096,20 @@ fun DetailScreen(
             val basic = list.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
             }
-                // Servers behind a Cloudflare "verify you are human" wall are
-                // SORTED AFTER the ones that play, but never allowed to empty
-                // the list: with a few dozen extensions reporting challenges at
-                // once, withholding every challenged host turned a lookup that
-                // found servers into "No playable server found". A challenged
-                // server the player can at least TRY (and that works once the
-                // user verifies that host) beats an empty result.
-                val cleared = basic.filterNot {
-                    com.hikari.app.net.CloudflareVerifier.needsVerification(it.url)
-                }
-                val ordered = if (cleared.isNotEmpty()) cleared else basic
+                // Every server the providers returned is offered, in full. A
+                // "needs a browser check" record is NOT used to hold anything
+                // back: a title that played once must not come back with a
+                // shorter list (or none) because a host got flagged in the
+                // meantime — the user asked for the servers, so the servers are
+                // shown and the player can try them.
+                //
                 // Archive links (.zip/.rar/.7z …) are not videos: providers
                 // (4KHDHub's isDirectVideo only checks the hostname, so its
                 // ".mkv.zip" hubcloud links leak through) sometimes hand them
                 // out, and they cost a full prepare+error cycle before the
                 // player falls through. A stable sort keeps arrival order but
                 // pushes archives to the back, so they are never server #1.
-                ordered.sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
+                basic.sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
         // NOTE: application scope, NOT the composition's. See [screenAlive].
         app.appScope.launch {
@@ -1347,7 +1343,7 @@ fun DetailScreen(
                 // timeout. Say what happened instead.
                 StreamsLive.setStatus(
                     sid,
-                    "The search stopped early (" + t.javaClass.simpleName + ").",
+                    "The search hit a problem (" + t.javaClass.simpleName + ").",
                 )
             } finally {
                 // ALWAYS declare the search over. The player only leaves its
@@ -1360,23 +1356,19 @@ fun DetailScreen(
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
-                    // A Cloudflare challenge is the one "empty" cause the user
-                    // can actually act on, so it goes first and names the host.
-                    val cfHost = com.hikari.app.net.CloudflareVerifier
-                        .blockedHost(com.hikari.app.net.CloudflareVerifier.VERIFY_WINDOW_MS)
                     val note = buildString {
                         append("No playable server found after searching $enabledN ")
                         append(if (enabledN == 1) "extension" else "extensions")
                         if (enabledN < installedN) {
                             append(" — only $enabledN of your $installedN installed extensions are enabled")
                         }
-                        if (cfHost != null) {
-                            append("\nCloudflare check needed on $cfHost — open a source or use the globe button to verify, then search again.")
-                        }
                         // Across the whole pass: how many extensions were asked,
                         // how many answered with servers, and why the rest came
                         // back empty. This is what separates "no extension has
                         // this title" from "most of them could not load".
+                        // Extensions behind a verification wall are left out of
+                        // the pass (and of this count) entirely, so no host name
+                        // and no Cloudflare wording ever appears here.
                         com.hikari.app.data.ContentRepository.crossSummary()?.let {
                             append("\n").append(it)
                         }
