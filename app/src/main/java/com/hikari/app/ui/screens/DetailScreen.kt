@@ -548,13 +548,25 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val result = withContext(Dispatchers.IO) {
                 runCatching { repo.streamsFor(item, ep, feed) }.getOrDefault(emptyList())
             }
-            if (result.isEmpty() && cached != null && cached.list.isNotEmpty()) {
-                // A re-extraction that finds nothing must not downgrade a list
-                // we already have into "No playable sources found" — leave the
-                // cache (and its old timestamp, so the next attempt tries
-                // again) and hand the caller what we have.
-                deferred.complete(cached.list)
-                return cached.list
+            if (result.isEmpty()) {
+                // Never downgrade. A re-extraction can legitimately come back
+                // empty — every provider failing or timing out on the retry —
+                // even though the progressive feed, which the player is
+                // ALREADY being handed servers through, got a full list
+                // moments earlier. Handing back (and caching) an empty list
+                // here made the player's source sheet look like it had stopped
+                // loading halfway, and made the next Play tap report "no
+                // servers" for the whole cache window even though the servers
+                // were still good. Prefer whatever we already have: the cached
+                // list first, else the live feed. The cache is deliberately NOT
+                // rewritten, so its old timestamp stands and the next lookup
+                // tries the providers again instead of trusting a dead list.
+                val fallback = cached?.list?.takeIf { it.isNotEmpty() }
+                    ?: _liveStreams.value.takeIf { it.isNotEmpty() }
+                if (fallback != null) {
+                    deferred.complete(fallback)
+                    return fallback
+                }
             }
             StreamCache.put(key, result)
             _liveStreams.value = result
@@ -562,7 +574,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             deferred.complete(result)
             return result
         } catch (e: Throwable) {
-            deferred.complete(emptyList())
+            // Same never-downgrade rule for a cancelled or failed extraction:
+            // complete the shared deferred with whatever the live feed already
+            // found, so a joiner — the player's own follow-up read, or a second
+            // Play tap sharing this extraction — is never wiped back to empty.
+            val partial = _liveStreams.value
+            deferred.complete(if (partial.isNotEmpty()) partial else emptyList())
             throw e
         } finally {
             StreamCache.release(key)
@@ -951,12 +968,15 @@ fun DetailScreen(
                 // there would be nothing to wait for.
                 putExtra(
                     "originGraceMs",
-                    // [liveId] is the provider this page actually resolved to —
+                    // [livePid] is the provider this page actually resolved to —
                     // the extension the title was opened from, or its live
                     // replacement if that one is gone. A disabled or missing
                     // one is not in the search at all, so there is nothing to
                     // hold the first start for.
-                    if (providers.firstOrNull { it.config.id == liveId }?.config?.enabled == true)
+                    // (This deliberately does NOT use [liveId]: that is the
+                    // random live-session id, which never matches a provider,
+                    // so the hold silently never happened.)
+                    if (providers.firstOrNull { it.config.id == livePid }?.config?.enabled == true)
                         ORIGIN_PLAY_GRACE_MS.toInt() else 0
                 )
                 putExtra("openDownload", wantsDownload)
@@ -1023,14 +1043,24 @@ fun DetailScreen(
         // One live-update session per play tap: the player subscribes to it and
         // keeps receiving servers as slower providers answer, so its "Select
         // server" dialog shows every source from every installed provider.
-        sessionId = UUID.randomUUID().toString()
+        // The id is held in a LOCAL and handed to the search coroutine below;
+        // the state is only for the screen's other entry points. Reading the
+        // state back from inside the coroutine was a real bug: a second Play
+        // tap (or an episode tap) reassigns it, and the FIRST tap's search —
+        // still running on the app scope — then appended every server it found
+        // to the NEW session, while the player it had launched kept listening
+        // on the old one. The player therefore showed only the first batch
+        // (one engine's servers) and never grew, which reads exactly like "the
+        // search stopped in the middle and only one category loaded".
+        val sid = UUID.randomUUID().toString()
+        sessionId = sid
         vm.resetLiveStreams()
         // Launch the player NOW with an empty source list — it shows its own
         // title card and waits for the first servers on [sessionId]. If the
         // launch itself fails (the activity can't be resolved), the coroutine
         // below falls back to the old "resolve here, then open the player" path
         // and the source sheet.
-        launchPlayer(emptyList<StreamSource>(), ep, sessionId, startPos, wantsDownload)
+        launchPlayer(emptyList<StreamSource>(), ep, sid, startPos, wantsDownload)
         // Local once-only flag: playback launches exactly ONCE per tap (either
         // the feed, the preferred-server grace period, or the final batch) —
         // afterwards new servers are appended to the player's live session,
@@ -1074,7 +1104,7 @@ fun DetailScreen(
                 // all (and, in the log, the only record of it).
                 val searchable = providers.count { it.config.enabled }
                 StreamsLive.setStatus(
-                    sessionId,
+                    sid,
                     "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…",
                 )
                 // Which episode the search runs for: the tapped one, or episode 1
@@ -1087,7 +1117,7 @@ fun DetailScreen(
                     // Hand the already-open player the episode it ended up on, so
                     // its title card, resume key and watch history are per-episode
                     // rather than the movie-level entry.
-                    StreamsLive.setEpisode(sessionId, epForSearch)
+                    StreamsLive.setEpisode(sid, epForSearch)
                 }
                 // The server this video was last played with, remembered by the
                 // player under the same key as the watch-history entry. When it
@@ -1110,7 +1140,7 @@ fun DetailScreen(
                         (prefUrl.isNotBlank() || prefName.isNotBlank())
                 if (wantPreferred) {
                     StreamsLive.setStatus(
-                        sessionId,
+                        sid,
                         "Waiting for your last used server (up to " +
                             (PREFERRED_GRACE_MS / 1000) + "s)…",
                     )
@@ -1132,16 +1162,16 @@ fun DetailScreen(
                 // Live re-extraction. A play session can have all of its servers
                 // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
                 // and the mirror that served them can go away. The player (still
-                // attached via [sessionId]) then requests fresh sources by bumping
+                // attached via [sid]) then requests fresh sources by bumping
                 // the session's refresh counter instead of replaying a dead link
                 // forever — we re-run the providers ignoring the cache and stream
                 // the new servers straight to the player, which retries with them.
-                var lastRefresh = StreamsLive.refreshFlow(sessionId).value
+                var lastRefresh = StreamsLive.refreshFlow(sid).value
                 launch {
-                    StreamsLive.refreshFlow(sessionId).collect { n ->
+                    StreamsLive.refreshFlow(sid).collect { n ->
                         if (n == lastRefresh) return@collect
                         lastRefresh = n
-                        StreamsLive.setStatus(sessionId, "Re-extracting expired links…")
+                        StreamsLive.setStatus(sid, "Re-extracting expired links…")
                         val fresh = vm.getStreams(epForSearch, force = true)
                         if (fresh.isNotEmpty()) {
                             found = fresh
@@ -1149,11 +1179,11 @@ fun DetailScreen(
                             val freshPlayable = playableEvery(fresh)
                             StreamProbe.warmAsync(freshPlayable)
                             StreamsLive.setStatus(
-                                sessionId,
+                                sid,
                                 "Found " + freshPlayable.size + " fresh server" +
                                     (if (freshPlayable.size == 1) "" else "s") + " — retrying…",
                             )
-                            StreamsLive.append(sessionId, freshPlayable)
+                            StreamsLive.append(sid, freshPlayable)
                         }
                     }
                 }
@@ -1168,7 +1198,7 @@ fun DetailScreen(
                     var started = false
                     onUi {
                         if (launched.get()) return@onUi
-                        started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos, wantsDownload)
+                        started = launchPlayer(ordered(playable), epForSearch, sid, startPos, wantsDownload)
                     }
                     if (started) {
                         launched.set(true)
@@ -1190,7 +1220,7 @@ fun DetailScreen(
                         // The screen is gone and the player never opened: keep the
                         // servers on the live session instead, so a player that
                         // opens later still finds them.
-                        StreamsLive.append(sessionId, playableEvery(found))
+                        StreamsLive.append(sid, playableEvery(found))
                     }
                 }
                 // Live feed: start the instant a playable server appears — unless a
@@ -1205,7 +1235,7 @@ fun DetailScreen(
                         // and any failover are instant.
                         StreamProbe.warmAsync(playable)
                         StreamsLive.setStatus(
-                            sessionId,
+                            sid,
                             if (launched.get() || playerLaunched) {
                                 "Found " + playable.size + " server" +
                                     (if (playable.size == 1) "" else "s") + " — still searching…"
@@ -1217,7 +1247,7 @@ fun DetailScreen(
                         )
                         if (launched.get() || playerLaunched) {
                             // Player already up — hand it the newly found servers.
-                            StreamsLive.append(sessionId, playable)
+                            StreamsLive.append(sid, playable)
                         } else if (!wantPreferred || preferredIndex(playable) >= 0) {
                             startNow()
                         }
@@ -1238,24 +1268,33 @@ fun DetailScreen(
                 val final = vm.getStreams(epForSearch)
                 feed.cancel()
                 grace.cancel()
-                found = final
+                // Never downgrade. The live feed above may already have handed
+                // the player a full list from the first providers that
+                // answered, and a late or cached re-read can come back empty
+                // (every provider having failed or timed out on the retry).
+                // Blindly overwriting [found] with that would blank the
+                // servers already in the player's "Select server" list. Only
+                // accept the batch when it actually carries servers, or when
+                // nothing was found at all — so a genuinely empty result is
+                // still reported.
+                if (final.isNotEmpty() || found.isEmpty()) found = final
                 onUi {
                     loadingStreams = false
-                    streams = final
+                    streams = found
                 }
-                val playable = playableEvery(final)
+                val playable = playableEvery(found)
                 StreamProbe.warmAsync(playable)
                 if (launched.get() || playerLaunched) {
                     // Player is up (or already was) — close the sheet and hand it the
                     // complete list.
                     onUi { showSheet = false }
-                    StreamsLive.append(sessionId, playable)
+                    StreamsLive.append(sid, playable)
                 } else if (playable.isNotEmpty()) {
                     // Cached/instant result arrived before the feed attached.
                     var started = false
                     onUi {
                         if (!launched.get()) {
-                            started = launchPlayer(ordered(playable), epForSearch, sessionId, startPos, wantsDownload)
+                            started = launchPlayer(ordered(playable), epForSearch, sid, startPos, wantsDownload)
                         }
                     }
                     if (started) {
@@ -1266,7 +1305,7 @@ fun DetailScreen(
                             showLoadingBanner = false
                             showSheet = true
                         }
-                        if (!screenAlive.get()) StreamsLive.append(sessionId, playable)
+                        if (!screenAlive.get()) StreamsLive.append(sid, playable)
                     }
                 } else {
                     // Nothing playable anywhere — keep the source sheet up, with the
@@ -1285,7 +1324,7 @@ fun DetailScreen(
                 // kept spinning on an empty session until its 90s safety
                 // timeout. Say what happened instead.
                 StreamsLive.setStatus(
-                    sessionId,
+                    sid,
                     "The search stopped early (" + t.javaClass.simpleName + ").",
                 )
             } finally {
@@ -1321,9 +1360,9 @@ fun DetailScreen(
                         }
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
-                    StreamsLive.setStatus(sessionId, note)
+                    StreamsLive.setStatus(sid, note)
                 }
-                StreamsLive.markDone(sessionId)
+                StreamsLive.markDone(sid)
             }
         }
     }

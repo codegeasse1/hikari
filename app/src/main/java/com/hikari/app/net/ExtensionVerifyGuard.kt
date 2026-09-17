@@ -1,6 +1,7 @@
 package com.hikari.app.net
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.SharedPreferences
 import androidx.preference.PreferenceManager
 import com.hikari.app.data.Logs
@@ -39,6 +40,26 @@ import java.io.File
  * forcing that key to `false` removes the dialog AND the toast, and Hikari's own
  * tap-only verification flow stays the single way a challenge can be cleared.
  *
+ * That read is why this object works in three places, not one. Writing the
+ * stored value is not enough on its own — an extension can hold its own
+ * default (`?: true`), cache the value, or read the prefs file directly
+ * through `Context.getSharedPreferences` (which is exactly what Cinemacity
+ * does, via `DataStore.getSharedPrefs`). So while extension verification
+ * pages are blocked:
+ *
+ *  * [forcesOff] makes every read through the shadow
+ *    [com.lagradost.cloudstream3.CloudStreamApp] answer `false` for a
+ *    verification-shaped key, even one that was never stored;
+ *  * [apply] stores `false` for that key in every preferences file an
+ *    extension could be reading (and never stores `true` — turning Hikari's
+ *    own switch on only stops the forcing, it never enables an extension's
+ *    bypass);
+ *  * [wrapContext] wraps the Context extensions are handed, so a plugin that
+ *    opens a preferences file itself gets `false` back for those keys, and
+ *    cannot write `true` into one either.
+ *
+ * Together those three make the switch unflippable from inside an extension.
+ *
  * The switch in Settings → Privacy & Browsing can let them back through; it is
  * off by default and it turns this guard into a pass-through.
  */
@@ -70,8 +91,10 @@ object ExtensionVerifyGuard {
      * preferences file are touched, and only ever set to `false` — a key is
      * never invented.
      */
-    private val CLOUDFLARE_WORD = Regex("CF|CLOUDFLARE", RegexOption.IGNORE_CASE)
-    private val WEBVIEW_WORD = Regex("WEBVIEW|BYPASS|VERIFY|CHALLENGE", RegexOption.IGNORE_CASE)
+    private val CLOUDFLARE_WORD =
+        Regex("CF|CLOUDFLARE|TURNSTILE|CAPTCHA|SECURITY|\\bBOT\\b", RegexOption.IGNORE_CASE)
+    private val WEBVIEW_WORD =
+        Regex("WEBVIEW|BYPASS|VERIFY|CHALLENGE|CAPTCHA|TURNSTILE|SOLVE", RegexOption.IGNORE_CASE)
 
     /** True for a key [apply] would force off (the same rule [discoveredToggles]
      *  uses), so a key that doesn't exist in any file yet is covered too. */
@@ -95,25 +118,154 @@ object ExtensionVerifyGuard {
     /**
      * Applies the user's choice. Returns a description of every key it changed
      * (empty when nothing needed changing), for the app log.
+     *
+     * Turning the switch ON deliberately writes NOTHING: it only stops the
+     * forcing. Writing `true` into an extension's own bypass switch — which is
+     * what this used to do — would make Hikari *enable* the very page the user
+     * is complaining about, and then leave it enabled after they turn the
+     * switch back off only on the next launch. The extension's own switch
+     * keeps whatever the user of that extension set; Hikari simply gets out of
+     * the way.
      */
     fun apply(context: Context, allow: Boolean): List<String> {
         allowed = allow
         val changed = ArrayList<String>()
-        val targets = if (allow) KNOWN_KEYS.map { null to it }
+        val targets = if (allow) emptyList()
         else (KNOWN_KEYS.map { null to it } + discoveredToggles(context)).distinct()
         for ((file, key) in targets) {
             val current = readToggle(context, key)
-            if (current != allow) changed += "$key=${allow}"
-            writeToggle(context, key, allow, file)
+            if (current != false) changed += "$key=false"
+            writeToggle(context, key, false, file)
         }
         if (changed.isNotEmpty()) {
             Logs.log(
                 "Extensions",
-                (if (allow) "extension verification pages allowed: " else "extension verification pages blocked: ") +
-                    changed.joinToString(", "),
+                "extension verification pages blocked: " + changed.joinToString(", "),
             )
         }
         return changed
+    }
+
+    /**
+     * The Context extensions are handed (see
+     * [com.lagradost.cloudstream3.CloudStreamApp.context]). While verification
+     * pages are blocked, every `getSharedPreferences(...)` on it hands back
+     * [GuardedPrefs], so an extension that reads its own switch straight from a
+     * preferences file — the way Cinemacity's `getCfWebviewEnabled()` does,
+     * through the jar's `DataStore` — still reads `false`.
+     */
+    fun wrapContext(base: Context): Context = if (allowed) base else GuardedContext(base)
+
+    /** A Context whose SharedPreferences hand out `false` (and never store
+     *  `true`) for verification-shaped keys. */
+    private class GuardedContext(base: Context) : ContextWrapper(base) {
+        override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences =
+            GuardedPrefs(super.getSharedPreferences(name, mode))
+    }
+
+    /**
+     * Read/write interception for one preferences file. Reads of a guarded key
+     * answer `false` whatever is stored (so a key that was never written, or
+     * that an extension wrote as `true` before this guard ran, still reads
+     * blocked), and writes of one are coerced to `false` (so an extension can
+     * never turn its own bypass back on). Every other key passes straight
+     * through, untouched.
+     */
+    private class GuardedPrefs(private val real: SharedPreferences) : SharedPreferences {
+        private fun guarded(key: String?): Boolean = key != null && forcesOff(key)
+
+        override fun getAll(): MutableMap<String, *> {
+            val out = HashMap<String, Any?>(real.all)
+            for (key in out.keys.toList()) if (forcesOff(key)) out[key] = false
+            return out
+        }
+
+        override fun getString(key: String?, defValue: String?): String? =
+            if (guarded(key)) "false" else real.getString(key, defValue)
+
+        override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? =
+            if (guarded(key)) mutableSetOf() else real.getStringSet(key, defValues)
+
+        override fun getInt(key: String?, defValue: Int): Int =
+            if (guarded(key)) 0 else real.getInt(key, defValue)
+
+        override fun getLong(key: String?, defValue: Long): Long =
+            if (guarded(key)) 0L else real.getLong(key, defValue)
+
+        override fun getFloat(key: String?, defValue: Float): Float =
+            if (guarded(key)) 0f else real.getFloat(key, defValue)
+
+        override fun getBoolean(key: String?, defValue: Boolean): Boolean =
+            if (guarded(key)) false else real.getBoolean(key, defValue)
+
+        override fun contains(key: String?): Boolean =
+            if (guarded(key)) true else real.contains(key)
+
+        override fun edit(): SharedPreferences.Editor = GuardedEditor(real.edit())
+
+        override fun registerOnSharedPreferenceChangeListener(
+            listener: SharedPreferences.OnSharedPreferenceChangeListener?,
+        ) = real.registerOnSharedPreferenceChangeListener(listener)
+
+        override fun unregisterOnSharedPreferenceChangeListener(
+            listener: SharedPreferences.OnSharedPreferenceChangeListener?,
+        ) = real.unregisterOnSharedPreferenceChangeListener(listener)
+    }
+
+    private class GuardedEditor(private val real: SharedPreferences.Editor) : SharedPreferences.Editor {
+        override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+            // Only a value that IS the toggle being switched on is coerced. A
+            // key that merely looks like a verification key can hold a URL or a
+            // mode name, and rewriting that would corrupt the extension's own
+            // setting instead of guarding it.
+            val turningOn = value != null && value.trim().lowercase() == "true"
+            real.putString(key, if (key != null && turningOn && forcesOff(key)) "false" else value)
+            return this
+        }
+
+        override fun putStringSet(
+            key: String?,
+            values: MutableSet<String>?,
+        ): SharedPreferences.Editor {
+            real.putStringSet(key, values)
+            return this
+        }
+
+        override fun putInt(key: String?, value: Int): SharedPreferences.Editor {
+            real.putInt(key, value)
+            return this
+        }
+
+        override fun putLong(key: String?, value: Long): SharedPreferences.Editor {
+            real.putLong(key, value)
+            return this
+        }
+
+        override fun putFloat(key: String?, value: Float): SharedPreferences.Editor {
+            real.putFloat(key, value)
+            return this
+        }
+
+        override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
+            real.putBoolean(key, if (key != null && forcesOff(key)) false else value)
+            return this
+        }
+
+        override fun remove(key: String?): SharedPreferences.Editor {
+            real.remove(key)
+            return this
+        }
+
+        override fun clear(): SharedPreferences.Editor {
+            real.clear()
+            return this
+        }
+
+        override fun commit(): Boolean = real.commit()
+
+        override fun apply() {
+            real.apply()
+        }
     }
 
     /**
@@ -161,18 +313,31 @@ object ExtensionVerifyGuard {
         return out.toList()
     }
 
-    /** Reads a stored boolean however it was written (bare literal, JSON string
-     *  or Hikari's own envelope) — null when the key isn't set at all. */
-    private fun readToggle(context: Context, key: String): Boolean? = when (val v = CloudStreamApp.getKey(key)) {
-        null -> null
-        is Boolean -> v
-        is String -> when (v.trim().lowercase()) {
-            "true" -> true
-            "false" -> false
-            else -> null
+    /**
+     * Reads a stored boolean however it was written — bare literal, JSON string
+     * or Hikari's own envelope — and null when the key isn't set anywhere.
+     *
+     * Deliberately reads the files directly instead of going through
+     * [CloudStreamApp.getKey]: that read is one of the things this guard
+     * forces off, so asking it what is stored would always answer `false` and
+     * the log would never report a key that is genuinely stuck on.
+     */
+    private fun readToggle(context: Context, key: String): Boolean? {
+        for (file in prefFiles(context)) {
+            val raw = runCatching { file.all[key] }.getOrNull() ?: continue
+            val parsed = when (raw) {
+                is Boolean -> raw
+                is Number -> raw.toInt() != 0
+                is String -> when (raw.trim().trim('"').lowercase()) {
+                    "true" -> true
+                    "false" -> false
+                    else -> null
+                }
+                else -> null
+            }
+            if (parsed != null) return parsed
         }
-        is Number -> v.toInt() != 0
-        else -> null
+        return null
     }
 
     /**

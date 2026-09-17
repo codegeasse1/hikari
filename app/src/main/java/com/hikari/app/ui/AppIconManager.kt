@@ -27,21 +27,30 @@ data class AppIconVariant(
     /** What the chooser draws — for every variant this is the launcher mipmap
      *  itself, so the tile is exactly what the home screen will show. */
     @DrawableRes val drawable: Int,
+    /**
+     * What the chooser *previews*. Drawing the adaptive `mipmap-anydpi-v26`
+     * XML in Compose means rasterising it and then guessing at the launcher's
+     * mask inset, which used to crop the artwork in the picker. Instead the
+     * picker shows the composed icon itself ([R.drawable.ic_launcher_vN_fg] is
+     * the same square the launcher builds, with a margin around the artwork),
+     * clipped to a rounded square — so nothing the user sees is cut.
+     */
+    @DrawableRes val preview: Int,
 )
 
 /** Order = the order of the tiles in the chooser. */
 val AppIconVariants: List<AppIconVariant> = listOf(
-    AppIconVariant("classic", "Hikari Gold", "com.hikari.app.icon.Classic", R.mipmap.ic_launcher),
-    AppIconVariant("cine", "Cine H", "com.hikari.app.icon.Cine", R.mipmap.ic_launcher_v2),
-    AppIconVariant("orbit", "Orbit Play", "com.hikari.app.icon.OrbitPlay", R.mipmap.ic_launcher_v3),
-    AppIconVariant("moon", "Moon Star", "com.hikari.app.icon.MoonStar", R.mipmap.ic_launcher_v4),
-    AppIconVariant("redplay", "Red Play", "com.hikari.app.icon.RedPlay", R.mipmap.ic_launcher_v5),
-    AppIconVariant("sakura", "Sakura", "com.hikari.app.icon.Sakura", R.mipmap.ic_launcher_v6),
-    AppIconVariant("enso", "Enso Play", "com.hikari.app.icon.EnsoPlay", R.mipmap.ic_launcher_v7),
-    AppIconVariant("silver", "Silver H", "com.hikari.app.icon.SilverH", R.mipmap.ic_launcher_v8),
-    AppIconVariant("violet", "Violet Play", "com.hikari.app.icon.VioletPlay", R.mipmap.ic_launcher_v9),
-    AppIconVariant("horizon", "Horizon", "com.hikari.app.icon.Horizon", R.mipmap.ic_launcher_v10),
-    AppIconVariant("neko", "Neko Moon", "com.hikari.app.icon.NekoMoon", R.mipmap.ic_launcher_v11),
+    AppIconVariant("classic", "Hikari Gold", "com.hikari.app.icon.Classic", R.mipmap.ic_launcher, R.mipmap.ic_launcher),
+    AppIconVariant("cine", "Cine H", "com.hikari.app.icon.Cine", R.mipmap.ic_launcher_v2, R.drawable.ic_launcher_v2_fg),
+    AppIconVariant("orbit", "Orbit Play", "com.hikari.app.icon.OrbitPlay", R.mipmap.ic_launcher_v3, R.drawable.ic_launcher_v3_fg),
+    AppIconVariant("moon", "Moon Star", "com.hikari.app.icon.MoonStar", R.mipmap.ic_launcher_v4, R.drawable.ic_launcher_v4_fg),
+    AppIconVariant("redplay", "Red Play", "com.hikari.app.icon.RedPlay", R.mipmap.ic_launcher_v5, R.drawable.ic_launcher_v5_fg),
+    AppIconVariant("sakura", "Sakura", "com.hikari.app.icon.Sakura", R.mipmap.ic_launcher_v6, R.drawable.ic_launcher_v6_fg),
+    AppIconVariant("enso", "Enso Play", "com.hikari.app.icon.EnsoPlay", R.mipmap.ic_launcher_v7, R.drawable.ic_launcher_v7_fg),
+    AppIconVariant("silver", "Silver H", "com.hikari.app.icon.SilverH", R.mipmap.ic_launcher_v8, R.drawable.ic_launcher_v8_fg),
+    AppIconVariant("violet", "Violet Play", "com.hikari.app.icon.VioletPlay", R.mipmap.ic_launcher_v9, R.drawable.ic_launcher_v9_fg),
+    AppIconVariant("horizon", "Horizon", "com.hikari.app.icon.Horizon", R.mipmap.ic_launcher_v10, R.drawable.ic_launcher_v10_fg),
+    AppIconVariant("neko", "Neko Moon", "com.hikari.app.icon.NekoMoon", R.mipmap.ic_launcher_v11, R.drawable.ic_launcher_v11_fg),
 )
 
 object AppIconManager {

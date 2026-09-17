@@ -144,6 +144,25 @@ object SkyStreamRuntime {
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
+    /**
+     * Runs a script and throws its completion value away.
+     *
+     * dokar's `evaluate<Any?>` marshals the script's *completion value* back to
+     * Kotlin by `JSON.stringify`-ing it inside the engine. Extension scripts
+     * that end in `Object.assign(globalThis, PluginModule)` — the export
+     * pattern several of the published SkyStream plugins use, e.g. the `akash`
+     * and `dev.cookie.*` repos — complete with `globalThis` itself as the value,
+     * and stringifying that throws `TypeError: circular reference`. That used to
+     * surface as *"Not a valid SkyStream extension: TypeError: circular
+     * reference"* and blocked the install of every extension from those repos
+     * (the script itself had run fine — only the value we never look at failed
+     * to convert). Nothing in this runtime wants a completion value, so every
+     * script is finished with `void 0` instead.
+     */
+    private fun QuickJs.evaluateVoid(js: String, name: String) {
+        evaluate<Any?>("$js\n;void 0;\n", name, false)
+    }
+
     private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(6)
 
     private val client by lazy {
@@ -214,23 +233,25 @@ object SkyStreamRuntime {
         }
 
         // 1. Polyfills (console, TextEncoder/Decoder, Blob, URL, CryptoJS, …).
-        qjs.evaluate<Any?>(bootJs, "boot.js", false)
+        qjs.evaluateVoid(bootJs, "boot.js")
         // 2. The cheerio bundle, captured as a CommonJS module exactly like the
         //    nuvio runtime does (the shim reads globalThis.__skyCheerio).
-        qjs.evaluate<Any?>(
+        qjs.evaluateVoid(
             "var __skyModule = { exports: {} }; var module = __skyModule; var exports = module.exports;",
-            "cheerio-head.js", false,
+            "cheerio-head.js",
         )
-        qjs.evaluate<Any?>(cheerioJs, "cheerio.js", false)
-        qjs.evaluate<Any?>("globalThis.__skyCheerio = module.exports;", "cheerio-tail.js", false)
+        qjs.evaluateVoid(cheerioJs, "cheerio.js")
+        qjs.evaluateVoid("globalThis.__skyCheerio = module.exports;", "cheerio-tail.js")
         // 3. Timers: SkyStream's engine provides them, QuickJS does not.
-        qjs.evaluate<Any?>(TIMER_JS, "skystream-timers.js", false)
+        qjs.evaluateVoid(TIMER_JS, "skystream-timers.js")
         // 4. The SkyStream plugin surface.
-        qjs.evaluate<Any?>(shimJs, "skystream-shim.js", false)
+        qjs.evaluateVoid(shimJs, "skystream-shim.js")
         // 5. The plugin's own manifest (plugins read manifest.baseUrl) and its
-        //    source. Both are plain scripts assigning globals.
-        qjs.evaluate<Any?>("globalThis.manifest = $manifestJson;", "manifest.js", false)
-        qjs.evaluate<Any?>(source, "$pluginId.js", false)
+        //    source. Both are plain scripts assigning globals — the source in
+        //    particular usually ends in an export helper whose return value is
+        //    cyclic, which is why it goes through evaluateVoid.
+        qjs.evaluateVoid("globalThis.manifest = $manifestJson;", "manifest.js")
+        qjs.evaluateVoid(source, "$pluginId.js")
         return qjs
     }
 

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_v2_bg">#04060d</color>
-    <color name="ic_launcher_v3_bg">#04070f</color>
-    <color name="ic_launcher_v4_bg">#090b12</color>
-    <color name="ic_launcher_v5_bg">#080b13</color>
-    <color name="ic_launcher_v6_bg">#1d1426</color>
-    <color name="ic_launcher_v7_bg">#070910</color>
-    <color name="ic_launcher_v8_bg">#070a10</color>
-    <color name="ic_launcher_v9_bg">#070917</color>
-    <color name="ic_launcher_v10_bg">#12162b</color>
-    <color name="ic_launcher_v11_bg">#080d17</color>
+    <color name="ic_launcher_v2_bg">#0b0f1a</color>
+    <color name="ic_launcher_v3_bg">#0a0f19</color>
+    <color name="ic_launcher_v4_bg">#0b0f19</color>
+    <color name="ic_launcher_v5_bg">#0c101b</color>
+    <color name="ic_launcher_v6_bg">#0c111c</color>
+    <color name="ic_launcher_v7_bg">#090d15</color>
+    <color name="ic_launcher_v8_bg">#080c14</color>
+    <color name="ic_launcher_v9_bg">#090d15</color>
+    <color name="ic_launcher_v10_bg">#090d15</color>
+    <color name="ic_launcher_v11_bg">#0a0e16</color>
 </resources>

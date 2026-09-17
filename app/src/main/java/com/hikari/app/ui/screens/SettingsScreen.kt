@@ -180,6 +180,16 @@ private enum class SettingsFolder(
         "How Hikari looks and speaks on this phone.",
         Icons.Filled.Palette,
     ),
+    // The user's own catalogs (Collections) live here rather than under
+    // Appearance: they are something the user CREATES and manages — like the
+    // extensions they install — not a way the app looks, and a folder of their
+    // own is where they go looking for it.
+    CATALOG(
+        "Personal Catalog creator",
+        "Your own collections, folders & catalogs",
+        "Build collections out of the catalogs you actually watch.",
+        Icons.Filled.FolderOpen,
+    ),
     PRIVACY(
         "Privacy & Browsing",
         "Ad blocking, redirects & user agent",
@@ -376,9 +386,6 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { TaskbarCard(app) } }
                     item { SettingsCard { AppIconCard(app) } }
                     item {
-                        SettingsCard { CollectionsCard(onOpen = { Routes.safeNavigate(nav, Routes.COLLECTIONS) }) }
-                    }
-                    item {
                         SettingsCard {
                             AccentCard(
                                 app = app,
@@ -396,6 +403,13 @@ fun SettingsScreen(nav: NavHostController) {
                                 appAccentKey = appAccentKey,
                                 playerAccentKey = playerAccentKey,
                             )
+                        }
+                    }
+                }
+                SettingsFolder.CATALOG -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            CollectionsCard(onOpen = { Routes.safeNavigate(nav, Routes.COLLECTIONS) })
                         }
                     }
                 }
@@ -1172,9 +1186,9 @@ private fun TaskbarCard(app: HikariApp) {
 private fun rasterizeIcon(context: Context, @DrawableRes resId: Int): ImageBitmap? =
     runCatching {
         val drawable = context.getDrawable(resId) ?: return@runCatching null
-        // The tile is drawn at 96dp (108/72 × the 64dp box), so one pixel per
-        // dp of that is exactly the resolution the screen can show.
-        val px = (96 * context.resources.displayMetrics.density).toInt().coerceIn(144, 640)
+        // The tile is drawn 1:1 in the 64dp box, so 2 px per dp is already
+        // sharper than any phone screen needs (and keeps the bitmaps small).
+        val px = (128 * context.resources.displayMetrics.density).toInt().coerceIn(192, 768)
         val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, px, px)
@@ -1199,6 +1213,7 @@ private fun AppIconCard(app: HikariApp) {
     val currentFlow = remember { app.store.appIconFlow() }
     val current by currentFlow.collectAsState(initial = AppIconManager.DEFAULT_KEY)
     val tile = 64.dp
+    val tileShape = RoundedCornerShape(tile * 0.26f)
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1226,7 +1241,7 @@ private fun AppIconCard(app: HikariApp) {
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .size(tile)
-                            .clip(CircleShape)
+                            .clip(tileShape)
                             .clickable {
                                 if (!selected) {
                                     scope.launch {
@@ -1242,23 +1257,24 @@ private fun AppIconCard(app: HikariApp) {
                                 width = if (selected) 2.dp else 1.dp,
                                 color = if (selected) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                                shape = CircleShape
+                                shape = tileShape
                             )
                     ) {
-                        // An adaptive icon is a 108dp layer whose visible area is
-                        // its centre 72dp, so the tile is drawn at 108/72 × the
-                        // box — exactly what a home screen ends up showing.
-                        // Drawn from a rasterised drawable rather than through
-                        // painterResource: the v2…v11 icons resolve to an
-                        // `<adaptive-icon>` XML on API 26+, which painterResource
-                        // refuses to load.
-                        val icon = remember(v.key) { rasterizeIcon(context, v.drawable) }
+                        // The preview drawable is the composed icon square
+                        // (background + artwork with its margin), drawn 1:1 in
+                        // the box — deliberately *not* zoomed to imitate the
+                        // launcher's mask, which is what made the artwork look
+                        // chopped in an earlier build.
+                        // Rasterised by hand rather than with painterResource:
+                        // the v2…v11 mipmaps resolve to an `<adaptive-icon>` XML
+                        // on API 26+, which Compose's vector loader refuses.
+                        val icon = remember(v.key) { rasterizeIcon(context, v.preview) }
                         if (icon != null) {
                             Image(
                                 bitmap = icon,
                                 contentDescription = v.label,
                                 contentScale = ContentScale.FillBounds,
-                                modifier = Modifier.size(tile * (108f / 72f))
+                                modifier = Modifier.size(tile)
                             )
                         }
                     }
@@ -1890,19 +1906,6 @@ private fun WebViewSafetyCard(app: HikariApp) {
 }
 
 /**
- * Extensions' own Cloudflare verification pages.
- *
- * Hikari's rule is that verification is tap-only — nothing loads a challenge
- * until the user taps the app's WebView (globe) button. Extensions don't have to
- * follow it: several ship their own Cloudflare WebView and a few open it by
- * themselves while they load sources (Cinemacity does, gated on its own
- * CINEMACITY_CF_WEBVIEW_ENABLED switch). This is the single opt-in for letting
- * them; while it is off the app forces those switches off at launch, after a
- * plugin settings sheet closes, and whenever this changes — see
- * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof of the
- * Cinemacity path.
- */
-/**
  * Settings → Backup & Restore: the whole setup (installed extensions, sources
  * and every pref this app owns) in one JSON file, and the way back.
  *
@@ -2121,7 +2124,7 @@ private fun ExtensionVerifyCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    tr("Off: the extension's own switch is forced off, so its page can never appear uninvited."),
+                    tr("Off: an extension's own page can never open uninvited. On: Hikari stops forcing the extension's switch — it never turns that page on for you."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

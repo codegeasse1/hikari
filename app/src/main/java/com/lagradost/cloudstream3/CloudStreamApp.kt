@@ -84,7 +84,7 @@ class CloudStreamApp : Application() {
 
         /** Current host context (wired by HikariApp at startup). */
         val context: Context?
-            get() = _context?.get()
+            get() = _context?.get()?.let { com.hikari.app.net.ExtensionVerifyGuard.wrapContext(it) }
 
         fun setContext(context: Context) {
             _context = WeakReference(context.applicationContext ?: context)
@@ -166,22 +166,38 @@ class CloudStreamApp : Application() {
         }
 
         private fun write(key: String, value: Any?) {
+            // The last line of defence for an extension's own verification-page
+            // switch: while the user keeps those pages blocked (Settings →
+            // Privacy & Browsing), a `true` written through this store is
+            // stored as `false`. A plugin's settings sheet writes its toggles
+            // through here, so its "bypass Cloudflare in a WebView" switch can
+            // never end up on — see ExtensionVerifyGuard, and the
+            // SharedPreferences half of the same guard in [context] above.
+            //
+            // Only ever done to a value that IS the switch being turned on
+            // (a boolean, or the literal "true"): a key that merely looks like
+            // a verification key can hold a URL or a mode name, and rewriting
+            // that would corrupt the extension's own setting instead of
+            // guarding it.
+            val turningOn = value is Boolean && value || (value as? String)?.trim()?.lowercase() == "true"
+            val guarded = turningOn && com.hikari.app.net.ExtensionVerifyGuard.forcesOff(key)
+            val effective = if (guarded) false else value
             val p = prefs
             if (p != null) {
-                if (value == null) {
+                if (effective == null) {
                     p.edit().remove(key).apply()
                 } else {
                     val o = JSONObject()
                     try {
-                        when (value) {
-                            is String -> o.put("s", value)
-                            is Number, is Boolean -> o.put("n", value)
+                        when (effective) {
+                            is String -> o.put("s", effective)
+                            is Number, is Boolean -> o.put("n", effective)
                             is List<*> -> {
                                 val arr = JSONArray()
-                                value.forEach { arr.put(it as? Any ?: JSONObject.NULL) }
+                                effective.forEach { arr.put(it as? Any ?: JSONObject.NULL) }
                                 o.put("a", arr)
                             }
-                            else -> o.put("s", value.toString())
+                            else -> o.put("s", effective.toString())
                         }
                         p.edit().putString(key, o.toString()).apply()
                     } catch (_: Throwable) {
@@ -191,7 +207,7 @@ class CloudStreamApp : Application() {
             // Mirror into the file the jar's DataStore reads, in ITS encoding —
             // see CS_PREFS_NAME above for why one file is not enough.
             val cs = csPrefs ?: return
-            val literal = csLiteral(value)
+            val literal = csLiteral(effective)
             if (literal == null) cs.edit().remove(key).apply()
             else cs.edit().putString(key, literal).apply()
         }

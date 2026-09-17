@@ -1,3 +1,58 @@
+## 0.5.1
+
+**One Play tap searches everywhere, and keeps filling the server list while the
+video runs. The ten alternative icons are cut correctly at last, `.sky`
+extensions install, and extensions can no longer open their own Cloudflare page
+over your video.**
+
+- **Every engine's servers, on Play, in the background.** Tapping Play used to
+  show the servers of the extension you opened the title from and then stop —
+  the rest arrived on a live session the player had already stopped listening
+  to, so the list looked like it had "loaded halfway". The play tap now holds
+  *one* session id for the whole search, so Hikari / Nuvio / SkyStream /
+  Stremio / CloudStream / universal-scraper servers all keep landing on the
+  player's own source sheet as each engine answers, exactly like the download
+  chooser does.
+- **A search that ends empty no longer wipes the servers you already have.**
+  When a late or cached re-read of the providers came back empty (every one of
+  them failing or timing out on the retry) it used to overwrite the list the
+  player was already holding, which closed the source sheet and left the next
+  Play tap saying "no servers" even though the links were still good.
+- **`.sky` extensions install again.** Installing a SkyStream extension failed
+  with *"Not a valid SkyStream extension: TypeError: circular reference"* — the
+  engine's bootstrap returns the global object, and writing it back into the
+  script's own scope made QuickJS reject the value. Bootstrapping now discards
+  the result, so the extension loads.
+- **Extensions cannot open a Cloudflare page on their own.** Some extensions
+  (Cinemacity is the one that was caught doing it) ship their own "Bypass
+  Cloudflare" WebView and open it by themselves mid-search, and print the raw
+  *"Cloudflare blocked. Go to Settings…"* line over the video when they can't.
+  The guard is now three layers instead of one, so it holds whether the
+  extension reads the toggle through Hikari's key store or straight out of its
+  own preferences file: the read answers `false`, the stored value is forced to
+  `false`, and the `Context` extensions are handed answers `false` too. Turning
+  Hikari's own switch **on** no longer writes `true` into the extension's
+  switch either — it only stops the forcing (writing it *enabled* the very page
+  the switch was meant to prevent). Hikari's own tap-only verification (the
+  globe button) is unchanged.
+- **Every alternative app icon is cut correctly.** The ten alternatives were
+  cropped from the art sheet by hand and several were clipped or half-offset —
+  one lost a third of its artwork inside the launcher's icon mask. All ten are
+  re-cut to the same rule (complete artwork, equally inset, sampled per icon),
+  so nothing is cut off on any launcher shape, and the chooser tiles now show
+  the same thing the launcher will.
+- **Collections moved where you'd look for them.** Settings → Appearance no
+  longer carries *Collections*; it lives in a new *Personal Catalog creator*
+  folder of its own in the settings list.
+
+**Fixes on top of 0.5.0:**
+
+- **The old crash is gone for good.** The `ToastBinding`
+  `NoClassDefFoundError` some installs hit on launch (a generated ViewBinding
+  class the desktop CloudStream jar expects) is still excluded from the jar and
+  replaced by Hikari's own class — see the older entry below; nothing in this
+  build touches it.
+
 ## 0.5.0
 
 **Hikari speaks SkyStream. `.sky` scriptable extensions run next to every other
