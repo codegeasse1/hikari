@@ -1,5 +1,6 @@
 package com.hikari.app.ui.screens
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.I18n
 
 import android.content.ContentValues
 import android.content.Context

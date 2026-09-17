@@ -1,5 +1,6 @@
 package com.hikari.app.ui
 
+import com.hikari.app.i18n.I18n
 import android.app.Activity
 import android.content.Context
 import android.content.Intent

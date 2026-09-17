@@ -1,5 +1,6 @@
 package com.hikari.app.ui.screens
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.I18n
 
 import android.content.Context
 import android.content.Intent
@@ -1160,9 +1161,9 @@ private fun TaskbarCard(app: HikariApp) {
 
 /**
  * Rasterises a launcher icon resource into a square bitmap. Needed because
- * `painterResource` only understands `<vector>` and raster XML: the v2…v11
- * launcher icons resolve to `mipmap-anydpi-v26/*.xml`, which is an
- * `<adaptive-icon>` and sends Compose's vector loader into an
+ * `painterResource` only understands vector and raster XML: the v2…v11
+ * launcher icons resolve to an adaptive-icon XML inside `mipmap-anydpi-v26`,
+ * which sends Compose's vector loader into an
  * IllegalArgumentException. Drawing the Drawable the way the launcher would is
  * also the more faithful preview — it covers the adaptive layer, a plain
  * vector (the pre-API-26 fallback for the official icon) and a plain bitmap

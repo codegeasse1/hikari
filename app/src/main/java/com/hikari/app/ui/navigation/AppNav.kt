@@ -61,6 +61,7 @@ import androidx.navigation.navArgument
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.screens.CatalogScreen
+import com.hikari.app.ui.screens.CollectionGridScreen
 import com.hikari.app.ui.screens.CollectionViewScreen
 import com.hikari.app.ui.screens.CollectionsScreen
 import com.hikari.app.ui.screens.DetailScreen

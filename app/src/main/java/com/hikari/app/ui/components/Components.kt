@@ -1,5 +1,6 @@
 package com.hikari.app.ui.components
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.I18n
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode

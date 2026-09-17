@@ -1,5 +1,6 @@
 package com.hikari.app.web
 
+import com.hikari.app.i18n.I18n
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color

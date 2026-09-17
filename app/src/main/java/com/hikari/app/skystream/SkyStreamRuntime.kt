@@ -114,10 +114,9 @@ object SkyStreamRuntime {
         var dirty = false
 
         init {
-            runCatching {
-                if (file.exists()) JSONObject(file.readText())
-            }.getOrNull()?.let { o ->
-                o.keys().forEach { k -> runCatching { values.put(k, o.get(k)) } }
+            val stored = runCatching { JSONObject(file.readText()) }.getOrNull()
+            if (stored != null) {
+                stored.keys().forEach { k -> runCatching { values.put(k, stored.get(k)) } }
             }
         }
 
