@@ -2478,7 +2478,7 @@ class PlayerActivity : ComponentActivity() {
         label?.takeIf { it.count { ch -> ch.isLetter() } >= 2 } ?: "Track ${fallbackIndex + 1}"
 
     /** A small glass pill: the right-aligned value badge on a row. */
-    private fun glassPill(text: String, sizeDp: Float = 9.5f): TextView {
+    private fun glassPill(text: String, sizeDp: Float = 8.5f): TextView {
         val density = resources.displayMetrics.density
         return TextView(this).apply {
             this.text = text
@@ -2487,8 +2487,8 @@ class PlayerActivity : ComponentActivity() {
             setTextColor(0xFFC9D2E0.toInt())
             gravity = Gravity.CENTER
             setPadding(
-                (7 * density).toInt(), (2.5f * density).toInt(),
-                (7 * density).toInt(), (2.5f * density).toInt()
+                (6 * density).toInt(), (2 * density).toInt(),
+                (6 * density).toInt(), (2 * density).toInt()
             )
             // No outline: the badge reads as a soft grey chip sitting on the
             // row, exactly like the reference player's bitrate pills.
@@ -2508,8 +2508,8 @@ class PlayerActivity : ComponentActivity() {
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(
-                (14 * density).toInt(), (14 * density).toInt()
-            ).apply { marginStart = (7 * density).toInt() }
+                (12 * density).toInt(), (12 * density).toInt()
+            ).apply { marginStart = (6 * density).toInt() }
         }
     }
 
@@ -2612,8 +2612,8 @@ class PlayerActivity : ComponentActivity() {
             isClickable = onClick != null
             isFocusable = onClick != null
             setPadding(
-                (11.5f * density).toInt(), (8.5f * density).toInt(),
-                (11f * density).toInt(), (8.5f * density).toInt()
+                (10 * density).toInt(), (6 * density).toInt(),
+                (10 * density).toInt(), (6 * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -2623,7 +2623,7 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                dpText(12.5f)
+                dpText(11.5f)
                 // One line, always. A row is a capsule, so its HEIGHT decides how
                 // round it reads (the corner radius is clamped to half of it), and
                 // a label that wrapped to a second line made those rows a visibly
@@ -2640,7 +2640,7 @@ class PlayerActivity : ComponentActivity() {
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
-                    dpText(10f)
+                    dpText(9f)
                     // Same rule for the secondary line, so every row on screen is
                     // exactly one label line plus one sub line: identical capsules.
                     maxLines = 1
@@ -2662,12 +2662,12 @@ class PlayerActivity : ComponentActivity() {
         } else if (option.chevron) {
             row.addView(TextView(this).apply {
                 text = "\u203A"
-                dpText(15f)
+                dpText(13f)
                 includeFontPadding = false
                 setTextColor(0xFF7E8AA0.toInt())
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = (6 * density).toInt() })
+            ).apply { marginStart = (5 * density).toInt() })
         }
         if (onClick != null) row.setOnClickListener { onClick() }
         return row
@@ -2679,8 +2679,8 @@ class PlayerActivity : ComponentActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
-                (10 * density).toInt(), (5 * density).toInt(),
-                (10 * density).toInt(), (2 * density).toInt()
+                (8 * density).toInt(), (4 * density).toInt(),
+                (8 * density).toInt(), (2 * density).toInt()
             )
         }
     }
@@ -2789,7 +2789,7 @@ class PlayerActivity : ComponentActivity() {
             ?.let { line ->
                 TextView(this).apply {
                     text = line
-                    dpText(11f)
+                    dpText(10f)
                     includeFontPadding = false
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
@@ -2811,8 +2811,8 @@ class PlayerActivity : ComponentActivity() {
                         imageTintList = ColorStateList.valueOf(withAlpha(accentMidColor, 0.95f))
                         scaleType = ImageView.ScaleType.CENTER_INSIDE
                     }, LinearLayout.LayoutParams(
-                        (14 * density).toInt(), (14 * density).toInt()
-                    ).apply { marginEnd = (7 * density).toInt() })
+                        (13 * density).toInt(), (13 * density).toInt()
+                    ).apply { marginEnd = (6 * density).toInt() })
                 }
                 addView(hintView, LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
@@ -2832,7 +2832,7 @@ class PlayerActivity : ComponentActivity() {
                     )
                     isClickable = true
                     setOnClickListener { dialog.dismiss() }
-                }, LinearLayout.LayoutParams((26 * density).toInt(), (26 * density).toInt()))
+                }, LinearLayout.LayoutParams((24 * density).toInt(), (24 * density).toInt()))
             }
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -3435,14 +3435,14 @@ class PlayerActivity : ComponentActivity() {
                     setColor(0x14FFFFFF.toInt())
                 }
             }
-            val padX = (11 * density).roundToInt()
-            val probe = TextView(this).apply { dpText(10.5f) }
+            val padX = (8 * density).roundToInt()
+            val probe = TextView(this).apply { dpText(9.5f) }
             val textW = ceil(probe.paint.measureText(label)).toInt()
-            val w = (textW + padX * 2).coerceAtLeast((34 * density).roundToInt())
-            val h = (25 * density).roundToInt()
+            val w = (textW + padX * 2).coerceAtLeast((28 * density).roundToInt())
+            val h = (21 * density).roundToInt()
             return TextView(this).apply {
                 text = label
-                dpText(10.5f)
+                dpText(9.5f)
                 isSingleLine = true
                 includeFontPadding = false
                 gravity = Gravity.CENTER
@@ -3453,7 +3453,7 @@ class PlayerActivity : ComponentActivity() {
                 isFocusable = false
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(w, h).apply {
-                    marginEnd = (6 * density).roundToInt()
+                    marginEnd = (5 * density).roundToInt()
                 }
             }
         }
@@ -3506,7 +3506,7 @@ class PlayerActivity : ComponentActivity() {
                         val first = list.childCount == 1
                         list.addView(TextView(this).apply {
                             text = name.uppercase() + "  \u00B7  " + memberIdx.size
-                            dpText(10f)
+                            dpText(9f)
                             includeFontPadding = false
                             isSingleLine = true
                             ellipsize = TextUtils.TruncateAt.END
@@ -3516,7 +3516,7 @@ class PlayerActivity : ComponentActivity() {
                             LinearLayout.LayoutParams.MATCH_PARENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT
                         ).apply {
-                            val topMargin = if (first) (2 * density).toInt() else (10 * density).toInt()
+                            val topMargin = if (first) (2 * density).toInt() else (7 * density).toInt()
                             setMargins(
                                 (4 * density).toInt(),
                                 topMargin,

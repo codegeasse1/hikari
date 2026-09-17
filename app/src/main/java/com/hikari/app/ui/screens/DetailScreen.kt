@@ -531,11 +531,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Someone (another instance of this screen for the same title, or a
         // prefetch that is still running) already owns this extraction: join it
-        // instead of running the providers a second time.
-        StreamCache.joined(key)?.let { return it.await() }
+        // instead of running the providers a second time. BOUNDED: an owner that
+        // was cancelled without ever completing its shared deferred would
+        // otherwise park every later lookup of this title on `await()` for good,
+        // which is the difference between "one slow search" and "this title
+        // never searches again".
+        StreamCache.joined(key)?.let { pending ->
+            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() } ?: emptyList()
+        }
         val deferred = CompletableDeferred<List<StreamSource>>()
         if (!StreamCache.claim(key, deferred)) {
-            return StreamCache.joined(key)?.await() ?: emptyList()
+            val pending = StreamCache.joined(key) ?: return emptyList()
+            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() } ?: emptyList()
         }
         try {
             // Every provider response is mirrored into the live feed so the UI
@@ -673,6 +680,19 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
  *  found. Long enough for a slower provider to answer, short enough that a tap
  *  never appears to hang. */
 private const val PREFERRED_GRACE_MS = 10_000L
+
+/** How long a lookup will join an extraction someone else already owns before
+ *  giving up on it (see [resolveStreams]). A shared extraction that was
+ *  cancelled without completing its deferred used to hang every later lookup of
+ *  the same title here, forever. */
+private const val JOIN_WAIT_MS = 90_000L
+
+/** Hard ceiling on the final sources read of a play tap. The cross-extension
+ *  pass has its own budget, but this is the outer guarantee: when it expires the
+ *  search is declared finished (the `finally` below reports the outcome and
+ *  marks the session done) instead of the player's cover sitting on "still
+ *  searching" while an unbounded provider combination works on it. */
+private const val STREAMS_FINAL_CAP_MS = 80_000L
 
 /** How long the player holds playback at the start of a fresh search, waiting
  *  for a server from the extension the title was opened from, before it takes
@@ -1265,7 +1285,9 @@ fun DetailScreen(
                     wantPreferred = false
                     startNow()
                 }
-                val final = vm.getStreams(epForSearch)
+                val final = withTimeoutOrNull(STREAMS_FINAL_CAP_MS) {
+                    vm.getStreams(epForSearch)
+                } ?: emptyList()
                 feed.cancel()
                 grace.cancel()
                 // Never downgrade. The live feed above may already have handed
@@ -1361,6 +1383,16 @@ fun DetailScreen(
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
                     StreamsLive.setStatus(sid, note)
+                } else {
+                    // Servers WERE found — say that the search is over, so the
+                    // cover/hint never keeps reading "still searching…" after the
+                    // pass has actually finished (which looks exactly like a
+                    // stuck search even though a full server list is in hand).
+                    StreamsLive.setStatus(
+                        sid,
+                        "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
+                            " — search finished.",
+                    )
                 }
                 StreamsLive.markDone(sid)
             }

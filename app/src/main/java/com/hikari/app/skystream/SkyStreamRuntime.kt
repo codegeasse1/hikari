@@ -66,6 +66,28 @@ object SkyStreamRuntime {
     private const val FETCH_TIMEOUT_MS = 30_000L
     private const val CALL_TIMEOUT_MS = 45_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
+    /** Budget for `getHome`/`search`: a catalog answer needs SEVERAL pages
+     *  (the `akash` sites fetch 8 category pages, the `dev.cookie.*` family up
+     *  to 24, plus their own addon manifests), and on a slow connection those
+     *  alone can outlast [CALL_TIMEOUT_MS] — which used to report a perfectly
+     *  healthy extension as "timed out"/"no catalog". Matches the Home feed's
+     *  per-provider ceiling in [com.hikari.app.data.ContentRepository]. */
+    private const val CATALOG_TIMEOUT_MS = 75_000L
+    /** Room on top of a call's budget for the pump loop's own bookkeeping. */
+    private const val CALL_GRACE_MS = 20_000L
+    /** Budget for one plugin call: catalogs get the long one (see above). */
+    private fun budgetFor(fnName: String): Long =
+        if (fnName == "getHome" || fnName == "search") CATALOG_TIMEOUT_MS else CALL_TIMEOUT_MS
+
+    /**
+     * Threads serving the plugin fetch bridge. One engine can have a dozen-plus
+     * requests in flight at once (the `dev.cookie.*` family fires up to 24
+     * category pages from ONE `getHome`), and up to [MAX_CONCURRENT] engines run
+     * at a time, so a small pool turned "parallel" fetches back into a queue —
+     * which is exactly the latency that made catalogs time out. The threads are
+     * almost always idle (they only block on a socket), so the pool is cheap.
+     */
+    private const val FETCH_THREADS = 24
     /** Budget for one legacy `loadExtractor` call (a plugin is blocked on it). */
     private const val EXTRACT_TIMEOUT_MS = 25_000L
 
@@ -167,7 +189,7 @@ object SkyStreamRuntime {
         evaluate<Any?>("$js\n;void 0;\n", name, false)
     }
 
-    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(12)
+    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(FETCH_THREADS)
 
     /**
      * Per-engine state for the ASYNCHRONOUS fetch bridge.
@@ -202,6 +224,20 @@ object SkyStreamRuntime {
             .followSslRedirects(true)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // Cloudflare, the whole reason a seemingly installed SkyStream
+            // extension can show an empty catalog: most extension sites
+            // (4khdhub.link and friends) answer a plain HTTP client with a
+            // "Just a moment…" interstitial, the plugin parses that page as if
+            // it were the catalog and reports success with zero items — so Home
+            // said "no catalog" while the site was simply waiting for a
+            // verification. Sharing CloudflareVerifier's interceptor (already
+            // used by Http for every CloudStream/Hikari provider) makes these
+            // fetches reuse the cf_clearance cookie the verify WebView earned,
+            // retry the challenge with the WebView's own UA, and record the host
+            // so the Home screen can offer its globe button. fetchOnce still
+            // scans for a challenge body as a second net (it also flags
+            // CF-CHALLENGE-UNSOLVED in the fetch log).
+            .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             // Some extension-repo hosts answer only via a public resolver on
             // some devices/ISPs — fall back to DNS-over-HTTPS (see DohDns).
             .dns(DohDns)
@@ -221,9 +257,10 @@ object SkyStreamRuntime {
         source: String,
         prefs: Prefs,
         fetches: AsyncFetches,
+        budgetMs: Long = CALL_TIMEOUT_MS,
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
-        qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
+        qjs.evaluationTimeoutMillis = budgetMs
 
         qjs.function("__hikariFetch") { args ->
             val url = args.getOrNull(0)?.toString() ?: ""
@@ -339,23 +376,25 @@ object SkyStreamRuntime {
         val source = runCatching { scriptFile.readText() }.getOrNull()
         if (source.isNullOrBlank()) return failure("plugin file missing — reinstall this extension")
         val manifestJson = readManifest(scriptFile)
+        val budget = budgetFor(fnName)
         return concurrency.withPermit {
-            withTimeoutOrNull(CALL_TIMEOUT_MS + 20_000L) {
+            withTimeoutOrNull(budget + CALL_GRACE_MS) {
                 withContext(Dispatchers.Default) {
                     val deferred = CompletableDeferred<String>()
                     val prefs = Prefs(settingsFile(pluginId))
                     val fetches = AsyncFetches()
                     var qjs: QuickJs? = null
                     try {
-                        qjs = createEngine(deferred, pluginId, manifestJson, source, prefs, fetches)
+                        qjs = createEngine(deferred, pluginId, manifestJson, source, prefs, fetches, budget)
                         qjs.evaluate<Any?>(buildCall(fnName, argsJson), "call.js", false)
-                        val deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS
+                        val deadline = System.currentTimeMillis() + budget
                         // Each round: fire one due timer, deliver every async fetch
                         // that finished since the last round, then sleep. A plugin
                         // waiting on `Promise.all` keeps [AsyncFetches.pending]
                         // above zero, which is what holds the loop open while its
                         // requests are in flight.
                         var idleRounds = 0
+                        var idleBail = false
                         while (!deferred.isCompleted && System.currentTimeMillis() < deadline) {
                             val next = qjs.evaluate<Any?>("__skyFireTimer()", "timer.js", false)
                             deliverFetches(qjs, fetches)
@@ -390,13 +429,24 @@ object SkyStreamRuntime {
                                     // the pool a few rounds to notice a request
                                     // that was just submitted before ending the call.
                                     idleRounds++
-                                    if (idleRounds >= 4) break
+                                    if (idleRounds >= 4) {
+                                        idleBail = true
+                                        break
+                                    }
                                     delay(12)
                                 }
                             }
                         }
                         if (deferred.isCompleted) normalise(deferred.await())
-                        else failure("timed out after ${CALL_TIMEOUT_MS / 1000}s")
+                        // Distinguish the two endings: an extension that parked on
+                        // a promise/timer nothing will ever settle stopped on its
+                        // own (a plugin bug, or a site that answered with something
+                        // it could not parse), whereas a real budget overrun means
+                        // the site is just slow. Saying "timed out after 75s" for a
+                        // call that bailed in 4 seconds sent people chasing a
+                        // network problem that did not exist.
+                        else if (idleBail) failure("the extension stopped responding before it could finish")
+                        else failure("timed out after ${budget / 1000}s")
                     } catch (e: Throwable) {
                         if (deferred.isCompleted) normalise(deferred.await())
                         else failure(e.message ?: e.javaClass.simpleName)
@@ -405,7 +455,7 @@ object SkyStreamRuntime {
                         prefs.save()
                     }
                 }
-            } ?: failure("timed out after ${CALL_TIMEOUT_MS / 1000}s")
+            } ?: failure("timed out after ${budget / 1000}s")
         }
     }
 

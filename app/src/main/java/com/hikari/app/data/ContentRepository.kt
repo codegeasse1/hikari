@@ -83,6 +83,39 @@ class ContentRepository(private val manager: ProviderManager) {
 
         const val CROSS_EMPTY_TTL_MS = 5 * 60 * 1000L
 
+        /**
+         * The POSITIVE counterpart of [crossEmpty]: `providerId|query` → the
+         * entry that extension MATCHED for that query, with the time it did.
+         *
+         * A title is normally looked up several times in one session — open the
+         * server sheet, pick another server, replay, jump to the next episode —
+         * and each lookup used to re-ask every installed extension from
+         * scratch. For a .cs3/.hiki repo that means re-loading its dex archive,
+         * the single most expensive step of the whole pass, which is why the
+         * second and third lookups crawled as much as the first. Remembering the
+         * match lets a repeat lookup skip both the search and the cold load.
+         *
+         * Only a genuine, scored match is stored (never a failure, and never an
+         * empty page — that is [crossEmpty]'s job), and only for a short window,
+         * because a repo's catalogue does change.
+         */
+        class CrossMatch(val item: MediaItem, val at: Long)
+
+        val crossMatch = ConcurrentHashMap<String, CrossMatch>()
+
+        const val CROSS_MATCH_TTL_MS = 10 * 60 * 1000L
+
+        /**
+         * Repos that have handed this session a playable server at least once
+         * (see [crossExtensionExtract]). They are asked FIRST on every later
+         * lookup: they are the ones most likely to still carry the title, and
+         * their plugin is usually still loaded, so they answer in a fraction of
+         * the time a cold repo needs. Never cleared — it is session knowledge,
+         * and a stale entry only costs one cheap search at the front of the
+         * queue.
+         */
+        val crossProven: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
 
@@ -169,9 +202,16 @@ class ContentRepository(private val manager: ProviderManager) {
     // background, so these budgets only cap how long we wait for SLOW extra
     // pages. Trimmed hard (was 90s/240s/260s) so a single dead provider can't
     // make a search feel like it never finishes.
-    private val SEARCH_PAGE_TIMEOUT_MS get() = NetTuning.timeout(25_000L)
-    private val SEARCH_PROVIDER_BUDGET_MS get() = NetTuning.timeout(90_000L)
-    private val SEARCH_TOTAL_BUDGET_MS get() = NetTuning.timeout(100_000L)
+    // NOTE on every wall-clock budget below: slow-connection mode scales a
+    // PER-REQUEST timeout (a single slow response deserves more time), but it
+    // must never scale a WALL-CLOCK CEILING on a whole pass. Multiplying the
+    // ceilings by 3 turned the cross-extension pass into a 450-second wait — the
+    // "it just sits on Finding server and never searches anything else" report —
+    // so each ceiling is now clamped with `minOf`. Per-call timeouts still get
+    // the full slow-mode multiplier.
+    private val SEARCH_PAGE_TIMEOUT_MS get() = minOf(NetTuning.timeout(25_000L), 30_000L)
+    private val SEARCH_PROVIDER_BUDGET_MS get() = minOf(NetTuning.timeout(90_000L), 90_000L)
+    private val SEARCH_TOTAL_BUDGET_MS get() = minOf(NetTuning.timeout(100_000L), 100_000L)
 
     // ---- Cross-extension fallback ----
     // The SAME title is asked of the other installed extensions (search → best
@@ -228,7 +268,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  which is how servers from a repo the user KNEW had them (MovieBox,
      *  4KHDHub's mirrors, …) stayed missing from the list. Results stream to the
      *  player as they land, so a longer tail costs nothing at play time. */
-    private val CROSS_EXT_BUDGET_MS get() = NetTuning.timeout(150_000L)
+    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(70_000L), 70_000L)
 
     /** Ceiling for PHASE 1 of the pass — asking every installed extension for
      *  the title. The phase ends the moment the last extension has answered, so
@@ -240,7 +280,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  never asked at all — and the pass still reported "all done, none with
      *  servers", which is exactly how a repo the user KNOWS carries the title
      *  went missing. */
-    private val CROSS_EXT_SEARCH_PHASE_MS get() = NetTuning.timeout(45_000L)
+    private val CROSS_EXT_SEARCH_PHASE_MS get() = minOf(NetTuning.timeout(25_000L), 25_000L)
 
     /** How many searches may still be pending when phase 2 (extraction) is
      *  allowed to start anyway. Searching is cheap next to extracting, so once
@@ -257,10 +297,10 @@ class ContentRepository(private val manager: ProviderManager) {
     // nothing. A search that still times out is retried once (see
     // [crossExtensionSearch]) and, if it fails again, is now reported as a
     // TIMEOUT rather than as "no matching title".
-    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = NetTuning.timeout(20_000L)
-    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = NetTuning.timeout(20_000L)
-    private val CROSS_EXT_META_TIMEOUT_MS get() = NetTuning.timeout(15_000L)
-    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = NetTuning.timeout(45_000L)
+    private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = minOf(NetTuning.timeout(20_000L), 25_000L)
+    private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = minOf(NetTuning.timeout(20_000L), 25_000L)
+    private val CROSS_EXT_META_TIMEOUT_MS get() = minOf(NetTuning.timeout(15_000L), 20_000L)
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 50_000L)
 
     /** Searching a title is cheap; extracting links is not, so they get their
      *  own caps. The wider one lets every installed extension be SEARCHED in
@@ -370,6 +410,56 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
+     * Ceiling on ONE provider's whole Home job: its `catalogs()` plus the first
+     * page of every row. A SkyStream extension has to boot an entire JS engine
+     * and then scrape a dozen-plus pages before it can answer (its own engine
+     * budget is 75s — see SkyStreamRuntime.CATALOG_TIMEOUT_MS), so the old 55s
+     * ceiling reported a healthy-but-slow extension as "no catalog" on exactly
+     * the same sites that a shorter-booting provider loaded fine.
+     */
+    private val HOME_PROVIDER_CEILING_MS get() = minOf(NetTuning.timeout(80_000L), 80_000L)
+
+    /** Ceiling on one catalog's first page (served from the provider's own home
+     *  cache for SkyStream extensions, so it is only reached by the scrapers). */
+    private val HOME_CATALOG_CEILING_MS get() = minOf(NetTuning.timeout(20_000L), 20_000L)
+
+    /**
+     * Providers reordered so every engine FAMILY gets a turn early.
+     *
+     * Home ("All providers") and search-all walk `manager.providers` in INSTALL
+     * order through a small semaphore ([Semaphore] 5 there, 4 here). With a few
+     * hundred enabled installs that means the extensions installed LAST — every
+     * SkyStream extension, since those are installed after the bulk CloudStream/
+     * Hikari repos — are at position ~240 and are simply never reached before
+     * the feed's own ceiling: their rows never appear and it reads as "this
+     * extension has no catalog". Round-robin over the families (first of each,
+     * then second of each, …) asks every one of them within the first few slots,
+     * keeping install order INSIDE a family so the user's oldest/first install
+     * still sorts first among its own kind. Same trick as
+     * [crossExtensionTargets]'s target ordering.
+     */
+    private fun interleaveByProviderType(providers: List<ContentProvider>): List<ContentProvider> {
+        if (providers.size < 3) return providers
+        val families = LinkedHashMap<ProviderType, MutableList<ContentProvider>>()
+        providers.forEach { families.getOrPut(it.config.type) { mutableListOf() }.add(it) }
+        if (families.size < 2) return providers
+        val out = ArrayList<ContentProvider>(providers.size)
+        var index = 0
+        while (true) {
+            var added = false
+            families.values.forEach { list ->
+                if (index < list.size) {
+                    out.add(list[index])
+                    added = true
+                }
+            }
+            if (!added) break
+            index++
+        }
+        return out
+    }
+
+    /**
      * Records *why* a provider's catalog came up empty when the whole provider
      * job hit the ceiling below. Without this the provider produced no entry in
      * any `catalogErrors` map, so Home fell back to its generic "it returned no
@@ -397,9 +487,11 @@ class ContentRepository(private val manager: ProviderManager) {
      * series both called "Netflix") can never crash the LazyColumn.
      */
     suspend fun homeRows(providerId: String? = null): List<CatalogRow> = withContext(Dispatchers.IO) {
-        val active = manager.providers.value.filter {
-            it.config.enabled && (providerId == null || it.config.id == providerId)
-        }
+        val active = interleaveByProviderType(
+            manager.providers.value.filter {
+                it.config.enabled && (providerId == null || it.config.id == providerId)
+            }
+        )
         // GLOBAL gates shared by ALL providers (not per-provider): with dozens
         // of installed extensions, per-provider limits multiplied into hundreds
         // of concurrent network requests which saturated the IO pool and froze
@@ -413,13 +505,13 @@ class ContentRepository(private val manager: ProviderManager) {
                     cancellableCatching {
                         providerGate.withPermit {
                             // Tight budgets: a healthy catalog answers in a few
-                            // seconds, so a 55s provider / 15s catalog ceiling
-                            // keeps one dead host from stalling the whole home
+                            // seconds, so the provider/catalog ceilings above
+                            // keep one dead host from stalling the whole home
                             // feed for two minutes while still tolerating slow
                             // provider manifest loads (a SkyStream extension
                             // boots a whole JS engine before its first byte,
                             // and its own home page can fetch a dozen sections).
-                            val loaded = withTimeoutOrNull(55_000) {
+                            val loaded = withTimeoutOrNull(HOME_PROVIDER_CEILING_MS) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -427,7 +519,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     catalogs.map { c ->
                                         async {
                                             catalogGate.withPermit {
-                                                val items = withTimeoutOrNull(15_000) {
+                                                val items = withTimeoutOrNull(HOME_CATALOG_CEILING_MS) {
                                                     cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                                 }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                 if (items.isEmpty()) null
@@ -447,7 +539,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                 }
                             }
                             if (loaded == null) {
-                                noteCatalogTimeout(p, 55_000)
+                                noteCatalogTimeout(p, HOME_PROVIDER_CEILING_MS)
                                 emptyList()
                             } else loaded
                         }
@@ -471,9 +563,11 @@ class ContentRepository(private val manager: ProviderManager) {
      * weak device still can't be flooded with requests.
      */
     fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> = flow {
-        val active = manager.providers.value.filter {
-            it.config.enabled && (providerId == null || it.config.id == providerId)
-        }
+        val active = interleaveByProviderType(
+            manager.providers.value.filter {
+                it.config.enabled && (providerId == null || it.config.id == providerId)
+            }
+        )
         if (active.isEmpty()) {
             emit(emptyList())
             return@flow
@@ -494,7 +588,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 scope.async {
                     try {
                         providerGate.withPermit {
-                            val settled = withTimeoutOrNull(55_000) {
+                            val settled = withTimeoutOrNull(HOME_PROVIDER_CEILING_MS) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -503,7 +597,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                         async {
                                             try {
                                                 catalogGate.withPermit {
-                                                    val items = withTimeoutOrNull(15_000) {
+                                                    val items = withTimeoutOrNull(HOME_CATALOG_CEILING_MS) {
                                                         cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                                     }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                     if (items.isNotEmpty()) {
@@ -530,7 +624,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     }
                                 }.awaitAll()
                             }
-                            if (settled == null) noteCatalogTimeout(p, 55_000)
+                            if (settled == null) noteCatalogTimeout(p, HOME_PROVIDER_CEILING_MS)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -549,7 +643,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     emit(snapshot)
                 }
                 if (jobs.all { it.isCompleted }) break
-                if (System.currentTimeMillis() - started > 85_000L) break
+                // Must cover the longest provider ceiling above, or rows that
+                // landed after this would be thrown away with the flow: the
+                // slowest extension still gets its full 80s, plus the row-level
+                // scramble on top.
+                if (System.currentTimeMillis() - started > 120_000L) break
                 delay(100)
             }
             val finalSnapshot = placed.entries.sortedBy { it.key }.map { it.value }
@@ -572,9 +670,11 @@ class ContentRepository(private val manager: ProviderManager) {
         page: Int = 1,
         providerIds: Set<String>? = null,
     ): Flow<List<MediaItem>> = flow {
-        val active = manager.providers.value.filter {
-            it.config.enabled && (providerIds.isNullOrEmpty() || it.config.id in providerIds)
-        }
+        val active = interleaveByProviderType(
+            manager.providers.value.filter {
+                it.config.enabled && (providerIds.isNullOrEmpty() || it.config.id in providerIds)
+            }
+        )
         if (active.isEmpty()) {
             emit(emptyList())
             return@flow
@@ -793,6 +893,10 @@ class ContentRepository(private val manager: ProviderManager) {
             // ones are what make the NEXT pass over the same title cheap.
             val emptyNow = System.currentTimeMillis()
             crossEmpty.entries.removeAll { emptyNow - it.value >= CROSS_EMPTY_TTL_MS }
+            // Same for the remembered matches ([crossMatch]): expired ones are
+            // dropped so a changed catalogue is re-searched instead of trusted
+            // forever.
+            crossMatch.entries.removeAll { emptyNow - it.value.at >= CROSS_MATCH_TTL_MS }
             // How many repos of each engine are installed, so the hint can say
             // "asked 32 of 48 CloudStream" — the difference between "not
             // installed" and "silently skipped" at a glance.
@@ -863,7 +967,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 // through the concurrency cap plus a few fallbacks. Results are
                 // emitted progressively via onProgress, so the UI never sits on
                 // an empty spinner while this runs.
-                val deadline = started + NetTuning.timeout(55_000L)
+                val deadline = started + minOf(NetTuning.timeout(55_000L), 60_000L)
                 // With no main targets at all (e.g. a title opened from a repo
                 // that has since been uninstalled) there is nothing to wait
                 // for — start the other extensions immediately instead of
@@ -941,6 +1045,10 @@ class ContentRepository(private val manager: ProviderManager) {
                             if (verdict == null && found.isNotEmpty()) {
                                 crossVerdict.remove(id)
                                 crossFound[id] = hit.provider.config.type.groupLabel
+                                // This repo actually produced playable servers:
+                                // ask it first on every later lookup of any
+                                // title (see [crossProven]).
+                                crossProven.add(id)
                             } else {
                                 crossVerdict[id] = "${hit.repo} — " +
                                     (verdict ?: "no playable links")
@@ -1192,12 +1300,24 @@ class ContentRepository(private val manager: ProviderManager) {
             if (originType == null || family.key != originType) continue
             out += family.value
         }
+        // Repos that have already handed this session a playable server go
+        // next, ahead of the round-robin (see [crossProven]): they are the ones
+        // most likely to carry the title too, and their plugin is usually still
+        // loaded from the earlier lookup, so they answer in a fraction of the
+        // time a cold repo needs — which is exactly what makes the SECOND
+        // lookup of a title feel fast instead of like the first one again.
+        for (family in families) {
+            if (originType != null && family.key == originType) continue
+            family.value.filter { crossProven.contains(it.config.id) }.forEach { out += it }
+        }
         var round = 0
         while (out.size < CROSS_EXT_MAX_TARGETS) {
             var added = false
             for (family in families) {
                 if (originType != null && family.key == originType) continue
                 val p = family.value.getOrNull(round) ?: continue
+                // Already put in front of the queue as a proven repo.
+                if (crossProven.contains(p.config.id)) continue
                 out += p
                 added = true
                 if (out.size >= CROSS_EXT_MAX_TARGETS) break
@@ -1515,6 +1635,17 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             crossEmpty.remove(cacheKey)
         }
+        // This extension already MATCHED this exact query minutes ago (see
+        // [crossMatch]): hand the remembered entry straight back instead of
+        // spending a search slot — and, for a .cs3/.hiki repo, a cold plugin
+        // load — on the same question again. Extraction still runs normally, so
+        // the servers are freshly resolved; only the lookup is skipped.
+        crossMatch[cacheKey]?.let { hit ->
+            if (System.currentTimeMillis() - hit.at < CROSS_MATCH_TTL_MS) {
+                return@withPermit SearchAttempt(hit.item, null)
+            }
+            crossMatch.remove(cacheKey)
+        }
         // The search is about to RUN (a slot has been acquired). Reporting
         // "asked" any earlier counted merely-queued repos as searched (see
         // [markCrossSearchStarted]).
@@ -1543,8 +1674,14 @@ class ContentRepository(private val manager: ProviderManager) {
             // so a variant can only ever confirm a genuine match.
             val scored = results.map { it to titleScore(item.title, item.year, it) }
             val best = scored.filter { it.second >= minMatch }.maxByOrNull { it.second }?.first
-            if (best != null) SearchAttempt(best, null)
-            else SearchAttempt(
+            if (best != null) {
+                // Remember the match for the rest of the session ([crossMatch]),
+                // and drop any "no such title" note from an earlier pass — the
+                // repo's answer has changed.
+                crossMatch[cacheKey] = CrossMatch(best, System.currentTimeMillis())
+                crossEmpty.remove(cacheKey)
+                SearchAttempt(best, null)
+            } else SearchAttempt(
                 null,
                 "${results.size} search result(s), none of them \"$query\" " +
                     "(best match ${scored.maxOf { it.second }}/$minMatch)",

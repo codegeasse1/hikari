@@ -60,7 +60,17 @@ object HikariPluginManager {
             if (path in loading) return emptyList()
             loading.add(path)
             try {
-                val list = LoadGate.withSlot { loadFile(context, file) }
+                val list = try {
+                    LoadGate.withSlot { loadFile(context, file) }
+                } catch (e: LoadGate.LoadQueueBusyException) {
+                    // Bounded slot wait expired: treat it as a failure of THIS
+                    // extension and let the caller carry on with the rest,
+                    // instead of throwing into the Home / search coroutine
+                    // (a single jam used to abort the entire sweep, which is
+                    // why nothing was searched after it got stuck once).
+                    lastError = e.message
+                    emptyList()
+                }
                 if (list.isNotEmpty()) {
                     cache[path] = list
                     lastFail.remove(path)
@@ -82,7 +92,12 @@ object HikariPluginManager {
         if (!LoadGate.acquire(lock)) return emptyList()
         try {
             loading.add(path)
-            val list = LoadGate.withSlot { loadFile(context, file) }
+            val list = try {
+                LoadGate.withSlot { loadFile(context, file) }
+            } catch (e: LoadGate.LoadQueueBusyException) {
+                lastError = e.message
+                emptyList()
+            }
             if (list.isNotEmpty()) {
                 cache[path] = list
                 lastFail.remove(path)

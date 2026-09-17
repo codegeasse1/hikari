@@ -138,8 +138,7 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
                 return@withLock null
             }
             if (!res.optBoolean("ok", false)) {
-                catalogErrors[config.id] =
-                    "Home failed: " + res.optString("error").ifBlank { "the site returned nothing" }
+                catalogErrors[config.id] = catalogReason(res.optString("error"), empty = true)
                 return@withLock null
             }
             val data = res.opt("data")
@@ -155,12 +154,34 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
                 cats.add("Home" to data)
             }
             if (cats.isEmpty()) {
-                catalogErrors[config.id] = "This extension returned an empty home page."
+                catalogErrors[config.id] = catalogReason(null, empty = true)
                 return@withLock null
             }
             catalogErrors.remove(config.id)
             Home(System.currentTimeMillis(), cats).also { homeCache = it }
         }
+    }
+
+    /**
+     * Why this extension produced no catalog, in Hikari's own words.
+     *
+     * A Cloudflare challenge is by far the most common cause and the most
+     * misleading one: the extension's site answers a plain HTTP client with a
+     * "Just a moment…" interstitial, the plugin parses that page as if it were a
+     * catalog and reports SUCCESS with zero items — so Home used to say "no
+     * catalog" for a site that was only waiting for a verification tap. Say that
+     * instead, and point at the globe button (the verify WebView's clearance is
+     * now reused by these fetches — see SkyStreamRuntime's OkHttp client).
+     */
+    private fun catalogReason(err: String?, empty: Boolean): String {
+        val e = err.orEmpty()
+        val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
+        if (blocked != null || com.hikari.app.net.CloudflareVerifier.isVerificationMessage(e)) {
+            return "Cloudflare wants a verification on this site — tap the globe button at the top, then retry."
+        }
+        if (e.isNotBlank()) return "Home failed: $e"
+        return if (empty) "This extension returned an empty catalog (its site may have changed)."
+        else "Home failed."
     }
 
     // ---- Search ----

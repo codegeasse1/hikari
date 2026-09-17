@@ -182,7 +182,17 @@ object Cs3PluginManager {
                 // The dex commit itself is one of the process-wide slots, so a
                 // Home warm-up and an install can run side by side without
                 // loading two dozen archives into memory at once.
-                val apis = LoadGate.withSlot { loadFile(context, file) }
+                val apis = try {
+                    LoadGate.withSlot { loadFile(context, file) }
+                } catch (e: LoadGate.LoadQueueBusyException) {
+                    // The bounded slot wait expired — report it as THIS plugin's
+                    // failure so the caller simply moves on to the next one,
+                    // instead of throwing into the coroutine that drives Home
+                    // or a cross-extension search (which used to abort the
+                    // whole sweep, so nothing after it was ever searched).
+                    record("plugin loader busy for ${file.name}", e)
+                    emptyList()
+                }
                 if (apis.isNotEmpty()) {
                     cache[path] = apis
                     lastFail.remove(path)
@@ -209,7 +219,12 @@ object Cs3PluginManager {
         }
         try {
             loading.add(path)
-            val apis = LoadGate.withSlot { loadFile(context, file) }
+            val apis = try {
+                LoadGate.withSlot { loadFile(context, file) }
+            } catch (e: LoadGate.LoadQueueBusyException) {
+                record("plugin loader busy while reloading ${file.name}", e)
+                emptyList()
+            }
             if (apis.isNotEmpty()) {
                 cache[path] = apis
                 lastFail.remove(path)

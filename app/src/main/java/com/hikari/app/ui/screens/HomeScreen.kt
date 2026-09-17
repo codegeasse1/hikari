@@ -928,11 +928,11 @@ private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.labelMedium,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
         )
     }
 }
@@ -952,14 +952,14 @@ private fun PickerRow(
     onClick: () -> Unit,
 ) {
     val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(14.dp)
     Surface(
         onClick = onClick,
         shape = shape,
         color = Color.Transparent,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp)
+            .padding(vertical = 2.dp)
             .clip(shape)
             .background(
                 if (isSelected) {
@@ -977,13 +977,13 @@ private fun PickerRow(
             .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else glass.border, shape),
     ) {
         Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
                     label,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

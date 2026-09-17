@@ -40,6 +40,27 @@ object LoadGate {
     /** How long a caller waits for another thread to finish the same plugin. */
     private const val LOCK_WAIT_MS = 120_000L
 
+    /**
+     * How long a caller waits for one of the [MAX_CONCURRENT_LOADS] process-wide
+     * slots before giving up with [LoadQueueBusyException].
+     *
+     * This used to be `slots.acquireUninterruptibly()`, i.e. an UNBOUNDED wait.
+     * With only a handful of slots and a few hundred installed extensions, one
+     * jam — a plugin whose `load()` does network work, or a dex load that never
+     * returns — was enough to park every slot permanently: every later load then
+     * queued forever behind them, so Home and every subsequent cross-extension
+     * search silently stopped doing anything at all and just sat there. That is
+     * the "it gets stuck once and then never searches again" report. A bounded
+     * wait turns that into a clear, per-repo failure that the search reports and
+     * moves past, leaving the queue free for everyone else.
+     */
+    private const val SLOT_WAIT_MS = 45_000L
+
+    /** Thrown when no load slot could be acquired within [SLOT_WAIT_MS]. */
+    class LoadQueueBusyException : IllegalStateException(
+        "The plugin loader is busy (no free load slot after ${SLOT_WAIT_MS / 1000}s)"
+    )
+
     private val slots = Semaphore(MAX_CONCURRENT_LOADS)
 
     private val locks = ConcurrentHashMap<String, ReentrantLock>()
@@ -62,7 +83,9 @@ object LoadGate {
         false
     }
 
-    /** Runs [block] while holding one of the process-wide load slots. */
+    /** Runs [block] while holding one of the process-wide load slots. Throws
+     *  [LoadQueueBusyException] rather than blocking forever (see
+     *  [SLOT_WAIT_MS]) so one jammed load can never freeze every later search. */
     fun <T> withSlot(block: () -> T): T {
         val held = depth.get() ?: 0
         if (held > 0) {
@@ -75,7 +98,13 @@ object LoadGate {
                 depth.set(held)
             }
         }
-        slots.acquireUninterruptibly()
+        val got = try {
+            slots.tryAcquire(SLOT_WAIT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!got) throw LoadQueueBusyException()
         depth.set(1)
         try {
             return block()
