@@ -48,8 +48,10 @@ regression is gone.**
   is fine and answers 200 from any public resolver (the Eclipsia nuvio repo is
   the one that hit this) — so Hikari now falls back to DNS-over-HTTPS: when the
   platform resolver throws, the host is re-resolved over HTTPS against a
-  hard-coded resolver IP, which needs no working DNS of its own. Applies to
-  repo manifests, extension installs and both plugin runtimes.
+  hard-coded resolver IP, which needs no working DNS of its own. Wired into
+  every HTTP client Hikari uses — repo manifests, extension installs, both
+  plugin runtimes, the CloudStream plugin client and the player/download client
+  — so one broken resolver no longer takes out just one feature.
 
 - **"No playable source found" is fixed.** A Cloudflare / withholding-looking
   page is no longer read as proof that an extension had nothing to play — only

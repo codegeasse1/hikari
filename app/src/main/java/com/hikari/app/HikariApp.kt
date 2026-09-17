@@ -10,6 +10,7 @@ import com.hikari.app.data.Logs
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
+import com.hikari.app.net.DohDns
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.ExtensionVerifyGuard
@@ -394,6 +395,7 @@ class HikariApp : Application() {
                 maxRequestsPerHost = 32
             }
             val client = OkHttpClient.Builder()
+                .dns(DohDns)
                 .dispatcher(dispatcher)
                 .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
@@ -524,6 +526,7 @@ class HikariApp : Application() {
             // 50MiB cache, optional SSL-ignore) so slow anime sites don't throw
             // on the 10s okhttp defaults.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
+                .dns(DohDns)
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .retryOnConnectionFailure(true)
