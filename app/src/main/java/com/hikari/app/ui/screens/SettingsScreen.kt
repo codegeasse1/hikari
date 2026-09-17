@@ -545,13 +545,7 @@ fun SettingsScreen(nav: NavHostController) {
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        tr("Every option lives in a folder, so nothing is buried at the " + "bottom of one long list. Tap a folder to open it."),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(14.dp))
                 }
             }
             SettingsFolder.entries.forEach { target ->

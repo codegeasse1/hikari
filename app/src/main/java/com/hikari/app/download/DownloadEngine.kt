@@ -135,6 +135,31 @@ object DownloadEngine {
         }
     }
 
+    /**
+     * The video variants an HLS master playlist offers, best first, as
+     * (height, bandwidth) pairs. With height 0 the playlist only published
+     * bandwidths.
+     *
+     * The download flow needs this when nothing has PLAYED yet: the quality
+     * picker otherwise reads the player's parsed tracks, and a download started
+     * straight from the detail page (which is the normal way to download now)
+     * has no player tracks to read. Any failure is an empty list — the caller
+     * then downloads at the engine's own default (highest) quality — so a probe
+     * like this can never be the reason a download doesn't start.
+     */
+    suspend fun hlsQualities(url: String, headers: Map<String, String>): List<Pair<Int, Long>> {
+        if (url.isBlank()) return emptyList()
+        val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+        return runCatching {
+            val (text, finalUrl) = fetchText(url, headers, ua)
+            val top = parsePlaylist(text, finalUrl)
+            top.variants
+                .map { v -> (v.height.coerceAtLeast(0)) to v.bandwidth }
+                .distinct()
+                .sortedByDescending { (h, bw) -> if (h > 0) h.toLong() else bw }
+        }.getOrDefault(emptyList())
+    }
+
     /** Aggregates the video + (optional) audio rendition into one task-wide
      *  progress reading. Segments (and both renditions) are fetched in
      *  parallel, so every mutator is synchronized and the tallies only ever

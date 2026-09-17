@@ -1,6 +1,7 @@
 package com.hikari.app.ui.theme
 
 import android.util.DisplayMetrics
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -135,14 +136,23 @@ fun HikariTheme(
             )
         }
     }
-    CompositionLocalProvider(LocalDensity provides density) {
+    val scheme = when (mode) {
+        HikariThemeMode.DARK -> darkColors(accent)
+        HikariThemeMode.LIGHT -> lightColors(accent)
+        HikariThemeMode.GLASS -> glassColors(accent)
+        HikariThemeMode.AMOLED -> amoledColors(accent)
+    }
+    CompositionLocalProvider(
+        LocalDensity provides density,
+        // Belt-and-braces: a transparent Scaffold/Material container reports
+        // `contentColorFor(Color.Transparent) == Color.Unspecified`, which made
+        // every unstyled Text fall back to Skia's black default — invisible on
+        // the dark/glass/AMOLED themes. Seeding the local here (and on the
+        // navigation Scaffold) keeps unstyled content readable everywhere.
+        LocalContentColor provides scheme.onBackground,
+    ) {
         MaterialTheme(
-            colorScheme = when (mode) {
-                HikariThemeMode.DARK -> darkColors(accent)
-                HikariThemeMode.LIGHT -> lightColors(accent)
-                HikariThemeMode.GLASS -> glassColors(accent)
-                HikariThemeMode.AMOLED -> amoledColors(accent)
-            },
+            colorScheme = scheme,
             typography = Typography,
             content = content,
         )

@@ -92,6 +92,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.MediaItem as AppMediaItem
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.download.DownloadEngine
 import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
@@ -261,6 +262,19 @@ class PlayerActivity : ComponentActivity() {
      *  source that never rendered is exactly the "downloaded file is broken"
      *  report. */
     private var downloadFlowActive = false
+
+    /** True when the player was opened ONLY to download something — a Download
+     *  tap on the detail page or an episode row. Nothing is ever prepared or
+     *  played in this mode: the server chooser comes up (filling in live, so it
+     *  is on screen the instant the player is) and the download starts from the
+     *  row the user picks. That is what a Download button has to do; the old
+     *  behaviour — start playing the first server found and only then offer the
+     *  download — played a video the user never asked to watch, and could offer
+     *  the download for a source that never actually worked.
+     *
+     *  Once the user picks a row, [showDownloadDialog] runs exactly as it does
+     *  from the in-player Download button, so there is still one download flow. */
+    private var downloadPickMode = false
 
     /** Whether THIS launch asked for the chooser. The detail screen passes the
      *  setting through the intent, so flipping the toggle mid-session can't
@@ -807,8 +821,12 @@ class PlayerActivity : ComponentActivity() {
         loadingStatus = findViewById(R.id.loading_status)
         loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
+        // A Download tap from outside the player opens the server chooser first
+        // and never plays anything (see [downloadPickMode]); the in-player
+        // Download button needs no flag because playback is already running.
         openDownloadPending = intent.getBooleanExtra("openDownload", false)
-        downloadFlowActive = openDownloadPending
+        downloadPickMode = openDownloadPending
+        downloadFlowActive = false
 
         // The cover stays up by design until real video is on screen, so tapping
         // it does nothing. (It used to skip straight to the player/controls,
@@ -1249,7 +1267,9 @@ class PlayerActivity : ComponentActivity() {
             // server" lists everything. When we opened with no servers yet, the
             // FIRST batch that arrives also starts playback.
             liveStreamsJob = lifecycleScope.launch {
-                var pendingStart = awaitLive
+                // In download-pick mode nothing ever starts playing: the
+                // chooser is the destination, and it fills in as servers land.
+                var pendingStart = awaitLive && !downloadPickMode
                 // How many servers must be known before playback starts. 1 (the
                 // default) means "the instant the first server is found"; a
                 // higher value is the Settings "wait for more servers" choice.
@@ -1420,8 +1440,11 @@ class PlayerActivity : ComponentActivity() {
 
         // Resolve every not-yet-known server while the first one starts: the
         // probe cache then answers instantly for a "Select server" pick, a
-        // failover, a retry, or a later replay of the same video.
-        lifecycleScope.launch(Dispatchers.IO) {
+        // failover, a retry, or a later replay of the same video. Skipped in
+        // download-pick mode: nothing is going to play there, so probing (and
+        // holding network bandwidth) while the user chooses a server is pure
+        // waste.
+        if (!downloadPickMode) lifecycleScope.launch(Dispatchers.IO) {
             runCatching { StreamProbe.warm(sources.map { it.toStreamSource() }) }
         }
 
@@ -1494,7 +1517,10 @@ class PlayerActivity : ComponentActivity() {
      *  opens the grouped server chooser and waits for the user's pick. */
     private fun startOrAsk() {
         lifecycleScope.launch {
-            if (shouldAskServer()) {
+            if (downloadPickMode) {
+                // "Download this": list the servers and let the user choose.
+                showServerChooser(startMode = true, forDownload = true)
+            } else if (shouldAskServer()) {
                 // The chooser is the destination, so open it even while the
                 // list is still empty: the player is already on screen (its own
                 // title card sits behind the sheet), and opening now means the
@@ -3260,11 +3286,14 @@ class PlayerActivity : ComponentActivity() {
      * stays up until the user picks, and backing out of it falls back to the
      * remembered/best server rather than leaving the player blank.
      */
-    private fun showServerChooser(startMode: Boolean = false) {
+    private fun showServerChooser(startMode: Boolean = false, forDownload: Boolean = false) {
         // startMode is the "don't play directly" chooser, which is opened the
         // instant the player does — before the first server has landed — so it
         // may legitimately be empty and fill in live. The Source pill
         // (non-startMode) only makes sense with a list, so it still no-ops.
+        // forDownload is the same chooser used as the first step of a Download
+        // tap: nothing plays, and the pick starts the download instead (see
+        // [downloadPickMode]).
         if (sources.isEmpty() && !startMode) return
         if (startMode) {
             // Present the start chooser at most once per Activity: the live
@@ -3274,7 +3303,9 @@ class PlayerActivity : ComponentActivity() {
             // fastest server instead of the one that was chosen.
             if (startChooserShown) return
             startChooserShown = true
-            startChoicePending = true
+            // Backing out of a download chooser must NOT fall back to playing
+            // the remembered server — there is no playback to fall back to.
+            startChoicePending = !forDownload
         }
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
@@ -3488,11 +3519,18 @@ class PlayerActivity : ComponentActivity() {
                             // on the way out.
                             startChoicePending = false
                             dialog.dismiss()
-                            // Before anything has played, `currentIndex` is
-                            // still its 0 default, so a tap on the first row
-                            // must play it like any other row rather than being
-                            // treated as "already on this one".
-                            if (i != currentIndex || !playbackCommitted) {
+                            if (forDownload) {
+                                // Download step 1: remember the chosen server and
+                                // move to the destination/quality steps. Nothing
+                                // is prepared or played.
+                                currentIndex = i
+                                pickedByUser = true
+                                showDownloadDialog()
+                            } else if (i != currentIndex || !playbackCommitted) {
+                                // Before anything has played, `currentIndex` is
+                                // still its 0 default, so a tap on the first row
+                                // must play it like any other row rather than being
+                                // treated as "already on this one".
                                 noSubsRetry = false
                                 playSource(i)
                                 // A tap here IS the user's choice: if this
@@ -3605,8 +3643,15 @@ class PlayerActivity : ComponentActivity() {
                     startChooserShown = false
                 }
             }
+            // Backed out of the DOWNLOAD chooser without picking a server: there
+            // is no playback to fall back to, so leave the player instead of
+            // stranding the user on a loading card. (Dismissal caused by a row
+            // tap has already moved on to the download.)
+            if (forDownload && !playbackCommitted && !isFinishing) finish()
         }
-        val baseHint = if (sources.isEmpty()) {
+        val baseHint = if (forDownload) {
+            I18n.t("Pick the server to download from \u2014 nothing starts playing.")
+        } else if (sources.isEmpty()) {
             val who = originProviderName.takeIf { it.isNotBlank() }
             if (who != null) "Searching $who \u2014 servers appear as they are found."
             else "Searching your providers \u2014 servers appear as they are found."
@@ -3621,11 +3666,11 @@ class PlayerActivity : ComponentActivity() {
         }
         val hintView = presentGlass(
             dialog,
-            "Select server",
+            if (forDownload) I18n.t("Download from") else "Select server",
             list,
             700f,
             hint = baseHint,
-            iconRes = R.drawable.ic_server,
+            iconRes = if (forDownload) R.drawable.ic_download else R.drawable.ic_server,
             rowHosts = listOf(list),
         )
         if (hintView != null) {
@@ -6406,6 +6451,7 @@ class PlayerActivity : ComponentActivity() {
         val src = sources.getOrNull(currentIndex)
         if (src == null || src.url.isBlank() || src.isTorrent || src.torrentStream) {
             Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            leaveAfterDownloadPick()
             return
         }
         val label = episodeLabel()
@@ -6457,26 +6503,60 @@ class PlayerActivity : ComponentActivity() {
      *  exposes more than one; a single-quality source goes straight to the
      *  download. */
     private fun chooseQualityThenDownload(kind: DownloadKind) {
-        val qualities = availableVideoQualities()
+        val src = sources.getOrNull(currentIndex)
+        val isHls = src != null &&
+            (src.isM3u8 || src.url.substringBefore('?').lowercase().contains(".m3u8"))
+        val known = availableVideoQualities()
+        // Nothing has played (the normal download path: picked straight from the
+        // detail page), so the player has no parsed tracks to read the qualities
+        // from — ask the server's own master playlist instead. Without this a
+        // multi-quality source silently downloaded at whatever the engine
+        // defaults to, with no way to ask for 720p.
+        if (known.isEmpty() && isHls && src != null) {
+            val progress = showGlassProgress(
+                I18n.t("Choose quality"),
+                I18n.t("Asking the server which qualities it has\u2026"),
+                cancelable = true,
+            ) { leaveAfterDownloadPick() }
+            lifecycleScope.launch {
+                val fromPlaylist = withContext(Dispatchers.IO) {
+                    runCatching { DownloadEngine.hlsQualities(src.url, src.headers) }
+                        .getOrDefault(emptyList())
+                }
+                runCatching { progress.dismiss() }
+                offerQualitiesThenDownload(kind, fromPlaylist.map { VideoQuality(it.first, it.second) })
+            }
+            return
+        }
+        offerQualitiesThenDownload(kind, known)
+    }
+
+    /** The quality menu itself, shared by both ways of learning the qualities
+     *  (the player's parsed tracks, the master playlist). */
+    private fun offerQualitiesThenDownload(kind: DownloadKind, qualities: List<VideoQuality>) {
         if (qualities.size <= 1) {
             startDownload(kind, 0, 0L)
             return
         }
         val options = mutableListOf(
-            GlassOption("Highest quality", "The best this server offers", selected = true)
+            GlassOption(
+                I18n.t("Highest quality"),
+                I18n.t("The best this server offers"),
+                selected = true
+            )
         )
         qualities.forEach { q ->
             options.add(
                 GlassOption(
-                    label = if (q.height > 0) "${q.height}p" else "Default quality",
+                    label = if (q.height > 0) "${q.height}p" else I18n.t("Default quality"),
                     badge = bitrateBadge(q.bandwidth),
                 )
             )
         }
         showGlassMenu(
-            "Choose quality",
+            I18n.t("Choose quality"),
             options,
-            hint = "Used only for this download.",
+            hint = I18n.t("Used only for this download."),
             iconRes = R.drawable.ic_quality,
         ) { which ->
             if (which == 0) {
@@ -6485,6 +6565,16 @@ class PlayerActivity : ComponentActivity() {
                 qualities.getOrNull(which - 1)?.let { startDownload(kind, it.height, it.bandwidth) }
             }
         }
+    }
+
+    /** A download launched from outside the player is finished once the task is
+     *  queued (or impossible): there is nothing to watch here, so the player
+     *  hands the user back to the screen they came from. A no-op for the
+     *  in-player Download button, where playback is running. */
+    private fun leaveAfterDownloadPick() {
+        if (!downloadPickMode) return
+        downloadPickMode = false
+        window?.decorView?.postDelayed({ if (!isFinishing && !isDestroyed) finish() }, 1200L)
     }
 
     /** The top bar's second line (e.g. "S1 E2 · Freedom Day") — the episode
@@ -6499,6 +6589,7 @@ class PlayerActivity : ComponentActivity() {
         val src = sources.getOrNull(currentIndex) ?: return
         if (src.url.isBlank() || src.isTorrent || src.torrentStream) {
             Toast.makeText(this, "This server can't be downloaded.", Toast.LENGTH_SHORT).show()
+            leaveAfterDownloadPick()
             return
         }
         val providerId = historyEntry?.providerId.orEmpty()
@@ -6534,6 +6625,9 @@ class PlayerActivity : ComponentActivity() {
             else "Downloading for offline watch…",
             Toast.LENGTH_SHORT,
         ).show()
+        // A download picked from outside the player is done: hand the user back
+        // rather than leaving them on a player that is playing nothing.
+        leaveAfterDownloadPick()
     }
 
     private fun requestNotificationPermission() {

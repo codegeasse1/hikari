@@ -1,3 +1,60 @@
+## 0.3.89
+
+**Black text on dark themes is gone, the age rating now sits on every film and
+series, each rating badge explains itself when tapped, and the Download button
+asks which server to use instead of quietly starting playback.**
+
+- **No more unreadable black headings.** On dark, AMOLED and glass themes a lot
+  of text — catalog titles like *Trending* and *Movies*, the settings rows,
+  sheet and dialog text — rendered in flat black on a near-black background. The
+  cause was the navigation shell: it drew a *transparent* content surface, and a
+  transparent surface resolves to Material's fallback (black) content colour, so
+  every piece of text that didn't set its own colour fell through to it. The
+  theme now provides its own content colour (`onBackground`) for the whole app,
+  so unstyled text inherits the correct colour on every theme, including the
+  accent-tinted and transparent glass ones.
+- **Age ratings on all movies and series (PG-13, R, TV-MA, …).** The
+  certification is shown as a hairline-bordered chip right next to
+  *year · runtime* on the detail page — the way IMDb and the store listings
+  print it. It comes from TMDB's own per-region certification list
+  (`release_dates` for films, `content_ratings` for series), preferring the US
+  rating and then falling back to GB/AU/CA/IE/NZ and finally to whichever region
+  has one, so a title that was only rated outside the US still shows its rating.
+- **Tap a score and it tells you what it means.** Every rating badge is now
+  clickable and opens an explanation: where the number comes from, how that
+  site's scale works (out of 10, out of 100, a percentage), the word for the
+  band it's in (*Rotten*, *Certified Fresh*, *Acclaim*, *Mixed*), how many
+  votes or reviews it is based on, the site's own average when it publishes one,
+  and a button that opens the source page. IMDb is now always shown with one
+  decimal (`8.7`, never `8.7` read as `8`), and its lookup falls back through
+  OMDb, Wikidata and Cinemeta, so the badge appears far more often than before.
+- **The Rotten Tomatoes tomato is red again.** It was rendering as a green disc
+  at every score, which read as a bug. The mark is now always the red tomato
+  with its green leaf, and the fresh/rotten split is carried by the colour of
+  the number in front of it (green when fresh, red when rotten) — plus the
+  Metascore square, which keeps its own green/yellow/red banding.
+- **Download doesn't start playback any more.** The download button next to
+  **Play** used to begin streaming and only then offer a download. It now lists
+  the available servers first with the title **Download from** and a note that
+  nothing will start playing, and once you pick one it goes straight to the
+  quality list. When nothing has played yet (the usual case) there are no parsed
+  tracks to read qualities from, so the app fetches the source's own HLS master
+  playlist and asks it — so a multi-quality source no longer silently downloads
+  at whatever the engine happened to default to. After the download is queued
+  the player closes itself and hands you back to the screen you came from.
+- **Less stutter.** Decoding a poster used to bump one global "revision" value
+  that every image on every screen was watching, so one image finishing forced
+  the whole feed to recompose while you were scrolling. Each image now tracks
+  only itself; the glass theme's tokens are computed once per palette instead of
+  on every read; and the download flow no longer probes sources in the
+  background while it waits for you to choose.
+- **Settings header is just *Settings*.** The paragraph explaining the folder
+  layout is gone — the screen opens with a bold heading and the folders.
+- **The new strings are translated.** The rating explanations, the age-rating
+  chip's neighbours, the download chooser's labels and the rest of this
+  release's English now have entries in all 20 languages (plus the pseudo-locale
+  used to test layout with long strings).
+
 ## 0.3.88
 
 **Every score for a film in one coloured row — IMDb, Rotten Tomatoes,

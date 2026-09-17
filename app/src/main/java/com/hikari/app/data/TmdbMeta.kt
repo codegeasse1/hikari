@@ -435,30 +435,36 @@ object TmdbMeta {
         return out
     }
 
-    /** US age rating when TMDB has one, else the first non-blank region's. */
+    /** Age rating, preferred the way a viewer recognises it: the US rating
+     *  first (R / PG-13 / TV-MA), then the other English-speaking boards, and
+     *  only then whatever region TMDB happens to list first. Every title that
+     *  has *any* rating gets one, which is what puts a certification on nearly
+     *  every detail page instead of only the ones TMDB rated for the US. */
     private fun certificationOf(d: JSONObject, seg: String): String? {
         val arr = d.optJSONObject(if (seg == "movie") "release_dates" else "content_ratings")
             ?.optJSONArray("results") ?: return null
+        val preferred = listOf("US", "GB", "AU", "CA", "IE", "NZ")
         var fallback: String? = null
+        var preferredHit: String? = null
         for (i in 0 until arr.length()) {
             val r = arr.optJSONObject(i) ?: continue
             val iso = r.optString("iso_3166_1")
+            var cert: String? = null
             if (seg == "movie") {
                 val dates = r.optJSONArray("release_dates") ?: continue
                 for (j in 0 until dates.length()) {
                     val c = dates.optJSONObject(j)?.optString("certification")?.trim().orEmpty()
-                    if (c.isBlank()) continue
-                    if (iso == "US") return c
-                    if (fallback == null) fallback = c
+                    if (c.isNotBlank()) { cert = c; break }
                 }
             } else {
-                val c = r.optString("rating").trim()
-                if (c.isBlank()) continue
-                if (iso == "US") return c
-                if (fallback == null) fallback = c
+                cert = r.optString("rating").trim().takeIf { it.isNotBlank() }
             }
+            if (cert == null) continue
+            if (iso == "US") return cert
+            if (iso in preferred && preferredHit == null) preferredHit = cert
+            if (fallback == null) fallback = cert
         }
-        return fallback
+        return preferredHit ?: fallback
     }
 
     private fun originCountryOf(d: JSONObject): String? {

@@ -11,7 +11,9 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
 import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -25,14 +27,17 @@ import kotlin.math.roundToInt
  * design constraint here — a review site is decoration, so it must never be able
  * to delay or break the page it decorates.
  *
- *  1. **Wikidata** — one SPARQL query keyed by the IMDb id (`P345`) returns the
- *     item's review scores (`P444`) together with the body that published each
- *     one (`P447`: IMDb, Rotten Tomatoes, Metacritic, Letterboxd). This is what
- *     makes an IMDb number possible at all: imdb.com itself answers a plain
- *     HTTP client with an empty body, and the keyless IMDb mirrors come and go.
+ *  1. **IMDb** — tried in order: OMDb (current numbers, one decimal, plus the
+ *     vote count), Wikidata (`P444`/`P447` keyed by the IMDb id — the broadest
+ *     coverage, but user-maintained and often stale), then the Cinemeta mirror
+ *     Stremio uses. imdb.com itself answers a plain HTTP client with an empty
+ *     body and IMDb's own GraphQL endpoint is Cloudflare-guarded, so a mirror is
+ *     the only way to get a number at all; three of them make it reliable.
+ *     When nothing knows the `tt` id, IMDb's own keyless suggestion endpoint
+ *     resolves one from the title and year.
  *  2. **Rotten Tomatoes** `/{m|tv}/{slug}` — the page's `media-scorecard-json`
- *     carries the tomatometer AND the popcornmeter, which is two badges from
- *     one request.
+ *     carries the tomatometer AND the popcornmeter, each with its review count,
+ *     average and sentiment: two badges from one request.
  *  3. **Metacritic** `/{movie|tv}/{slug}/` — the JSON-LD `aggregateRating`.
  *  4. **Letterboxd** `/imdb/{ttid}/` — `twitter:data2` ("4.46 out of 5").
  *  5. **TMDB** — the score the detail page's own details lookup already
@@ -44,8 +49,39 @@ import kotlin.math.roundToInt
  */
 enum class RatingSource { IMDB, TOMATOMETER, POPCORN, METACRITIC, LETTERBOXD, TMDB }
 
-/** One badge: which site it came from and the number to show. */
-data class TitleRating(val source: RatingSource, val value: String)
+/** The word a site itself uses for a score band. The label is the English UI
+ *  key that `tr()` translates; the bands are applied by [Ratings] so the UI
+ *  never has to know how a given site grades. */
+enum class RatingVerdict(val label: String) {
+    CERTIFIED_FRESH("Certified Fresh"),
+    FRESH("Fresh"),
+    ROTTEN("Rotten"),
+    LIKED("Liked it"),
+    DISLIKED("Didn't like it"),
+    ACCLAIM("Acclaim"),
+    FAVORABLE("Favorable"),
+    MIXED("Mixed"),
+    UNFAVORABLE("Unfavorable"),
+    DISASTER("Dislike"),
+}
+
+/**
+ * One badge: which site it came from, the number to show, and everything the
+ * tap-through explanation needs. [votes] is the site's own review/rating count
+ * when the page published one, [average] is the site's second number (RT's
+ * "out of 5" critic average, Metacritic's user score), [verdict] is the band
+ * word, and [url] the page the number came from so the dialog can offer to open
+ * the source itself. Every field but the source and value is optional, so a
+ * source that publishes nothing but a score still renders.
+ */
+data class TitleRating(
+    val source: RatingSource,
+    val value: String,
+    val votes: Long? = null,
+    val verdict: RatingVerdict? = null,
+    val average: String? = null,
+    val url: String? = null,
+)
 
 object Ratings {
 
@@ -74,7 +110,7 @@ object Ratings {
         tmdbScore: Double?,
         tmdbVotes: Int?,
     ): List<TitleRating> = withContext(Dispatchers.IO) {
-        val tmdb = tmdbBadge(tmdbScore, tmdbVotes)
+        val tmdb = tmdbBadge(tmdbScore, tmdbVotes, item)
         val key = cacheKey(item)
         memory[key]?.let { return@withContext finish(it, tmdb) }
         readDisk(key)?.let {
@@ -82,32 +118,36 @@ object Ratings {
             return@withContext finish(it, tmdb)
         }
 
-        val imdb = imdbId?.trim()?.takeIf { isImdbId(it) }
+        var imdb = imdbId?.trim()?.takeIf { isImdbId(it) }
             ?: item.id.trim().takeIf { isImdbId(it) }
+        // No id from TMDB: ask IMDb itself for one. This is what makes the IMDb
+        // badge appear on titles TMDB has no `external_ids` for.
+        if (imdb == null) imdb = imdbSuggestionId(item)
         val isSeries = item.type == MediaType.SERIES
 
-        val found = LinkedHashMap<RatingSource, String>()
+        val found = LinkedHashMap<RatingSource, TitleRating>()
         // Scraped values are put in FIRST so a fresher tomatometer/Metascore
         // wins over Wikidata's (which is user-maintained and can lag by years);
-        // Wikidata then fills every gap — and is the only source for IMDb.
+        // the jobs are awaited in the order below, and the first source to
+        // claim a slot keeps it.
         coroutineScope {
             val jobs = listOf(
                 async { guarded { rtScores(item, isSeries) } },
                 async { guarded { metacriticScore(item, isSeries) } },
                 async { if (imdb != null && !isSeries) guarded { letterboxd(imdb) } else emptyList() },
+                async { if (imdb != null) guarded { omdb(imdb) } else emptyList() },
                 async { if (imdb != null) guarded { wikidata(imdb) } else emptyList() },
+                async { if (imdb != null) guarded { cinemeta(imdb, isSeries) } else emptyList() },
             )
             for (job in jobs) {
                 for (r in job.await()) {
                     if (r.value.isNotBlank() && !found.containsKey(r.source)) {
-                        found[r.source] = r.value
+                        found[r.source] = r
                     }
                 }
             }
         }
-        val list = found.entries
-            .sortedBy { it.key.ordinal }
-            .map { TitleRating(it.key, it.value) }
+        val list = found.values.sortedBy { it.source.ordinal }
         memory[key] = list
         writeDisk(key, list)
         finish(list, tmdb)
@@ -123,18 +163,61 @@ object Ratings {
         return (cached + tmdb).sortedBy { it.source.ordinal }
     }
 
-    private fun tmdbBadge(score: Double?, votes: Int?): TitleRating? {
+    private fun tmdbBadge(score: Double?, votes: Int?, item: MediaItem): TitleRating? {
         // A brand-new title with a handful of votes has a meaningless average:
         // TMDB's own site hides the score below 10 votes, and so do we.
         if (score == null || score <= 0.0) return null
         if ((votes ?: 0) < 10) return null
-        return TitleRating(RatingSource.TMDB, "${(score * 10).roundToInt()}%")
+        val percent = (score * 10).roundToInt()
+        return TitleRating(
+            source = RatingSource.TMDB,
+            value = "$percent%",
+            votes = votes?.toLong(),
+            verdict = percentVerdict(percent),
+            average = String.format(Locale.US, "%.1f/10", score),
+            url = tmdbUrl(item),
+        )
+    }
+
+    private fun tmdbUrl(item: MediaItem): String? {
+        val raw = item.id.trim()
+        val id = raw.substringAfterLast(':').takeIf { it.all { c -> c.isDigit() } } ?: return null
+        val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
+        return "https://www.themoviedb.org/$kind/$id"
     }
 
     private fun cacheKey(item: MediaItem): String =
         TmdbMeta.normalizeTitle(item.title) + "|" + (item.year ?: 0) + "|" + item.type.name
 
-    // ------------------------------------------------------------ Wikidata --
+    // ------------------------------------------------------ IMDb (via id) --
+
+    /**
+     * OMDb: the IMDb rating and its vote count as IMDb itself reports them
+     * (one decimal, e.g. "7.0"), which is what the badge is supposed to look
+     * like. It is tried before Wikidata because Wikidata's `P444` is
+     * user-maintained and frequently missing (or years stale) for new releases.
+     *
+     * The `trilogy` key is OMDb's long-standing public demo key. It is
+     * rate-limited, which is exactly why this source is allowed to fail
+     * silently and is backed by two others.
+     */
+    private fun omdb(imdb: String): List<TitleRating> {
+        val body = Http.getStringQuiet("https://www.omdbapi.com/?apikey=trilogy&r=json&i=$imdb")
+            ?: return emptyList()
+        val obj = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        if (!obj.optString("Response").equals("True", ignoreCase = true)) return emptyList()
+        val value = imdbValue(obj.optString("imdbRating")) ?: return emptyList()
+        val votes = obj.optString("imdbVotes").filter { it.isDigit() }.toLongOrNull()
+        return listOf(
+            TitleRating(
+                source = RatingSource.IMDB,
+                value = value,
+                votes = votes,
+                verdict = score10Verdict(value.toDoubleOrNull()),
+                url = "https://www.imdb.com/title/$imdb/",
+            )
+        )
+    }
 
     /**
      * Review scores from Wikidata, keyed by the IMDb id. The label service
@@ -162,14 +245,121 @@ object Ratings {
             val by = b.optJSONObject("byLabel")?.optString("value")?.trim()?.lowercase().orEmpty()
             if (rating.isBlank()) continue
             when {
-                by.contains("imdb") -> out.add(TitleRating(RatingSource.IMDB, outOf(rating, "/10")))
-                by.contains("rotten") && rating.endsWith("%") ->
-                    out.add(TitleRating(RatingSource.TOMATOMETER, rating))
-                by.contains("metacritic") -> out.add(TitleRating(RatingSource.METACRITIC, outOf(rating, "/100")))
-                by.contains("letterboxd") -> out.add(TitleRating(RatingSource.LETTERBOXD, outOf(rating, "/5")))
+                by.contains("imdb") -> imdbValue(rating)?.let {
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.IMDB,
+                            value = it,
+                            verdict = score10Verdict(it.toDoubleOrNull()),
+                            url = "https://www.imdb.com/title/$imdb/",
+                        )
+                    )
+                }
+                by.contains("rotten") && rating.endsWith("%") -> {
+                    val p = rating.trim().removeSuffix("%").toIntOrNull()
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.TOMATOMETER,
+                            value = "$p%",
+                            verdict = p?.let { tomatoVerdict(it, false) },
+                            url = "https://www.rottentomatoes.com/",
+                        )
+                    )
+                }
+                by.contains("metacritic") -> {
+                    val v = outOf(rating, "/100").substringBefore(".").trim()
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.METACRITIC,
+                            value = v,
+                            verdict = v.toIntOrNull()?.let { metacriticVerdict(it) },
+                            url = "https://www.metacritic.com/",
+                        )
+                    )
+                }
+                by.contains("letterboxd") -> {
+                    val v = outOf(rating, "/5")
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.LETTERBOXD,
+                            value = v,
+                            verdict = v.toDoubleOrNull()?.let { score5Verdict(it) },
+                            url = "https://letterboxd.com/imdb/$imdb/",
+                        )
+                    )
+                }
             }
         }
         return out.filter { it.value.isNotBlank() }
+    }
+
+    /**
+     * Cinemeta — the meta addon Stremio runs — as the last IMDb word. It has no
+     * key and answers anything with a `tt` id, but it mirrors IMDb lazily, so an
+     * empty `imdbRating` for a new release is normal and means "no badge here".
+     */
+    private fun cinemeta(imdb: String, isSeries: Boolean): List<TitleRating> {
+        val kind = if (isSeries) "series" else "movie"
+        val body = Http.getStringQuiet("https://v3-cinemeta.strem.io/meta/$kind/$imdb.json")
+            ?: return emptyList()
+        val meta = runCatching { JSONObject(body).optJSONObject("meta") }.getOrNull() ?: return emptyList()
+        val value = imdbValue(meta.optString("imdbRating")) ?: return emptyList()
+        return listOf(
+            TitleRating(
+                source = RatingSource.IMDB,
+                value = value,
+                verdict = score10Verdict(value.toDoubleOrNull()),
+                url = "https://www.imdb.com/title/$imdb/",
+            )
+        )
+    }
+
+    /**
+     * IMDb's own keyless suggestion endpoint, used only when nothing else knows
+     * the title's `tt` id. It returns a compact list of matches with their type
+     * and year, so the same verification the scraped pages get is applied here
+     * (a name score, and the year within a year) before an id is trusted.
+     */
+    private fun imdbSuggestionId(item: MediaItem): String? {
+        val q = URLEncoder.encode(
+            TmdbMeta.queryVariants(item.title).firstOrNull() ?: item.title, "UTF-8"
+        ).replace("+", "%20")
+        val body = Http.getStringQuiet("https://v2.sg.media-imdb.com/suggestion/x/$q.json")
+            ?: return null
+        val arr = runCatching { JSONObject(body).optJSONArray("d") }.getOrNull() ?: return null
+        var best: String? = null
+        var bestScore = -1
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id").trim()
+            if (!isImdbId(id)) continue
+            val wantSeries = item.type == MediaType.SERIES
+            val q2 = o.optString("q").lowercase()
+            if (q2.isNotBlank()) {
+                val isSeries = q2.contains("series") || q2.contains("episode")
+                if (isSeries != wantSeries) continue
+            }
+            var score = TmdbMeta.titleScore(item.title, o.optString("l"))
+            val year = o.opt("y") as? Number
+            if (year != null && item.year != null) {
+                val diff = abs(year.toInt() - item.year)
+                if (diff > 1) continue
+                if (diff == 0) score += 20
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = id
+            }
+        }
+        return if (bestScore >= 25) best else null
+    }
+
+    /** "8.7/10" or "8" → "8.7"/"8.0"; a score that isn't a positive number is
+     *  no score. Always one decimal, so IMDb never reads "8" next to "7.0". */
+    private fun imdbValue(raw: String): String? {
+        val d = raw.trim().substringBefore("/").trim().toDoubleOrNull() ?: return null
+        if (d <= 0.0 || d > 10.0) return null
+        return String.format(Locale.US, "%.1f", d)
     }
 
     /** "8.7/10" → "8.7"; a bare number passes through. */
@@ -190,19 +380,84 @@ object Ratings {
     private fun rtScores(item: MediaItem, isSeries: Boolean): List<TitleRating> {
         val kind = if (isSeries) "tv" else "m"
         for (candidate in slugCandidates(item, "_")) {
-            val html = Http.getStringQuiet("https://www.rottentomatoes.com/$kind/$candidate")
-                ?: continue
+            val pageUrl = "https://www.rottentomatoes.com/$kind/$candidate"
+            val html = Http.getStringQuiet(pageUrl) ?: continue
             if (!matches(html, item)) continue
             val out = ArrayList<TitleRating>(2)
-            val critic = Regex("\"criticsScore\"\\s*:\\s*\\{[^}]*?\"score\"\\s*:\\s*\"(\\d+)\"")
-                .find(html)?.groupValues?.get(1)
-            if (critic != null) out.add(TitleRating(RatingSource.TOMATOMETER, "$critic%"))
-            val audience = Regex("\"audienceScore\"\\s*:\\s*\\{[^}]*?\"score\"\\s*:\\s*\"(\\d+)\"")
-                .find(html)?.groupValues?.get(1)
-            if (audience != null) out.add(TitleRating(RatingSource.POPCORN, "$audience%"))
+            criticBlock(html)?.let { b ->
+                val score = b.optString("score").trim().toIntOrNull()
+                if (score != null) {
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.TOMATOMETER,
+                            value = "$score%",
+                            votes = b.opt("ratingCount") as? Long
+                                ?: (b.opt("ratingCount") as? Number)?.toLong(),
+                            verdict = tomatoVerdict(score, b.optBoolean("certified")),
+                            average = b.optString("averageRating").trim()
+                                .takeIf { it.isNotBlank() }?.let { "$it/5" },
+                            url = pageUrl,
+                        )
+                    )
+                }
+            }
+            audienceBlock(html)?.let { b ->
+                val score = b.optString("score").trim().toIntOrNull()
+                if (score != null) {
+                    out.add(
+                        TitleRating(
+                            source = RatingSource.POPCORN,
+                            value = "$score%",
+                            votes = b.opt("reviewCount") as? Long
+                                ?: (b.opt("reviewCount") as? Number)?.toLong(),
+                            verdict = if (score >= 60) RatingVerdict.LIKED else RatingVerdict.DISLIKED,
+                            average = b.optString("averageRating").trim()
+                                .takeIf { it.isNotBlank() }?.let { "$it/5" },
+                            url = pageUrl,
+                        )
+                    )
+                }
+            }
             return out
         }
         return emptyList()
+    }
+
+    /** The `"criticsScore": { ... }` object of RT's scorecard JSON. Braces are
+     *  balanced-scanned rather than matched with a non-greedy regex, because a
+     *  nested object (the sentiments/badges block) sits inside it on some
+     *  pages and a `[^}]*` match would silently stop short. */
+    private fun criticBlock(html: String): JSONObject? = scoreBlock(html, "criticsScore")
+
+    private fun audienceBlock(html: String): JSONObject? = scoreBlock(html, "audienceScore")
+
+    private fun scoreBlock(html: String, key: String): JSONObject? {
+        val at = html.indexOf("\"$key\"")
+        if (at < 0) return null
+        val open = html.indexOf('{', at)
+        if (open < 0) return null
+        var depth = 0
+        var i = open
+        var inString = false
+        var escaped = false
+        while (i < html.length) {
+            val c = html[i]
+            when {
+                escaped -> escaped = false
+                c == '\\' && inString -> escaped = true
+                c == '"' -> inString = !inString
+                !inString && c == '{' -> depth++
+                !inString && c == '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        val body = html.substring(open, i + 1)
+                        return runCatching { JSONObject(body) }.getOrNull()
+                    }
+                }
+            }
+            i++
+        }
+        return null
     }
 
     // ----------------------------------------------------------- Metacritic --
@@ -211,8 +466,8 @@ object Ratings {
     private fun metacriticScore(item: MediaItem, isSeries: Boolean): List<TitleRating> {
         val kind = if (isSeries) "tv" else "movie"
         for (candidate in slugCandidates(item, "-")) {
-            val html = Http.getStringQuiet("https://www.metacritic.com/$kind/$candidate/")
-                ?: continue
+            val pageUrl = "https://www.metacritic.com/$kind/$candidate/"
+            val html = Http.getStringQuiet(pageUrl) ?: continue
             if (!matches(html, item)) continue
             val ld = jsonLd(html) ?: return emptyList()
             val agg = ld.optJSONObject("aggregateRating") ?: return emptyList()
@@ -225,7 +480,17 @@ object Ratings {
                 is String -> raw.trim().substringBefore(".").takeIf { it.isNotBlank() }
                 else -> null
             } ?: return emptyList()
-            return listOf(TitleRating(RatingSource.METACRITIC, value))
+            val votes = (agg.opt("ratingCount") as? Number)?.toLong()
+                ?: agg.optString("ratingCount").filter { it.isDigit() }.toLongOrNull()
+            return listOf(
+                TitleRating(
+                    source = RatingSource.METACRITIC,
+                    value = value,
+                    votes = votes,
+                    verdict = value.toIntOrNull()?.let { metacriticVerdict(it) },
+                    url = pageUrl,
+                )
+            )
         }
         return emptyList()
     }
@@ -234,13 +499,69 @@ object Ratings {
 
     /** The community average (out of 5) from the IMDb-id redirect page. */
     private fun letterboxd(imdb: String): List<TitleRating> {
-        val html = Http.getStringQuiet("https://letterboxd.com/imdb/$imdb/") ?: return emptyList()
+        val pageUrl = "https://letterboxd.com/imdb/$imdb/"
+        val html = Http.getStringQuiet(pageUrl) ?: return emptyList()
         val value = Regex("name=\"twitter:data2\"\\s+content=\"([0-9.]+)\\s+out of 5\"")
             .find(html)?.groupValues?.get(1)
             ?: Regex("content=\"([0-9.]+)\\s+out of 5\"\\s*/>\\s*<meta name=\"twitter:image")
                 .find(html)?.groupValues?.get(1)
             ?: return emptyList()
-        return listOf(TitleRating(RatingSource.LETTERBOXD, value))
+        val votes = Regex("(?i)based on ([0-9,]+) ratings").find(html)
+            ?.groupValues?.get(1)?.filter { it.isDigit() }?.toLongOrNull()
+        return listOf(
+            TitleRating(
+                source = RatingSource.LETTERBOXD,
+                value = value,
+                votes = votes,
+                verdict = value.toDoubleOrNull()?.let { score5Verdict(it) },
+                average = "$value/5",
+                url = pageUrl,
+            )
+        )
+    }
+
+    // -------------------------------------------------------------- Bands --
+    // The bands the sites themselves publish, so a 33% tomatometer reads
+    // "Rotten" and a 96 Metascore reads "Acclaim" without the UI guessing.
+
+    private fun tomatoVerdict(score: Int, certified: Boolean): RatingVerdict = when {
+        score >= 75 && certified -> RatingVerdict.CERTIFIED_FRESH
+        score >= 60 -> RatingVerdict.FRESH
+        else -> RatingVerdict.ROTTEN
+    }
+
+    private fun metacriticVerdict(score: Int): RatingVerdict = when {
+        score >= 81 -> RatingVerdict.ACCLAIM
+        score >= 61 -> RatingVerdict.FAVORABLE
+        score >= 40 -> RatingVerdict.MIXED
+        score >= 20 -> RatingVerdict.UNFAVORABLE
+        else -> RatingVerdict.DISASTER
+    }
+
+    private fun percentVerdict(score: Int): RatingVerdict = when {
+        score >= 80 -> RatingVerdict.ACCLAIM
+        score >= 70 -> RatingVerdict.FAVORABLE
+        score >= 50 -> RatingVerdict.MIXED
+        else -> RatingVerdict.UNFAVORABLE
+    }
+
+    private fun score10Verdict(score: Double?): RatingVerdict? {
+        val s = score ?: return null
+        return when {
+            s >= 8.0 -> RatingVerdict.ACCLAIM
+            s >= 7.0 -> RatingVerdict.FAVORABLE
+            s >= 5.0 -> RatingVerdict.MIXED
+            s >= 3.5 -> RatingVerdict.UNFAVORABLE
+            else -> RatingVerdict.DISASTER
+        }
+    }
+
+    private fun score5Verdict(score: Double): RatingVerdict = when {
+        score >= 4.0 -> RatingVerdict.ACCLAIM
+        score >= 3.5 -> RatingVerdict.FAVORABLE
+        score >= 2.5 -> RatingVerdict.MIXED
+        score >= 1.5 -> RatingVerdict.UNFAVORABLE
+        else -> RatingVerdict.DISASTER
     }
 
     // -------------------------------------------------------------- Shared --
@@ -268,7 +589,7 @@ object Ratings {
         val year = item.year ?: return true
         val created = ld.optString("dateCreated").trim()
         val pageYear = created.take(4).toIntOrNull() ?: return true
-        return kotlin.math.abs(pageYear - year) <= 1
+        return abs(pageYear - year) <= 1
     }
 
     /**
@@ -306,10 +627,24 @@ object Ratings {
         if (System.currentTimeMillis() - entry.optLong("at") > ttl) return null
         val out = ArrayList<TitleRating>(arr.length())
         for (i in 0 until arr.length()) {
-            val pair = arr.optJSONArray(i) ?: continue
-            val source = runCatching { RatingSource.valueOf(pair.optString(0)) }.getOrNull() ?: continue
-            val value = pair.optString(1)
-            if (value.isNotBlank()) out.add(TitleRating(source, value))
+            val row = arr.optJSONArray(i) ?: continue
+            val source = runCatching { RatingSource.valueOf(row.optString(0)) }.getOrNull() ?: continue
+            val value = row.optString(1)
+            if (value.isBlank()) continue
+            // Entries written by older builds are [source, value] only; every
+            // extra field is read positionally and defaults when absent.
+            out.add(
+                TitleRating(
+                    source = source,
+                    value = value,
+                    votes = if (row.length() > 2) row.optLong(2).takeIf { it > 0 } else null,
+                    verdict = if (row.length() > 3) {
+                        runCatching { RatingVerdict.valueOf(row.optString(3)) }.getOrNull()
+                    } else null,
+                    average = if (row.length() > 4) row.optString(4).takeIf { it.isNotBlank() } else null,
+                    url = if (row.length() > 5) row.optString(5).takeIf { it.isNotBlank() } else null,
+                )
+            )
         }
         return out
     }
@@ -321,7 +656,15 @@ object Ratings {
             entry.put("at", System.currentTimeMillis())
             val arr = JSONArray()
             for (r in list) {
-                arr.put(JSONArray().put(r.source.name).put(r.value))
+                arr.put(
+                    JSONArray()
+                        .put(r.source.name)
+                        .put(r.value)
+                        .put(r.votes ?: JSONObject.NULL)
+                        .put(r.verdict?.name ?: JSONObject.NULL)
+                        .put(r.average ?: JSONObject.NULL)
+                        .put(r.url ?: JSONObject.NULL)
+                )
             }
             entry.put("r", arr)
             root.put(key, entry)

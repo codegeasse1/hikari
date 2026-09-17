@@ -3,6 +3,7 @@ import com.hikari.app.i18n.tr
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -61,6 +62,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -84,6 +86,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -99,6 +102,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RatingSource
+import com.hikari.app.data.RatingVerdict
 import com.hikari.app.data.Ratings
 import com.hikari.app.data.StreamCache
 import com.hikari.app.data.StreamSource
@@ -717,6 +721,9 @@ fun DetailScreen(
     }
 
     var showSheet by remember { mutableStateOf(false) }
+    // The rating the user tapped in the score strip, or null when no
+    // explanation dialog is up. Set by DetailsBlock, cleared by the dialog.
+    var ratingInfo by remember { mutableStateOf<TitleRating?>(null) }
     // The full-screen title-card cover shown from the moment the user taps Play
     // until the player activity takes over (Nuvio/Stremio style). It is the
     // instant feedback for a tap, replacing the old bare source sheet.
@@ -1570,7 +1577,7 @@ fun DetailScreen(
                 // language and the director/writer credits. Renders only once
                 // the background TMDB lookup has landed.
                 extras?.details?.let { det ->
-                    item { DetailsBlock(det, ratings) }
+                    item { DetailsBlock(det, ratings) { ratingInfo = it } }
                 }
                 // Cast + Trailers sit ABOVE the episode list — the order the
                 // Nuvio/Stremio detail page uses. Below it they were buried under
@@ -1784,6 +1791,10 @@ fun DetailScreen(
                 )
             }
         }
+    }
+
+    ratingInfo?.let { info ->
+        RatingDetailDialog(info) { ratingInfo = null }
     }
 
     if (showSheet) {
@@ -2302,21 +2313,26 @@ private fun ShelfRow(
     }
 }
 
-/** The "Show Details" block: year/runtime/certification, then the coloured
- *  rating badges, then status/country/language, then the director/writer
- *  credits — the metadata Nuvio and Stremio show above their Cast row. Each line
- *  is skipped when the lookup had nothing for it, so a sparse TMDB record still
- *  renders cleanly. */
+/** The "Show Details" block: year/runtime plus the age rating, then the
+ *  coloured rating badges, then status/country/language, then the director/
+ *  writer credits — the metadata Nuvio and Stremio show above their Cast row.
+ *  Each line is skipped when the lookup had nothing for it, so a sparse TMDB
+ *  record still renders cleanly. Badges are tappable: a tap opens
+ *  [RatingDetailDialog], which explains the number the way the source site
+ *  does. */
 @Composable
-private fun DetailsBlock(d: TitleDetails, ratings: List<TitleRating>) {
-    val stats = ArrayList<String>(5)
+private fun DetailsBlock(
+    d: TitleDetails,
+    ratings: List<TitleRating>,
+    onRatingClick: (TitleRating) -> Unit,
+) {
+    val stats = ArrayList<String>(4)
     d.year?.let { stats.add(it.toString()) }
     d.runtimeMinutes?.let { minutes ->
         val h = minutes / 60
         val mm = minutes % 60
         stats.add(if (h > 0) "${h}h ${mm}m" else "${mm}m")
     }
-    d.certification?.let { stats.add(it) }
 
     val meta = ArrayList<String>(4)
     d.status?.let { meta.add(it) }
@@ -2324,23 +2340,39 @@ private fun DetailsBlock(d: TitleDetails, ratings: List<TitleRating>) {
     d.language?.let { meta.add(it) }
     d.voteCount?.takeIf { it > 0 }?.let { meta.add("$it votes") }
 
+    val cert = d.certification?.trim()?.takeIf { it.isNotEmpty() }
+
     // A TMDB record with nothing usable would otherwise render an empty block.
-    if (stats.isEmpty() && meta.isEmpty() && ratings.isEmpty() &&
+    if (stats.isEmpty() && meta.isEmpty() && ratings.isEmpty() && cert == null &&
         d.director.isNullOrBlank() && d.writers.isEmpty()
     ) return
 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
-        if (stats.isNotEmpty()) {
-            Text(
-                stats.joinToString("  ·  "),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Medium,
+        // Year · runtime, with the age rating as its own bordered box next to
+        // them — the way IMDb prints "PG-13". TMDB often has a rating only for
+        // a region other than the US, and any of them beats showing nothing.
+        if (stats.isNotEmpty() || cert != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 4.dp)
-            )
+            ) {
+                if (stats.isNotEmpty()) {
+                    Text(
+                        stats.joinToString("  ·  "),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                if (cert != null) {
+                    if (stats.isNotEmpty()) Spacer(Modifier.width(8.dp))
+                    AgeChip(cert)
+                }
+            }
         }
         // The review-score strip: one badge per site, in that site's own colour
-        // (see [RatingBadge]). Scrolls sideways so six of them still fit a phone.
+        // (see [RatingBadge]). Scrolls sideways so six of them still fit a
+        // phone, and each one opens its own explanation.
         if (ratings.isNotEmpty()) {
             Row(
                 modifier = Modifier
@@ -2349,7 +2381,7 @@ private fun DetailsBlock(d: TitleDetails, ratings: List<TitleRating>) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ratings.forEach { r -> RatingBadge(r) }
+                ratings.forEach { r -> RatingBadge(r) { onRatingClick(r) } }
             }
         }
         if (meta.isNotEmpty()) {
@@ -2362,20 +2394,43 @@ private fun DetailsBlock(d: TitleDetails, ratings: List<TitleRating>) {
         }
         if (!d.director.isNullOrBlank()) {
             Text(
-                "Director: ${d.director}",
-                style = MaterialTheme.typography.labelMedium,
+                "Director: " + d.director,                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
         if (d.writers.isNotEmpty()) {
             Text(
-                "Writer: ${d.writers.joinToString(", ")}",
+                "Writer: " + d.writers.joinToString(", "),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
+    }
+}
+
+/** The age rating ("PG-13", "R", "TV-MA") in a bordered box, the way IMDb and
+ *  the store listings print it. Drawn in the theme's on-surface colour with an
+ *  outline rather than a fixed grey, so it stays readable on Hikari Dark, Dark
+ *  Glass and AMOLED alike. */
+@Composable
+private fun AgeChip(label: String) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        Modifier
+            .clip(shape)
+            .border(1.dp, scheme.onSurface.copy(alpha = 0.55f), shape)
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    ) {
+        Text(
+            label,
+            color = scheme.onSurface,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }
 
@@ -2392,24 +2447,36 @@ private val MetacriticYellow = Color(0xFFFFBD3F)
 private val MetacriticRed = Color(0xFFFF6871)
 private val LetterboxdGreen = Color(0xFF00C030)
 
-/** The colour a badge shows in: the site's brand colour, except for the two
- *  sites whose mark is itself score-dependent — Metacritic turns
- *  green/yellow/red with the Metascore, and a tomatometer under 60% is a green
- *  "rotten" splat rather than a red tomato. */
+/** True when a tomatometer score sits in the site's "rotten" band. The band
+ *  comes from the lookup itself (it reads RT's own sentiment), with the 60%
+ *  rule as the fallback for a row cached before that was captured. */
+private fun isRotten(r: TitleRating): Boolean = when (r.verdict) {
+    RatingVerdict.ROTTEN -> true
+    RatingVerdict.FRESH, RatingVerdict.CERTIFIED_FRESH -> false
+    else -> percentOf(r.value) in 0..59
+}
+
+/** The colour a badge shows in: the site's brand colour, except for the sites
+ *  whose number is itself score-dependent — Metacritic turns green/yellow/red
+ *  with the Metascore, and a tomatometer number turns green when the title is
+ *  rated "rotten". The tomato mark itself stays red at every score: it is the
+ *  site's logo, and a green disc on the badge read as a bug. */
 private fun ratingTint(r: TitleRating): Color = when (r.source) {
     RatingSource.IMDB -> IMDbYellow
     RatingSource.TMDB -> TmdbCyan
-    RatingSource.TOMATOMETER -> {
-        val p = percentOf(r.value)
-        if (p in 0..59) TomatoGreen else TomatoRed
-    }
+    RatingSource.TOMATOMETER -> if (isRotten(r)) TomatoGreen else TomatoRed
     RatingSource.POPCORN -> TomatoRed
     RatingSource.LETTERBOXD -> LetterboxdGreen
-    RatingSource.METACRITIC -> when (val s = r.value.trim().toIntOrNull()) {
-        null -> MetacriticGreen
-        in 61..Int.MAX_VALUE -> MetacriticGreen
-        in 40..60 -> MetacriticYellow
-        else -> MetacriticRed
+    RatingSource.METACRITIC -> when (r.verdict) {
+        RatingVerdict.ACCLAIM, RatingVerdict.FAVORABLE -> MetacriticGreen
+        RatingVerdict.MIXED -> MetacriticYellow
+        RatingVerdict.UNFAVORABLE, RatingVerdict.DISASTER -> MetacriticRed
+        else -> when (val s = r.value.trim().toIntOrNull()) {
+            null -> MetacriticGreen
+            in 61..Int.MAX_VALUE -> MetacriticGreen
+            in 40..60 -> MetacriticYellow
+            else -> MetacriticRed
+        }
     }
 }
 
@@ -2417,9 +2484,10 @@ private fun percentOf(value: String): Int =
     value.trim().removeSuffix("%").trim().toIntOrNull() ?: -1
 
 /** One rating badge: the site's mark, then its number, in the site's colour on
- *  a tinted glass pill — so a row of six still reads as one strip. */
+ *  a tinted glass pill — so a row of six still reads as one strip. Tapping it
+ *  opens the explanation dialog. */
 @Composable
-private fun RatingBadge(r: TitleRating) {
+private fun RatingBadge(r: TitleRating, onClick: () -> Unit) {
     val tint = ratingTint(r)
     val shape = RoundedCornerShape(9.dp)
     Row(
@@ -2427,6 +2495,7 @@ private fun RatingBadge(r: TitleRating) {
             .clip(shape)
             .background(tint.copy(alpha = 0.16f))
             .border(1.dp, tint.copy(alpha = 0.40f), shape)
+            .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -2445,9 +2514,10 @@ private fun RatingBadge(r: TitleRating) {
 /**
  * The site mark in front of the number, drawn from primitives — no image
  * assets and no network, so a badge can never be the thing that fails to load:
- * coloured wordmarks for IMDb and TMDB, a green-leaved disc for the
- * tomatometer, a striped bucket with popcorn for the popcornmeter, a white M on
- * the score's colour for the Metascore, and Letterboxd's three dots.
+ * coloured wordmarks for IMDb and TMDB, Rotten Tomatoes' tomato, the striped
+ * popcorn bucket for the audience score, a white M on the score's colour for
+ * the Metascore, and Letterboxd's three dots. The tomato is red at every
+ * score and the rotten/fresh split is carried by the number's colour.
  */
 @Composable
 private fun RatingMark(source: RatingSource, tint: Color) {
@@ -2466,17 +2536,17 @@ private fun RatingMark(source: RatingSource, tint: Color) {
             fontWeight = FontWeight.Bold,
             maxLines = 1,
         )
-        RatingSource.TOMATOMETER -> Box(Modifier.size(11.dp)) {
+        RatingSource.TOMATOMETER -> Box(Modifier.size(width = 11.dp, height = 12.dp)) {
             Box(
                 Modifier
-                    .size(9.dp)
+                    .size(10.dp)
                     .align(Alignment.BottomCenter)
                     .clip(CircleShape)
-                    .background(tint)
+                    .background(TomatoRed)
             )
             Box(
                 Modifier
-                    .size(width = 5.dp, height = 2.dp)
+                    .size(width = 6.dp, height = 2.5.dp)
                     .align(Alignment.TopCenter)
                     .clip(RoundedCornerShape(1.dp))
                     .background(TomatoGreen)
@@ -2521,6 +2591,201 @@ private fun RatingMark(source: RatingSource, tint: Color) {
                 )
             }
         }
+    }
+}
+
+/** What the source calls the number it published. */
+private fun ratingTitle(source: RatingSource): String = when (source) {
+    RatingSource.IMDB -> "IMDb rating"
+    RatingSource.TOMATOMETER -> "Rotten Tomatoes Tomatometer"
+    RatingSource.POPCORN -> "Rotten Tomatoes Audience score"
+    RatingSource.METACRITIC -> "Metacritic Metascore"
+    RatingSource.LETTERBOXD -> "Letterboxd rating"
+    RatingSource.TMDB -> "TMDB score"
+}
+
+/** The site itself, for the "open the source" action. Brand names, so they are
+ *  not translated. */
+private fun ratingSite(source: RatingSource): String = when (source) {
+    RatingSource.IMDB -> "IMDb"
+    RatingSource.TOMATOMETER, RatingSource.POPCORN -> "Rotten Tomatoes"
+    RatingSource.METACRITIC -> "Metacritic"
+    RatingSource.LETTERBOXD -> "Letterboxd"
+    RatingSource.TMDB -> "TMDB"
+}
+
+/** What the number actually measures, in the site's own terms. */
+private fun ratingExplain(source: RatingSource): String = when (source) {
+    RatingSource.IMDB ->
+        "IMDb's score is the weighted average of every vote on the title, out of 10."
+    RatingSource.TOMATOMETER ->
+        "The share of professional critic reviews that were positive. 60% or more is Fresh; below 60% is Rotten."
+    RatingSource.POPCORN ->
+        "The share of audience ratings that were positive — what viewers thought, not critics."
+    RatingSource.METACRITIC ->
+        "A weighted average of professional critic reviews, out of 100. 61 and above is favourable, 40-60 mixed, below 40 unfavourable."
+    RatingSource.LETTERBOXD ->
+        "The average of Letterboxd members' ratings, out of 5."
+    RatingSource.TMDB ->
+        "The average user score on TMDB, shown as a percentage."
+}
+
+/** The scale the number is on, printed small next to it ("8.3 /10"). */
+private fun ratingScale(source: RatingSource): String? = when (source) {
+    RatingSource.IMDB -> "/10"
+    RatingSource.METACRITIC -> "/100"
+    RatingSource.LETTERBOXD -> "/5"
+    else -> null
+}
+
+/** How the site counts what it is averaging, as a template the caller fills. */
+private fun ratingVotesLine(source: RatingSource): String = when (source) {
+    RatingSource.IMDB, RatingSource.TMDB -> "Based on %s votes"
+    else -> "Based on %s ratings"
+}
+
+/**
+ * The explanation behind a badge, the way a rating site itself explains a score:
+ * where the number comes from, how that site's scale works, how many people it
+ * is based on, and — for the sites that grade in words — the word for that band
+ * ("Rotten", "Certified Fresh", "Acclaim"). It also offers to open the source
+ * page, which is where the number's authority lives.
+ */
+@Composable
+private fun RatingDetailDialog(r: TitleRating, onDismiss: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val tint = ratingTint(r)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val shape = RoundedCornerShape(20.dp)
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .clip(shape)
+                .background(scheme.surface)
+                .border(1.dp, tint.copy(alpha = 0.45f), shape)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RatingMark(r.source, tint)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    tr(ratingTitle(r.source)),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = scheme.onSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    r.value,
+                    color = tint,
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1
+                )
+                ratingScale(r.source)?.let { scale ->
+                    Text(
+                        " " + scale,
+                        color = scheme.onSurfaceVariant,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                }
+                r.verdict?.let { v ->
+                    Spacer(Modifier.width(10.dp))
+                    val chipShape = RoundedCornerShape(8.dp)
+                    Box(
+                        Modifier
+                            .padding(bottom = 6.dp)
+                            .clip(chipShape)
+                            .background(tint.copy(alpha = 0.16f))
+                            .border(1.dp, tint.copy(alpha = 0.45f), chipShape)
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            tr(v.label),
+                            color = tint,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr(ratingExplain(r.source)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = scheme.onSurfaceVariant
+            )
+            r.average?.let { avg ->
+                if (r.source != RatingSource.LETTERBOXD) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        tr("Average score: %s").replace("%s", avg),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurface
+                    )
+                }
+            }
+            r.votes?.takeIf { it > 0 }?.let { votes ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    tr(ratingVotesLine(r.source)).replace("%s", formatCount(votes)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurface
+                )
+            }
+            r.url?.let { url ->
+                Spacer(Modifier.height(12.dp))
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        openRatingPage(context, url, ratingSite(r.source))
+                    }
+                ) {
+                    Text(tr("Open on %s").replace("%s", ratingSite(r.source)), color = tint)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onDismiss) {
+                Text(tr("Close"), color = scheme.onSurface)
+            }
+        }
+    }
+}
+
+/** "14,283" — grouped, because a five- or six-figure review count is
+ *  unreadable without separators. */
+private fun formatCount(n: Long): String {
+    val s = n.toString()
+    val sb = StringBuilder(s.length + 4)
+    for ((i, c) in s.withIndex()) {
+        if (i > 0 && (s.length - i) % 3 == 0) sb.append(',')
+        sb.append(c)
+    }
+    return sb.toString()
+}
+
+/** Opens a rating site in whatever the device uses for links, falling back to
+ *  the in-app web view when nothing answers. */
+private fun openRatingPage(context: android.content.Context, url: String, title: String) {
+    val opened = runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }.isSuccess
+    if (opened) return
+    runCatching {
+        context.startActivity(
+            Intent(context, WebViewActivity::class.java).apply {
+                putExtra("url", url)
+                putExtra("title", title)
+            }
+        )
     }
 }
 

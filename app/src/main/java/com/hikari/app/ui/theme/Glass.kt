@@ -2,6 +2,7 @@ package com.hikari.app.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 
@@ -46,19 +47,24 @@ data class GlassTokens(
 @Composable
 fun rememberGlassTokens(): GlassTokens {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    return if (dark) {
-        GlassTokens(
-            fillTop = Color.White.copy(alpha = 0.095f),
-            fillBottom = Color.White.copy(alpha = 0.045f),
-            border = Color.White.copy(alpha = 0.115f),
-            dark = true,
-        )
-    } else {
-        GlassTokens(
-            fillTop = Color.White,
-            fillBottom = Color.White,
-            border = Color.Black.copy(alpha = 0.08f),
-            dark = false,
-        )
+    // Built once per theme rather than once per card: this is called by every
+    // panel in the app (settings cards, extensions, search field, the bottom
+    // bar), i.e. hundreds of times per screen.
+    return remember(dark) {
+        if (dark) {
+            GlassTokens(
+                fillTop = Color.White.copy(alpha = 0.095f),
+                fillBottom = Color.White.copy(alpha = 0.045f),
+                border = Color.White.copy(alpha = 0.115f),
+                dark = true,
+            )
+        } else {
+            GlassTokens(
+                fillTop = Color.White,
+                fillBottom = Color.White,
+                border = Color.Black.copy(alpha = 0.08f),
+                dark = false,
+            )
+        }
     }
 }

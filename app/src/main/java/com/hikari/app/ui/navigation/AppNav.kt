@@ -372,6 +372,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             // Transparent: the backdrop above is the page, so the cards' glass
             // has something to sit on (see the comment on the backdrop).
             containerColor = Color.Transparent,
+            // Material's Scaffold wraps its body in a Surface carrying
+            // `contentColorFor(containerColor)` — for a transparent container
+            // that resolves to `Color.Unspecified`, which let every Text with no
+            // explicit colour fall back to black (invisible on the dark, glass
+            // and AMOLED themes: settings folder names, catalog headings, ...).
+            // Pinning it to the theme's on-background colour fixes them all.
+            contentColor = MaterialTheme.colorScheme.onBackground,
             // The app is edge-to-edge/immersive (MainActivity hides the system
             // bars), so the Scaffold must NOT pad the content down by the status
             // bar inset. It used to: on any device where the bars were showing,
