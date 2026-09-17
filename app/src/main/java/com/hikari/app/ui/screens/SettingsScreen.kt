@@ -1235,7 +1235,7 @@ private fun AppIconCard(app: HikariApp) {
                                             AppIconManager.apply(context, v.key)
                                         }
                                     }
-                                    Toast.makeText(context, tr("Icon updated"), Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, I18n.t("Icon updated"), Toast.LENGTH_SHORT).show()
                                 }
                             }
                             .border(
