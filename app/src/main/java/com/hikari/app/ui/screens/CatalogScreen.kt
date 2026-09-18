@@ -58,6 +58,9 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.RatingBadge
+import com.hikari.app.ui.rememberPosterScore
+import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -280,6 +283,12 @@ fun CatalogScreen(
 
 @Composable
 private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
+    val style = rememberPosterStyle()
+    // The score badge, when Settings → Appearance has it on: warm the ratings
+    // cache for this title and print whatever is known (see
+    // rememberPosterScore). Null when the switch is off, so an old device that
+    // never wanted badges pays nothing.
+    val badge = rememberPosterScore(item, style)
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -308,6 +317,14 @@ private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
+            if (badge != null) {
+                RatingBadge(
+                    text = badge,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
+            }
         }
         Text(
             item.title,

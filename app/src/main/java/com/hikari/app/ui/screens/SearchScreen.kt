@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
@@ -60,10 +61,13 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberPosterScore
+import com.hikari.app.ui.rememberPosterStyle
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -356,6 +360,11 @@ fun SearchScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(results, key = { it.uniqueId }) { item ->
+                    val style = rememberPosterStyle()
+                    // Show ratings (Settings → Appearance) draws here too — the
+                    // badge warms the ratings cache for the title and prints
+                    // whatever is known. Null when the switch is off.
+                    val badge = rememberPosterScore(item, style)
                     Column(
                         Modifier
                             .clip(RoundedCornerShape(10.dp))
@@ -366,15 +375,27 @@ fun SearchScreen(
                                 )
                             }
                     ) {
-                        AsyncImage(
-                            model = Artwork.model(item),
-                            contentDescription = item.title,
-                            modifier = Modifier
+                        Box(
+                            Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(2f / 3f)
-                                .clip(RoundedCornerShape(10.dp)),
-                            contentScale = ContentScale.Crop
-                        )
+                                .clip(RoundedCornerShape(10.dp))
+                        ) {
+                            AsyncImage(
+                                model = Artwork.model(item),
+                                contentDescription = item.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            if (badge != null) {
+                                RatingBadge(
+                                    text = badge,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(4.dp),
+                                )
+                            }
+                        }
                         Text(
                             item.title,
                             style = MaterialTheme.typography.bodySmall,

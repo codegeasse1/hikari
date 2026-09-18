@@ -104,7 +104,6 @@ import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.CollectionsRepository
 import com.hikari.app.data.CoverKinds
 import com.hikari.app.data.MediaItem
-import com.hikari.app.data.Ratings
 import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
@@ -126,6 +125,7 @@ import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -2206,9 +2206,7 @@ fun TmdbGridScreen(
 
 @Composable
 private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
-    if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
-    if (style.showRatings) Ratings.revision(item)
-    val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
+    val badge = rememberPosterScore(item, style)
     Column(
         Modifier
             // Not clipped to the poster rounding: at high corner values the

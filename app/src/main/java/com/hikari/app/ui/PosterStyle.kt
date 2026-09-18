@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -34,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hikari.app.HikariApp
+import com.hikari.app.data.MediaItem
+import com.hikari.app.data.Ratings
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlin.math.roundToInt
@@ -86,6 +89,33 @@ fun rememberPosterStyle(): PosterStyle {
 
 /** The rounded shape a poster at [style] uses. */
 fun PosterStyle.shape(): RoundedCornerShape = RoundedCornerShape(corner.dp)
+
+/**
+ * The score a poster's badge should print for [item], or null when the badges
+ * are switched off or nothing is known about the title yet.
+ *
+ * This is the ONE place a poster grid asks for a score, so every grid warms and
+ * repaints identically: the cell registers itself for a background lookup
+ * ([Ratings.ensure] — cheap once the title is on file), reads the revision so
+ * only the cells showing that title repaint when the answer lands
+ * ([Ratings.revision]), and prints whatever the cache holds
+ * ([Ratings.cachedBadge] — IMDb first, then TMDB's own average). A grid that
+ * only did the cache read showed a score for the titles the user had already
+ * opened and a blank corner for the rest.
+ *
+ * The item's own TMDB average ([MediaItem.rating], carried by every TMDB-sourced
+ * row) is the last fallback, so a row that came in with scores prints them on
+ * the first frame instead of waiting for a lookup.
+ */
+@Composable
+fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
+    if (!style.showRatings) return null
+    LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
+    Ratings.revision(item)
+    return Ratings.cachedBadge(item)
+        ?: item.rating?.takeIf { it > 0.0 }
+            ?.let { ((it * 10f).roundToInt() / 10f).toString() }
+}
 
 /**
  * One poster cell, styled.

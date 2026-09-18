@@ -127,13 +127,21 @@ object Ratings {
      */
     private val revisions = ConcurrentHashMap<String, MutableState<Long>>()
 
+    /** The revision state for [key], created once and once only. Spelled with
+     *  `computeIfAbsent` rather than `getOrPut` on purpose: `getOrPut` is a
+     *  read-then-write, so two threads racing on a title's first warm-up could
+     *  each build a state object and keep different ones — the cell would then
+     *  observe a state nobody ever bumps and stay blank until something else
+     *  recomposed it. */
+    private fun revisionState(key: String): MutableState<Long> =
+        revisions.computeIfAbsent(key) { mutableStateOf(0L) }
+
     /** The revision a poster badge should read alongside [cachedBadge]. */
-    fun revision(item: MediaItem): Long =
-        revisions.getOrPut(cacheKey(item)) { mutableStateOf(0L) }.value
+    fun revision(item: MediaItem): Long = revisionState(cacheKey(item)).value
 
     private fun bumpRevision(key: String) {
         runCatching {
-            val state = revisions.getOrPut(key) { mutableStateOf(0L) }
+            val state = revisionState(key)
             state.value = state.value + 1L
         }
     }
@@ -251,9 +259,16 @@ object Ratings {
     private val ensureQueued = ConcurrentHashMap.newKeySet<String>()
 
     /**
-     * Warms the cache for [item] in the background when nothing is on file for it
-     * yet — what the poster-rating switch uses so scores start appearing on the
-     * rows instead of only on titles the user has already opened.
+     * Warms the cache for [item] in the background — what the poster-rating
+     * switch uses so scores start appearing on the rows instead of only on
+     * titles the user has already opened.
+     *
+     * Called again on every redraw, so three cases are cheap and one is not:
+     * a title with a score on file returns immediately; a title whose last
+     * answer was scoreless is re-asked only once its retry window has passed
+     * ([missingSources]) — which is what keeps a warm-up that happened to run
+     * while the network or one of the mirrors was busy from freezing a blank
+     * corner for hours; and a title nobody has looked up yet does one pass.
      *
      * Never awaited and deduped per title, so scrolling a row past the same
      * poster ten times costs one pass. Callers use it as a hint, not a request:
@@ -261,7 +276,14 @@ object Ratings {
      */
     fun ensure(item: MediaItem) {
         val key = cacheKey(item)
-        if (memory.containsKey(key) || readDisk(key) != null) return
+        val cached = memory[key] ?: readDisk(key)?.also { memory[key] = it }
+        // A score on file is the whole point of this call.
+        if (cached != null && cached.isNotEmpty()) return
+        // A scoreless answer is retried on the same schedule the detail page's
+        // refresh uses. Titles nobody has a review for stay cheap (the windows
+        // are 15 minutes / 3 hours), but one that was merely unlucky gets its
+        // badge on a later scroll instead of staying bare.
+        if (cached != null && missingSources(key, item, cached).isEmpty()) return
         // WAIT for a slot instead of giving up on it. Dropping the title is what
         // left whole rows of posters bare: the first four to reach this point
         // were served and the rest were skipped, and nothing asked for them
@@ -273,6 +295,19 @@ object Ratings {
                 ensureSlots.acquire()
                 try {
                     val side = tmdbSide(item, null)
+                    // Publish TMDB's own average the moment it lands — one
+                    // request instead of the five the scraper pass makes — so a
+                    // Home row fills in seconds and the IMDb/tomato numbers
+                    // join it as they arrive. Binding the badge to the END of
+                    // the pass meant the slowest review site decided when the
+                    // row's scores appeared, which is how some posters came up
+                    // badged and their neighbours did not.
+                    if (side.badge != null) {
+                        val quick = finish(memory[key].orEmpty(), side.badge)
+                        memory[key] = quick
+                        writeDisk(key, quick)
+                        bumpRevision(key)
+                    }
                     val imdb = resolveImdb(item, side.imdbId)
                     val want = applicableSources(item)
                     val found = runSources(item, imdb, want)

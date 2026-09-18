@@ -2074,6 +2074,10 @@ private fun DnsModeCard(app: HikariApp) {
         scope.launch { runCatching { app.store.setDnsProvider(key) } }
     }
 
+    // Hoisted out of runTest(): tr() is @Composable, so a plain local function
+    // is not allowed to call it.
+    val addrWarning = tr("Write an address first — e.g. https://dns.google/dns-query")
+
     fun runTest() {
         val target = when (chosen.key) {
             DnsProviders.SYSTEM -> null
@@ -2082,7 +2086,7 @@ private fun DnsModeCard(app: HikariApp) {
         }
         if (chosen.key == DnsProviders.CUSTOM && target == null) {
             testRan = true
-            testReason = tr("Write an address first — e.g. https://dns.google/dns-query")
+            testReason = addrWarning
             return
         }
         testing = true

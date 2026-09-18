@@ -119,8 +119,10 @@ import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.openYouTubeVideo
+import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.HeroArtwork
@@ -2527,89 +2529,107 @@ private fun ShelfRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(shelf, key = { it.uniqueId }) { item ->
-                Column(Modifier.width(112.dp)) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(2f / 3f)
-                    ) {
-                        // Tapping the poster loads the title itself (no trip
-                        // through the Search tab).
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .clickable { onClick(item) }
-                        ) {
-                            AsyncImage(
-                                model = Artwork.model(item),
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
+                ShelfCell(
+                    item = item,
+                    onClick = { onClick(item) },
+                    onSearchHere = { onSearchHere(item) },
+                    onGlobalSearch = { onGlobalSearch(item) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One cell of a Related/Similar shelf.
+ *
+ * It draws through [PosterArt] like every other grid in the app, which is what
+ * puts the score badge on it: these two rows used to be the only posters in
+ * Hikari that ignored Settings → Appearance → "Show ratings", because they
+ * hand-rolled their own artwork box. Tapping the poster loads the title itself
+ * (no trip through the Search tab).
+ */
+@Composable
+private fun ShelfCell(
+    item: MediaItem,
+    onClick: () -> Unit,
+    onSearchHere: () -> Unit,
+    onGlobalSearch: () -> Unit,
+) {
+    val style = rememberPosterStyle()
+    val badge = rememberPosterScore(item, style)
+    var menuOpen by remember(item.uniqueId) { mutableStateOf(false) }
+    Column(Modifier.width(112.dp)) {
+        PosterArt(
+            model = Artwork.model(item),
+            contentDescription = item.title,
+            style = style,
+            rating = item.rating,
+            imdb = badge,
+            // The kebab owns the top-right corner of this cell.
+            ratingAlignment = Alignment.TopStart,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clickable { onClick() },
+        ) {
+            // The kebab in the corner carries the two ways to search instead
+            // of open: this extension only, or every installed extension. Same
+            // pair as the genre pills.
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+            ) {
+                Box(
+                    Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .clickable { menuOpen = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = tr("Search options"),
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(tr("Search")) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onSearchHere()
                         }
-                        // The kebab in the corner carries the two ways to
-                        // search instead of open: this extension only, or every
-                        // installed extension. Same pair as the genre pills.
-                        var menuOpen by remember(item.uniqueId) { mutableStateOf(false) }
-                        Box(
-                            Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(4.dp)
-                        ) {
-                            Box(
-                                Modifier
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.45f))
-                                    .clickable { menuOpen = true },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Filled.MoreVert,
-                                    contentDescription = tr("Search options"),
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = menuOpen,
-                                onDismissRequest = { menuOpen = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(tr("Search")) },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Search, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        menuOpen = false
-                                        onSearchHere(item)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(tr("Global search")) },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Public, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        menuOpen = false
-                                        onGlobalSearch(item)
-                                    }
-                                )
-                            }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(tr("Global search")) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Public, contentDescription = null)
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onGlobalSearch()
                         }
-                    }
-                    Text(
-                        item.title,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
             }
         }
+        Text(
+            item.title,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp)
+        )
     }
 }
 

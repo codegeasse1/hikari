@@ -52,7 +52,6 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.LibraryCategory
 import com.hikari.app.data.MediaItem
-import com.hikari.app.data.Ratings
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterStyle
@@ -61,6 +60,7 @@ import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
 import kotlinx.coroutines.launch
@@ -301,9 +301,7 @@ private fun LibraryCard(
     onMove: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
-    if (style.showRatings) Ratings.revision(item)
-    val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
+    val badge = rememberPosterScore(item, style)
     Column(
         Modifier
             // Not clipped to the poster rounding: at high corner values the
