@@ -649,7 +649,12 @@ fun HomeScreen(nav: NavHostController) {
         }
 
         // Floating source pill (Anikoto-style): shows the current provider and
-        // opens the picker sheet. Sits above the bottom nav bar.
+        // opens the picker sheet. It has to clear the taskbar, which is drawn
+        // OVER the page rather than in a strip of its own — pinned to the
+        // bottom-right corner as it was, it ended up underneath the bar's own
+        // buttons and could not be tapped at all. [LocalTaskbarInset] is exactly
+        // the room the bar covers, so the pill lifts itself by that and then
+        // keeps its own 14dp of air above the bar.
         Surface(
             onClick = { showPicker = true },
             shape = RoundedCornerShape(50),
@@ -661,7 +666,11 @@ fun HomeScreen(nav: NavHostController) {
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(
+                    horizontal = 16.dp,
+                    top = 14.dp,
+                    bottom = 14.dp + LocalTaskbarInset.current,
+                )
         ) {
             Row(
                 Modifier.padding(horizontal = 12.dp, vertical = 7.dp),

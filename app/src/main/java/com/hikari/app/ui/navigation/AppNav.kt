@@ -245,14 +245,19 @@ object Routes {
 /**
  * The bottom bar's three looks (Settings → App Layout → Taskbar & navigation).
  *
- *  * [ANIMATED] — the full-width, labelled bar the app rests on; it shrinks
- *    into a smaller floating pill as the user scrolls back up towards the top
- *    of a page, and swells back to the full bar on any downward scroll (or a
- *    tab change). This is the default layout.
+ *  * [ANIMATED] — a small floating pill; as the user scrolls back up towards the
+ *    top of a page it draws itself in — narrower, shorter, and with the button
+ *    names set aside so only the icons are left — and settles back out on any
+ *    downward scroll (or a tab change). This is the default layout.
  *  * [FLOATING] — the detached glass pill, always the same size.
  *  * [CLASSIC] — the seamless edge-to-edge plate: opaque, flush with the bottom
  *    of the screen, closed off by a hairline along its top edge.
  *
+ * All three float over the page (except the seamless plate, which IS the bottom
+ * of the page); the two floating ones are deliberately SMALL — a compact pill
+ * with room around it, not a full navigation bar stretched across the screen —
+ * and they are nearly opaque, because a bar over artwork cannot rely on what is
+ * behind it being dim.
  * The three used to be indistinguishable in practice: "classic" and the old
  * "borderless" both drew radius 0, no border and no elevation, and differed
  * only in a plate colour that matches the page background on the dark and AMOLED
@@ -271,7 +276,7 @@ object NavStyles {
         Option(
             ANIMATED,
             "Floating animation",
-            "A full bar at the top of a page that shrinks into a floating pill as you scroll."
+            "A small floating pill that draws itself in as you scroll up."
         ),
         Option(FLOATING, "Floating", "A rounded glass pill that hovers above the page."),
         Option(CLASSIC, "Classic", "Edge-to-edge, flush with the bottom of the screen."),
@@ -296,16 +301,26 @@ object NavStyles {
  * (see [BarMetrics.inset]).
  */
 object BarMetrics {
+    /** The seamless layout's plate. */
     val classicHeight = 50.dp
-    /** The animation layout's resting size. */
-    val fullHeight = 54.dp
-    /** The animation layout's size once the user scrolls back up. Close to
-     *  [fullHeight] on purpose — the bar breathes, it does not change into a
-     *  different bar. */
-    val midHeight = 48.dp
-    /** Gap between the bar and the bottom of the screen. */
-    val margin = 6.dp
-    val midMargin = 5.dp
+    /** The floating bars' resting height. Deliberately compact — the reference
+     *  client's bar is a small pill floating over the artwork, and a bar that
+     *  is as tall as the screen's own navigation bar reads as a band across the
+     *  page even when it is rounded. */
+    val fullHeight = 46.dp
+    /** The animation layout's size once the user scrolls back up. This is a real
+     *  step down, not a nudge: at the resting size the drawn-in bar was the same
+     *  width, the same height and wore the same labels as the plain floating
+     *  bar, so the animation could not be seen at all. Here the bar also drops
+     *  its button names and pulls its ends in (see AppBottomBar), leaving the
+     *  compact icon pill the reference client scrolls with — still a stadium
+     *  capsule with the same icons, so it is plainly the same bar. */
+    val midHeight = 40.dp
+    /** Gap between the bar and the bottom of the screen — and, with [hPad], the
+     *  room around the pill on every side, which is what makes it float over
+     *  the page instead of spanning it. */
+    val margin = 8.dp
+    val midMargin = 6.dp
 
     /**
      * What a tab page must leave clear at the bottom of its scrolling content,
@@ -355,9 +370,11 @@ private fun AppBottomBar(
     // the scroll direction). Everything below is hoisted so the two states
     // animate between rather than swap.
     //
-    // The difference between the states is a step, not a transformation: a
-    // medium pill still carrying the labels. The icon-only sliver this used to
-    // shrink to stopped reading as the same bar at all.
+    // The difference between the states is a step the eye can follow: a smaller
+    // pill, drawn in on every side, that keeps the icons and lays the names
+    // aside. It stays a stadium capsule of the same bar — the sliver this used
+    // to shrink to lost its ends, its names and most of its size, which is why
+    // it stopped reading as the taskbar at all.
     val animatedShrunk = style == NavStyles.ANIMATED && !expanded
     // Classic is the only edge-to-edge layout; the other two float over the
     // page. A floating bar is TRANSLUCENT and rounded on every edge, so the
@@ -365,9 +382,12 @@ private fun AppBottomBar(
     // never sits in a strip of its own.
     val floating = style != NavStyles.CLASSIC
     // The labels can be switched off wholesale (Settings → App Layout → "Show
-    // text on taskbar buttons"). Both animated states keep them otherwise:
-    // shrinking must not mean losing the names.
-    val withLabels = showLabels
+    // text on taskbar buttons"), and the drawn-in animated bar lays them aside
+    // by itself: dropping the names is most of what makes the scrolled state
+    // read as small, and the label height animates to zero with them, so the
+    // pill really is shorter rather than just emptier. [labelHeight] and
+    // [labelAlpha] below both follow this one flag.
+    val withLabels = showLabels && !animatedShrunk
     val edgeToEdge = style == NavStyles.CLASSIC
     // One cached text measurer, used below to size the labels to the width
     // they actually have (see the comment on the Row).
@@ -375,12 +395,15 @@ private fun AppBottomBar(
     val hPad by animateDpAsState(
         when {
             edgeToEdge -> 0.dp
-            style == NavStyles.FLOATING -> 16.dp
-            // Shrunk, the pill pulls its edges in so it reads as a floating
-            // control rather than a half-empty bar — but only a little, and
-            // never far enough to look like a different, smaller bar.
-            animatedShrunk -> 22.dp
-            else -> 8.dp
+            // The floating styles keep a real margin either side: that gap is
+            // what makes the bar read as a pill floating over the page rather
+            // than a band across it.
+            style == NavStyles.FLOATING -> 14.dp
+            // Shrunk, the pill pulls its edges in hard — this, with the smaller
+            // height and the dropped labels, is what makes the bar read as a
+            // small capsule floating over the page rather than as the full bar.
+            animatedShrunk -> 32.dp
+            else -> 12.dp
         },
         label = "barHPad",
     )
@@ -397,10 +420,12 @@ private fun AppBottomBar(
         label = "barVPad",
     )
     val radius by animateDpAsState(
+        // Fully round ends: [BarMetrics.fullHeight] and [BarMetrics.midHeight]
+        // halved, so the pill is a stadium at both sizes.
         when {
             edgeToEdge -> 0.dp
-            animatedShrunk -> 22.dp
-            else -> 26.dp
+            animatedShrunk -> BarMetrics.midHeight / 2
+            else -> BarMetrics.fullHeight / 2
         },
         label = "barRadius",
     )
@@ -415,14 +440,19 @@ private fun AppBottomBar(
     val labelHeight by animateDpAsState(if (withLabels) 15.dp else 0.dp, label = "barLabelH")
     val labelAlpha by animateFloatAsState(if (withLabels) 1f else 0f, label = "barLabelA")
     // The button cell fills the bar's inner height (the Row below insets itself
-    // by 6dp top and bottom, and the label is drawn inside this cell), so the
-    // icon and its name always have the room the bar itself claims.
-    val tabHeight = (barHeight - 12.dp)
+    // by 5dp top and bottom, and the label is drawn inside this cell), so the
+    // icon and its name always have the room the bar itself claims. The inset is
+    // as small as the icon + label can live with: the bar is a compact pill, and
+    // every dp of frame it does not need is a dp of artwork it covers.
+    val tabHeight = (barHeight - 10.dp)
     val iconSize by animateDpAsState(
         when {
             edgeToEdge -> 22.dp
-            animatedShrunk -> 17.dp
-            else -> 19.dp
+            // Shrunk, the icon is the whole button: with the labels gone it is
+            // given a little MORE room, not less, so the compact pill stays
+            // readable at a glance.
+            animatedShrunk -> 20.dp
+            else -> 18.dp
         },
         label = "barIcon",
     )
@@ -447,26 +477,45 @@ private fun AppBottomBar(
             }
             Surface(
                 shape = RoundedCornerShape(radius),
-                // A floating bar is GLASS: a whisper of light over the page, so
-                // the artwork scrolling under it stays visible and the bar reads
-                // as a panel hovering over the content. (It used to be painted
-                // from `surfaceContainerHigh`, which is opaque enough that on the
-                // dark themes the bar and the black page around it were the same
-                // colour — the bar's own area read as a black slab.) Only the
-                // seamless layout is opaque, because there the plate IS the
-                // bottom of the screen.
+                // A floating bar is GLASS — but it is the one panel in the app
+                // that floats over ARTWORK, so it cannot be a whisper: the page
+                // behind it may be a bright poster, and the old white-whisper
+                // fill let whatever it happened to be sitting on decide whether
+                // the icons and their names could be read at all. This is the
+                // theme's own surface colour at nearly full strength — a dark
+                // frosted panel on the dark themes, a light one on the light
+                // theme — with the same hairline edge and soft top-light every
+                // other glass panel in the app carries, so it still reads as
+                // glass rather than as paint. Only the seamless layout is
+                // opaque, because there the plate IS the bottom of the screen.
                 color = if (edgeToEdge) {
                     MaterialTheme.colorScheme.surfaceContainerHigh
-                } else if (glass.dark) {
-                    Color.White.copy(alpha = 0.14f)
                 } else {
-                    MaterialTheme.colorScheme.surface.copy(alpha = 0.80f)
+                    MaterialTheme.colorScheme.surface.copy(alpha = if (glass.dark) 0.92f else 0.95f)
                 },
                 border = if (floating) BorderStroke(1.dp, glass.border) else null,
                 shadowElevation = if (floating && !glass.dark) 8.dp else 0.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                BoxWithConstraints(
+                    Modifier
+                        .fillMaxWidth()
+                        // The glass sheen (see [rememberGlassTokens]): a touch
+                        // more light along the top edge than the bottom. On the
+                        // light theme the tokens are opaque white — that is the
+                        // panel colour there — so the sheen is only drawn on
+                        // the dark side, where it is the subtle falloff that
+                        // keeps the pill from looking like flat paint.
+                        .then(
+                            if (floating && glass.dark) {
+                                Modifier.background(
+                                    Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom))
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                ) {
                     // Equal slots are not much room, and the labels
                     // ("Downloads", "Extensions") are the longest text in the
                     // app: on a narrow screen, or with the accessibility Font
@@ -537,7 +586,7 @@ private fun AppBottomBar(
                         Modifier
                             .fillMaxWidth()
                             .height(barHeight)
-                            .padding(horizontal = 2.dp, vertical = 6.dp),
+                            .padding(horizontal = 2.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         tabs.forEach { tab ->
@@ -773,7 +822,18 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             // of it with [LocalTaskbarInset].
         ) { padding ->
             CompositionLocalProvider(
-                LocalTaskbarInset provides if (showBar) BarMetrics.inset(navStyle) else 0.dp
+                // The bar's own footprint (see [BarMetrics.inset]) PLUS the room
+                // it keeps clear of the system navigation bar when those bars
+                // are on screen: the bar pads itself by that inset too, so a
+                // page that padded only by the bar's height would still end up
+                // under it. In immersive mode — the default, and what the whole
+                // design assumes — that inset is 0 and this is just the bar.
+                LocalTaskbarInset provides if (showBar) {
+                    val navBarBottom = with(LocalDensity.current) {
+                        WindowInsets.navigationBars.getBottom(this).toDp()
+                    }
+                    BarMetrics.inset(navStyle) + navBarBottom
+                } else 0.dp
             ) {
                 NavHost(
                     navController = nav,

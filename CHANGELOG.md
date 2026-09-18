@@ -1,3 +1,13 @@
+## 0.5.15
+
+Fixed:
+- The Home provider pill can be tapped again. It sits in the bottom-right corner — exactly where the taskbar floats — so once the bar started drawing over the page instead of in a strip of its own, the pill ended up underneath the bar's own buttons and a tap on it landed on Home or Settings instead. It lifts itself clear of the bar now, and stays put when the gesture bar is showing.
+- The taskbar can be read over artwork. The floating bar was a white whisper of a panel, so a bright poster decided whether the icons and their names were legible — over a pale poster they all but vanished. It is the theme's own surface at nearly full strength now (a dark frosted panel on the dark themes, a light one on the light theme) with the hairline edge and soft top-light every other glass panel in the app carries, so it is still glass with the artwork faintly showing through it, and the buttons are readable whatever they are floating over.
+
+Changed:
+- The floating bars are small pills, not near-full-width bands: shorter, round-ended, with real room around them on every side, so they float over the artwork instead of sitting in a band across the page.
+- The drawn-in size of "Floating animation" is a real step down again — and this time it is not a near-copy of the bar it grew out of. It pulls its ends in hard, drops a size and lays the button names aside, leaving a compact icon capsule with air either side of it: still the same round-ended pill with the same icons, so it is plainly the same bar, but the scroll animation is something you can see.
+
 ## 0.5.14
 
 Fixed:
