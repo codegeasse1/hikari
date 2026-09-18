@@ -12,6 +12,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -243,20 +245,36 @@ object Ratings {
             ?.average?.substringBefore('/')?.trim()?.takeIf { it.isNotBlank() }
     }
 
-    /** How many lookups [ensure] is allowed to have in flight at once. A grid
-     *  asks for every poster it draws; without a ceiling, one Home screen would
-     *  open hundreds of requests across five review sites and get the device
-     *  rate-limited. Suspend-based, so a title waiting for a slot parks its
-     *  coroutine instead of holding a thread. */
-    private val ensureSlots = kotlinx.coroutines.sync.Semaphore(4)
+    /** How many quick TMDB resolutions may run at once. Every poster on screen
+     *  asks for one of these, and it is the request that actually prints the
+     *  badge, so the door is wide: a Home feed fills in over seconds rather than
+     *  queueing behind the five-site scan below. Suspend-based, so a title
+     *  waiting for a slot parks its coroutine instead of holding a thread. */
+    private val quickSlots = Semaphore(6)
 
-    /** How many warm-ups may be waiting for a slot. Past this the oldest are
-     *  simply not asked for (a Home feed can be thousands of posters long). */
-    private const val MAX_ENSURE_QUEUE = 120
+    /** How many five-site scans may run at once. Each one fans out to five
+     *  review sites, so this stays narrow — it is the slow half of a lookup and
+     *  nothing on screen waits for it (see [warmUp]). */
+    private val deepSlots = Semaphore(2)
+
+    /** How many warm-ups may be waiting for a quick slot. Past this [ensure]
+     *  refuses the title rather than queueing it, and the poster cell asks again
+     *  instead of being left blank for good. */
+    private const val MAX_ENSURE_QUEUE = 240
+
+    /** How many five-site scans may be waiting. A scan is the expensive half and
+     *  may be skipped without losing anything the user can see: the badge is up
+     *  by then ([warmUp] publishes TMDB's own average first). */
+    private const val MAX_DEEP_QUEUE = 200
 
     /** Titles a warm-up has been started for and not yet finished — the dedupe
      *  that makes scrolling the same row ten times cost one pass. */
     private val ensureQueued = ConcurrentHashMap.newKeySet<String>()
+
+    /** Titles whose five-site scan is queued or running. Kept apart from
+     *  [ensureQueued] because a warm-up is done — and its queue slot freed — as
+     *  soon as the badge is up; only the scan behind it is still going. */
+    private val deepQueued = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Warms the cache for [item] in the background — what the poster-rating
@@ -273,62 +291,90 @@ object Ratings {
      * Never awaited and deduped per title, so scrolling a row past the same
      * poster ten times costs one pass. Callers use it as a hint, not a request:
      * the badge reads [cachedBadge] on the next recomposition after this lands.
+     *
+     * @return true when the title is queued (or already answered, or already in
+     *         flight); false when the queue was full and it was NOT taken, so
+     *         the caller knows to ask again in a moment. A poster grid depends
+     *         on that answer: it calls this once per cell, and a cell that is
+     *         refused and never retried stays blank for as long as it lives.
      */
-    fun ensure(item: MediaItem) {
+    fun ensure(item: MediaItem): Boolean {
         val key = cacheKey(item)
         val cached = memory[key] ?: readDisk(key)?.also { memory[key] = it }
         // A score on file is the whole point of this call.
-        if (cached != null && cached.isNotEmpty()) return
+        if (cached != null && cached.isNotEmpty()) return true
         // A scoreless answer is retried on the same schedule the detail page's
         // refresh uses. Titles nobody has a review for stay cheap (the windows
         // are 15 minutes / 3 hours), but one that was merely unlucky gets its
         // badge on a later scroll instead of staying bare.
-        if (cached != null && missingSources(key, item, cached).isEmpty()) return
-        // WAIT for a slot instead of giving up on it. Dropping the title is what
-        // left whole rows of posters bare: the first four to reach this point
-        // were served and the rest were skipped, and nothing asked for them
-        // again until the user happened to scroll the row back into view.
-        if (ensureQueued.size >= MAX_ENSURE_QUEUE) return
-        if (!ensureQueued.add(key)) return
-        refresher.launch {
-            try {
-                ensureSlots.acquire()
-                try {
-                    val side = tmdbSide(item, null)
-                    // Publish TMDB's own average the moment it lands — one
-                    // request instead of the five the scraper pass makes — so a
-                    // Home row fills in seconds and the IMDb/tomato numbers
-                    // join it as they arrive. Binding the badge to the END of
-                    // the pass meant the slowest review site decided when the
-                    // row's scores appeared, which is how some posters came up
-                    // badged and their neighbours did not.
-                    if (side.badge != null) {
-                        val quick = finish(memory[key].orEmpty(), side.badge)
-                        memory[key] = quick
-                        writeDisk(key, quick)
-                        bumpRevision(key)
-                    }
-                    val imdb = resolveImdb(item, side.imdbId)
-                    val want = applicableSources(item)
-                    val found = runSources(item, imdb, want)
-                    markAttempts(key, want)
-                    val list = finish(found.values.sortedBy { it.source.ordinal }, side.badge)
-                    // Cached even when empty: an empty answer is still an
-                    // answer, and remembering it (for [EMPTY_TTL_MS]) is what
-                    // keeps a title nobody has a score for from being re-asked
-                    // on every scroll.
-                    memory[key] = list
-                    writeDisk(key, list)
-                    bumpRevision(key)
-                } finally {
-                    ensureSlots.release()
-                }
-            } catch (e: Exception) {
-                // A failed warm-up is not news: the next scroll tries again.
-            } finally {
-                ensureQueued.remove(key)
+        if (cached != null && missingSources(key, item, cached).isEmpty()) return true
+        // A full queue is reported, not swallowed. A Home feed composes far more
+        // posters than can be looked up at once, and silently dropping the
+        // overflow is what left whole rows of posters bare: the first handful
+        // were served, the rest were forgotten, and nothing asked for them again
+        // until their cells happened to be rebuilt.
+        if (ensureQueued.size >= MAX_ENSURE_QUEUE) return false
+        if (!ensureQueued.add(key)) return true
+        refresher.launch { warmUp(key, item) }
+        return true
+    }
+
+    /**
+     * One title's lookup, in the two halves a poster badge actually cares about.
+     *
+     * First the quick half: one TMDB request, and the badge is published the
+     * moment it lands. Only then the slow half — the five review sites — which
+     * is handed to [deepen] and which nothing on screen waits for. Binding the
+     * badge to the end of that pass meant the slowest review site decided when
+     * a row's scores appeared, which is how some posters came up badged and
+     * their neighbours did not.
+     *
+     * The queue slot ([ensureQueued]) is released as soon as the quick half is
+     * done, on purpose: that is what makes the queue turn over in a fraction of
+     * a second per title, so a whole Home screen's worth of posters can be taken
+     * instead of only the first [MAX_ENSURE_QUEUE] of them.
+     */
+    private suspend fun warmUp(key: String, item: MediaItem) {
+        try {
+            val side = quickSlots.withPermit { tmdbSide(item, null) }
+            if (side.badge != null) {
+                val quick = finish(memory[key].orEmpty(), side.badge)
+                memory[key] = quick
+                writeDisk(key, quick)
+                bumpRevision(key)
             }
+            if (deepQueued.size < MAX_DEEP_QUEUE && deepQueued.add(key)) {
+                refresher.launch {
+                    try {
+                        deepSlots.withPermit { deepen(key, item, side) }
+                    } catch (e: Exception) {
+                        // Same as below: a scan that failed is not news.
+                    } finally {
+                        deepQueued.remove(key)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // A failed warm-up is not news: the next redraw tries again.
+        } finally {
+            ensureQueued.remove(key)
         }
+    }
+
+    /** The five review sites for [key], merged onto whatever the quick half
+     *  already published, and written back to the cache. */
+    private suspend fun deepen(key: String, item: MediaItem, side: TmdbSide) {
+        val imdb = resolveImdb(item, side.imdbId)
+        val want = applicableSources(item)
+        val found = runSources(item, imdb, want)
+        markAttempts(key, want)
+        val list = finish(found.values.sortedBy { it.source.ordinal }, side.badge)
+        // Cached even when empty: an empty answer is still an answer, and
+        // remembering it (for [EMPTY_TTL_MS]) is what keeps a title nobody has a
+        // score for from being re-asked on every scroll.
+        memory[key] = list
+        writeDisk(key, list)
+        bumpRevision(key)
     }
 
     /** The TMDB half of a title: its average (as a badge) and the `tt` id TMDB

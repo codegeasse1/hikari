@@ -40,6 +40,7 @@ import com.hikari.app.data.Ratings
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /**
  * The user's poster styling — Settings → Appearance → Poster & icons.
@@ -110,7 +111,18 @@ fun PosterStyle.shape(): RoundedCornerShape = RoundedCornerShape(corner.dp)
 @Composable
 fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
     if (!style.showRatings) return null
-    LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
+    LaunchedEffect(item.uniqueId) {
+        // The warm-up queue is bounded, and a Home feed composes more posters
+        // than it will take at once; a refused title used to stay bare for the
+        // life of its cell, because nothing asks twice. Ask again until it is
+        // taken — a refused call is one memory read, and once the title is on
+        // file (score or scoreless answer) the first call already returns.
+        var attempt = 0
+        while (attempt < 14 && !Ratings.ensure(item)) {
+            attempt++
+            delay(900L + attempt * 500L)
+        }
+    }
     Ratings.revision(item)
     return Ratings.cachedBadge(item)
         ?: item.rating?.takeIf { it > 0.0 }
