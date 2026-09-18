@@ -419,11 +419,15 @@ private fun AppBottomBar(
                     // the widest label at a 100sp reference gives the size that
                     // just fits the slot. Bold is the wider weight (the active
                     // tab), so measuring with it is the safe case.
-                    val widestRef = remember(tabs, densityNow.density, densityNow.fontScale) {
+                    // The translated labels are read here, in composition, because
+                    // tr() is @Composable and cannot be called from the remember
+                    // lambda that does the measuring.
+                    val tabLabels = tabs.map { tr(it.label) }
+                    val widestRef = remember(tabLabels, densityNow.density, densityNow.fontScale) {
                         val reference = TextStyle(fontSize = 100.sp, fontWeight = FontWeight.Bold)
-                        tabs.maxOfOrNull { tab ->
+                        tabLabels.maxOfOrNull { label ->
                             measurer.measure(
-                                text = AnnotatedString(tr(tab.label)),
+                                text = AnnotatedString(label),
                                 style = reference,
                                 maxLines = 1,
                                 softWrap = false,
