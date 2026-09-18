@@ -28,6 +28,7 @@ class ProviderManager(private val store: AppStore) {
         ProviderType.HIKARI -> HikariProviderAdapter(c)
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper(c)
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider(c)
+        ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider(c)
     }
 
     fun byId(id: String): ContentProvider? =

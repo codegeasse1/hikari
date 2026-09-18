@@ -439,6 +439,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // Aniyomi extensions live in `filesDir/aniyomi/exts` and are shared by
+        // every source they publish — only the last referencing provider takes
+        // the `.ext` with it.
+        if (target != null && target.type == ProviderType.ANIYOMI &&
+            target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
+        ) {
+            val stillUsed = store.providers().any { it.url == target.url }
+            if (!stillUsed) {
+                withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
+            }
+        }
     }
 
     suspend fun installHikiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -583,7 +594,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             store.providers().forEach { p ->
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
-                    ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM -> extra
+                    ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
+                    ProviderType.ANIYOMI -> extra
                     ProviderType.HIKARI -> extra.substringBeforeLast('|')
                     else -> return@forEach
                 }
@@ -703,6 +715,110 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
         com.hikari.app.skystream.SkyStreamPluginManager.install(
+            getApplication<Application>(),
+            bytes,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    /**
+     * Registers an Aniyomi extension repository. This one CANNOT go through
+     * [addRepoUrl]: an Aniyomi repo publishes a **bare JSON array** (every other
+     * kind nests its entries under a `plugins` key), so `JSONObject(text)` would
+     * throw "Invalid index.min.json" on a perfectly good repo. A bare folder,
+     * host or shortcode is normalised to `<dir>/index.min.json` first, mirroring
+     * Aniyomi's own "add repo" flow.
+     */
+    suspend fun addAniyomiRepo(rawUrl: String): Result<Cs3Repo> {
+        val resolved = com.hikari.app.aniyomi.AniyomiExtensionManager.resolveRepoUrl(rawUrl)
+            ?: return Result.failure(
+                Exception("Must be a link to an index.min.json (or the repo folder)")
+            )
+        return addAniyomiRepoUrl(resolved)
+    }
+
+    /** The fetch + validate + store half of [addAniyomiRepo] — shared with the
+     *  shortcode aliases, whose URLs are already resolved. */
+    private suspend fun addAniyomiRepoUrl(url: String): Result<Cs3Repo> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val text = fetchRepoRaw(url, ANIYOMI_INDEX).getOrElse { throw it }
+                // Validate BEFORE storing: a wrong URL (or an HTML page) must
+                // not end up as a repo whose every open fails.
+                val arr = runCatching { JSONArray(text) }.getOrElse {
+                    throw Exception("Invalid $ANIYOMI_INDEX: ${it.message}")
+                }
+                if (arr.length() == 0) throw Exception("That $ANIYOMI_INDEX lists no extensions")
+                val repo = Cs3Repo(
+                    url = lastGoodRepoUrl,
+                    name = niceRepoName(url, ""),
+                    description = "",
+                    kind = RepoKind.ANIYOMI,
+                )
+                val key = SourceUrls.canonical(repo.url)
+                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
+                store.addCs3Repo(repo)
+                repos.value = store.repos()
+                store.repos().firstOrNull { SourceUrls.canonical(it.url) == key } ?: repo
+            }
+        }
+
+    suspend fun installAniyomiPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        withContext(Dispatchers.IO) {
+            // Aniyomi extensions are a couple of MB at most, but the biggest
+            // ones (allanime, aniwatch) sit behind slow mirrors, so the ceiling
+            // is looser than the JS-plugin installs'.
+            val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(plugin.url) }
+                ?: return@withContext Result.failure(
+                    Exception("Download timed out — check your connection")
+                )
+            com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+                getApplication<Application>(),
+                bytes,
+                sourceUrl = plugin.url,
+                iconUrl = plugin.iconUrl,
+            ).also { manager.refresh(); reloadInstalled() }
+        }
+
+    /** Removes every ANIYOMI provider that came from [pluginUrl] (and the `.ext`
+     *  itself once nothing references it). */
+    suspend fun uninstallAniyomiPlugin(pluginUrl: String) {
+        val app = getApplication<Application>()
+        // The manager removes by exact source URL, so hand it the spelling each
+        // installed provider actually stored — a repo build can move the file
+        // (a new branch, the jsDelivr mirror) between listing and uninstall.
+        val stored = store.providers()
+            .filter { it.type == ProviderType.ANIYOMI && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
+        }
+        manager.refresh()
+        reloadInstalled()
+    }
+
+    suspend fun installAniyomiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            return@withContext Result.failure(Exception("Must start with http(s)://"))
+        }
+        val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(clean) }
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+            getApplication<Application>(),
+            bytes,
+            sourceUrl = clean,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    /** Installs a local `.apk`/`.ext` the user picked (an Aniyomi extension
+     *  downloaded from a browser has no repo URL at all). */
+    suspend fun installAniyomiFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = runCatching {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
+        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
             getApplication<Application>(),
             bytes,
         ).also { manager.refresh(); reloadInstalled() }
@@ -879,6 +995,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         fun sky(url: String) = RepoAlias(url, RepoKind.SKYSTREAM)
         val skyOfficial = sky("https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json")
         val skyRouge = sky("https://raw.githubusercontent.com/rougegz/SkystreamPlugins/main/repo.json")
+        // Aniyomi extension repos. These publish `index.min.json` — a BARE JSON
+        // ARRAY of extensions (every other kind nests entries under a `plugins`
+        // key), which is why this kind has its own repo parser and its own
+        // install path. Aniyomi's official repo is the only one seeded; these
+        // aliases are the shortcut for re-adding it (or a mirror) by hand.
+        fun aniyomiExt(url: String) = RepoAlias(url, RepoKind.ANIYOMI)
+        val aniyomiOfficial = aniyomiExt(
+            "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
+        )
         val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
@@ -952,6 +1077,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("sky", listOf(skyOfficial))
         put("skyourge", listOf(skyRouge))
         put("rougegz", listOf(skyRouge))
+        put("aniyomiext", listOf(aniyomiOfficial))
+        put("aniyomiextensions", listOf(aniyomiOfficial))
+        put("aniyomiindex", listOf(aniyomiOfficial))
+        put("aniyomiofficial", listOf(aniyomiOfficial))
+        put("aniyomirepo", listOf(aniyomiOfficial))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -970,7 +1100,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             var first: Cs3Repo? = null
             var lastError: Throwable? = null
             for (alias in aliases) {
-                val result = addRepoUrl(alias.url, alias.kind)
+                val result = if (alias.kind == RepoKind.ANIYOMI) addAniyomiRepoUrl(alias.url)
+                else addRepoUrl(alias.url, alias.kind)
                 val added = result.getOrNull()
                 if (added != null) {
                     if (first == null) first = added
@@ -1072,11 +1203,36 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
-        val file = if (repo.kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
+        val file = when (repo.kind) {
+            RepoKind.NUVIO -> "manifest.json"
+            RepoKind.ANIYOMI -> ANIYOMI_INDEX
+            else -> "repo.json"
+        }
         val text = fetchRepoRaw(
             repo.url, file, ua = if (repo.kind == RepoKind.NUVIO) Http.NUVIO_UA else null
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
+        if (repo.kind == RepoKind.ANIYOMI) {
+            // An Aniyomi index is a BARE ARRAY (not an object with a `plugins`
+            // key), so it can't go through JSONObject below. Each entry's `apk`
+            // is a filename served from `<repo root>/apk/`, and the icon from
+            // `<repo root>/icon/<pkg>.png` — see AniyomiExtensionManager.repoPlugin.
+            val arr = runCatching { JSONArray(text) }.getOrElse {
+                throw Exception("Invalid $file: ${it.message}")
+            }
+            val out = LinkedHashMap<String, Cs3RepoPlugin>()
+            val trimmed = repo.url.trimEnd('/')
+            val baseUrl = if (trimmed.endsWith("/$ANIYOMI_INDEX", ignoreCase = true))
+                trimmed.removeSuffix("/$ANIYOMI_INDEX") else trimmed
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { o ->
+                    com.hikari.app.aniyomi.AniyomiExtensionManager.repoPlugin(o, baseUrl)
+                        ?.let { p -> out[p.url] = p }
+                }
+            }
+            if (out.isEmpty()) throw Exception("No extensions found in $file")
+            return out.values.toList() to null
+        }
         val root = runCatching { JSONObject(text) }.getOrElse {
             throw Exception("Invalid $file: ${it.message}")
         }
@@ -1408,6 +1564,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
             RepoKind.SKYSTREAM -> "extension"
+            RepoKind.ANIYOMI -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         val pending = plugins.filter { it.url !in installedUrls }
@@ -1430,6 +1587,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
                             RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                         }
                     }
                 }.getOrNull()
@@ -1515,6 +1673,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
                             RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                         }
                     }
                 }.getOrNull()
@@ -1560,8 +1719,16 @@ private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
     url.endsWith(".cs3", ignoreCase = true) -> RepoKind.CS3
     url.endsWith(".hiki", ignoreCase = true) -> RepoKind.HIKARI
     url.endsWith(".sky", ignoreCase = true) -> RepoKind.SKYSTREAM
+    // Aniyomi repos serve plain `.apk` files (saved locally with an `.ext`
+    // suffix), so a repo whose own kind was guessed wrong still installs
+    // through the Aniyomi path instead of the CloudStream one.
+    url.endsWith(".apk", ignoreCase = true) -> RepoKind.ANIYOMI
+    url.endsWith(".ext", ignoreCase = true) -> RepoKind.ANIYOMI
     else -> default
 }
+
+/** The file an Aniyomi extension repo publishes (a bare JSON array). */
+private const val ANIYOMI_INDEX = "index.min.json"
 
 @Composable
 fun ExtensionsScreen() {
@@ -1581,11 +1748,13 @@ fun ExtensionsScreen() {
     var repoDialogKind by remember { mutableStateOf(RepoKind.CS3) }
     var showHikiUrl by remember { mutableStateOf(false) }
     var showSkyUrl by remember { mutableStateOf(false) }
+    var showAniyomiUrl by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
     var cs3Url by remember { mutableStateOf("") }
     var hikiUrl by remember { mutableStateOf("") }
     var skyUrl by remember { mutableStateOf("") }
+    var aniyomiUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
     val busy by vm.busy.collectAsState()
     val busyMsg by vm.busyMsg.collectAsState()
@@ -1647,6 +1816,13 @@ fun ExtensionsScreen() {
         }
     }
 
+    val aniyomiPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                vm.runInstall("Installing Aniyomi extension…") { vm.installAniyomiFromUri(uri) }
+            }
+        }
+
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runInstall(
             "Installing ${p.name}…",
@@ -1657,6 +1833,7 @@ fun ExtensionsScreen() {
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
                 RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
+                RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
             }
         }
     }
@@ -1668,6 +1845,7 @@ fun ExtensionsScreen() {
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
                 RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)
                 RepoKind.SKYSTREAM -> vm.uninstallSkyStreamPlugin(p.url)
+                RepoKind.ANIYOMI -> vm.uninstallAniyomiPlugin(p.url)
             }
         }
     }
@@ -1759,6 +1937,7 @@ fun ExtensionsScreen() {
                     SourceFolder.HIKARI -> RepoKind.HIKARI
                     SourceFolder.NUVIO -> RepoKind.NUVIO
                     SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
+                    SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -1825,6 +2004,7 @@ fun ExtensionsScreen() {
             onAddHikiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
             onAddNuvioRepo = { vm.clearStatus(); repoDialogKind = RepoKind.NUVIO; showRepoDialog = true },
             onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
+            onAddAniyomiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANIYOMI; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
@@ -1867,6 +2047,11 @@ fun ExtensionsScreen() {
                 vm.clearStatus()
                 skyPicker.launch(arrayOf("application/octet-stream", "*/*"))
             },
+            onAddAniyomiUrl = { vm.clearStatus(); showAniyomiUrl = true },
+            onPickAniyomiFile = {
+                vm.clearStatus()
+                aniyomiPicker.launch(arrayOf("application/vnd.android.package-archive", "*/*"))
+            },
             onAddSite = { vm.clearStatus(); showSite = true },
             onOpenSite = { site ->
                 context.startActivity(
@@ -1907,6 +2092,7 @@ fun ExtensionsScreen() {
         val isHikari = repoDialogKind == RepoKind.HIKARI
         val isNuvio = repoDialogKind == RepoKind.NUVIO
         val isSky = repoDialogKind == RepoKind.SKYSTREAM
+        val isAniyomi = repoDialogKind == RepoKind.ANIYOMI
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
             title = {
@@ -1915,6 +2101,7 @@ fun ExtensionsScreen() {
                         RepoKind.HIKARI -> "Add Hikari repo"
                         RepoKind.NUVIO -> "Add Nuvio repo"
                         RepoKind.SKYSTREAM -> "Add SkyStream repo"
+                        RepoKind.ANIYOMI -> "Add Aniyomi repo"
                         RepoKind.CS3 -> "Add CloudStream repo"
                     }
                 )
@@ -1933,6 +2120,9 @@ fun ExtensionsScreen() {
                                 "Paste a SkyStream repo URL (a repo.json), or just its short " +
                                     "code. For example:\n" +
                                     "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json"
+                            isAniyomi ->
+                                "Paste an Aniyomi repo URL (an index.min.json). For example:\n" +
+                                    "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
                             else ->
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
@@ -1948,7 +2138,8 @@ fun ExtensionsScreen() {
                                 "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
                                 "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
                                 "mooncrown, kennethjys, eclipsia. SkyStream repos: skystream, " +
-                                "akash, skyourge, rougegz."
+                                "akash, skyourge, rougegz. Aniyomi repos: aniyomiext " +
+                                "(the official Aniyomi extensions repo)."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1957,7 +2148,11 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = repoUrl,
                         onValueChange = { repoUrl = it },
-                        placeholder = { Text(tr("https://…/repo.json")) },
+                        placeholder = {
+                            Text(
+                                tr(if (isAniyomi) "https://…/index.min.json" else "https://…/repo.json")
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1982,6 +2177,7 @@ fun ExtensionsScreen() {
                                     RepoKind.HIKARI -> vm.addHikiRepo(repoUrl)
                                     RepoKind.NUVIO -> vm.addNuvioRepo(repoUrl)
                                     RepoKind.SKYSTREAM -> vm.addSkyStreamRepo(repoUrl)
+                                    RepoKind.ANIYOMI -> vm.addAniyomiRepo(repoUrl)
                                     RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
                                 }
                             },
@@ -2248,6 +2444,64 @@ fun ExtensionsScreen() {
         )
     }
 
+    if (showAniyomiUrl) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showAniyomiUrl = false },
+            title = { Text(tr("Install Aniyomi extension (.apk)")) },
+            text = {
+                Column {
+                    Text(
+                        tr(
+                            "Paste a direct link to an Aniyomi extension (.apk) — the " +
+                                "same file the Aniyomi app installs. Look for an " +
+                                "\"Aniyomi repo\" in the list above instead if you want " +
+                                "to browse a whole repository."
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = aniyomiUrl,
+                        onValueChange = { aniyomiUrl = it },
+                        placeholder = {
+                            Text(
+                                tr(
+                                    "https://…/repo/apk/aniyomi-all.jellyfin-v14.17.apk"
+                                )
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
+                                showAniyomiUrl = false
+                                aniyomiUrl = ""
+                            },
+                        ) { vm.installAniyomiFromUrl(aniyomiUrl) }
+                    }
+                ) { Text(tr("Install")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showAniyomiUrl = false }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
     if (showSite) {
         AlertDialog(
             onDismissRequest = { if (!busy) showSite = false },
@@ -2439,6 +2693,8 @@ private fun RepoBrowserView(
     onPickHikiFile: () -> Unit,
     onAddSkyStreamUrl: () -> Unit,
     onPickSkyStreamFile: () -> Unit,
+    onAddAniyomiUrl: () -> Unit,
+    onPickAniyomiFile: () -> Unit,
     onRemoveRepo: (String) -> Unit,
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
@@ -2674,6 +2930,13 @@ private fun RepoBrowserView(
                     )
                     SourceDivider()
                     SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("Aniyomi repos"),
+                        subtitle = tr("index.min.json · Aniyomi extensions"),
+                        onClick = { onOpenFolder(SourceFolder.ANIYOMI) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
                         icon = Icons.Filled.PlayArrow,
                         title = tr("Stremio addons"),
                         subtitle = tr("manifest.json · Stremio addons"),
@@ -2712,6 +2975,15 @@ private fun RepoBrowserView(
                         onClick = onAddSkyStreamUrl,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickSkyStreamFile
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Add,
+                        title = tr("Install Aniyomi extension (.apk)"),
+                        subtitle = tr("Aniyomi extension · from a URL or a local file"),
+                        onClick = onAddAniyomiUrl,
+                        trailingIcon = Icons.Filled.FolderOpen,
+                        onTrailing = onPickAniyomiFile
                     )
                     SourceDivider()
                     SourceActionRow(
@@ -2942,6 +3214,7 @@ private fun RepoPluginsView(
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
             RepoKind.SKYSTREAM -> "extension"
+            RepoKind.ANIYOMI -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         Row(
@@ -3694,6 +3967,7 @@ private fun RepoCard(
                             RepoKind.HIKARI -> "Hikari"
                             RepoKind.NUVIO -> "Nuvio"
                             RepoKind.SKYSTREAM -> "SkyStream"
+                            RepoKind.ANIYOMI -> "Aniyomi"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -3712,6 +3986,7 @@ private fun RepoCard(
                             val unit = when (repo.kind) {
                                 RepoKind.NUVIO -> "provider"
                                 RepoKind.SKYSTREAM -> "extension"
+                                RepoKind.ANIYOMI -> "extension"
                                 else -> "plugin"
                             }
                             "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
@@ -3903,6 +4178,18 @@ private fun pluginStatus(p: ContentProvider): String? {
         ) return null
         return err?.take(200)
     }
+    if (p.config.type == ProviderType.ANIYOMI) {
+        if (com.hikari.app.aniyomi.AniyomiExtensionManager.fileMissing(p.config)) {
+            return "Extension file missing — reinstall this extension"
+        }
+        val err = com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id]
+        // Same rule as below: a browser check on the scraped site is never
+        // reported as a scary, unactionable line.
+        if (err != null &&
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)
+        ) return null
+        return err?.take(200)
+    }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
     if (err != null) {
@@ -4049,7 +4336,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, STREMIO }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, STREMIO }
 
 @Composable
 private fun SourceFolderView(
@@ -4077,6 +4364,7 @@ private fun SourceFolderView(
         SourceFolder.HIKARI -> RepoKind.HIKARI
         SourceFolder.NUVIO -> RepoKind.NUVIO
         SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
+        SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
         SourceFolder.STREMIO -> null
     }
     val (title, subtitle) = when (folder) {
@@ -4084,6 +4372,7 @@ private fun SourceFolderView(
         SourceFolder.HIKARI -> "Hikari repos" to "repo.json · Hikari extensions"
         SourceFolder.NUVIO -> "Nuvio repos" to "manifest.json · Nuvio providers"
         SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
+        SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
     }
     val kindLabel = when (folder) {
@@ -4091,6 +4380,7 @@ private fun SourceFolderView(
         SourceFolder.HIKARI -> "Hikari"
         SourceFolder.NUVIO -> "Nuvio"
         SourceFolder.SKYSTREAM -> "SkyStream"
+        SourceFolder.ANIYOMI -> "Aniyomi"
         SourceFolder.STREMIO -> "Stremio"
     }
     val folderRepos = if (kind != null) repos.filter { it.kind == kind } else emptyList()
@@ -4234,6 +4524,7 @@ private fun SourcesOverviewView(
     onAddHikiRepo: () -> Unit,
     onAddNuvioRepo: () -> Unit,
     onAddSkyStreamRepo: () -> Unit,
+    onAddAniyomiRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -4247,6 +4538,7 @@ private fun SourcesOverviewView(
     val hikiGroupTitle = tr("Hikari")
     val nuvioGroupTitle = tr("Nuvio")
     val skyGroupTitle = tr("SkyStream")
+    val aniyomiGroupTitle = tr("Aniyomi")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -4336,6 +4628,16 @@ private fun SourcesOverviewView(
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
                 onAdd = onAddSkyStreamRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = aniyomiGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.ANIYOMI },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddAniyomiRepo,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onRemoveRepo = onRemoveRepo,

@@ -798,6 +798,8 @@ private fun FolderEditorPage(
 
     if (tmdbSheet) {
         TmdbSourceSheet(
+            addedKeys = sources.mapTo(HashSet<String>()) { it.key },
+            onPreset = { source -> sources = sources.toggleSource(source) },
             onAdd = { source ->
                 if (sources.none { it.key == source.key }) sources = sources + source
                 tmdbSheet = false
@@ -837,7 +839,7 @@ private fun FolderEditorPage(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    tr("Pick the catalog this folder should show."),
+                    tr("Tap every catalog this folder should show — tap one to add it, tap it again to take it out."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
@@ -859,18 +861,19 @@ private fun FolderEditorPage(
                 } else {
                     LazyColumn(Modifier.padding(bottom = 24.dp)) {
                         items(loaded.distinctBy { "${it.type}|${it.id}" }, key = { "${it.type}|${it.id}" }) { ref ->
-                            PickerLine(label = ref.name, selected = false) {
-                                sources = sources + CatalogSource(
-                                    kind = CatalogSourceKind.PROVIDER,
-                                    title = ref.name,
-                                    providerId = provider.config.id,
-                                    catalogId = ref.id,
-                                    type = ref.type,
-                                    rawType = ref.rawType,
-                                )
-                                pickProvider = null
+                            val source = CatalogSource(
+                                kind = CatalogSourceKind.PROVIDER,
+                                title = ref.name,
+                                providerId = provider.config.id,
+                                catalogId = ref.id,
+                                type = ref.type,
+                                rawType = ref.rawType,
+                            )
+                            PickerLine(label = ref.name, selected = sources.any { it.key == source.key }) {
+                                sources = sources.toggleSource(source)
                             }
                         }
+                        item { SheetDoneRow { pickProvider = null } }
                     }
                 }
             }
@@ -934,6 +937,10 @@ private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {
     if (from == to || from !in indices || to !in indices) return this
     return toMutableList().apply { add(to, removeAt(from)) }
 }
+
+/** [this] with [source] added to the end, or removed when it is already there. */
+private fun List<CatalogSource>.toggleSource(source: CatalogSource): List<CatalogSource> =
+    if (any { it.key == source.key }) filterNot { it.key == source.key } else this + source
 
 /**
  * One catalog source line inside the folder editor.
@@ -1017,12 +1024,15 @@ private fun SourceRow(
  * so the language the app is set to is the only thing that decides which
  * language the row's own items are titled in.
  *
- * A preset is one tap: it adds a ready-made row and leaves the sheet, exactly
- * like the old preset picker did.
+ * A preset is one tap, and the sheet stays open so several can be added in a
+ * row: a preset already in the folder is ticked, and tapping it again takes it
+ * back out. The hand-built form is still one source and then the sheet closes.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TmdbSourceSheet(
+    addedKeys: Set<String>,
+    onPreset: (CatalogSource) -> Unit,
     onAdd: (CatalogSource) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1045,6 +1055,13 @@ private fun TmdbSourceSheet(
         title = name,
         type = spec.kind,
         tmdbSpec = spec.encode(),
+    )
+
+    fun presetSource(p: TmdbPreset): CatalogSource = CatalogSource(
+        kind = CatalogSourceKind.TMDB,
+        title = p.name,
+        type = p.kind,
+        tmdbPreset = p.key,
     )
 
     fun resetFor(t: TmdbSourceType) {
@@ -1150,7 +1167,7 @@ private fun TmdbSourceSheet(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                tr("Pick a ready-made source, or build one from a TMDB id, a name or a link."),
+                tr("Tap a ready-made source to add it — tap several in a row — or build one from a TMDB id, a name or a link."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -1173,30 +1190,23 @@ private fun TmdbSourceSheet(
                 if (type == TmdbSourceType.PRESET) {
                     item { SheetHeading(tr("Movie studios")) }
                     items(TmdbPresets.MOVIES, key = { it.key }) { p ->
-                        PickerLine(label = p.name, supporting = p.detail, selected = false) {
-                            onAdd(
-                                CatalogSource(
-                                    kind = CatalogSourceKind.TMDB,
-                                    title = p.name,
-                                    type = p.kind,
-                                    tmdbPreset = p.key,
-                                )
-                            )
-                        }
+                        val source = presetSource(p)
+                        PickerLine(
+                            label = p.name,
+                            supporting = p.detail,
+                            selected = addedKeys.contains(source.key),
+                        ) { onPreset(source) }
                     }
                     item { SheetHeading(tr("TV networks")) }
                     items(TmdbPresets.SERIES, key = { it.key }) { p ->
-                        PickerLine(label = p.name, supporting = p.detail, selected = false) {
-                            onAdd(
-                                CatalogSource(
-                                    kind = CatalogSourceKind.TMDB,
-                                    title = p.name,
-                                    type = p.kind,
-                                    tmdbPreset = p.key,
-                                )
-                            )
-                        }
+                        val source = presetSource(p)
+                        PickerLine(
+                            label = p.name,
+                            supporting = p.detail,
+                            selected = addedKeys.contains(source.key),
+                        ) { onPreset(source) }
                     }
+                    item { SheetDoneRow(onDismiss) }
                     return@LazyColumn
                 }
 
@@ -1520,6 +1530,32 @@ private fun SheetHeading(text: String) {
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(top = 14.dp, bottom = 6.dp),
     )
+}
+
+/**
+ * The row that closes a multi-select sheet. A picker that keeps itself open has
+ * no "tap one and it's gone" moment to tell you it is finished, so it says it
+ * outright instead of leaving the user to guess at the scrim.
+ */
+@Composable
+private fun SheetDoneRow(onDone: () -> Unit) {
+    Surface(
+        onClick = onDone,
+        shape = GlassShape,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 10.dp),
+    ) {
+        Box(Modifier.padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+            Text(
+                tr("Done"),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+        }
+    }
 }
 
 /**

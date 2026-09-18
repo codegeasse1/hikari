@@ -1114,6 +1114,10 @@ private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     // this the globe button had no target at all for these extensions.
     ProviderType.SKYSTREAM ->
         com.hikari.app.skystream.SkyStreamPluginManager.siteUrlOf(p.config)
+    // Same for Aniyomi: `url` is the local .ext path, so the site comes from the
+    // extension's own source (`baseUrl`/`siteUrl`, else its source class name).
+    ProviderType.ANIYOMI ->
+        com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(p.config)
     ProviderType.CS3 -> runCatching {
         val file = java.io.File(p.config.url)
         if (!file.exists()) return@runCatching null

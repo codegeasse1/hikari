@@ -46,6 +46,8 @@ object ExtensionIcons {
             ProviderType.CS3 -> Cs3MainApiProvider.iconFallback(config)
             ProviderType.SKYSTREAM ->
                 com.hikari.app.skystream.SkyStreamPluginManager.iconFallback(config)
+            ProviderType.ANIYOMI ->
+                com.hikari.app.aniyomi.AniyomiExtensionManager.iconFallback(config)
             else -> null
         }
     }

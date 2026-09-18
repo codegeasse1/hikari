@@ -327,7 +327,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     // SkyStream plugins carry their own search, so every
                     // installed one is asked by title through the cross pass
                     // (see ContentRepository.crossExtensionTargets).
+                    // SkyStream plugins and Aniyomi extensions carry their own
+                    // search, so every one installed is asked by title through
+                    // the cross pass (see ContentRepository.crossExtensionTargets).
                     it.config.type == ProviderType.SKYSTREAM ||
+                    it.config.type == ProviderType.ANIYOMI ||
                     (it.config.type == ProviderType.NUVIO &&
                         com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)))
         }
@@ -354,6 +358,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ProviderType.SKYSTREAM ->
                     com.hikari.app.skystream.SkyStreamProvider.lastOutcome[item.providerId]
                         ?: com.hikari.app.skystream.SkyStreamProvider.streamErrors[item.providerId]
+                ProviderType.ANIYOMI ->
+                    com.hikari.app.aniyomi.AniyomiProvider.lastOutcome[item.providerId]
+                        ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[item.providerId]
                 else -> null
             }
             // A Cloudflare wall is never surfaced here: the Home screen reports
@@ -740,6 +747,9 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ProviderType.SKYSTREAM ->
             com.hikari.app.skystream.SkyStreamProvider.lastOutcome[p.config.id]
                 ?: com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
+        ProviderType.ANIYOMI ->
+            com.hikari.app.aniyomi.AniyomiProvider.lastOutcome[p.config.id]
+                ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
         else -> null
     }
     return msg?.takeIf { !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it) }

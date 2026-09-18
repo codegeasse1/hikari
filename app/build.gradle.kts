@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 138
-        versionName = "0.5.22"
+        versionCode = 139
+        versionName = "0.5.23"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -223,6 +223,27 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.atomicfu)
     implementation(libs.newpipeextractor)
+    // Mihon/Aniyomi's dependency-injection container. Aniyomi extension APKs
+    // don't receive their dependencies as constructor arguments — the extension
+    // loader instantiates a source and the source immediately pulls what it
+    // needs (`Application`, `Json`, `NetworkHelper`, `JavaScriptEngine`, …) out
+    // of the global `Injekt` scope. Hikari has no DI container of its own, so
+    // the same container (mihonapp's fork, which rebuilds injekt for modern
+    // Kotlin and patches the registrar) is installed and primed in
+    // HikariApp.onCreate — see AniyomiExtensionManager.
+    implementation("com.github.mihonapp:injekt:91edab2317")
+    // RxJava 1 — Aniyomi's `AnimeHttpSource` still carries the deprecated Rx
+    // `fetch*` API that `AnimeCatalogueSource`'s default methods delegate to
+    // (extlib-14 extensions only implement the suspend methods, so the Rx bridge
+    // vendored in RxCoroutineBridge is what actually runs them).
+    implementation("io.reactivex:rxjava:1.3.8")
+    // Aniyomi's `HttpServer` (a NanoHTTPD local proxy some extensions use for
+    // streams that want same-origin requests). Hikari never starts one, but the
+    // class still has to LINK — `AnimeHttpSource.createHttpServer()` and the
+    // video-resolving paths name it.
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    // `HttpLoggingInterceptor` — NetworkHelper's OkHttp stack.
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     // Required to LINK the CloudStream jar's generated ViewBinding classes
     // (ToastBinding et al.) — they implement androidx.viewbinding.ViewBinding
     // and call ViewBindings.findChildViewById. Without the viewbinding runtime

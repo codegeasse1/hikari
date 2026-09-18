@@ -556,6 +556,8 @@ class ContentRepository(private val manager: ProviderManager) {
             is NuvioScraper -> NuvioScraper.catalogErrors[p.config.id] = msg
             is StremioAddon -> StremioAddon.catalogErrors[p.config.id] = msg
             is Cs3MainApiProvider -> Cs3MainApiProvider.catalogErrors[p.config.id] = msg
+            is com.hikari.app.aniyomi.AniyomiProvider ->
+                com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id] = msg
         }
     }
 
@@ -1516,6 +1518,7 @@ class ContentRepository(private val manager: ProviderManager) {
             t == ProviderType.CS3 -> 2
             t == ProviderType.UNIVERSAL -> 3
             t == ProviderType.SKYSTREAM -> 3
+            t == ProviderType.ANIYOMI -> 3
             else -> 4
         }
         val families = manager.providers.value
@@ -1563,6 +1566,10 @@ class ContentRepository(private val manager: ProviderManager) {
                     // other site-scraper family; the plugin's own opaque token
                     // stays inside the provider (see SkyStreamProvider).
                     ProviderType.SKYSTREAM -> true
+                    // Aniyomi extensions carry their OWN search too (an Aniyomi
+                    // source can search by title), so they are asked exactly
+                    // like the other site-scraper families.
+                    ProviderType.ANIYOMI -> true
                     ProviderType.STREMIO -> !originIsStremio
                     ProviderType.NUVIO -> false
                     else -> false
@@ -1887,6 +1894,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.UNIVERSAL -> UniversalScraper.streamErrors[p.config.id]
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
+        ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
     }
 
     /** Minimal head start for the repos of the origin's own family — extended
@@ -2114,6 +2122,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.UNIVERSAL -> UniversalScraper.streamErrors
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
             ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
+            ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors
         }
         if (message == null) map.remove(id) else map[id] = message
         // Mirrored into the on-device log: a "why were this repo's servers

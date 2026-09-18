@@ -1,3 +1,21 @@
+## 0.5.23
+
+Test build — Aniyomi `.apk` extensions, and adding several catalogs at once in the Personal Catalog creator.
+
+**New — Aniyomi `.apk` extensions**
+
+Hikari can now install and run Aniyomi extensions: the `.apk` extension format of the Aniyomi / Mihon anime ecosystem, which is to anime roughly what `.cs3` is to CloudStream. One extension is a small APK holding one or more anime sources, and Hikari loads it in-process through the Aniyomi source API it was built against.
+
+- **Install** three ways, from the Extensions tab: **Add Aniyomi repo** (paste a repo's `index.min.json`), **Install Aniyomi extension (.apk)** from a URL, or from a `.apk` you already downloaded on the phone. The official Aniyomi extensions repo is offered out of the box, so a working anime source is one tap away.
+- **Browse:** every anime source becomes a provider with its own Home catalogs (Popular and Latest), its own icon, and its own entry in the extension picker — exactly like a `.cs3` or `.sky` provider. Installed extensions can be enabled, disabled, updated and removed like any other.
+- **Search, detail and episodes:** a source answers search, and a title's detail page lists its episodes. An episode's video servers are resolved through the extension's own hoster list and then played by the same player as everything else — headers, subtitles, source switching and downloads included.
+- **Cross-extension lookup** works for Aniyomi sources as it does for every other kind, so a title found on an `.hiki` or `.cs3` catalog can still be played through an Aniyomi source and vice versa.
+- Hikari ships the small piece of the Aniyomi API an extension needs (`eu.kanade.tachiyomi.*`) instead of loading Aniyomi itself, so an extension stays a self-contained file. An extension built for a much newer Aniyomi API version may refuse to load — when that happens its row says so rather than failing silently.
+
+**Fixed — Personal Catalog creator: add several catalogs in one go**
+
+Adding a catalog to a folder used to close the picker after the first tap, so building a folder out of Netflix, HBO and Prime Video meant re-opening the TMDB sheet for each one. The picker now stays open: tap Netflix, then HBO, then Prime Video — each lands in the folder and shows a tick, and tapping a ticked row takes it back out. The same goes for a folder's extension catalogs: choose an extension once and tick every catalog you want from it in a single visit. A **Done** row closes the sheet when you are finished.
+
 ## 0.5.22
 
 Hikari 0.5.22 — the first main release since 0.5.17. This build gathers everything the test builds 0.5.18 to 0.5.22 changed: it is mostly one big UI tweak pass over the whole app, plus the catalog mover, plus a few known bugs fixed. Nothing from those builds is left out.

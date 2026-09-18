@@ -33,6 +33,9 @@ import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.conscrypt.Conscrypt
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.addSingleton
+import uy.kohesive.injekt.api.addSingletonFactory
 import java.io.File
 import java.security.Security
 import java.util.concurrent.TimeUnit
@@ -177,6 +180,15 @@ class HikariApp : Application() {
         Logs.init(this)
         Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
+        // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
+        // loader builds a class loader over the .ext and instantiates a source,
+        // and the source immediately resolves its own dependencies out of
+        // Mihon's global `Injekt` container (`Injekt.get<Application>()` for its
+        // preferences, `Json`, `NetworkHelper`, `JavaScriptEngine`, …). Hikari
+        // has no DI container, so the patched Injekt singleton is installed and
+        // primed here — before anything can possibly load an extension.
+        runCatching { dev.mihon.injekt.patchInjekt() }
+        runCatching { registerAniyomiSingletons() }
         initCloudStream(this)
         store = AppStore(this)
         // Restore the saved app language BEFORE any Activity is created, so the
@@ -266,6 +278,12 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.skystream.SkyStreamPluginManager.seedDefaults(this@HikariApp, store)
             }
+            // First run: seed the Aniyomi extension repo (Aniyomi's official
+            // index.min.json) so Aniyomi-extensions are installable from the
+            // Extensions screen without hunting for a repo URL.
+            runCatching {
+                com.hikari.app.aniyomi.AniyomiExtensionManager.seedDefaults(this@HikariApp, store)
+            }
             // First run only: add the bundled Hikari (.hiki) and CloudStream
             // extension repos, so the Extensions screen ("Sources, repos &
             // providers") is never empty on a fresh install and the built-in
@@ -298,6 +316,23 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
+            // Aniyomi extensions are the same story: one installed .ext can
+            // register several sources, and the set can move when the extension
+            // is updated, so rebuild the stored configs from the loaded
+            // extension and refresh if anything moved.
+            runCatching {
+                if (com.hikari.app.aniyomi.AniyomiProviderSync.reconcile(this@HikariApp, store)) {
+                    Logs.log("Providers", "Aniyomi sync changed the provider list — refreshing")
+                    providers.refresh()
+                }
+            }
+            // Warm the installed Aniyomi extensions here so the first catalog or
+            // search tap doesn't pay the class-loading cost on the UI thread.
+            runCatching {
+                providers.providers.value
+                    .filterIsInstance<com.hikari.app.aniyomi.AniyomiProvider>()
+                    .forEach { it.warm() }
+            }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
             // Re-assert the chosen launcher icon. The enabled `activity-alias` is
@@ -308,6 +343,38 @@ class HikariApp : Application() {
                 com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
             }
             Logs.log("App", "startup complete (${providers.providers.value.size} providers)")
+        }
+    }
+
+    /**
+     * Prime Mihon's Injekt container with the singletons an Aniyomi extension
+     * can ask for. `Application` is the one that matters most — every
+     * `ConfigurableAnimeSource` / `AnimeHttpSource` preferences accessor is
+     * `Injekt.get<Application>().getSharedPreferences(...)`, and a source that
+     * can't get its preferences throws before it can list anything. `Json`,
+     * `NetworkHelper` and `JavaScriptEngine` are what `JsonExtensions.defaultJson`,
+     * `AnimeHttpSource.network` and the JS-driven sources inject.
+     *
+     * All of them are singletons so every installed extension shares Hikari's
+     * one OkHttp stack (cookies + 5 MiB cache) instead of building its own.
+     * Failures are swallowed: an extension asking for something unregistered
+     * gets an `InjektionException` at its own call site, which the provider
+     * already turns into a per-source error message rather than a crash.
+     */
+    private fun registerAniyomiSingletons() {
+        Injekt.addSingleton<Application>(this)
+        Injekt.addSingleton<Context>(this)
+        Injekt.addSingletonFactory<kotlinx.serialization.json.Json> {
+            kotlinx.serialization.json.Json {
+                ignoreUnknownKeys = true
+                explicitNulls = false
+            }
+        }
+        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.NetworkHelper> {
+            eu.kanade.tachiyomi.network.NetworkHelper(this)
+        }
+        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.JavaScriptEngine> {
+            eu.kanade.tachiyomi.network.JavaScriptEngine(this)
         }
     }
 
