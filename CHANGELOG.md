@@ -1,3 +1,10 @@
+## 0.5.22
+
+Test build — one rounding rule for the whole app, and catalogs you can put in the order you want.
+
+- Everything inside a box now uses that box's own corner radius. The cards are rounded at 26.dp, but what sat inside them was a mix — a 4.dp form field, a 10.dp tile, a 13.dp cover preview, a 16.dp button, an 18.dp sub-folder row — so one card looked half-rounded and its neighbour fully rounded depending on what was in it, and a sub-folder row never matched the card it was inside. Every one of those now uses the same 26.dp as its card. A short box (a button, a chip, an up/down chevron) therefore ends up a capsule and a tall one keeps the card's curve, which is what makes a box and its contents read as one piece. This covers the settings pages, the Personal Catalog creator (folder rows, catalog rows, the tile-shape pills, the cover preview, the form fields) and the player-control editor. The app has exactly one corner radius now; only true circles (accent swatches, the back button, toggles) and the cover tile shapes you pick yourself (Poster / Square / Wide) are unchanged.
+- Catalogs and folders can be moved up and down. In the Personal Catalog creator, every catalog row inside a folder ("Netflix", "HBO", "Pixar") and every folder row inside a collection now carries a small up/down pair: HBO can be moved above Netflix, and an Amazon Prime you just added can be moved up to sit where you want it instead of staying at the bottom. The order you leave the rows in is the order Home shows — the catalogs inside a folder, and the folders inside a collection. A new catalog still lands at the end of the list, and the chevron at either end fades out when there is nowhere further to go.
+
 ## 0.5.21
 
 Test build — one fix on the settings pages.

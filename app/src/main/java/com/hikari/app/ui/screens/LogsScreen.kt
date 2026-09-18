@@ -53,7 +53,7 @@ import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
 import com.hikari.app.ui.components.GlassCard
-import com.hikari.app.ui.components.SettingsBoxShape
+import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import java.io.File
@@ -289,7 +289,7 @@ private fun ActionPill(
 ) {
     Row(
         Modifier
-            .clip(SettingsBoxShape)
+            .clip(GlassShape)
             .background(
                 if (primary) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                 else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)

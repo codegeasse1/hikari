@@ -36,8 +36,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -49,6 +49,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tv
@@ -80,6 +82,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -123,6 +126,7 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.MediaRow
+import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
@@ -220,7 +224,7 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                 item {
                     Surface(
                         onClick = { askNewCollection = true },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -448,6 +452,7 @@ private fun CollectionEditorPage(
         ) {
             item {
                 OutlinedTextField(
+                    shape = GlassShape,
                     value = collection.name,
                     onValueChange = { onChange(collection.copy(name = it)) },
                     singleLine = true,
@@ -471,7 +476,7 @@ private fun CollectionEditorPage(
             item {
                 Surface(
                     onClick = onAddFolder,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = GlassShape,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -505,9 +510,20 @@ private fun CollectionEditorPage(
                     )
                 }
             }
-            items(collection.folders, key = { it.id }) { f ->
+            // Folders are listed — and saved — in the order they appear on Home,
+            // so their rows carry the same up/down pair the catalogs inside a
+            // folder do (see [MoveButtons]).
+            itemsIndexed(collection.folders, key = { _, f -> f.id }) { index, f ->
                 FolderEditorRow(
                     folder = f,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < collection.folders.lastIndex,
+                    onMoveUp = {
+                        onChange(collection.copy(folders = collection.folders.moveItem(index, index - 1)))
+                    },
+                    onMoveDown = {
+                        onChange(collection.copy(folders = collection.folders.moveItem(index, index + 1)))
+                    },
                     onOpen = { onEditFolder(f) },
                     onDelete = { onDeleteFolder(f) },
                 )
@@ -515,7 +531,7 @@ private fun CollectionEditorPage(
             item {
                 Surface(
                     onClick = onSave,
-                    shape = RoundedCornerShape(18.dp),
+                    shape = GlassShape,
                     color = MaterialTheme.colorScheme.primary,
                     enabled = collection.name.isNotBlank(),
                     modifier = Modifier
@@ -542,6 +558,10 @@ private fun FolderEditorRow(
     folder: CollectionFolder,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
 ) {
     GlassCard(
         onClick = onOpen,
@@ -572,6 +592,12 @@ private fun FolderEditorRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            MoveButtons(
+                canMoveUp = canMoveUp,
+                canMoveDown = canMoveDown,
+                onMoveUp = onMoveUp,
+                onMoveDown = onMoveDown,
+            )
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
@@ -597,7 +623,11 @@ private fun FolderEditorPage(
     onSave: (CollectionFolder) -> Unit,
 ) {
     var name by remember { mutableStateOf(folder.name) }
-    var sources by remember { mutableStateOf(folder.sources) }
+    // The list this page works on. A folder can hold the same catalog twice
+    // (added twice, or restored from an older save) and two identical Lazy keys
+    // are a crash in Compose, so the repeats are dropped once here — from then on
+    // the order of this list IS the order the user sees and the order that saves.
+    var sources by remember { mutableStateOf(folder.sources.distinctBy { it.key }) }
     var coverKind by remember { mutableStateOf(folder.coverKind) }
     var coverValue by remember { mutableStateOf(folder.coverValue) }
     var tileShape by remember { mutableStateOf(folder.tileShape) }
@@ -630,6 +660,7 @@ private fun FolderEditorPage(
         ) {
             item {
                 OutlinedTextField(
+                    shape = GlassShape,
                     value = name,
                     onValueChange = { name = it },
                     singleLine = true,
@@ -654,7 +685,7 @@ private fun FolderEditorPage(
                 Row(Modifier.padding(top = 16.dp)) {
                     Surface(
                         onClick = { tmdbSheet = true },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                         modifier = Modifier.weight(1f),
                     ) {
@@ -679,7 +710,7 @@ private fun FolderEditorPage(
                     Spacer(Modifier.width(10.dp))
                     Surface(
                         onClick = { providerSheet = true },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShape,
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                         modifier = Modifier.weight(1f),
                     ) {
@@ -722,11 +753,15 @@ private fun FolderEditorPage(
                     )
                 }
             }
-            // A folder can hold the same source twice (added twice, or restored
-            // from an older save). Two identical Lazy keys are a crash in
-            // Compose, so the list is shown — and saved — without repeats.
-            items(sources.distinctBy { it.key }, key = { it.key }) { s ->
-                SourceRow(source = s, onDelete = { sources = sources.filter { it.key != s.key } })
+            itemsIndexed(sources, key = { _, s -> s.key }) { index, s ->
+                SourceRow(
+                    source = s,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < sources.lastIndex,
+                    onMoveUp = { sources = sources.moveItem(index, index - 1) },
+                    onMoveDown = { sources = sources.moveItem(index, index + 1) },
+                    onDelete = { sources = sources.filter { it.key != s.key } },
+                )
             }
             item {
                 Surface(
@@ -741,7 +776,7 @@ private fun FolderEditorPage(
                             )
                         )
                     },
-                    shape = RoundedCornerShape(18.dp),
+                    shape = GlassShape,
                     color = MaterialTheme.colorScheme.primary,
                     enabled = name.isNotBlank(),
                     modifier = Modifier
@@ -843,9 +878,81 @@ private fun FolderEditorPage(
     }
 }
 
-/** One catalog source line inside the folder editor. */
+/**
+ * The up/down pair that reorders one row of a list.
+ *
+ * Two small chevrons rather than a drag handle: a drag has to be aimed, is
+ * awkward while the page itself scrolls, and needs a long-press on a row that is
+ * already a button — where a chevron is one tap, behaves the same for a
+ * two-source folder as for a twenty-source one, and says by fading out at the
+ * ends that there is no further to go.
+ */
 @Composable
-private fun SourceRow(source: CatalogSource, onDelete: () -> Unit) {
+private fun MoveButtons(
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        MoveButton(Icons.Filled.KeyboardArrowUp, tr("Move up"), canMoveUp, onMoveUp)
+        MoveButton(Icons.Filled.KeyboardArrowDown, tr("Move down"), canMoveDown, onMoveDown)
+    }
+}
+
+/** One chevron of [MoveButtons]; a no-op and faded when it cannot move. */
+@Composable
+private fun MoveButton(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        Modifier
+            .size(28.dp)
+            .clip(GlassShape)
+            .background(
+                if (enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                else Color.Transparent
+            )
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (enabled) tint else tint.copy(alpha = 0.28f),
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+/** [this] with the item at [from] moved to [to] — what [MoveButtons] calls. */
+private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {
+    if (from == to || from !in indices || to !in indices) return this
+    return toMutableList().apply { add(to, removeAt(from)) }
+}
+
+/**
+ * One catalog source line inside the folder editor.
+ *
+ * The up/down pair reorders this folder's catalogs, and a folder's row on Home
+ * shows its sources in exactly this order (see CollectionsRepository), so moving
+ * HBO above Netflix here is what puts it first there. A newly added source lands
+ * at the bottom, which is why the pair is how a source ends up where the user
+ * wants it rather than only where it happened to land.
+ */
+@Composable
+private fun SourceRow(
+    source: CatalogSource,
+    onDelete: () -> Unit,
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
+) {
     GlassCard(modifier = Modifier
         .fillMaxWidth()
         .padding(top = 10.dp)) {
@@ -881,6 +988,12 @@ private fun SourceRow(source: CatalogSource, onDelete: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            MoveButtons(
+                canMoveUp = canMoveUp,
+                canMoveDown = canMoveDown,
+                onMoveUp = onMoveUp,
+                onMoveDown = onMoveDown,
+            )
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Close,
@@ -1089,6 +1202,7 @@ private fun TmdbSourceSheet(
 
                 item {
                     OutlinedTextField(
+                        shape = GlassShape,
                         value = text,
                         onValueChange = {
                             text = it
@@ -1173,6 +1287,7 @@ private fun TmdbSourceSheet(
                     }
                     item {
                         OutlinedTextField(
+                            shape = GlassShape,
                             value = year,
                             onValueChange = { v -> year = v.filter { it.isDigit() }.take(4) },
                             singleLine = true,
@@ -1187,6 +1302,7 @@ private fun TmdbSourceSheet(
 
                 item {
                     OutlinedTextField(
+                        shape = GlassShape,
                         value = displayTitle,
                         onValueChange = { displayTitle = it },
                         singleLine = true,
@@ -1204,7 +1320,7 @@ private fun TmdbSourceSheet(
                     val enabled = canAdd && !saving
                     Surface(
                         onClick = { add() },
-                        shape = RoundedCornerShape(18.dp),
+                        shape = GlassShape,
                         color = MaterialTheme.colorScheme.primary,
                         enabled = enabled,
                         modifier = Modifier
@@ -1258,7 +1374,7 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
         selected = selected,
         onClick = onClick,
         label = { Text(label) },
-        shape = RoundedCornerShape(24.dp),
+        shape = GlassShape,
         colors = FilterChipDefaults.filterChipColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
             selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
@@ -1303,6 +1419,7 @@ private fun ExtensionPickerSheet(
                 modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
             )
             OutlinedTextField(
+                shape = GlassShape,
                 value = query,
                 onValueChange = { query = it },
                 singleLine = true,
@@ -1344,7 +1461,7 @@ private fun PickerLine(
         Row(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(GlassShape)
                 .background(
                     if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                     else Color.Transparent
@@ -1487,9 +1604,9 @@ private fun CoverArt(
     Box(
         modifier
             .then(if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(GlassShape)
             .background(tokens.fillTop)
-            .border(1.dp, tokens.border, RoundedCornerShape(16.dp)),
+            .border(1.dp, tokens.border, GlassShape),
         contentAlignment = Alignment.Center,
     ) {
         when {
@@ -1509,7 +1626,7 @@ private fun CoverArt(
                 Box(
                     Modifier
                         .size(40.dp)
-                        .clip(RoundedCornerShape(13.dp))
+                        .clip(GlassShape)
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -1584,7 +1701,7 @@ private fun CoverSection(
                     COVER_EMOJIS.forEach { e ->
                         Surface(
                             onClick = { onValue(e) },
-                            shape = RoundedCornerShape(12.dp),
+                            shape = GlassShape,
                             color = if (value == e) {
                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                             } else {
@@ -1601,6 +1718,7 @@ private fun CoverSection(
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
+                    shape = GlassShape,
                     value = value,
                     onValueChange = onValue,
                     singleLine = true,
@@ -1611,6 +1729,7 @@ private fun CoverSection(
             CoverKinds.URL, CoverKinds.GIF -> {
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
+                    shape = GlassShape,
                     value = value,
                     onValueChange = onValue,
                     singleLine = true,
@@ -1625,7 +1744,7 @@ private fun CoverSection(
                 Spacer(Modifier.height(10.dp))
                 Surface(
                     onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    shape = RoundedCornerShape(14.dp),
+                    shape = GlassShape,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                 ) {
                     Row(
@@ -1725,6 +1844,7 @@ private fun NameCoverDialog(
                     .verticalScroll(rememberScrollState()),
             ) {
                 OutlinedTextField(
+                    shape = GlassShape,
                     value = text,
                     onValueChange = { text = it },
                     singleLine = true,
@@ -1864,9 +1984,9 @@ private fun FolderTile(
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(GlassShape)
             .background(tokens.fillTop)
-            .border(1.dp, tokens.border, RoundedCornerShape(20.dp))
+            .border(1.dp, tokens.border, GlassShape)
             .clickable(onClick = onClick)
             .padding(10.dp),
     ) {

@@ -56,7 +56,7 @@ import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
 import com.hikari.app.ui.components.GlassCard
-import com.hikari.app.ui.components.SettingsBoxShape
+import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
@@ -205,7 +205,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box(
                                 Modifier
                                     .size(32.dp)
-                                    .clip(SettingsBoxShape)
+                                    .clip(GlassShape)
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -232,7 +232,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box {
                                 Column(
                                     Modifier
-                                        .clip(SettingsBoxShape)
+                                        .clip(GlassShape)
                                         .background(
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                         )
@@ -480,7 +480,7 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
 private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier
-            .clip(SettingsBoxShape)
+            .clip(GlassShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .padding(2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -489,7 +489,7 @@ private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
             val selected = icons == wantsIcons
             Box(
                 Modifier
-                    .clip(SettingsBoxShape)
+                    .clip(GlassShape)
                     .background(
                         if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                         else Color.Transparent

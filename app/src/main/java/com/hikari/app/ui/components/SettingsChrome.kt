@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.HorizontalDivider
@@ -50,19 +49,6 @@ import com.hikari.app.ui.theme.rememberGlassTokens
  * Anything larger ellipsises, and a truncated name reads as a bug.
  */
 val SETTINGS_TITLE_SIZE: TextUnit = 16.sp
-
-/**
- * The corner radius of every box drawn INSIDE a settings page: the action
- * buttons, the preset chips, the row a picker leads with ([ChoiceRow]). The
- * outer setting box stays what it is ([GlassCard], 26.dp) — a Material button
- * defaults to a 50% capsule, though, and beside a 26.dp card that read as two
- * different designs on one page.
- *
- * 14.dp is the same proportion of a 40.dp button as 26.dp is of a 76.dp card
- * (~35%), so everything inside a settings page is now rounded by one rule
- * rather than by whichever default each component happened to inherit.
- */
-val SettingsBoxShape = RoundedCornerShape(14.dp)
 
 /**
  * The round accent badge a settings row leads with: a circle of accent wash with

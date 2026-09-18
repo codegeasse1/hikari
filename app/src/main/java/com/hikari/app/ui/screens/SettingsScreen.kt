@@ -143,7 +143,7 @@ import com.hikari.app.ui.components.ChoiceDialog
 import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.ChoiceRow
 import com.hikari.app.ui.components.GlassCard
-import com.hikari.app.ui.components.SettingsBoxShape
+import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.LanguageManager
@@ -952,7 +952,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
             Box(
                 Modifier
                     .size(44.dp)
-                    .clip(SettingsBoxShape)
+                    .clip(GlassShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -985,7 +985,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
             Box(
                 Modifier
                     .size(28.dp)
-                    .clip(SettingsBoxShape)
+                    .clip(GlassShape)
                     .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1089,7 +1089,7 @@ private fun DownloadSettingsCard(app: HikariApp) {
             Box(
                 Modifier
                     .size(44.dp)
-                    .clip(SettingsBoxShape)
+                    .clip(GlassShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1418,7 +1418,7 @@ private fun FontCard(app: HikariApp) {
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            shape = SettingsBoxShape,
+            shape = GlassShape,
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
@@ -2023,7 +2023,7 @@ private fun DnsModeCard(app: HikariApp) {
                 label = { Text(tr("DNS address")) },
                 placeholder = { Text("https://dns.example.com/dns-query") },
                 singleLine = true,
-                shape = SettingsBoxShape,
+                shape = GlassShape,
                 isError = typed.isNotBlank() && endpoint == null,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -2457,7 +2457,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
                 onValueChange = { newAllowedDomain = it },
                 placeholder = { Text(tr("player.example.com")) },
                 singleLine = true,
-                shape = SettingsBoxShape,
+                shape = GlassShape,
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = {
@@ -2687,7 +2687,7 @@ private fun BackupRow(
         OutlinedButton(
             onClick = onClick,
             enabled = enabled,
-            shape = SettingsBoxShape,
+            shape = GlassShape,
         ) { Text(action) }
     }
 }
@@ -2755,7 +2755,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                     onValueChange = { draft = it },
                     placeholder = { Text(tr("Mozilla/5.0 …")) },
                     singleLine = true,
-                    shape = SettingsBoxShape,
+                    shape = GlassShape,
                     label = { Text(tr("Custom user agent")) },
                     modifier = Modifier.weight(1f)
                 )
@@ -2842,7 +2842,7 @@ private fun UserscriptsCard(app: HikariApp) {
         }
         OutlinedButton(
             onClick = { draft = ""; adding = true },
-            shape = SettingsBoxShape,
+            shape = GlassShape,
         ) {
             Icon(Icons.Filled.Add, contentDescription = null)
             Spacer(Modifier.width(6.dp))
@@ -2869,7 +2869,7 @@ private fun UserscriptsCard(app: HikariApp) {
                             .fillMaxWidth()
                             .heightIn(min = 200.dp),
                         textStyle = MaterialTheme.typography.bodySmall,
-                        shape = SettingsBoxShape,
+                        shape = GlassShape,
                         placeholder = { Text(tr("// ==UserScript==\n// @name   My Script\n// @match  https://example.com/*\n// @run-at document-start\n// ==/UserScript==\n\nconsole.log('hello');")) }
                     )
                 }
@@ -2978,7 +2978,7 @@ private fun AdBlockingCard(app: HikariApp) {
                                 runCatching { AdBlocker.download(preset.url, context) }
                             }
                         },
-                        shape = SettingsBoxShape,
+                        shape = GlassShape,
                     ) {
                         Text((if (isAdded) "✓ " else "+ ") + preset.name)
                     }
@@ -3091,7 +3091,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onValueChange = { newBlockDomain = it },
                     placeholder = { Text(tr("ads.example.com")) },
                     singleLine = true,
-                    shape = SettingsBoxShape,
+                    shape = GlassShape,
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(onClick = {
@@ -3151,7 +3151,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onValueChange = { newWhiteDomain = it },
                     placeholder = { Text(tr("video-site.example.com")) },
                     singleLine = true,
-                    shape = SettingsBoxShape,
+                    shape = GlassShape,
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(onClick = {
@@ -3204,7 +3204,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         value = name,
                         onValueChange = { name = it },
                         label = { Text(tr("Name")) },
-                        shape = SettingsBoxShape,
+                        shape = GlassShape,
                         singleLine = true
                     )
                     Spacer(Modifier.height(8.dp))
@@ -3212,7 +3212,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         value = url,
                         onValueChange = { url = it },
                         label = { Text(tr("Hosts file URL")) },
-                        shape = SettingsBoxShape,
+                        shape = GlassShape,
                         singleLine = true
                     )
                 }
@@ -3260,7 +3260,7 @@ private fun PlayerControlsCard(onOpen: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = onOpen, shape = SettingsBoxShape) {
+        OutlinedButton(onClick = onOpen, shape = GlassShape) {
             Text(tr("Edit control layout"))
         }
     }
@@ -3488,14 +3488,14 @@ private fun MatchThemeCard(
                     scope.launch { runCatching { app.store.setPlayerAccent(appAccentKey) } }
                 },
                 enabled = playerAccentKey != appAccentKey,
-                shape = SettingsBoxShape,
+                shape = GlassShape,
             ) { Text(tr("App \u2192 player")) }
             OutlinedButton(
                 onClick = {
                     scope.launch { runCatching { app.store.setAppAccent(playerAccentKey) } }
                 },
                 enabled = playerAccentKey != appAccentKey,
-                shape = SettingsBoxShape,
+                shape = GlassShape,
             ) { Text(tr("Player \u2192 app")) }
         }
     }

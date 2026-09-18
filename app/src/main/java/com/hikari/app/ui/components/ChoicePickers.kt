@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
@@ -82,7 +81,7 @@ fun ChoiceDialog(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(GlassShape)
                         .background(
                             if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                             else Color.Transparent
@@ -136,9 +135,9 @@ fun ChoiceDialog(
  * choose" setting in the app is one of these, so it reads as one control rather
  * than a menu in one card and a list of radios in the next.
  *
- * Its rounding matches the settings pages' other inner boxes (14.dp — see
- * `SettingsBoxShape` in SettingsChrome.kt); this is the row the app-language
- * card leads with on Appearance & Theme.
+ * Its rounding is the app's one box radius (`GlassShape` in Components.kt), the
+ * same corner the card around it is drawn with; this is the row the
+ * app-language card leads with on Appearance & Theme.
  */
 @Composable
 fun ChoiceRow(
@@ -150,7 +149,7 @@ fun ChoiceRow(
     modifier: Modifier = Modifier,
 ) {
     val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(14.dp)
+    val shape = GlassShape
     val hasLeading = leadingIcon != null || !leadingText.isNullOrBlank()
     Row(
         modifier

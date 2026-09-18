@@ -737,10 +737,25 @@ private fun fmtRemaining(ms: Long): String {
     return if (m >= 60L) "${m / 60}h ${m % 60}m" else "${m}m"
 }
 
+/**
+ * The one corner radius the app rounds a box with.
+ *
+ * Every card is drawn at this radius, and so is every box INSIDE one — the
+ * action buttons, the pickers, the small icon tiles, the form fields. Mixing
+ * radii on one screen is the thing that reads as unfinished: a card rounded at
+ * 26.dp with a 4.dp field, or a half-rounded row, sitting in it looks like two
+ * designs laid on top of each other. A short box (a button, a chip, a tile) ends
+ * up a capsule at this radius, which is what "fully rounded" should look like,
+ * and a tall one keeps the card's own curve — so everything inside a card
+ * matches the card it is inside.
+ */
+val GlassCornerRadius = 26.dp
+val GlassShape = RoundedCornerShape(GlassCornerRadius)
+
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(26.dp),
+    shape: Shape = GlassShape,
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -782,7 +797,7 @@ fun GlassDialog(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(26.dp)
+    val shape = GlassShape
     // A short fade + scale so the panel appears rather than blinks.
     val appear = remember { Animatable(0f) }
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
