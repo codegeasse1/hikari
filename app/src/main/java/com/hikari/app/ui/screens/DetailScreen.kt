@@ -123,6 +123,7 @@ import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.openYouTubeVideo
 import com.hikari.app.ui.rememberPosterScore
+import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.HeroArtwork
