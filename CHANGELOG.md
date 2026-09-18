@@ -1,3 +1,11 @@
+## 0.5.8
+
+Fixed:
+- Play no longer gives up while the search is still running. Hikari used to call a search that had not finished "no playable server found" about ten seconds in — the servers it was still finding a moment later were thrown away and you had to tap Play again, sometimes several times. Now only a search that really finished can report that, and one that got cut off is simply tried again.
+- A Retry now rejoins the search that is already running for that title instead of starting all over again, so retrying is quick instead of another full sweep.
+- Tapping Play twice no longer makes two searches fight each other. Each search keeps its own count, so the "asked N · M no such title" line under the sheet is that search's own numbers instead of two searches mixed together.
+- The "no playable server found" card now includes the extensions that never answered in time, so it no longer reads as if every extension was asked and said no.
+
 ## 0.5.7
 
 Fixed:

@@ -96,6 +96,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.ContentRepository.StreamLookup
 import com.hikari.app.data.CastMember
 import com.hikari.app.data.Episode
 import com.hikari.app.data.HistoryEntry
@@ -496,7 +497,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         /** Ignore the prefetch cache and run the providers again. Set by the
          *  player when every server it was given turned out to be dead. */
         force: Boolean = false,
-    ): List<StreamSource> {
+    ): StreamLookup {
         val key = cacheKey(item, ep)
         val cached = StreamCache.get(key)
         if (cached != null) {
@@ -516,7 +517,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     "cache hit \"${item.title}\" (fresh) → ${cached.list.size} servers",
                 )
                 _liveStreams.value = cached.list
-                return cached.list
+                return StreamLookup(cached.list, complete = true)
             }
             // Stale or forced: the signed links in there are very likely dead.
             // They are deliberately NOT put on the live feed — whatever lands
@@ -564,12 +565,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // which is the difference between "one slow search" and "this title
         // never searches again".
         StreamCache.joined(key)?.let { pending ->
-            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() } ?: emptyList()
+            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() }
+                ?: StreamLookup(emptyList(), complete = false)
         }
-        val deferred = CompletableDeferred<List<StreamSource>>()
+        val deferred = CompletableDeferred<StreamLookup>()
         if (!StreamCache.claim(key, deferred)) {
-            val pending = StreamCache.joined(key) ?: return emptyList()
-            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() } ?: emptyList()
+            val pending = StreamCache.joined(key)
+                ?: return StreamLookup(emptyList(), complete = false)
+            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() }
+                ?: StreamLookup(emptyList(), complete = false)
         }
         try {
             // Every provider response is mirrored into the live feed so the UI
@@ -579,8 +583,22 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _liveStreams.value = partial
                 onProgress?.invoke(partial)
             }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repo.streamsFor(item, ep, feed) }.getOrDefault(emptyList())
+            val lookup = withContext(Dispatchers.IO) {
+                repo.streamsForOutcome(item, ep, feed)
+            }
+            val result = lookup.servers
+            if (result.isEmpty() && !lookup.complete) {
+                // The pass was CUT SHORT — it never reached an answer, so it must
+                // not be handed out (or remembered) as one. Give whoever is
+                // waiting whatever the live feed already produced, explicitly
+                // marked "not a verdict", so a joiner/retry asks again instead of
+                // being told this title has no servers.
+                val partial = cached?.list?.takeIf { it.isNotEmpty() }
+                    ?: _liveStreams.value.takeIf { it.isNotEmpty() }
+                    ?: emptyList()
+                val early = StreamLookup(partial, complete = false)
+                deferred.complete(early)
+                return early
             }
             if (result.isEmpty()) {
                 // Never downgrade. A re-extraction can legitimately come back
@@ -598,22 +616,28 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 val fallback = cached?.list?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                 if (fallback != null) {
-                    deferred.complete(fallback)
-                    return fallback
+                    val answered = StreamLookup(fallback, complete = true)
+                    deferred.complete(answered)
+                    return answered
                 }
             }
             StreamCache.put(key, result)
-            _liveStreams.value = result
+            // An empty result is not put on the live feed: the feed is what the
+            // player starts on, and blanking a list it is already playing from
+            // is the one thing that can stop playback dead here.
+            if (result.isNotEmpty()) _liveStreams.value = result
             recordOutcome(result, item)
-            deferred.complete(result)
-            return result
+            val done = StreamLookup(result, complete = true)
+            deferred.complete(done)
+            return done
         } catch (e: Throwable) {
             // Same never-downgrade rule for a cancelled or failed extraction:
             // complete the shared deferred with whatever the live feed already
-            // found, so a joiner — the player's own follow-up read, or a second
-            // Play tap sharing this extraction — is never wiped back to empty.
+            // found, flagged as NOT a verdict, so a joiner — the player's own
+            // follow-up read, or a second Play tap sharing this extraction — is
+            // never wiped back to empty and never told the search came up empty.
             val partial = _liveStreams.value
-            deferred.complete(if (partial.isNotEmpty()) partial else emptyList())
+            deferred.complete(StreamLookup(partial, complete = false))
             throw e
         } finally {
             StreamCache.release(key)
@@ -654,14 +678,29 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private fun cacheKey(item: MediaItem, ep: Episode?): String =
         item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
 
+    /** [getStreamsLookup]'s servers, for callers that only want the list. */
     suspend fun getStreams(
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
         /** Re-run the providers even if a cached list exists — used when the
          *  player reports that every server it was given is dead. */
         force: Boolean = false,
-    ): List<StreamSource> {
-        val m = _meta.value ?: return emptyList()
+    ): List<StreamSource> = getStreamsLookup(episode, onProgress, force).servers
+
+    /**
+     * [getStreams] plus whether the lookup actually FINISHED — see
+     * [StreamLookup]. The play flow uses this to tell "the search ran and found
+     * nothing" (a real answer, report it) apart from "the search was cut short"
+     * (knows nothing about the title, so retry instead of telling the user there
+     * are no servers).
+     */
+    suspend fun getStreamsLookup(
+        episode: Episode?,
+        onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+        force: Boolean = false,
+    ): StreamLookup {
+        // No metadata yet means we could not search at all: not a verdict.
+        val m = _meta.value ?: return StreamLookup(emptyList(), complete = false)
         // The provider scan can run for a minute; keep it alive across a
         // background trip (see [com.hikari.app.work.BackgroundWork]).
         val work = com.hikari.app.work.BackgroundWork.begin(
@@ -716,10 +755,21 @@ private const val JOIN_WAIT_MS = 90_000L
 
 /** Hard ceiling on the final sources read of a play tap. The cross-extension
  *  pass has its own budget, but this is the outer guarantee: when it expires the
- *  search is declared finished (the `finally` below reports the outcome and
- *  marks the session done) instead of the player's cover sitting on "still
- *  searching" while an unbounded provider combination works on it. */
+ *  play flow stops asking (the `finally` below reports the outcome — an
+ *  unfinished pass is reported as unfinished, never as "no servers found") so the
+ *  player's cover does not sit on "still searching" while an unbounded provider
+ *  combination works on it. */
 private const val STREAMS_FINAL_CAP_MS = 80_000L
+
+/** How many extra times the final sources read may ask again when a pass comes
+ *  back without a verdict (see [StreamLookup]). Each retry either JOINS the pass
+ *  that is still running for this title via [StreamCache] or, when that pass
+ *  really died, starts it once more — so this is a bounded "try again", not a
+ *  way to re-run every extension in a loop. */
+private const val STREAMS_FINAL_RETRIES = 3
+
+/** Breather between those retries, so a pass that keeps dying does not spin. */
+private const val SEARCH_RETRY_PAUSE_MS = 1_500L
 
 /** How long the player holds playback at the start of a fresh search, waiting
  *  for a server from the extension the title was opened from, before it takes
@@ -1119,6 +1169,15 @@ fun DetailScreen(
         // own list and only mirrors it into [streams] (for the source sheet)
         // while the screen is alive.
         var found: List<StreamSource> = emptyList()
+        // Did the final lookup reach a real conclusion? Only then may the user be
+        // told the search "found nothing" — a pass that was cut short (cancelled,
+        // a provider blow-up, the device starving the threads) knows nothing
+        // about this title, and reporting it as "no playable server found after
+        // searching 254 extensions" is exactly what ended playback seconds into
+        // a search that was still running. See [StreamLookup].
+        var lookupComplete = false
+        // Set when the search threw: shown instead of a false "found nothing".
+        var problemNote: String? = null
         val playableEvery = { list: List<StreamSource> ->
             val basic = list.filter { s ->
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
@@ -1308,9 +1367,37 @@ fun DetailScreen(
                     wantPreferred = false
                     startNow()
                 }
-                val final = withTimeoutOrNull(STREAMS_FINAL_CAP_MS) {
-                    vm.getStreams(epForSearch)
-                } ?: emptyList()
+                // The final read is the one that decides the outcome, so it is
+                // RETRIED while a pass keeps coming back unfinished. This used
+                // to be a single read whose timeout/emptiness was treated as an
+                // answer: a search that was still running (three Play taps →
+                // three back-to-back 254-extension sweeps, nothing reused) got
+                // reported as "no playable server found" about nine seconds in
+                // and the player quit. Only a lookup that FINISHED — with
+                // servers, or genuinely empty — ends the loop; an unfinished one
+                // is asked again, which either JOINS the pass still running for
+                // this title or (if it really died) starts it once more. Bounded
+                // both by [STREAMS_FINAL_RETRIES] and by [STREAMS_FINAL_CAP_MS].
+                val finalDeadline = System.currentTimeMillis() + STREAMS_FINAL_CAP_MS
+                var final: List<StreamSource> = emptyList()
+                var attempts = 0
+                while (attempts <= STREAMS_FINAL_RETRIES) {
+                    val left = finalDeadline - System.currentTimeMillis()
+                    if (left <= 0L) break
+                    val lookup = withTimeoutOrNull(left) { vm.getStreamsLookup(epForSearch) }
+                        ?: break
+                    attempts++
+                    final = lookup.servers
+                    lookupComplete = lookup.complete
+                    if (lookup.servers.isNotEmpty() || lookup.complete) break
+                    // Not an answer: the pass was cut short. Say that plainly and
+                    // ask again — never "no servers found".
+                    StreamsLive.setStatus(
+                        sid,
+                        "Still searching — no server found yet (attempt ${attempts + 1})…",
+                    )
+                    delay(SEARCH_RETRY_PAUSE_MS)
+                }
                 feed.cancel()
                 grace.cancel()
                 // Never downgrade. The live feed above may already have handed
@@ -1360,18 +1447,18 @@ fun DetailScreen(
                         showSheet = true
                     }
                 }
-                // The whole source search is over. The player (which opened the
-                // moment Play was tapped) uses this to fail fast when nothing was
-                // found, instead of waiting out its safety timeout.
+                // The whole source search is over. [StreamsLive.markDone] is sent
+                // below ONLY when there is something to play or the pass reached a
+                // real verdict — see the note there.
             } catch (t: Throwable) {
                 // A throw here (a provider blowing up, a cancelled child
                 // collector) used to skip markDone entirely, so the player
                 // kept spinning on an empty session until its 90s safety
-                // timeout. Say what happened instead.
-                StreamsLive.setStatus(
-                    sid,
-                    "The search hit a problem (" + t.javaClass.simpleName + ").",
-                )
+                // timeout. Say what happened instead — and say it as a
+                // PROBLEM, never as "no servers were found", which is what
+                // made a search that died mid-flight read like a verdict.
+                problemNote = "The search hit a problem (" + t.javaClass.simpleName + ")."
+                StreamsLive.setStatus(sid, problemNote!!)
             } finally {
                 // ALWAYS declare the search over. The player only leaves its
                 // "Finding the best server…" cover when a server arrives or
@@ -1379,7 +1466,7 @@ fun DetailScreen(
                 // empty result into a clear message within a second instead
                 // of a minute and a half of nothing.
                 val foundCount = playableEvery(found).size
-                if (foundCount == 0) {
+                if (foundCount == 0 && lookupComplete) {
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
@@ -1406,7 +1493,7 @@ fun DetailScreen(
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
                     StreamsLive.setStatus(sid, note)
-                } else {
+                } else if (foundCount > 0) {
                     // Servers WERE found — say that the search is over, so the
                     // cover/hint never keeps reading "still searching…" after the
                     // pass has actually finished (which looks exactly like a
@@ -1416,8 +1503,28 @@ fun DetailScreen(
                         "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
                             " — search finished.",
                     )
+                } else if (problemNote != null) {
+                    // Already reported in the catch above; repeated here because a
+                    // collector that died later could have overwritten it.
+                    StreamsLive.setStatus(sid, problemNote!!)
+                } else {
+                    // Nothing found AND no verdict: the pass was cut short or the
+                    // budget ran out while it was still working. This is the case
+                    // that must never be dressed up as "no playable server found
+                    // after searching N extensions" — the search may still be
+                    // running and may still hand the player servers. The player
+                    // is told the truth and left to its own timeout instead of
+                    // being failed fast on a lie.
+                    StreamsLive.setStatus(
+                        sid,
+                        "The search took longer than expected — it may still be running.",
+                    )
                 }
-                StreamsLive.markDone(sid)
+                // The search is only declared OVER when there is something to
+                // play or a real answer: marking it done on an unfinished pass is
+                // what let the player quit seconds into a search that was still
+                // finding servers.
+                if (foundCount > 0 || lookupComplete) StreamsLive.markDone(sid)
             }
         }
     }

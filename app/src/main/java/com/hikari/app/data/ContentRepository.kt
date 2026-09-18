@@ -20,7 +20,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
@@ -36,34 +38,43 @@ import java.util.concurrent.atomic.AtomicInteger
 class ContentRepository(private val manager: ProviderManager) {
 
     /**
-     * Live status of the cross-extension pass, for the player's "Select server"
-     * sheet: [crossRunning] holds `provider id -> repo name` for every extension
-     * still being searched, and [crossVerdict] holds
-     * `provider id -> "Repo name — why it found nothing"` for the ones that came
-     * back empty. The sheet shows this above the panel, so "my other repo's
-     * servers never showed up" has an answer on screen (still searching / no
-     * matching title / the plugin failed to load / no playable links) instead of
-     * being indistinguishable from "that repo is simply still loading".
+     * One pass's diagnostic tally, for the player's "Select server" sheet and
+     * the "no playable server found" note: [CrossTally.running] holds
+     * `provider id -> repo name` for every extension still being searched,
+     * [CrossTally.verdict] holds `provider id -> "Repo name — why it found
+     * nothing"` for the ones that came back empty, [CrossTally.asked] /
+     * [CrossTally.found] say which extensions were actually asked and which
+     * produced servers, and [CrossTally.installed] counts the repos of each
+     * engine that exist.
+     *
+     * WHY this is an object per pass instead of process-wide maps: a pass can
+     * OVERLAP with the next one (a Play tap while the prefetch's sweep is still
+     * running, a retry after a pass was cut short, two screens for the same
+     * title). Every pass used to clear and then write the SAME maps, so the
+     * counters on screen belonged to no single search at all — "asked 93" with
+     * "164 no such title" (more verdicts than asks) and "186 no such title" one
+     * card, "18" the next. Whoever asks now gets ITS OWN pass's numbers.
+     *
      * [crossStatusVersion] bumps on every change so the UI can poll cheaply.
      */
     companion object {
-        val crossRunning = ConcurrentHashMap<String, String>()
-        val crossVerdict = ConcurrentHashMap<String, String>()
 
-        /**
-         * `provider id -> engine label` for every extension the CURRENT pass has
-         * asked, `provider id -> engine label` for the ones that produced
-         * servers, and `engine label -> how many repos of that engine are
-         * installed`. With [crossRunning]/[crossVerdict] these let the chooser's
-         * hint report PROGRESS ("asked 48 of 96 · 4 with servers · 12 still
-         * searching") instead of one repo's verdict on its own — the old line
-         * was a " · "-joined list of failures, and the two-line hint cut it off
-         * after the first repo, which read as if the whole search had stopped
-         * there while the rest were still running.
-         */
-        val crossAsked = ConcurrentHashMap<String, String>()
-        val crossFound = ConcurrentHashMap<String, String>()
-        val crossInstalled = ConcurrentHashMap<String, Int>()
+        /** The live diagnostic state of ONE pass (see the class note above). */
+        class CrossTally {
+            val running = ConcurrentHashMap<String, String>()
+            val verdict = ConcurrentHashMap<String, String>()
+            val asked = ConcurrentHashMap<String, String>()
+            val found = ConcurrentHashMap<String, String>()
+            val installed = ConcurrentHashMap<String, Int>()
+        }
+
+        /** The tally of the newest pass — the one a summary should describe. */
+        @Volatile
+        var crossTally = CrossTally()
+            private set
+
+        /** Starts a fresh tally and makes it the current one. */
+        fun newCrossTally(): CrossTally = CrossTally().also { crossTally = it }
 
         /**
          * Session-scoped NEGATIVE cache for the cross-extension pass:
@@ -142,14 +153,12 @@ class ContentRepository(private val manager: ProviderManager) {
          *  about it anywhere". Never shown, never counted. */
         const val CROSS_VERDICT_SKIPPED = "\u0000skipped"
 
-        /** Buckets that describe how far THE PASS got (its own timing) or a
-         *  verification wall, rather than what any repo actually said. They are
-         *  never surfaced in a summary the user reads: "unfinished" / "not
-         *  reached" read as a broken search, and a Cloudflare wording is not
-         *  something to put in a server list. */
+        /** Buckets that are never surfaced in a summary the user reads: a
+         *  verification wall is not something to put in a server list, and a
+         *  skipped extension has nothing to say at all. How far the pass itself
+         *  got ("no answer in time") is deliberately NOT in here — it is the
+         *  honest explanation for an empty result (see [crossSummary]). */
         val CROSS_QUIET_BUCKETS = setOf(
-            "unfinished",
-            "not reached (pass ended)",
             "cloudflare check",
             "skipped",
         )
@@ -195,8 +204,8 @@ class ContentRepository(private val manager: ProviderManager) {
          *  repos could not load is a broken-extension story. */
         fun crossReasonBucket(verdict: String): String = when {
             verdict == CROSS_VERDICT_SKIPPED -> "skipped"
-            verdict.contains("never reached") -> "not reached (pass ended)"
-            verdict.contains("still searching when the pass ended") -> "unfinished"
+            verdict.contains("never reached") -> "no answer in time"
+            verdict.contains("still searching when the pass ended") -> "no answer in time"
             verdict.contains("cloudflare", ignoreCase = true) -> "cloudflare check"
             verdict.contains("failed to load") ||
                 verdict.contains("file is missing") ||
@@ -219,20 +228,30 @@ class ContentRepository(private val manager: ProviderManager) {
          * load"). Null when no pass has run yet, so callers can just append it.
          */
         fun crossSummary(limit: Int = 3): String? {
-            if (crossVerdict.isEmpty() && crossFound.isEmpty()) return null
-            val counts = crossVerdict.values
+            // The NEWEST pass's tally: a summary has to describe ONE search, not
+            // a merge of every search that happens to be running (see
+            // [CrossTally] — a retry, or a Play tap during the prefetch's sweep,
+            // used to make these numbers impossible: "asked 93 · 164 no such
+            // title", i.e. more verdicts than asks).
+            val tally = crossTally
+            if (tally.verdict.isEmpty() && tally.found.isEmpty()) return null
+            val counts = tally.verdict.values
                 .groupingBy { crossReasonBucket(it) }
                 .eachCount()
                 .entries
-                // Buckets the user asked never to read (the pass's own timing,
-                // and verification walls — see [CROSS_QUIET_BUCKETS]).
+                // Buckets the user asked never to read (a verification wall —
+                // see [CROSS_QUIET_BUCKETS]). How far the pass itself got is
+                // NOT hidden any more: "N no answer in time" is the honest
+                // reason a pass ended with nothing, and hiding it is what made
+                // an empty result look like "every extension said no such
+                // title" when in fact hundreds were never reached.
                 .filterNot { it.key in CROSS_QUIET_BUCKETS }
                 .sortedByDescending { it.value }
                 .take(limit)
                 .joinToString(" · ") { "${it.value} ${it.key}" }
             return buildString {
-                append("asked ${crossAsked.size}")
-                if (crossFound.isNotEmpty()) append(" · ${crossFound.size} with servers")
+                append("asked ${tally.asked.size}")
+                if (tally.found.isNotEmpty()) append(" · ${tally.found.size} with servers")
                 if (counts.isNotEmpty()) append(" · ").append(counts)
             }
         }
@@ -827,6 +846,22 @@ class ContentRepository(private val manager: ProviderManager) {
      *    returns sources, the rest are cancelled and playback starts. Only if
      *    every addon comes up empty do we wait for all of them.
      */
+    /**
+     * The outcome of one lookup: the servers it produced, and whether the lookup
+     * actually FINISHED (as opposed to being cut short).
+     *
+     * That distinction is the whole point. A pass that ends normally has asked
+     * what it could and its (possibly empty) answer is a real answer — the user
+     * may be told "no extension has this title". A pass that was cut short says
+     * nothing about the title at all (a provider blew up and took the pass with
+     * it, a collector was cancelled, the device starved the threads), and
+     * presenting it as "no playable server found after searching 254 extensions"
+     * is a lie — it is what ended playback ~9 seconds into a search that was
+     * still running, and made a working title need four Play taps. An incomplete
+     * lookup must be RETRIED, never used as the verdict.
+     */
+    class StreamLookup(val servers: List<StreamSource>, val complete: Boolean)
+
     suspend fun streamsFor(
         item: MediaItem,
         episode: Episode?,
@@ -834,14 +869,46 @@ class ContentRepository(private val manager: ProviderManager) {
          *  results, so callers can show servers progressively (Stremio-style)
          *  while the slower providers are still searching. */
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
-    ): List<StreamSource> {
+    ): List<StreamSource> = streamsForOutcome(item, episode, onProgress).servers
+
+    /** [streamsFor] plus "did this lookup actually finish?" — see [StreamLookup].
+     *  Never throws: a lookup that dies is reported as `complete = false`, so the
+     *  caller can ask again instead of telling the user there is nothing. */
+    suspend fun streamsForOutcome(
+        item: MediaItem,
+        episode: Episode?,
+        onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+    ): StreamLookup {
         // A source scan across many providers can take a minute; keep it alive
         // if the user leaves the app (see [com.hikari.app.work.BackgroundWork]).
         val work = com.hikari.app.work.BackgroundWork.begin(
             "Finding servers for \"${item.title.take(60)}\""
         )
         try {
-            return streamsForInner(item, episode, onProgress)
+            return StreamLookup(streamsForInner(item, episode, onProgress), complete = true)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // OUR job being cancelled means the caller went away — propagate it.
+            // A cancellation from INSIDE the pass is a different story: the pass
+            // is over, nobody found out why, and that must never read as
+            // "asked everything, nothing there".
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "pass for \"${item.title.take(60)}\" was cut short (cancelled) — not an answer",
+            )
+            return StreamLookup(emptyList(), complete = false)
+        } catch (e: Throwable) {
+            // This used to be swallowed a level up, where an empty list meant the
+            // same as a finished empty search. The reason is logged now, so a
+            // pass that dies is diagnosable, and the caller is told plainly that
+            // it was not an answer.
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "pass for \"${item.title.take(60)}\" ended early (" +
+                    e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "") +
+                    ") — not an answer",
+            )
+            return StreamLookup(emptyList(), complete = false)
         } finally {
             com.hikari.app.work.BackgroundWork.end(work)
         }
@@ -962,14 +1029,20 @@ class ContentRepository(private val manager: ProviderManager) {
                     .joinToString(",") { "${it.key}=${it.value}" },
         )
 
-            // Fresh diagnostic state for this lookup.
-            // Same for the cross-extension status the chooser's hint shows:
-            // every repo of this lookup starts out "searching".
-            crossRunning.clear()
-            crossVerdict.clear()
-            crossAsked.clear()
-            crossFound.clear()
-            crossInstalled.clear()
+            // This pass's OWN diagnostic state — a fresh object, and the local
+            // names below deliberately shadow nothing process-wide: passes
+            // overlap (a Play tap during the prefetch's sweep, a retry after a
+            // pass was cut short, two screens for the same title), and a shared
+            // tally meant the numbers on screen belonged to no single search
+            // ("asked 93" with "164 no such title" — more verdicts than asks).
+            // Everything below, and every helper this pass calls, writes into
+            // THIS tally.
+            val tally = newCrossTally()
+            val crossRunning = tally.running
+            val crossVerdict = tally.verdict
+            val crossAsked = tally.asked
+            val crossFound = tally.found
+            val crossInstalled = tally.installed
             // Drop expired "no such title" answers (see [crossEmpty]); the live
             // ones are what make the NEXT pass over the same title cheap.
             val emptyNow = System.currentTimeMillis()
@@ -1082,7 +1155,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         // below still waits for them; only their work is deferred.
                         if (waitForOrigin) awaitOriginHeadStart(originJob, SAME_ENGINE_HEAD_START_MS)
                         val outcome: Pair<CrossHit?, String?> =
-                            cancellableCatching { crossExtensionSearch(p, item) }
+                            cancellableCatching { crossExtensionSearch(p, item, tally) }
                                 .getOrElse {
                                     null to ("search threw ${it.javaClass.simpleName}: " +
                                         (it.message ?: "no message"))
@@ -1555,9 +1628,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *  every QUEUED repo, so the chooser said "Asked 231 other repos … all done,
      *  none with servers" while the tail had never even been reached — the exact
      *  report that made the search look like it had silently stopped. */
-    private fun markCrossSearchStarted(p: ContentProvider, repo: String, title: String) {
-        crossAsked[p.config.id] = p.config.type.groupLabel
-        crossRunning[p.config.id] = repo
+    private fun markCrossSearchStarted(
+        p: ContentProvider,
+        repo: String,
+        title: String,
+        tally: CrossTally,
+    ) {
+        tally.asked[p.config.id] = p.config.type.groupLabel
+        tally.running[p.config.id] = repo
         bumpCrossStatus()
         com.hikari.app.data.Logs.log("Search", "cross \"$title\" → $repo: searching…")
     }
@@ -1571,6 +1649,7 @@ class ContentRepository(private val manager: ProviderManager) {
     private suspend fun crossExtensionSearch(
         p: ContentProvider,
         item: MediaItem,
+        tally: CrossTally,
     ): Pair<CrossHit?, String?> {
         val repo = p.config.name.ifBlank { p.config.id }
         // Already known to need a verification wall this session: skipped
@@ -1592,10 +1671,10 @@ class ContentRepository(private val manager: ProviderManager) {
             return null to CROSS_VERDICT_SKIPPED
         }
         // Queued: counted as "still searching" until the verdict lands.
-        crossRunning[p.config.id] = repo
+        tally.running[p.config.id] = repo
         bumpCrossStatus()
         var attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH) {
-            markCrossSearchStarted(p, repo, title)
+            markCrossSearchStarted(p, repo, title, tally)
         }
         // A search that THREW or TIMED OUT says nothing about the repo's
         // catalog — a cold plugin load ("the first call has to spin up its
@@ -1640,8 +1719,8 @@ class ContentRepository(private val manager: ProviderManager) {
                     // extension and drop it silently — no note, no verdict, and
                     // no further search for it this session (see [crossCfSkip]).
                     crossCfSkip[id] = System.currentTimeMillis()
-                    crossVerdict.remove(id)
-                    crossAsked.remove(id)
+                    tally.verdict.remove(id)
+                    tally.asked.remove(id)
                     return null to CROSS_VERDICT_SKIPPED
                 }
                 recordStreamMessage(p, said)

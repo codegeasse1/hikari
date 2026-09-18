@@ -32,7 +32,13 @@ object StreamCache {
     private const val MAX_ENTRIES = 40
 
     private val entries = ConcurrentHashMap<String, Entry>()
-    private val inflight = ConcurrentHashMap<String, CompletableDeferred<List<StreamSource>>>()
+
+    /** The extraction running for a key, if any. It completes with a
+     *  [ContentRepository.StreamLookup] rather than a bare list so a joiner can
+     *  tell a finished empty answer apart from a pass that was cut short (see
+     *  [ContentRepository.StreamLookup]) — the latter must be retried, not
+     *  believed. */
+    private val inflight = ConcurrentHashMap<String, CompletableDeferred<ContentRepository.StreamLookup>>()
 
     fun get(key: String): Entry? = entries[key]
 
@@ -59,10 +65,10 @@ object StreamCache {
     }
 
     /** The extraction already running for [key], or null when there is none. */
-    fun joined(key: String): CompletableDeferred<List<StreamSource>>? = inflight[key]
+    fun joined(key: String): CompletableDeferred<ContentRepository.StreamLookup>? = inflight[key]
 
     /** Claims the extraction slot for [key]; false when someone else holds it. */
-    fun claim(key: String, deferred: CompletableDeferred<List<StreamSource>>): Boolean =
+    fun claim(key: String, deferred: CompletableDeferred<ContentRepository.StreamLookup>): Boolean =
         inflight.putIfAbsent(key, deferred) == null
 
     fun release(key: String) {

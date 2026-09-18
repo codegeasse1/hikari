@@ -1377,12 +1377,31 @@ class PlayerActivity : ComponentActivity() {
                         // Append happens before markDone, so a non-empty live
                         // flow means servers are on the way.
                         if (sources.isEmpty() && StreamsLive.flow(liveId).value.isEmpty()) {
+                            // The detail screen says its search is over and there
+                            // is nothing to hand over. That is only a real verdict
+                            // when IT says so: its "No playable server found after
+                            // searching N extensions…" note is written only for a
+                            // pass that genuinely FINISHED empty. Anything else
+                            // means the pass was cut short or hit a problem, and
+                            // telling the user "no playable sources" for that is
+                            // what made a search that was still finding servers
+                            // look like an empty catalogue ~9 seconds into a tap.
+                            val last = StreamsLive.statusFlow(liveId).value
                             // The "don't play directly" chooser may already be
                             // up with nothing in it (it opens the instant the
                             // player does). Close it before showing the error,
                             // so the message isn't buried behind an empty sheet.
                             runCatching { serverChooserDialog?.dismiss() }
-                            showError(I18n.t("No playable sources received."), false)
+                            if (last != null && last.startsWith(NO_RESULT_PREFIX)) {
+                                showError(I18n.t("No playable sources received."), false)
+                            } else {
+                                // Honest: the search did not get to answer. The
+                                // panel's "Retry all" button re-runs it.
+                                showError(
+                                    I18n.t("The search was cut short before it found anything."),
+                                    false,
+                                )
+                            }
                         } else {
                             tryStart()
                         }
@@ -3729,14 +3748,19 @@ class PlayerActivity : ComponentActivity() {
      * reason is appended when nothing at all was found.
      */
     private fun crossSearchHint(): String? {
-        val asked = ContentRepository.crossAsked.values.toList()
+        // One pass's snapshot (see [ContentRepository.CrossTally]): reading the
+        // live per-pass maps gave a mix of every search that happened to be
+        // running, which is why the numbers could not add up ("93 asked · 164 no
+        // such title").
+        val tally = ContentRepository.crossTally
+        val asked = tally.asked.values.toList()
         if (asked.isEmpty()) return null
-        val running = ContentRepository.crossRunning.size
-        val found = ContentRepository.crossFound.size
+        val running = tally.running.size
+        val found = tally.found.size
         val byEngine = asked.groupingBy { it }.eachCount().entries
             .sortedBy { it.key }
             .joinToString(", ") { e ->
-                val total = ContentRepository.crossInstalled[e.key]
+                val total = tally.installed[e.key]
                 if (total != null && total > e.value) "${e.key} ${e.value} of $total" else "${e.key} ${e.value}"
             }
         // Cloudflare verdicts are dropped, and so is anything that describes how
@@ -3747,7 +3771,7 @@ class PlayerActivity : ComponentActivity() {
         // when every repo that answered did so normally. The raw extension
         // Cloudflare wording ("Cloudflare blocked. Go to Settings 'n Bypass
         // Cloudflare.") is likewise not something to read in a server chooser.
-        val allVerdicts = ContentRepository.crossVerdict.values.toList()
+        val allVerdicts = tally.verdict.values.toList()
         val verdicts = allVerdicts.filterNot {
             com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it.substringAfter(" — ", it)) ||
                 ContentRepository.crossReasonBucket(it.substringAfter(" — ", it)) in
