@@ -569,10 +569,15 @@ class ContentRepository(private val manager: ProviderManager) {
      * series both called "Netflix") can never crash the LazyColumn.
      */
     suspend fun homeRows(providerId: String? = null): List<CatalogRow> = withContext(Dispatchers.IO) {
+        // The provider list can hold the same repo twice (installed from two
+        // repos, or a stale entry an update left behind). Every row such a
+        // provider produced would then be built twice, carry the SAME Lazy key,
+        // and take Home down with it — a duplicated key is a crash in Compose,
+        // not a warning — while its catalog was fetched twice for nothing.
         val active = interleaveByProviderType(
-            manager.providers.value.filter {
-                it.config.enabled && (providerId == null || it.config.id == providerId)
-            }
+            manager.providers.value
+                .filter { it.config.enabled && (providerId == null || it.config.id == providerId) }
+                .distinctBy { it.config.id }
         )
         // GLOBAL gates shared by ALL providers (not per-provider): with dozens
         // of installed extensions, per-provider limits multiplied into hundreds

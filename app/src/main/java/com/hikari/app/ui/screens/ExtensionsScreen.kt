@@ -4198,7 +4198,9 @@ private fun SourceFolderView(
                         )
                     }
                 }
-                items(stremioProviders, key = { it.config.id }) { p ->
+        // The same repo can be installed twice, and two identical Lazy keys are a
+        // crash in Compose rather than a warning.
+        items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     ProviderCard(
                         p = p,
                         status = null,
@@ -4408,7 +4410,7 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(filteredProviders, key = { it.config.id }) { p ->
+            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     status = pluginStatus(p),
@@ -4689,7 +4691,7 @@ private fun InstalledExtensionsView(
                     )
                 }
             }
-            items(filteredProviders, key = { it.config.id }) { p ->
+            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     status = pluginStatus(p),

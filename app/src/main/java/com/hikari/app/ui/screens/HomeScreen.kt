@@ -547,7 +547,11 @@ fun HomeScreen(nav: NavHostController) {
             if (loading) {
                 items(4) { ShimmerRow() }
             }
-            rows.forEach { row ->
+            // Two rows can carry the same key when an extension offers the same
+            // catalog twice (or two catalogs under one name): a duplicated Lazy
+            // key is a crash in Compose, not a warning, so repeats are dropped
+            // before the feed is built.
+            rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }.forEach { row ->
                 item(key = row.key.ifBlank { "${row.providerName}|${row.title}" }) {
                     MediaRow(
                         title = row.title,
@@ -945,7 +949,7 @@ private fun ProviderPickerSheet(
                         onPick(null)
                     }
                 }
-                items(filtered, key = { it.config.id }) { p ->
+                items(filtered.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     PickerRow(p.config.name, isSelected = selectedId == p.config.id) {
                         onPick(p.config.id)
                     }

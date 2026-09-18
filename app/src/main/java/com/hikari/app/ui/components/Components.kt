@@ -131,7 +131,14 @@ fun MediaRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(items, key = { it.id }) { item -> PosterCard(item, onClick = { onClick(item) }) }
+            // A row's items come from an extension, and an extension is free to
+            // list the same title twice (or to hand back two entries that share
+            // an id). Compose does not warn about a duplicated key — it throws,
+            // taking the whole screen with it — so the key is the item's own
+            // identity, with literal repeats dropped before they are drawn.
+            items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
+                PosterCard(item, onClick = { onClick(item) })
+            }
         }
     }
 }

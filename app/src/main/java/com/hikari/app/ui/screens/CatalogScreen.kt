@@ -248,7 +248,11 @@ fun CatalogScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(items, key = { it.uniqueId }) { item ->
+                // Extension catalogs repeat themselves (a scraped page can list
+                // the same title twice): keying on the identity WITHOUT dropping
+                // repeats crashes the screen, because Compose throws on a
+                // duplicated key.
+                items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     CatalogCard(item) {
                         Routes.safeNavigate(
                             nav,

@@ -2529,7 +2529,10 @@ private fun ShelfRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(shelf, key = { it.uniqueId }) { item ->
+            // The shelf arrives from an extension; a repeated title would repeat
+            // its Lazy key, which Compose treats as a crash rather than a
+            // warning.
+            items(shelf.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                 ShelfCell(
                     item = item,
                     onClick = { onClick(item) },

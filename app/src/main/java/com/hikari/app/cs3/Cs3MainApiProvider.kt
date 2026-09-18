@@ -323,7 +323,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
             }
         }
-        out
+        // One entry per catalog, whatever the plugin answered with: a plugin
+        // whose mainPage list repeats itself (or repeats a page's data as an id)
+        // would otherwise hand Hikari two catalogs with the same id, and every
+        // row they produced would carry the same Lazy key — which Compose treats
+        // as a crash, not a warning.
+        out.distinctBy { it.type to it.id }
     }
 
     private fun rowRefId(pageIndex: Int, rowIndex: Int): String = "row:$pageIndex:$rowIndex"

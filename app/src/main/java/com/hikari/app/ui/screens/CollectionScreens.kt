@@ -722,7 +722,10 @@ private fun FolderEditorPage(
                     )
                 }
             }
-            items(sources, key = { it.key }) { s ->
+            // A folder can hold the same source twice (added twice, or restored
+            // from an older save). Two identical Lazy keys are a crash in
+            // Compose, so the list is shown — and saved — without repeats.
+            items(sources.distinctBy { it.key }, key = { it.key }) { s ->
                 SourceRow(source = s, onDelete = { sources = sources.filter { it.key != s.key } })
             }
             item {
@@ -731,7 +734,7 @@ private fun FolderEditorPage(
                         onSave(
                             folder.copy(
                                 name = name.trim(),
-                                sources = sources,
+                                sources = sources.distinctBy { it.key },
                                 coverKind = coverKind,
                                 coverValue = coverValue,
                                 tileShape = tileShape,
@@ -820,7 +823,7 @@ private fun FolderEditorPage(
                     )
                 } else {
                     LazyColumn(Modifier.padding(bottom = 24.dp)) {
-                        items(loaded, key = { "${it.type}|${it.id}" }) { ref ->
+                        items(loaded.distinctBy { "${it.type}|${it.id}" }, key = { "${it.type}|${it.id}" }) { ref ->
                             PickerLine(label = ref.name, selected = false) {
                                 sources = sources + CatalogSource(
                                     kind = CatalogSourceKind.PROVIDER,
@@ -1122,7 +1125,7 @@ private fun TmdbSourceSheet(
                         )
                     }
                 }
-                items(hits, key = { it.id }) { hit ->
+                items(hits.distinctBy { it.id }, key = { it.id }) { hit ->
                     PickerLine(
                         label = hit.name,
                         supporting = hit.subtitle.ifBlank { "ID ${hit.id}" },
@@ -1945,7 +1948,7 @@ private fun CollectionFolderContent(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
-            items(loaded, key = { it.key }) { row ->
+            items(loaded.distinctBy { it.key }, key = { it.key }) { row ->
                 MediaRow(
                     title = row.title,
                     providerName = row.providerName,
@@ -2171,7 +2174,7 @@ fun TmdbGridScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(items, key = { it.uniqueId }) { item ->
+                items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,
@@ -2327,7 +2330,10 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                         }
                     }
                 }
-                items(row.items, key = { item -> row.key + "|" + item.uniqueId }) { item ->
+                items(
+                    row.items.distinctBy { it.uniqueId },
+                    key = { item -> row.key + "|" + item.uniqueId },
+                ) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,

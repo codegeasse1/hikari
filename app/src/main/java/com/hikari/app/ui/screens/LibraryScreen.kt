@@ -200,7 +200,10 @@ fun LibraryScreen(nav: NavHostController) {
                 }
             }
         } else {
-            items(shown, key = { it.uniqueId }) { item ->
+            // Saved titles can repeat (the same film filed twice, or stored
+            // twice by an older build): a duplicated Lazy key is a crash, so the
+            // grid is built from the distinct set.
+            items(shown.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                 LibraryCard(
                     item = item,
                     style = style,

@@ -303,7 +303,7 @@ fun SearchScreen(
                             )
                         )
                     }
-                    items(visibleProviders, key = { it.config.id }) { p ->
+                    items(visibleProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                         FilterChip(
                             selected = p.config.id in selected,
                             onClick = { vm.toggleProvider(p.config.id) },
@@ -359,7 +359,10 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(results, key = { it.uniqueId }) { item ->
+                // Two providers can answer with the same title and the same id
+                // (and one provider can answer twice): a repeated Lazy key is a
+                // hard crash, so repeats are dropped before the grid is built.
+                items(results.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     val style = rememberPosterStyle()
                     // Show ratings (Settings → Appearance) draws here too — the
                     // badge warms the ratings cache for the title and prints

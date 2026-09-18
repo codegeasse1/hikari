@@ -1,3 +1,9 @@
+## 0.5.16
+
+Fixed:
+- The crash some people hit while browsing ("Key \"…\" was already used"). Compose refuses to draw two items in the same list that share a key — it throws, and the screen goes down with it. Every key in Hikari is built out of data an extension handed us, and extensions repeat themselves: the same title twice in a scraped page, two catalogs sharing an id, the same repo installed twice, the same source added to a folder twice. Those repeats are now handled in Home, a catalog's "Show all" grid, search results, a detail page's shelf, the Library grid, a folder's catalogs and the extension and picker lists — a repeat in the data costs the item its own slot at worst, and can no longer take a screen (or the app) down with it.
+- The same repo installed twice is only loaded once. The provider list could hold duplicates, so every catalog of that repo was fetched twice and produced two rows with the same key — which was one of the ways the crash above was reached.
+
 ## 0.5.15
 
 Fixed:
