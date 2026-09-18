@@ -1752,6 +1752,9 @@ private fun NameCoverDialog(
         },
     )
 }
+
+/**
+ * Shows one collection: either its folder tiles, or (when a folder is selected) the
  * catalogs inside that folder as rows, exactly like a Home shelf.
  *
  * Both shapes live in one destination ([Routes.collectionView]) because they
