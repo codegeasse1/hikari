@@ -22,21 +22,21 @@ private suspend fun <T> Observable<T>.awaitOne(): T = suspendCancellableCoroutin
 
             override fun onNext(t: T) {
                 if (cont.isActive) {
-                    cont.resume(t)
+                    cont.resumeWith(Result.success(t))
                 }
             }
 
             override fun onCompleted() {
                 if (cont.isActive) {
-                    cont.resumeWithException(
-                        IllegalStateException("Should have invoked onNext"),
+                    cont.resumeWith(
+                        Result.failure(IllegalStateException("Should have invoked onNext")),
                     )
                 }
             }
 
             override fun onError(e: Throwable) {
                 if (cont.isActive) {
-                    cont.resumeWithException(e)
+                    cont.resumeWith(Result.failure(e))
                 }
             }
         },

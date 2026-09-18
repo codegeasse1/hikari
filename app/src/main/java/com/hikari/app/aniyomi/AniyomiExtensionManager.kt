@@ -285,9 +285,12 @@ object AniyomiExtensionManager {
                 pkg.ifBlank { null },
             ).joinToString(" · "),
             url = url,
-            iconUrl = o.optString("icon").ifBlank { o.optString("iconUrl") }.ifBlank {
-                pkg.takeIf { it.isNotBlank() && root.isNotBlank() }?.let { "$root/icon/$it.png" }
-            }.ifBlank { null },
+            iconUrl = o.optString("icon")
+                .ifBlank { o.optString("iconUrl") }
+                .ifBlank {
+                    if (pkg.isNotBlank() && root.isNotBlank()) "$root/icon/$pkg.png" else ""
+                }
+                .ifBlank { null },
             version = o.optInt("code", 1).takeIf { it > 0 } ?: 1,
             iconHost = firstSourceHost(o),
         )
