@@ -24,6 +24,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A build that stalls (a Maven download that never lands) used to sit on
+    # the runner for half an hour with no output. The per-attempt timeout in
+    # the build step handles the common case; this is the backstop.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -68,19 +72,26 @@ jobs:
           # Maven Central occasionally rate-limits (HTTP 429) cold dependency
           # resolution. Retry the whole build a few times with a pause so the
           # rate-limit bucket can drain, instead of failing the first run.
+          # Each attempt is capped as well as retried: a stalled download can
+          # hang a Gradle build indefinitely (no output, no exit code), and
+          # that is worse than a clean failure, because the retry never gets a
+          # chance to run. "timeout" turns a hang into exit code 124, which the
+          # retry below treats like any other transient network problem.
           code=1
           for attempt in 1 2 3 4 5; do
             echo "==== Gradle build attempt $attempt/5 ===="
-            gradle assembleDebug assembleRelease --no-daemon --stacktrace > gradle-build.log 2>&1
+            timeout 1500 gradle assembleDebug assembleRelease --no-daemon --stacktrace \
+              -Dorg.gradle.internal.http.connectionTimeout=30000 \
+              -Dorg.gradle.internal.http.socketTimeout=60000 > gradle-build.log 2>&1
             code=$?
             if [ $code -eq 0 ]; then
               break
             fi
-            if grep -qE "429|Too Many Requests" gradle-build.log; then
-              echo "==== Attempt $attempt hit a 429 rate-limit; retrying in 60s ===="
-              sleep 60
+            if [ $code -eq 124 ] || grep -qE "429|Too Many Requests|Connection reset|Read timed out|SocketTimeout|connect timed out|Could not resolve|Unable to load Maven meta-data" gradle-build.log; then
+              echo "==== Attempt $attempt hit a rate-limit or network stall (exit $code); retrying in 45s ===="
+              sleep 45
             else
-              echo "==== Attempt $attempt failed with a non-rate-limit error; stopping ===="
+              echo "==== Attempt $attempt failed with a non-network error; stopping ===="
               break
             fi
           done
