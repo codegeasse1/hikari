@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -241,7 +243,7 @@ object Routes {
  * The bottom bar's three looks (Settings → App Layout → Taskbar & navigation).
  *
  *  * [ANIMATED] — the full-width, labelled bar the app rests on; it shrinks
- *    into a small icon-only pill as the user scrolls back up towards the top
+ *    into a smaller floating pill as the user scrolls back up towards the top
  *    of a page, and swells back to the full bar on any downward scroll (or a
  *    tab change). This is the default layout.
  *  * [FLOATING] — the detached glass pill, always the same size.
@@ -303,17 +305,25 @@ private fun AppBottomBar(
     val tabs = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
     val glass = rememberGlassTokens()
     val style = NavStyles.normalize(navStyle)
-    // The animated layout is the same bar in two states: the full-width,
-    // labelled bar the app rests on, and a smaller icon-only pill it shrinks
-    // into as the user scrolls back up towards the top of a page (see
-    // [AppRoot], which tracks the scroll direction). Everything below is
-    // hoisted so the two states animate between rather than swap.
-    val animatedCollapsed = style == NavStyles.ANIMATED && !expanded
-    val pill = style == NavStyles.FLOATING || animatedCollapsed
+    // The animated layout is the same bar in two states: the full, labelled bar
+    // the app rests on, and a smaller floating pill it draws back into as the
+    // user scrolls up towards the top of a page (see [AppRoot], which tracks
+    // the scroll direction). Everything below is hoisted so the two states
+    // animate between rather than swap.
+    //
+    // The difference between the states is a step, not a transformation: a
+    // medium pill still carrying the labels. The icon-only sliver this used to
+    // shrink to stopped reading as the same bar at all.
+    val animatedShrunk = style == NavStyles.ANIMATED && !expanded
+    // Classic is the only edge-to-edge layout; the other two float over the
+    // page. A floating bar is TRANSLUCENT and rounded on every edge, so the
+    // page (and the artwork scrolling behind it) still shows through — and it
+    // never sits in a strip of its own.
+    val floating = style != NavStyles.CLASSIC
     // The labels can be switched off wholesale (Settings → App Layout → "Show
-    // text on taskbar buttons"); the animated bar also drops them on its own
-    // while it is shrunk, whichever way that setting points.
-    val withLabels = showLabels && !animatedCollapsed
+    // text on taskbar buttons"). Both animated states keep them otherwise:
+    // shrinking must not mean losing the names.
+    val withLabels = showLabels
     val edgeToEdge = style == NavStyles.CLASSIC
     // One cached text measurer, used below to size the labels to the width
     // they actually have (see the comment on the Row).
@@ -321,49 +331,61 @@ private fun AppBottomBar(
     val hPad by animateDpAsState(
         when {
             edgeToEdge -> 0.dp
-            style == NavStyles.FLOATING -> 12.dp
-            // Shrunk, the pill pulls its own edges in hard so it reads as a
-            // small floating control rather than a half-empty bar.
-            animatedCollapsed -> 64.dp
+            style == NavStyles.FLOATING -> 16.dp
+            // Shrunk, the pill pulls its edges in so it reads as a floating
+            // control rather than a half-empty bar — but only by enough to
+            // float: pulled in hard it stopped looking like the same bar.
+            animatedShrunk -> 32.dp
             else -> 8.dp
         },
         label = "barHPad",
     )
+    // The gap between the bar and the edge of the screen (and the content). A
+    // floating bar keeps only a small margin: the bigger it got, the more the
+    // bar looked like it was sitting in a band of its own rather than floating
+    // over the page.
     val vPad by animateDpAsState(
         when {
-            animatedCollapsed -> 6.dp
-            pill -> 8.dp
-            else -> 0.dp
+            edgeToEdge -> 0.dp
+            animatedShrunk -> 5.dp
+            else -> 6.dp
         },
         label = "barVPad",
     )
     val radius by animateDpAsState(
-        if (animatedCollapsed) 20.dp else if (pill) 26.dp else 0.dp,
+        when {
+            edgeToEdge -> 0.dp
+            animatedShrunk -> 22.dp
+            else -> 26.dp
+        },
         label = "barRadius",
     )
     val barHeight by animateDpAsState(
         when {
-            withLabels -> 60.dp
-            animatedCollapsed -> 38.dp
-            else -> 50.dp
+            edgeToEdge -> 50.dp
+            // The two animated states are deliberately close together: the bar
+            // grows a little as the user scrolls down and settles back as they
+            // scroll up. It used to swell to the full bar and collapse to a
+            // sliver — two different bars, not one bar breathing.
+            animatedShrunk -> 48.dp
+            else -> 54.dp
         },
         label = "barHeight",
     )
-    val labelHeight by animateDpAsState(if (withLabels) 16.dp else 0.dp, label = "barLabelH")
+    val labelHeight by animateDpAsState(if (withLabels) 15.dp else 0.dp, label = "barLabelH")
     val labelAlpha by animateFloatAsState(if (withLabels) 1f else 0f, label = "barLabelA")
+    // The button cell fills the bar's inner height (the Row below insets itself
+    // by 6dp top and bottom, and the label is drawn inside this cell), so the
+    // icon and its name always have the room the bar itself claims.
+    val tabHeight = (barHeight - 12.dp)
     val iconSize by animateDpAsState(
         when {
-            withLabels -> 20.dp
-            animatedCollapsed -> 16.dp
-            else -> 22.dp
+            edgeToEdge -> 22.dp
+            animatedShrunk -> 17.dp
+            else -> 19.dp
         },
         label = "barIcon",
     )
-    val tabHeight = when {
-        withLabels -> 48.dp
-        animatedCollapsed -> 26.dp
-        else -> 42.dp
-    }
     Box(
         Modifier
             .fillMaxWidth()
@@ -385,15 +407,23 @@ private fun AppBottomBar(
             }
             Surface(
                 shape = RoundedCornerShape(radius),
+                // A floating bar is GLASS: a whisper of light over the page, so
+                // the artwork scrolling under it stays visible and the bar reads
+                // as a panel hovering over the content. (It used to be painted
+                // from `surfaceContainerHigh`, which is opaque enough that on the
+                // dark themes the bar and the black page around it were the same
+                // colour — the bar's own area read as a black slab.) Only the
+                // seamless layout is opaque, because there the plate IS the
+                // bottom of the screen.
                 color = if (edgeToEdge) {
                     MaterialTheme.colorScheme.surfaceContainerHigh
                 } else if (glass.dark) {
-                    MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+                    Color.White.copy(alpha = 0.14f)
                 } else {
-                    MaterialTheme.colorScheme.surface
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.80f)
                 },
-                border = if (pill) BorderStroke(1.dp, glass.border) else null,
-                shadowElevation = if (pill && !glass.dark) 8.dp else 0.dp,
+                border = if (floating) BorderStroke(1.dp, glass.border) else null,
+                shadowElevation = if (floating && !glass.dark) 8.dp else 0.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -412,19 +442,38 @@ private fun AppBottomBar(
                     // and the scale rides on the density, so the labels still
                     // scale with that setting.)
                     val slotDp = maxWidth / tabs.size
-                    val availDp = (slotDp - 6.dp).coerceAtLeast(12.dp)
+                    val availDp = (slotDp - 8.dp).coerceAtLeast(12.dp)
                     val densityNow = LocalDensity.current
                     val availPx = with(densityNow) { availDp.toPx() }
+                    // The style the label is actually drawn with, taken from
+                    // the ambient typography: the app font (Settings → App font)
+                    // and the theme's own metrics are part of the width, and
+                    // measuring with a bare TextStyle missed them — which is
+                    // exactly how a label "fit" on paper and still came out
+                    // clipped on the device.
+                    //
+                    // Letter spacing is pinned to zero for the labels: the
+                    // incoming body style carries half a point per character,
+                    // and over nine characters that is most of the budget we
+                    // are trying to fit into.
+                    val labelStyle = LocalTextStyle.current.copy(
+                        letterSpacing = 0.sp,
+                        // The incoming body style's line height would make a
+                        // 10sp label occupy an 18dp line box and push the icon
+                        // off centre; the font's own metrics are what we want.
+                        lineHeight = TextUnit.Unspecified,
+                    )
                     // Text width is linear in font size, so one measurement of
                     // the widest label at a 100sp reference gives the size that
                     // just fits the slot. Bold is the wider weight (the active
                     // tab), so measuring with it is the safe case.
-                    // The translated labels are read here, in composition, because
-                    // tr() is @Composable and cannot be called from the remember
-                    // lambda that does the measuring.
+                    //
+                    // The translated labels are read here, in composition,
+                    // because tr() is @Composable and cannot be called from the
+                    // remember lambda that does the measuring.
                     val tabLabels = tabs.map { tr(it.label) }
-                    val widestRef = remember(tabLabels, densityNow.density, densityNow.fontScale) {
-                        val reference = TextStyle(fontSize = 100.sp, fontWeight = FontWeight.Bold)
+                    val widestRef = remember(tabLabels, labelStyle, densityNow.density, densityNow.fontScale) {
+                        val reference = labelStyle.copy(fontSize = 100.sp, fontWeight = FontWeight.Bold)
                         tabLabels.maxOfOrNull { label ->
                             measurer.measure(
                                 text = AnnotatedString(label),
@@ -439,7 +488,9 @@ private fun AppBottomBar(
                         9f
                     } else {
                         val fontScale = densityNow.fontScale.coerceAtLeast(0.5f)
-                        (availPx * 100f * fontScale / widestRef).coerceIn(6f, 11.5f)
+                        // 0.97 leaves a hair of slack in the slot, so the text
+                        // never sits edge to edge in its cell.
+                        (availPx * 0.97f * 100f * fontScale / widestRef).coerceIn(6f, 11.5f)
                     }
                     val labelScale = densityNow.fontScale.coerceAtLeast(0.5f)
                     Row(
@@ -474,10 +525,15 @@ private fun AppBottomBar(
                                     Spacer(Modifier.height(2.dp))
                                     Text(
                                         tr(tab.label),
+                                        // The very style the size above was
+                                        // measured from, so what fits on paper
+                                        // is what is drawn.
+                                        style = labelStyle,
                                         maxLines = 1,
                                         softWrap = false,
                                         overflow = TextOverflow.Ellipsis,
                                         fontSize = (labelSp / labelScale).sp,
+                                        letterSpacing = 0.sp,
                                         textAlign = TextAlign.Center,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         color = if (selected) primary else muted,
@@ -551,10 +607,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val fullscreenOffFlow = remember { app.store.fullscreenOffFlow() }
     val fullscreenOff by fullscreenOffFlow.collectAsState(initial = false)
     // The animated layout's two states. A page's own scrolling drives it: the
-    // bar rests at its full, labelled size and shrinks to a small icon-only pill
-    // as the user scrolls back up towards the top of a page (swiping up is the
-    // gesture that "pulls the page down" over the bar); scrolling down into the
-    // content — or opening another tab — swells it back to full size. The
+    // bar rests at its full, labelled size and eases into a smaller floating
+    // pill as the user scrolls back up towards the top of a page (swiping up is
+    // the gesture that "pulls the page down" over the bar); scrolling down into
+    // the content — or opening another tab — swells it back to full size. The
     // connection sits on the Box that wraps the whole app, so every screen's
     // list feeds it without a single screen having to pass its scroll state up.
     var barExpanded by remember { mutableStateOf(true) }
@@ -564,8 +620,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val dy = available.y
                 // A few dp of slack: a fling's first event can be tiny, and the
                 // bar flipping on a one-pixel jitter looks broken.
-                if (dy > 8f) barExpanded = false
-                else if (dy < -8f) barExpanded = true
+                //
+                // Scrolling DOWN into the page (dy > 0) is what fills the bar
+                // out to its full, labelled size; scrolling back UP (dy < 0)
+                // lets it draw in to the floating pill. That is the reference
+                // client's feel: the bar gets out of the way of the content you
+                // are moving towards, and comes back as a full bar the moment
+                // you head further down.
+                if (dy > 8f) barExpanded = true
+                else if (dy < -8f) barExpanded = false
                 return Offset.Zero
             }
         }

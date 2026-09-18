@@ -298,7 +298,9 @@ private fun LibraryCard(
     val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
     Column(
         Modifier
-            .clip(style.shape())
+            // Not clipped to the poster rounding: at high corner values the
+            // curve cut into the title's first and last letters. The artwork
+            // rounds itself.
             .clickable(onClick = onClick)
     ) {
         PosterArt(

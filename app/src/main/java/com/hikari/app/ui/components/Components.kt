@@ -251,7 +251,10 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     Column(
         Modifier
             .width(120.dp)
-            .clip(style.shape())
+            // Deliberately NOT clipped to the poster's rounding: the outer
+            // corner curve reached down into the title and bit the first and
+            // last letters off it at high corner values. The artwork applies
+            // the rounding to itself (see PosterArt).
             .clickable(onClick = onClick)
     ) {
         PosterArt(
@@ -623,7 +626,8 @@ private fun ContinueWatchingCard(
     Column(
         Modifier
             .width(230.dp)
-            .clip(style.shape())
+            // Not clipped: the rounding lives on the thumbnail itself, so the
+            // title under it cannot be eaten by the corner curve.
             .clickable(onClick = onClick)
     ) {
         Box(
