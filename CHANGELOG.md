@@ -1,8 +1,31 @@
 ## 0.5.17
 
-Changed:
-- The floating taskbar has the height its length was asking for. It spans very nearly the whole width of the screen, so its height is the only thing deciding whether it reads as a capsule or as a strip — and at 46dp it was a strip: barely a couple of dp above and below the icon and its name, which is why the buttons looked squeezed into the box rather than sitting in it. It rests at 54dp now, the same height-to-length proportion as the bar in the reference screenshot (a seventh of its length, measured off the image), so the box reads as the stadium capsule it is meant to be with real air above and below the icons. The length, the corners, the colours and the drawn-in behaviour are all untouched.
-- The resting and drawn-in bars now share one icon size (20dp, up from 18dp on the resting bar): with the height to carry them the icons only grew a little, and the taskbar no longer looks like a different control after a scroll — the drawn-in state is still the smaller pill, it shrinks by dropping the button names and pulling its frame in.
+The last release you got was 0.5.6 — everything below has landed since then. The builds in between were test builds, so every fix here comes out of actually using them.
+
+New:
+- TMDB titles in your language. Movie and series titles and overviews are fetched from TMDB in the app's language, or in any single language you pick (Settings → App Layout → Title language), with a switch to keep TMDB's original titles. Changing it applies straight away, no restart.
+- The personal catalog creator builds a row from anywhere on TMDB: presets, public lists, studios, networks, collections, people, directors, or a custom genre/year/sort query — by name, by TMDB id, or by pasting a themoviedb.org link — each with your own display name.
+- Covers for collections and folders: an emoji, an image link, an animated GIF (it plays on the tile), or an image from your own storage, in a poster, square or wide tile.
+- Library categories. Movies, Series, Action and Romance are built in, and you can add, rename and delete your own. "Add to library" asks which category a title goes in, saved titles can be moved between them, and the categories show as filter pills above the grid.
+- App font: system default, sans, light/medium/black, condensed, serif, monospace, casual, cursive or small caps — or import a .ttf/.otf from your storage. It applies to the whole app, the player and the browser.
+- Poster & icon styling: an iOS-style blur that lifts posters off the page, corner rounding from square to very round, and switches for titles and score badges on artwork.
+- Settings → Network and Internet, with DNS mode: Automatic, Cloudflare, Google, AdGuard, Quad9, DNS.SB, Mullvad, Canadian Shield, CleanBrowsing, DNS.WATCH or your own DNS-over-HTTPS address, with a Test button. It covers searches, repo and extension downloads, stream probes and playback.
+- The bottom bar is yours to shape (Settings → App Layout → Taskbar & navigation): Floating animation (the default — it draws itself in as you scroll up), Floating, or Classic; button names on or off; and which buttons it shows.
+- "Show ratings" switch, for the review strip on a detail page and the score badge on posters.
+- "Turn off full screen app mode", keeping the phone's status bar and its buttons visible everywhere.
+- Settings is two levels deep — Appearance and App Layout — each page with a breadcrumb.
+
+Fixed:
+- The crash that could take the app down while browsing when an extension repeated itself: the same title twice, two catalogs sharing an id, the same repo added twice. Repeats are handled everywhere now, and a repo installed twice is only loaded once.
+- Play no longer gives up while the search is still running. "No playable server found" is only said once a search has really finished, Retry rejoins the search that is already running instead of starting over, and tapping Play twice no longer sets two searches going against each other. The card now also names the extensions that never answered in time.
+- A title you just played starts instantly on the server that worked, while fresh servers are looked for behind it — and Play searches every time instead of reusing a remembered "no source".
+- Scores on posters: the badge shows on every poster now (it falls back to TMDB's average when no review score resolves), on search results and catalog "Show all" grids, and on the Related and Similar rows of a detail page — and far fewer posters come up blank.
+- The taskbar is a proper capsule: it rests at the height its length asks for, with real room above and below the icons, and its names are never clipped at any app font or text size.
+- The black band under the bottom bar is gone in all three layouts. The bar floats over the page, is glass rather than a slab, and stays readable over a bright poster.
+- The Home provider pill can be tapped again (it sat underneath the taskbar), and it is readable on the Dark Glass UI theme — the same fix covers the extension catalog button and Library's chips.
+- Poster titles are whole again: the rounded corners no longer shave the first and last letter off.
+- A folder with no cover of its own shows its collection's cover.
+- "Add to library" no longer cuts its own buttons off below the fold, and the extension picker is a clean minimal list.
 
 ## 0.5.16
 
