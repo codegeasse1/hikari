@@ -3544,43 +3544,30 @@ private fun MatchThemeCard(
 ) {
     val scope = rememberCoroutineScope()
 
-    Column(Modifier.padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(tr("Match app & player theme"), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    tr("Use one colour everywhere"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = linked,
-                onCheckedChange = { on ->
-                    scope.launch {
-                        runCatching {
-                            if (on) {
-                                // Copy the app colour onto the player as the two
-                                // are joined, so they are identical immediately.
-                                app.store.setPlayerAccent(appAccentKey)
-                                app.store.setThemeLinked(true)
-                            } else {
-                                app.store.setThemeLinked(false)
-                            }
+    SettingsSection(
+        id = "appearance.match-theme",
+        icon = Icons.Filled.Palette,
+        title = tr("Match app & player theme"),
+        summary = if (linked) tr("The player follows the app colour")
+        else tr("The two keep their own colours"),
+    ) {
+        SettingsToggle(
+            label = tr("Use one colour everywhere"),
+            checked = linked,
+            onCheckedChange = { on ->
+                scope.launch {
+                    runCatching {
+                        if (on) {
+                            // Copy the app colour onto the player as the two
+                            // are joined, so they are identical immediately.
+                            app.store.setPlayerAccent(appAccentKey)
+                            app.store.setThemeLinked(true)
+                        } else {
+                            app.store.setThemeLinked(false)
                         }
                     }
                 }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (linked) {
-                tr("The player follows the app colour.")
-            } else {
-                tr("The two keep their own colours.")
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
