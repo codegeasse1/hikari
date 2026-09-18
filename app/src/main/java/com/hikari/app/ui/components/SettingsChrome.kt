@@ -141,7 +141,6 @@ fun SettingsPageHeader(
     title: String,
     subtitle: String,
     onBack: () -> Unit,
-    blurb: String? = null,
     icon: ImageVector? = null,
     breadcrumb: String? = null,
     trailing: (@Composable () -> Unit)? = null,
@@ -192,14 +191,6 @@ fun SettingsPageHeader(
                 Spacer(Modifier.width(8.dp))
                 trailing()
             }
-        }
-        if (blurb != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                blurb,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))

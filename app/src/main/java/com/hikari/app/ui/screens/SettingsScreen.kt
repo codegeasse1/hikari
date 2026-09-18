@@ -189,7 +189,6 @@ private enum class SettingsFolder(
     val key: String,
     val title: String,
     val subtitle: String,
-    val blurb: String,
     val icon: ImageVector,
     /** Id of the folder this one lives inside, or null for a top-level folder. */
     val parent: String? = null,
@@ -198,42 +197,36 @@ private enum class SettingsFolder(
         "appearance",
         "Appearance & Theme",
         "Language, theme, accent, icon & font",
-        "How Hikari looks and speaks on this phone.",
         Icons.Filled.Palette,
     ),
     APP_LAYOUT(
         "layout",
         "App Layout",
         "Posters, ratings, taskbar & full screen",
-        "How the app's pages are arranged.",
         Icons.Filled.Dashboard,
     ),
     PLAYER(
         "player",
         "Player",
         "Playback start & loading screen",
-        "How the player behaves when you start a video.",
         Icons.Filled.PlayArrow,
     ),
     NETWORK(
         "network",
         "Network and Internet",
         "DNS mode & slow connections",
-        "How Hikari reaches the internet from this phone.",
         Icons.Filled.Public,
     ),
     SOURCES(
         "sources",
         "Sources & Extensions",
         "yt-dlp fallback, userscripts, Continue Watching",
-        "How Hikari finds, plays and remembers videos.",
         Icons.Filled.Extension,
     ),
     DOWNLOADS(
         "downloads",
         "Downloads",
         "Offline copies & parallel saves",
-        "Saving videos to this device.",
         Icons.Filled.Download,
     ),
     // The user's own catalogs (Collections) live here rather than under
@@ -244,35 +237,30 @@ private enum class SettingsFolder(
         "catalog",
         "Personal Catalog creator",
         "Your own collections, folders & catalogs",
-        "Build collections out of the catalogs you actually watch.",
         Icons.Filled.FolderOpen,
     ),
     PRIVACY(
         "privacy",
         "Privacy & Browsing",
         "Ad blocking, redirects & user agent",
-        "What the built-in browser is allowed to do.",
         Icons.Filled.Shield,
     ),
     LOGS(
         "logs",
         "Logs & Diagnostics",
         "App logs & crash reports",
-        "Share what the app recorded, so a bug needs no screenshot.",
         Icons.Filled.BugReport,
     ),
     BACKUP(
         "backup",
         "Backup & Restore",
         "One file with your whole setup",
-        "Carry your extensions, sources and settings to another phone.",
         Icons.Filled.SettingsBackupRestore,
     ),
     ABOUT(
         "about",
         "About & Updates",
         "Version, links, roadmap & reset",
-        "What this build is, and where it comes from.",
         Icons.Filled.Info,
     ),
 
@@ -282,7 +270,6 @@ private enum class SettingsFolder(
         "appearance.colors",
         "Accent colour",
         "The app colour & the player's",
-        "The colour every screen is painted in.",
         Icons.Filled.ColorLens,
         parent = "appearance",
     ),
@@ -290,7 +277,6 @@ private enum class SettingsFolder(
         "appearance.font",
         "App font",
         "The typeface used everywhere",
-        "Pick a bundled font, or import your own.",
         Icons.Filled.TextFields,
         parent = "appearance",
     ),
@@ -298,7 +284,6 @@ private enum class SettingsFolder(
         "appearance.icon",
         "App icon",
         "Your home-screen icon",
-        "Pick the launcher icon the app uses.",
         Icons.Filled.Android,
         parent = "appearance",
     ),
@@ -306,7 +291,6 @@ private enum class SettingsFolder(
         "layout.poster",
         "Poster styling",
         "Blur, corners, titles & score badges",
-        "Blur halo, corner rounding, titles and score badges.",
         Icons.Filled.Wallpaper,
         parent = "layout",
     ),
@@ -314,7 +298,6 @@ private enum class SettingsFolder(
         "layout.nav",
         "Taskbar & navigation",
         "Bar layout & which buttons stay",
-        "Which tabs the bottom bar carries.",
         Icons.Filled.Tune,
         parent = "layout",
     ),
@@ -899,7 +882,6 @@ private fun FolderHeader(
     SettingsPageHeader(
         title = tr(folder.title),
         subtitle = tr(folder.subtitle),
-        blurb = tr(folder.blurb),
         icon = folder.icon,
         breadcrumb = parentTitle?.let { tr(it) + " ›" },
         onBack = onBack,
@@ -970,7 +952,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
             Box(
                 Modifier
                     .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(SettingsBoxShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1003,7 +985,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
             Box(
                 Modifier
                     .size(28.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(SettingsBoxShape)
                     .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1107,7 +1089,7 @@ private fun DownloadSettingsCard(app: HikariApp) {
             Box(
                 Modifier
                     .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(SettingsBoxShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -2041,6 +2023,7 @@ private fun DnsModeCard(app: HikariApp) {
                 label = { Text(tr("DNS address")) },
                 placeholder = { Text("https://dns.example.com/dns-query") },
                 singleLine = true,
+                shape = SettingsBoxShape,
                 isError = typed.isNotBlank() && endpoint == null,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -2474,6 +2457,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
                 onValueChange = { newAllowedDomain = it },
                 placeholder = { Text(tr("player.example.com")) },
                 singleLine = true,
+                shape = SettingsBoxShape,
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = {
@@ -2771,6 +2755,7 @@ private fun WebViewUserAgentCard(app: HikariApp) {
                     onValueChange = { draft = it },
                     placeholder = { Text(tr("Mozilla/5.0 …")) },
                     singleLine = true,
+                    shape = SettingsBoxShape,
                     label = { Text(tr("Custom user agent")) },
                     modifier = Modifier.weight(1f)
                 )
@@ -2884,6 +2869,7 @@ private fun UserscriptsCard(app: HikariApp) {
                             .fillMaxWidth()
                             .heightIn(min = 200.dp),
                         textStyle = MaterialTheme.typography.bodySmall,
+                        shape = SettingsBoxShape,
                         placeholder = { Text(tr("// ==UserScript==\n// @name   My Script\n// @match  https://example.com/*\n// @run-at document-start\n// ==/UserScript==\n\nconsole.log('hello');")) }
                     )
                 }
@@ -3105,6 +3091,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onValueChange = { newBlockDomain = it },
                     placeholder = { Text(tr("ads.example.com")) },
                     singleLine = true,
+                    shape = SettingsBoxShape,
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(onClick = {
@@ -3164,6 +3151,7 @@ private fun AdBlockingCard(app: HikariApp) {
                     onValueChange = { newWhiteDomain = it },
                     placeholder = { Text(tr("video-site.example.com")) },
                     singleLine = true,
+                    shape = SettingsBoxShape,
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(onClick = {
@@ -3216,6 +3204,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         value = name,
                         onValueChange = { name = it },
                         label = { Text(tr("Name")) },
+                        shape = SettingsBoxShape,
                         singleLine = true
                     )
                     Spacer(Modifier.height(8.dp))
@@ -3223,6 +3212,7 @@ private fun AdBlockingCard(app: HikariApp) {
                         value = url,
                         onValueChange = { url = it },
                         label = { Text(tr("Hosts file URL")) },
+                        shape = SettingsBoxShape,
                         singleLine = true
                     )
                 }

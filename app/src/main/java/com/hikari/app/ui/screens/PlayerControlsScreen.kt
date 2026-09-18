@@ -56,6 +56,7 @@ import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.SettingsBoxShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
@@ -124,7 +125,6 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
             SettingsPageHeader(
                 title = tr("Player controls"),
                 subtitle = tr("Move or hide the player buttons"),
-                blurb = tr("Buttons you never use can be hidden."),
                 onBack = onBack,
                 trailing = {
                     TextButton(
@@ -205,7 +205,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box(
                                 Modifier
                                     .size(32.dp)
-                                    .clip(RoundedCornerShape(11.dp))
+                                    .clip(SettingsBoxShape)
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -232,7 +232,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box {
                                 Column(
                                     Modifier
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(SettingsBoxShape)
                                         .background(
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                         )
@@ -480,7 +480,7 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
 private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(SettingsBoxShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .padding(2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -489,7 +489,7 @@ private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
             val selected = icons == wantsIcons
             Box(
                 Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(SettingsBoxShape)
                     .background(
                         if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                         else Color.Transparent

@@ -1,3 +1,9 @@
+## 0.5.21
+
+Test build — one fix on the settings pages.
+
+- The sentence under every settings heading is gone. Each folder — Appearance & Theme, Player, Network, Sources, Downloads, Personal Catalog creator, Privacy, Logs, Backup, About, and the sub-folders like Accent colour and App font — carried a second line under its title ("How Hikari looks and speaks on this phone."), which only repeated what the name and its summary already said. A page's heading is now just the name with its one-line summary under it. The Logs & diagnostics page and the player-control editor lost the same line, since they share the header.
+
 ## 0.5.20
 
 Test build — two fixes on the settings pages.

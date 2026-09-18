@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -54,6 +53,7 @@ import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.SettingsBoxShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import java.io.File
@@ -100,9 +100,6 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
             SettingsPageHeader(
                 title = tr("Logs & diagnostics"),
                 subtitle = tr("Share what the app recorded"),
-                blurb = tr("Hikari keeps two rolling app logs and one crash log on this " + "device. If something goes wrong, share these files here ") +
-                    "instead of a screenshot — they contain the exact error and " +
-                    "what happened just before it.",
                 onBack = onBack,
             )
         }
@@ -292,7 +289,7 @@ private fun ActionPill(
 ) {
     Row(
         Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(SettingsBoxShape)
             .background(
                 if (primary) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                 else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
