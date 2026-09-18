@@ -671,8 +671,9 @@ fun HomeScreen(nav: NavHostController) {
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(
-                    horizontal = 16.dp,
+                    start = 16.dp,
                     top = 14.dp,
+                    end = 16.dp,
                     bottom = 14.dp + LocalTaskbarInset.current,
                 )
         ) {
