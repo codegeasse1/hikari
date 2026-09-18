@@ -111,6 +111,7 @@ import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.ui.shape
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1830,6 +1831,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
 @Composable
 fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
     val app = LocalContext.current.applicationContext as HikariApp
+    val style = rememberPosterStyle()
     var collection by remember(collectionId) { mutableStateOf<Collection?>(null) }
     var rows by remember(collectionId) { mutableStateOf<List<CatalogRow>?>(null) }
 
@@ -1907,7 +1909,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                     }
                 }
                 items(row.items, key = { item -> row.key + "|" + item.uniqueId }) { item ->
-                    TmdbGridCard(item) {
+                    TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(

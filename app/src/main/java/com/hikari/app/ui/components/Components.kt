@@ -79,6 +79,7 @@ import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.theme.rememberGlassTokens
+import com.hikari.app.ui.shape
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 

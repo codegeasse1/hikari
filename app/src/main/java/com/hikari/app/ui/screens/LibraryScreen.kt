@@ -60,6 +60,7 @@ import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.ui.shape
 import kotlinx.coroutines.launch
 
 /**
