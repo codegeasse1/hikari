@@ -43,8 +43,11 @@ import com.hikari.app.ui.theme.rememberGlassTokens
  *
  * The size is not a taste call: the header is one line (icon, then name), and
  * 16.sp is the largest that keeps the longest name in Settings — "Personal
- * Catalog creator" — on that line on a phone. Anything bigger ellipsises, and a
- * truncated folder name reads as a bug.
+ * Catalog creator" — on that line on a phone. The numbers, so nobody has to
+ * re-derive them: the back button and badge take 92.dp, leaving ~236.dp of a
+ * 360.dp phone's row, and the longest name measures 178.dp at 16.sp in Roboto
+ * Bold — room to spare even with the phone's own font size set a notch or two up.
+ * Anything larger ellipsises, and a truncated name reads as a bug.
  */
 val SETTINGS_TITLE_SIZE: TextUnit = 16.sp
 
@@ -162,10 +165,10 @@ fun SettingsPageHeader(
         Row(verticalAlignment = Alignment.CenterVertically) {
             SettingsBackButton(onBack)
             if (icon != null) {
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
                 SettingsIconBadge(icon, 40.dp)
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     title,
