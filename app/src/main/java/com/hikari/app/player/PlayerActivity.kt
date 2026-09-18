@@ -741,6 +741,9 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
+        // The app font (Settings → Appearance → Font) reaches this View-based
+        // screen by walking the inflated hierarchy — the Compose theme cannot.
+        com.hikari.app.ui.AppFonts.applyToContent(this, window.decorView)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUi()
 
@@ -2935,6 +2938,7 @@ class PlayerActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         )
+        com.hikari.app.ui.AppFonts.applyToViewTree(root, com.hikari.app.ui.AppFonts.appTypeface(this))
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
@@ -3110,6 +3114,7 @@ class PlayerActivity : ComponentActivity() {
             panel,
             ViewGroup.LayoutParams(w + 2 * halo, ViewGroup.LayoutParams.WRAP_CONTENT)
         )
+        com.hikari.app.ui.AppFonts.applyToViewTree(panel, com.hikari.app.ui.AppFonts.appTypeface(this))
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(false)
         dialog.setCancelable(cancelable)

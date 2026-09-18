@@ -108,6 +108,7 @@ import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.BackupManager
+import com.hikari.app.data.TmdbLang
 import com.hikari.app.data.Userscript
 import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
@@ -118,11 +119,13 @@ import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
+import com.hikari.app.ui.AppFonts
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTabs
+import com.hikari.app.ui.navigation.NavStyles
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
@@ -384,6 +387,10 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item { SettingsCard { UiScaleCard(app) } }
                     item { SettingsCard { TaskbarCard(app) } }
+                    item { SettingsCard { FontCard(app) } }
+                    item { SettingsCard { PosterStyleCard(app) } }
+                    item { SettingsCard { NavBarCard(app) } }
+                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
                     item { SettingsCard { AppIconCard(app) } }
                     item {
                         SettingsCard {
@@ -1169,6 +1176,450 @@ private fun TaskbarCard(app: HikariApp) {
                     onCheckedChange = { on -> scope.launch { app.store.setTabHidden(tab.route, !on) } }
                 )
             }
+        }
+    }
+}
+
+/**
+ * The app-wide font.
+ *
+ * One choice repaints every Compose screen at once (the theme's typography is
+ * rebuilt around the chosen family — see [com.hikari.app.ui.theme.typographyWith])
+ * and the View-based half of the app — the player, its dialogs, the built-in
+ * browser — through [AppFonts.applyToViewTree], so the whole app speaks in one
+ * typeface rather than just the parts written in Compose.
+ *
+ * The last entry is a font the user brings from their own storage. It is copied
+ * into the app's private directory on import, which is why it keeps working
+ * after the document picker's permission has expired — and why the player can
+ * read it during its own Activity creation.
+ */
+@Composable
+private fun FontCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val keyFlow = remember { app.store.appFontFlow() }
+    val key by keyFlow.collectAsState(initial = AppFonts.DEFAULT)
+    val fileFlow = remember { app.store.appFontFileFlow() }
+    val file by fileFlow.collectAsState(initial = "")
+    val labelFlow = remember { app.store.appFontLabelFlow() }
+    val importedLabel by labelFlow.collectAsState(initial = "")
+
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val picked = withContext(Dispatchers.IO) { AppFonts.import(context, uri) }
+            if (picked == null) {
+                Toast.makeText(
+                    context,
+                    I18n.t("That file isn't a font Hikari can read."),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } else {
+                app.store.setImportedFont(picked.first, picked.second)
+                app.store.setAppFont(AppFonts.IMPORTED)
+                Toast.makeText(context, I18n.t("Font imported"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("App font"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Applies to the whole app — every screen, the player and the built-in browser."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        AppFonts.CHOICES.forEach { choice ->
+            FontRow(label = choice.label, selected = key == choice.key) {
+                if (key != choice.key) scope.launch { runCatching { app.store.setAppFont(choice.key) } }
+            }
+        }
+        if (file.isNotBlank()) {
+            FontRow(
+                label = AppFonts.labelFor(AppFonts.IMPORTED, importedLabel),
+                supporting = tr("Imported from your storage"),
+                selected = key == AppFonts.IMPORTED,
+            ) {
+                if (key != AppFonts.IMPORTED) {
+                    scope.launch { runCatching { app.store.setAppFont(AppFonts.IMPORTED) } }
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = {
+                runCatching {
+                    importer.launch(
+                        arrayOf("font/ttf", "font/otf", "application/octet-stream", "*/*")
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(tr(if (file.isBlank()) "Import a font from storage" else "Replace the imported font"))
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            tr("Tip: .ttf and .otf files from your Downloads folder work best."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** One radio row in the font picker. */
+@Composable
+private fun FontRow(
+    label: String,
+    selected: Boolean,
+    supporting: String? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (!supporting.isNullOrBlank()) {
+                Text(
+                    supporting,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Poster & icon styling — the dynamic iOS-style blur that lifts a poster off
+ * the page, the corner rounding, and whether the title/score are drawn at all.
+ *
+ * Every grid in the app renders through [com.hikari.app.ui.PosterArt] and reads
+ * these values live, so what is set here is what the next frame shows — no
+ * restart, and the same look on Home, Search, Library and a collection alike.
+ */
+@Composable
+private fun PosterStyleCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val blurFlow = remember { app.store.posterBlurFlow() }
+    val blur by blurFlow.collectAsState(initial = 0)
+    val cornerFlow = remember { app.store.posterCornerFlow() }
+    val corner by cornerFlow.collectAsState(initial = 14)
+    val titlesFlow = remember { app.store.posterShowTitlesFlow() }
+    val titles by titlesFlow.collectAsState(initial = true)
+    val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
+    val ratings by ratingsFlow.collectAsState(initial = false)
+    val glassFlow = remember { app.store.posterGlassFlow() }
+    val glass by glassFlow.collectAsState(initial = true)
+
+    var blurSlider by remember { mutableStateOf(blur.toFloat()) }
+    var cornerSlider by remember { mutableStateOf(corner.toFloat()) }
+    LaunchedEffect(blur) { blurSlider = blur.toFloat() }
+    LaunchedEffect(corner) { cornerSlider = corner.toFloat() }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Poster & icon styling"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("How artwork is drawn in every grid — Home, Search, Library and your collections."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingsSlider(
+            label = tr("Dynamic blur"),
+            value = blurSlider,
+            valueText = if (blurSlider < 1f) tr("Off") else blurSlider.roundToInt().toString(),
+            valueRange = 0f..24f,
+            steps = 23,
+            onValueChange = { blurSlider = it },
+            onValueChangeFinished = {
+                val v = blurSlider.roundToInt().coerceIn(0, 24)
+                blurSlider = v.toFloat()
+                scope.launch { runCatching { app.store.setPosterBlur(v) } }
+            },
+        )
+        Text(
+            tr("A soft coloured halo behind each poster, the way the reference client does it."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingsSlider(
+            label = tr("Corner rounding"),
+            value = cornerSlider,
+            valueText = cornerSlider.roundToInt().toString(),
+            valueRange = 0f..28f,
+            steps = 27,
+            onValueChange = { cornerSlider = it },
+            onValueChangeFinished = {
+                val v = cornerSlider.roundToInt().coerceIn(0, 28)
+                cornerSlider = v.toFloat()
+                scope.launch { runCatching { app.store.setPosterCorner(v) } }
+            },
+        )
+        Spacer(Modifier.height(4.dp))
+        SettingsToggle(
+            label = tr("Show titles"),
+            supporting = tr("The name under each poster."),
+            checked = titles,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowTitles(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Show ratings"),
+            supporting = tr("A score badge on posters that have one (TMDB titles)."),
+            checked = ratings,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowRatings(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Glass trim"),
+            supporting = tr("The hairline and frosted backing every card in the app shares."),
+            checked = glass,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterGlass(on) } } },
+        )
+    }
+}
+
+/** A labelled slider with its value on the right — used by [PosterStyleCard]. */
+@Composable
+private fun SettingsSlider(
+    label: String,
+    value: Float,
+    valueText: String,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            valueText,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        onValueChangeFinished = onValueChangeFinished,
+        valueRange = valueRange,
+        steps = steps,
+        colors = SliderDefaults.colors(
+            thumbColor = MaterialTheme.colorScheme.primary,
+            activeTrackColor = MaterialTheme.colorScheme.primary,
+            inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f),
+            activeTickColor = Color.Transparent,
+            inactiveTickColor = Color.Transparent,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** A switch row with a caption — the shape every toggle in this folder uses. */
+@Composable
+private fun SettingsToggle(
+    label: String,
+    supporting: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                supporting,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
+ * The bottom bar's layout (Settings → Appearance → Navigation bar): the
+ * floating glass pill, a seamless edge-to-edge plate, or no plate at all.
+ *
+ * The tabs themselves are chosen by [TaskbarCard] right above; this only
+ * changes the chrome around them, and it is stored under its own key so the two
+ * settings never fight.
+ */
+@Composable
+private fun NavBarCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val styleFlow = remember { app.store.navStyleFlow() }
+    val style by styleFlow.collectAsState(initial = NavStyles.FLOATING)
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Navigation bar"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Choose how the bottom bar is drawn. Which buttons it shows is set above."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        NavStyles.ALL.forEach { option ->
+            val on = style == option.key
+            val pick = { scope.launch { runCatching { app.store.setNavStyle(option.key) } } }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { pick() },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = on, onClick = { pick() })
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        tr(option.label),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        tr(option.blurb),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Which language TMDB titles are fetched in.
+ *
+ * "Follow app language" is the default and the interesting one: change the app
+ * to Spanish and every TMDB row — search results, a studio's films, the detail
+ * page's similar shelf, a collection's source — comes back with Spanish titles,
+ * because the chosen code rides along on every TMDB request (see
+ * [com.hikari.app.nuvio.TmdbResolver.contentLanguage]). "Off" pins TMDB to its
+ * own default so the titles stay as released; the explicit list is for the
+ * people who want, say, Japanese titles inside an English app.
+ */
+@Composable
+private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tmdbLanguageFlow() }
+    val saved by flow.collectAsState(initial = "")
+    val followed = TmdbLang.forAppLanguage(appLanguage)
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Title language (TMDB)"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Titles and overviews from TMDB are fetched in this language, so the same " +
+                "movie reads correctly after you change the app language."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        NavOptionRow(
+            label = tr("Follow app language"),
+            supporting = if (followed.isBlank()) {
+                tr("No TMDB translation for the current app language — English is used.")
+            } else {
+                tr("Currently") + ": " + followed
+            },
+            selected = saved.isBlank(),
+            onClick = { scope.launch { runCatching { app.store.setTmdbLanguage("") } } },
+        )
+        NavOptionRow(
+            label = tr("Off (TMDB default)"),
+            supporting = tr("Keep the titles exactly as TMDB releases them."),
+            selected = saved == "none",
+            onClick = { scope.launch { runCatching { app.store.setTmdbLanguage("none") } } },
+        )
+        Spacer(Modifier.height(6.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+        Spacer(Modifier.height(6.dp))
+        TmdbLang.CHOICES.forEach { (code, name) ->
+            NavOptionRow(
+                label = name,
+                supporting = code,
+                selected = saved == code,
+                onClick = { scope.launch { runCatching { app.store.setTmdbLanguage(code) } } },
+            )
+        }
+    }
+}
+
+/** A radio row used by the navigation-bar and title-language pickers. */
+@Composable
+private fun NavOptionRow(
+    label: String,
+    supporting: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                supporting,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

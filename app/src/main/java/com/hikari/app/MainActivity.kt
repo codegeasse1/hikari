@@ -158,6 +158,42 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
+            // App-wide font (Settings → Appearance → Font). The Compose half
+            // rides on the theme's typography below; the View-based half (the
+            // player, its dialogs, the WebView) reads the synchronous mirror
+            // this keeps up to date.
+            val appFontFlow = remember { store.appFontFlow() }
+            val appFontFileFlow = remember { store.appFontFileFlow() }
+            val appFontKey by appFontFlow.collectAsState(initial = com.hikari.app.ui.AppFonts.DEFAULT)
+            val appFontFile by appFontFileFlow.collectAsState(initial = "")
+            var importedFontLabel by remember { mutableStateOf("") }
+            LaunchedEffect(appFontKey, appFontFile) {
+                com.hikari.app.ui.AppFonts.sync(this@MainActivity, appFontKey, appFontFile)
+                importedFontLabel = if (appFontKey == com.hikari.app.ui.AppFonts.IMPORTED) {
+                    runCatching { store.appFontLabel() }.getOrDefault("")
+                } else {
+                    ""
+                }
+            }
+            val appFontFamily = remember(appFontKey, appFontFile) {
+                com.hikari.app.ui.AppFonts.fontFamily(this@MainActivity, appFontKey, appFontFile)
+            }
+
+            // Which language TMDB answers in. "" follows the app language (the
+            // point of the feature: switch the app to Spanish and the movies
+            // and series are titled in Spanish too), "none" leaves TMDB on
+            // English, anything else is an explicit TMDB code.
+            val tmdbLanguageFlow = remember { store.tmdbLanguageFlow() }
+            val tmdbLanguageMode by tmdbLanguageFlow.collectAsState(initial = "")
+            val tmdbLanguage = when (tmdbLanguageMode) {
+                "" -> com.hikari.app.data.TmdbLang.forAppLanguage(languageTag)
+                "none" -> ""
+                else -> tmdbLanguageMode
+            }
+            LaunchedEffect(tmdbLanguage) {
+                com.hikari.app.nuvio.TmdbResolver.contentLanguage = tmdbLanguage
+            }
+
             LaunchedEffect(themeMode) {
                 // Dark status-bar icons on the light theme so they stay visible.
                 androidx.core.view.WindowCompat.getInsetsController(
@@ -195,6 +231,7 @@ class MainActivity : AppCompatActivity() {
                 accent = appAccent,
                 uiScaleEnabled = uiScaleEnabled,
                 uiScale = uiScale,
+                fontFamily = appFontFamily,
             ) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {

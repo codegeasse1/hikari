@@ -75,7 +75,9 @@ import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -235,50 +237,32 @@ fun HeroArtwork(
 
 @Composable
 fun PosterCard(item: MediaItem, onClick: () -> Unit) {
-    val glass = rememberGlassTokens()
-    val cardShape = RoundedCornerShape(14.dp)
+    val style = rememberPosterStyle()
     Column(
         Modifier
             .width(120.dp)
-            .clip(cardShape)
+            .clip(style.shape())
             .clickable(onClick = onClick)
     ) {
-        Box(
-            Modifier
+        PosterArt(
+            model = Artwork.model(item),
+            contentDescription = item.title,
+            style = style,
+            rating = item.rating,
+            modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(2f / 3f)
-                .clip(cardShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                // Same hairline as every other surface, so a poster reads as a
-                // card on the page instead of a floating rectangle. A border
-                // always draws over its node's content, so this rings the
-                // artwork itself.
-                .border(1.dp, glass.border, cardShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            // Sits behind the artwork: when the extension's image 403s/404s (or
-            // the item has no poster at all) the cell still reads as a poster
-            // slot instead of a blank dark rectangle.
-            Icon(
-                Icons.Filled.Movie,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
-                modifier = Modifier.size(28.dp),
-            )
-            PosterImage(
-                model = Artwork.model(item),
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
+                .aspectRatio(2f / 3f),
+        )
+        if (style.showTitles) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp)
             )
         }
-        Text(
-            item.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp)
-        )
     }
 }
 
@@ -620,6 +604,7 @@ private fun ContinueWatchingCard(
     onClick: () -> Unit,
     onRemove: () -> Unit = {},
 ) {
+    val style = rememberPosterStyle()
     val fraction = if (h.durationMs > 0L) {
         (h.positionMs.toFloat() / h.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -627,14 +612,14 @@ private fun ContinueWatchingCard(
     Column(
         Modifier
             .width(230.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(style.shape())
             .clickable(onClick = onClick)
     ) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(style.shape())
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             HeroArtwork(

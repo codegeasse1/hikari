@@ -6,26 +6,31 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -42,6 +47,8 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,15 +91,26 @@ import com.hikari.app.data.Collection
 import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.CollectionsRepository
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.TmdbGenre
+import com.hikari.app.data.TmdbGenres
+import com.hikari.app.data.TmdbHit
 import com.hikari.app.data.TmdbPreset
 import com.hikari.app.data.TmdbPresets
+import com.hikari.app.data.TmdbSort
+import com.hikari.app.data.TmdbSorts
+import com.hikari.app.data.TmdbSourceType
+import com.hikari.app.data.TmdbSources
+import com.hikari.app.data.TmdbSpec
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -678,24 +696,10 @@ private fun FolderEditorPage(
     }
 
     if (tmdbSheet) {
-        TmdbPresetSheet(
-            selected = sources.filter { it.kind == CatalogSourceKind.TMDB }
-                .map { it.tmdbPreset }
-                .toSet(),
-            onToggle = { preset ->
-                val existing = sources.firstOrNull {
-                    it.kind == CatalogSourceKind.TMDB && it.tmdbPreset == preset.key
-                }
-                sources = if (existing != null) {
-                    sources.filter { it != existing }
-                } else {
-                    sources + CatalogSource(
-                        kind = CatalogSourceKind.TMDB,
-                        title = preset.name,
-                        type = preset.kind,
-                        tmdbPreset = preset.key,
-                    )
-                }
+        TmdbSourceSheet(
+            onAdd = { source ->
+                if (sources.none { it.key == source.key }) sources = sources + source
+                tmdbSheet = false
             },
             onDismiss = { tmdbSheet = false },
         )
@@ -798,8 +802,11 @@ private fun SourceRow(source: CatalogSource, onDelete: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    if (source.kind == CatalogSourceKind.TMDB) tr("TMDB preset")
-                    else tr("From an installed extension"),
+                    if (source.kind == CatalogSourceKind.TMDB) {
+                        source.spec?.let { "TMDB · " + TmdbSources.detail(it) } ?: tr("TMDB preset")
+                    } else {
+                        tr("From an installed extension")
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -816,14 +823,138 @@ private fun SourceRow(source: CatalogSource, onDelete: () -> Unit) {
     }
 }
 
-/** The TMDB preset picker — "Pick a ready-made source" in the reference app. */
+/**
+ * The "TMDB sources" editor — the reference client's source-type chips
+ * (Presets, Public list, Production, Network, Collection, Person, Director,
+ * Custom) plus the small form that turns an id, a name or a themoviedb.org URL
+ * into a saved [CatalogSource].
+ *
+ * What a saved source carries is always a plain numeric TMDB id (plus its kind,
+ * media and order), so a row keeps working even if TMDB renames a studio — and
+ * so the language the app is set to is the only thing that decides which
+ * language the row's own items are titled in.
+ *
+ * A preset is one tap: it adds a ready-made row and leaves the sheet, exactly
+ * like the old preset picker did.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TmdbPresetSheet(
-    selected: Set<String>,
-    onToggle: (TmdbPreset) -> Unit,
+private fun TmdbSourceSheet(
+    onAdd: (CatalogSource) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    var type by remember { mutableStateOf(TmdbSourceType.PRESET) }
+    var text by remember { mutableStateOf("") }
+    var picked by remember { mutableStateOf<TmdbHit?>(null) }
+    var displayTitle by remember { mutableStateOf("") }
+    var media by remember { mutableStateOf("movie") }
+    var sort by remember { mutableStateOf("popularity.desc") }
+    var genre by remember { mutableStateOf(0) }
+    var year by remember { mutableStateOf("") }
+    var hits by remember { mutableStateOf<List<TmdbHit>>(emptyList()) }
+    var searched by remember { mutableStateOf(false) }
+    var searching by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+
+    fun sourcesFor(name: String, spec: TmdbSpec): CatalogSource = CatalogSource(
+        kind = CatalogSourceKind.TMDB,
+        title = name,
+        type = spec.kind,
+        tmdbSpec = spec.encode(),
+    )
+
+    fun resetFor(t: TmdbSourceType) {
+        type = t
+        picked = null
+        hits = emptyList()
+        searched = false
+        genre = 0
+        year = ""
+        sort = "popularity.desc"
+        media = when {
+            t.forcesTv -> "tv"
+            t == TmdbSourceType.COLLECTION -> "movie"
+            t.isPerson || t == TmdbSourceType.LIST -> "all"
+            else -> "movie"
+        }
+    }
+
+    val typedId = TmdbSources.numericId(text)
+    val canSearch = type != TmdbSourceType.DISCOVER && type != TmdbSourceType.PRESET
+    val canAdd = type == TmdbSourceType.PRESET ||
+        type == TmdbSourceType.DISCOVER || picked != null || typedId != null
+
+    fun runSearch() {
+        if (text.isBlank() || searching) return
+        searching = true
+        scope.launch {
+            val found = withContext(Dispatchers.IO) { TmdbSources.search(type, text) }
+            hits = found
+            searched = true
+            searching = false
+            if (found.size == 1) picked = found.first()
+        }
+    }
+
+    fun add() {
+        if (saving) return
+        val spec = TmdbSpec(
+            type = type,
+            id = picked?.id ?: typedId.orEmpty(),
+            media = media,
+            sort = if (type == TmdbSourceType.DISCOVER || type == TmdbSourceType.COMPANY ||
+                type == TmdbSourceType.NETWORK
+            ) sort else "popularity.desc",
+            genre = if (type == TmdbSourceType.DISCOVER) genre else 0,
+            year = if (type == TmdbSourceType.DISCOVER) year.toIntOrNull() ?: 0 else 0,
+            title = displayTitle.trim(),
+        )
+        val given = displayTitle.trim()
+        val known = picked?.name?.takeIf { it.isNotBlank() }
+        val name = given.ifBlank { known.orEmpty() }
+        if (name.isNotBlank()) {
+            onAdd(sourcesFor(name, spec))
+            return
+        }
+        // Nothing to title the row with, so ask TMDB for the entity's own name.
+        saving = true
+        scope.launch {
+            val resolved = withContext(Dispatchers.IO) { TmdbSources.displayName(spec) }
+            saving = false
+            onAdd(sourcesFor(resolved, spec))
+        }
+    }
+
+    val hint = when (type) {
+        TmdbSourceType.LIST -> tr("A list id, or a themoviedb.org/list link.")
+        TmdbSourceType.COMPANY -> tr("Marvel Studios, 420, or a company link.")
+        TmdbSourceType.NETWORK -> tr("213 for Netflix, 49 for HBO, 2739 for Disney+.")
+        TmdbSourceType.COLLECTION -> tr("10 for Star Wars Collection, or a collection link.")
+        TmdbSourceType.PERSON -> tr("31 for Tom Hanks, or a person link.")
+        TmdbSourceType.DIRECTOR -> tr("525 for Christopher Nolan, or a person link.")
+        TmdbSourceType.DISCOVER -> tr("No id needed — narrow it down with genre, year and order.")
+        TmdbSourceType.PRESET -> ""
+    }
+    val fieldLabel = when (type) {
+        TmdbSourceType.LIST -> tr("List id or link")
+        TmdbSourceType.COMPANY -> tr("Studio name or id")
+        TmdbSourceType.NETWORK -> tr("Network name or id")
+        TmdbSourceType.COLLECTION -> tr("Collection name or id")
+        TmdbSourceType.PERSON -> tr("Actor name or id")
+        TmdbSourceType.DIRECTOR -> tr("Director name or id")
+        else -> tr("Name or id")
+    }
+    val mediaOptions: List<Pair<String, String>> = when {
+        type.forcesTv -> listOf("tv" to tr("Series"))
+        type == TmdbSourceType.COLLECTION -> listOf("movie" to tr("Movies"))
+        type.isPerson || type == TmdbSourceType.LIST ->
+            listOf("all" to tr("Both"), "movie" to tr("Movies"), "tv" to tr("Series"))
+        else -> listOf("movie" to tr("Movies"), "tv" to tr("Series"))
+    }
+    val sortable = type == TmdbSourceType.DISCOVER || type == TmdbSourceType.COMPANY ||
+        type == TmdbSourceType.NETWORK
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier
@@ -836,31 +967,235 @@ private fun TmdbPresetSheet(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                tr("Pick a ready-made source. You can remove it again any time."),
+                tr("Pick a ready-made source, or build one from a TMDB id, a name or a link."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
+                modifier = Modifier.padding(top = 2.dp),
             )
-            LazyColumn(Modifier.padding(bottom = 24.dp)) {
-                item { SheetHeading(tr("Movie studios")) }
-                items(TmdbPresets.MOVIES, key = { it.key }) { p ->
-                    PickerLine(
-                        label = p.name,
-                        supporting = p.detail,
-                        selected = p.key in selected,
-                    ) { onToggle(p) }
+            ChipRow(Modifier.padding(top = 12.dp)) {
+                TmdbSourceType.entries.forEach { t ->
+                    ChoiceChip(
+                        label = tr(t.label),
+                        selected = t == type,
+                        onClick = { if (t != type) resetFor(t) },
+                    )
                 }
-                item { SheetHeading(tr("TV networks")) }
-                items(TmdbPresets.SERIES, key = { it.key }) { p ->
+            }
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+            ) {
+                if (type == TmdbSourceType.PRESET) {
+                    item { SheetHeading(tr("Movie studios")) }
+                    items(TmdbPresets.MOVIES, key = { it.key }) { p ->
+                        PickerLine(label = p.name, supporting = p.detail, selected = false) {
+                            onAdd(
+                                CatalogSource(
+                                    kind = CatalogSourceKind.TMDB,
+                                    title = p.name,
+                                    type = p.kind,
+                                    tmdbPreset = p.key,
+                                )
+                            )
+                        }
+                    }
+                    item { SheetHeading(tr("TV networks")) }
+                    items(TmdbPresets.SERIES, key = { it.key }) { p ->
+                        PickerLine(label = p.name, supporting = p.detail, selected = false) {
+                            onAdd(
+                                CatalogSource(
+                                    kind = CatalogSourceKind.TMDB,
+                                    title = p.name,
+                                    type = p.kind,
+                                    tmdbPreset = p.key,
+                                )
+                            )
+                        }
+                    }
+                    return@LazyColumn
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = {
+                            text = it
+                            picked = null
+                            hits = emptyList()
+                            searched = false
+                        },
+                        singleLine = true,
+                        label = { Text(fieldLabel) },
+                        placeholder = { Text(hint) },
+                        trailingIcon = if (canSearch) {
+                            {
+                                IconButton(onClick = { runSearch() }) {
+                                    if (searching) {
+                                        CircularProgressIndicator(Modifier.size(18.dp))
+                                    } else {
+                                        Icon(Icons.Filled.Search, contentDescription = tr("Search"))
+                                    }
+                                }
+                            }
+                        } else null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                    )
+                }
+                if (canSearch && searched && hits.isEmpty() && !searching) {
+                    item {
+                        Text(
+                            tr("Nothing found. Try the numeric TMDB id (or paste the link)."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+                items(hits, key = { it.id }) { hit ->
                     PickerLine(
-                        label = p.name,
-                        supporting = p.detail,
-                        selected = p.key in selected,
-                    ) { onToggle(p) }
+                        label = hit.name,
+                        supporting = hit.subtitle.ifBlank { "ID ${hit.id}" },
+                        selected = picked?.id == hit.id,
+                    ) { picked = hit }
+                }
+
+                item {
+                    SheetHeading(
+                        if (mediaOptions.size == 1) tr("Media") else tr("Movies or series?")
+                    )
+                }
+                item {
+                    ChipRow {
+                        mediaOptions.forEach { (key, label) ->
+                            ChoiceChip(label = label, selected = media == key) { media = key }
+                        }
+                    }
+                }
+
+                if (sortable) {
+                    item { SheetHeading(tr("Order")) }
+                    item {
+                        ChipRow {
+                            TmdbSorts.forMedia(media).forEach { s ->
+                                ChoiceChip(label = tr(s.label), selected = sort == s.key) {
+                                    sort = s.key
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (type == TmdbSourceType.DISCOVER) {
+                    item { SheetHeading(tr("Genre")) }
+                    item {
+                        ChipRow {
+                            ChoiceChip(label = tr("Any"), selected = genre == 0) { genre = 0 }
+                            TmdbGenres.forMedia(media).forEach { g ->
+                                ChoiceChip(label = tr(g.name), selected = genre == g.id) {
+                                    genre = g.id
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = year,
+                            onValueChange = { v -> year = v.filter { it.isDigit() }.take(4) },
+                            singleLine = true,
+                            label = { Text(tr("Year")) },
+                            placeholder = { Text(tr("Any year")) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp),
+                        )
+                    }
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = displayTitle,
+                        onValueChange = { displayTitle = it },
+                        singleLine = true,
+                        label = { Text(tr("Display title")) },
+                        supportingText = {
+                            Text(tr("Shown as the row name. Leave blank and Hikari names it from TMDB."))
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                    )
+                }
+
+                item {
+                    val enabled = canAdd && !saving
+                    Surface(
+                        onClick = { add() },
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        enabled = enabled,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 18.dp),
+                    ) {
+                        Box(
+                            Modifier.padding(vertical = 15.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (saving) {
+                                CircularProgressIndicator(
+                                    Modifier.size(18.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Text(
+                                    tr("Add source"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/** A horizontally scrolling strip of pills — the form's one-line choice rows. */
+@Composable
+private fun ChipRow(
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        content = content,
+    )
+}
+
+/** One pill in a [ChipRow]. */
+@Composable
+private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+        shape = RoundedCornerShape(24.dp),
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            selectedLabelColor = MaterialTheme.colorScheme.primary,
+        ),
+    )
 }
 
 /** Installed-extension picker, shared by the folder editor. */
@@ -1211,9 +1546,14 @@ private fun CollectionFolderContent(
                     onShowAll = {
                         val source = folder.sources.firstOrNull { it.key == row.catalogId }
                         if (source?.kind == CatalogSourceKind.TMDB) {
+                            val spec = source.spec
                             Routes.safeNavigate(
                                 nav,
-                                Routes.tmdbGrid(source.tmdbPreset, row.title)
+                                if (spec != null) {
+                                    Routes.tmdbGridSpec(spec.encode(), row.title)
+                                } else {
+                                    Routes.tmdbGrid(source.tmdbPreset, row.title)
+                                }
                             )
                         } else {
                             Routes.safeNavigate(
@@ -1292,8 +1632,14 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
 class TmdbGridViewModel(
     app: Application,
     private val presetKey: String,
+    /** A hand-built TMDB source ([TmdbSpec] JSON) — what "Show all" passes for a
+     *  public list, a studio, a network, a collection, a person or a custom
+     *  query. Blank when the row is a built-in preset. */
+    private val specJson: String = "",
 ) : AndroidViewModel(app) {
     private val preset = TmdbPresets.byKey(presetKey)
+    private val spec = TmdbSpec.decode(specJson).takeIf { specJson.isNotBlank() }
+    private val label = spec?.let { TmdbSources.fallbackName(it) } ?: (preset?.name ?: presetKey)
 
     private val _items = MutableStateFlow<List<MediaItem>>(emptyList())
     val items: StateFlow<List<MediaItem>> = _items.asStateFlow()
@@ -1311,16 +1657,27 @@ class TmdbGridViewModel(
     }
 
     fun loadNext() {
-        if (_loading.value || _done.value || preset == null) return
-        val work = com.hikari.app.work.BackgroundWork.begin("Loading " + preset.name)
+        if (_loading.value || _done.value) return
+        if (preset == null && spec == null) return
+        val work = com.hikari.app.work.BackgroundWork.begin("Loading " + label)
         viewModelScope.launch {
             _loading.value = true
-            val fresh = runCatching { TmdbPresets.page(preset, page) }.getOrDefault(emptyList())
-            if (fresh.isEmpty()) {
+            val specNow = spec
+            val presetNow = preset
+            val fresh = runCatching {
+                if (specNow != null) TmdbSources.page(specNow, page)
+                else if (presetNow != null) TmdbPresets.page(presetNow, page)
+                else emptyList()
+            }.getOrDefault(emptyList())
+            // A page that adds nothing new ends the list — a collection (whose
+            // parts all arrive on page 1) and a list TMDB has exhausted must
+            // both stop the grid, not leave it scrolling forever.
+            val seen = _items.value.map { it.uniqueId }.toMutableSet()
+            val added = fresh.filter { seen.add(it.uniqueId) }
+            if (added.isEmpty()) {
                 _done.value = true
             } else {
-                val seen = _items.value.map { it.uniqueId }.toMutableSet()
-                _items.value = _items.value + fresh.filter { seen.add(it.uniqueId) }
+                _items.value = _items.value + added
                 page++
             }
             _loading.value = false
@@ -1336,19 +1693,26 @@ class TmdbGridViewModel(
 }
 
 @Composable
-fun TmdbGridScreen(nav: NavHostController, presetKey: String, title: String) {
+fun TmdbGridScreen(
+    nav: NavHostController,
+    presetKey: String,
+    title: String,
+    specJson: String = "",
+) {
     val app = LocalContext.current.applicationContext as Application
     val vm: TmdbGridViewModel = viewModel(
-        key = "tmdb-grid|$presetKey",
+        key = "tmdb-grid|$presetKey|$specJson",
         factory = viewModelFactory {
-            initializer { TmdbGridViewModel(app, presetKey) }
+            initializer { TmdbGridViewModel(app, presetKey, specJson) }
         }
     )
     val items by vm.items.collectAsState()
     val loading by vm.loading.collectAsState()
     val done by vm.done.collectAsState()
+    val spec = remember(specJson) { TmdbSpec.decode(specJson).takeIf { specJson.isNotBlank() } }
     val preset = remember(presetKey) { TmdbPresets.byKey(presetKey) }
-    val name = title.ifBlank { preset?.name ?: presetKey }
+    val name = title.ifBlank { spec?.let { TmdbSources.fallbackName(it) } ?: preset?.name ?: presetKey }
+    val style = rememberPosterStyle()
 
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState) {
@@ -1364,7 +1728,11 @@ fun TmdbGridScreen(nav: NavHostController, presetKey: String, title: String) {
     Column(Modifier.fillMaxSize()) {
         PageHeader(
             title = name,
-            subtitle = preset?.detail?.let { "TMDB · $it" } ?: "TMDB",
+            subtitle = when {
+                spec != null -> "TMDB · " + TmdbSources.detail(spec)
+                preset != null -> "TMDB · " + preset.detail
+                else -> "TMDB"
+            },
             onBack = { nav.popBackStack() },
         )
         if (items.isEmpty() && loading) {
@@ -1388,7 +1756,7 @@ fun TmdbGridScreen(nav: NavHostController, presetKey: String, title: String) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(items, key = { it.uniqueId }) { item ->
-                    TmdbGridCard(item) {
+                    TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(
@@ -1421,41 +1789,31 @@ fun TmdbGridScreen(nav: NavHostController, presetKey: String, title: String) {
 }
 
 @Composable
-private fun TmdbGridCard(item: MediaItem, onClick: () -> Unit) {
+private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
     Column(
         Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(style.shape())
             .clickable(onClick = onClick)
     ) {
-        Box(
-            Modifier
+        PosterArt(
+            model = Artwork.model(item),
+            contentDescription = item.title,
+            style = style,
+            rating = item.rating,
+            modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(2f / 3f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Filled.Movie,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
-                modifier = Modifier.size(26.dp),
-            )
-            AsyncImage(
-                model = Artwork.model(item),
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
+                .aspectRatio(2f / 3f),
+        )
+        if (style.showTitles) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
             )
         }
-        Text(
-            item.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
-        )
     }
 }
 

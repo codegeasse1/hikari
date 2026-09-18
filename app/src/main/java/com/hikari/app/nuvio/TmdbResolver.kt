@@ -33,6 +33,23 @@ object TmdbResolver {
         "439c478a771f35c05022f9feabcca01c",
     )
     private const val API_BASE = "https://api.themoviedb.org/3"
+
+    /**
+     * The language TMDB CONTENT requests are answered in ("es-ES", "ja-JP" …).
+     * Blank = TMDB's own default (English). Kept here rather than read from the
+     * preference store on every call, because a fan-out source search makes
+     * dozens of TMDB requests at once; it is mirrored from Settings at launch
+     * and whenever the choice changes. Search/lookup endpoints deliberately
+     * ignore it — a title search must match the ORIGINAL name too, and asking
+     * TMDB to translate the query as well only narrows what it can find.
+     */
+    @Volatile
+    var contentLanguage: String = ""
+
+    private fun isLookupPath(path: String): Boolean =
+        path.startsWith("/search") || path.startsWith("/find") ||
+            path.contains("alternative_titles") || path.contains("external_ids")
+
     private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache.json")
 
     private val memory = ConcurrentHashMap<String, Resolved>()
@@ -241,10 +258,21 @@ object TmdbResolver {
      *  its `runCatching`, leaving the Cast/Trailers/Details/Related/Similar
      *  sections silently missing on every title. Suspending on IO here makes
      *  every present and future caller safe by construction. */
-    suspend fun apiGet(path: String, query: Map<String, String>): JSONObject? =
+    suspend fun apiGet(
+        path: String,
+        query: Map<String, String>,
+        language: String? = null,
+    ): JSONObject? =
         withContext(Dispatchers.IO) {
+            val lang = language ?: if (contentLanguage.isNotBlank() && !isLookupPath(path)) {
+                contentLanguage
+            } else {
+                ""
+            }
             for (key in API_KEYS) {
-                val params = query + ("api_key" to key)
+                val params = LinkedHashMap<String, String>(query)
+                if (lang.isNotBlank()) params["language"] = lang
+                params["api_key"] = key
                 val qs = params.entries.joinToString("&") { (k, v) ->
                     "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
                 }

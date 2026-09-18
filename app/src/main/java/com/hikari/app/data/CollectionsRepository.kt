@@ -161,18 +161,31 @@ class CollectionsRepository(private val manager: ProviderManager) {
             .filter { it.isNotBlank() }
             .joinToString(" · ")
         if (source.kind == CatalogSourceKind.TMDB) {
-            val preset = TmdbPresets.byKey(source.tmdbPreset) ?: return null
-            val items = withTimeoutOrNull(perCatalogTimeoutMs) { TmdbPresets.page(preset, 1) }
+            // A hand-built source (a studio, a network, a person, a custom
+            // discover query — see TmdbSources) carries its whole description
+            // in `tmdbSpec`; a built-in preset has only a key. Both run through
+            // the same pager, so a row behaves identically either way.
+            val spec = source.spec ?: TmdbPresets.byKey(source.tmdbPreset)?.let { preset ->
+                TmdbSpec(
+                    type = TmdbSourceType.PRESET,
+                    preset = preset.key,
+                    media = if (preset.isMovie) "movie" else "tv",
+                )
+            } ?: return null
+            val items = withTimeoutOrNull(perCatalogTimeoutMs) { TmdbSources.page(spec, 1) }
                 .orEmpty().distinctBy { it.uniqueId }
             if (items.isEmpty()) return null
             return CatalogRow(
                 providerId = "tmdb",
                 providerName = breadcrumb,
-                title = preset.name,
+                // The user's own name wins; otherwise ask the source (a preset
+                // answers from its own list without a request).
+                title = if (source.title.isNotBlank()) source.title
+                else TmdbSources.displayName(spec),
                 items = items,
                 key = "coll|${collection.id}|${folder.id}|${source.key}",
                 catalogId = source.key,
-                type = preset.kind,
+                type = spec.kind,
                 rawType = "tmdb",
             )
         }

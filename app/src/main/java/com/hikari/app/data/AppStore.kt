@@ -106,6 +106,27 @@ class AppStore(private val ctx: Context) {
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
         val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
         val APP_ICON = stringPreferencesKey("appIcon")
+        /** Language TMDB titles are shown in. "" = follow the app language,
+         *  "none" = leave TMDB on English, otherwise a TMDB code ("es-ES"). */
+        val TMDB_LANGUAGE = stringPreferencesKey("tmdbLanguage")
+        /** Key of the app-wide font (see [com.hikari.app.ui.AppFonts]). */
+        val APP_FONT = stringPreferencesKey("appFont")
+        /** File name (inside filesDir/fonts) of a font the user imported. */
+        val APP_FONT_FILE = stringPreferencesKey("appFontFile")
+        /** The imported font's own display name, for Settings. */
+        val APP_FONT_LABEL = stringPreferencesKey("appFontLabel")
+        /** The user's Library categories ([LibraryCategory] JSON array). */
+        val LIBRARY_CATEGORIES = stringPreferencesKey("libraryCategories")
+        /** uniqueId → category ids ([favoriteCategories]). */
+        val FAVORITE_CATEGORIES = stringPreferencesKey("favoriteCategories")
+        /** Poster & icon styling (see [com.hikari.app.ui.PosterStyle]). */
+        val POSTER_BLUR = intPreferencesKey("posterBlur")
+        val POSTER_CORNER = intPreferencesKey("posterCorner")
+        val POSTER_SHOW_TITLES = booleanPreferencesKey("posterShowTitles")
+        val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
+        val POSTER_GLASS = booleanPreferencesKey("posterGlass")
+        /** Bottom navigation bar layout: "classic" | "floating" | "borderless". */
+        val NAV_STYLE = stringPreferencesKey("navBarStyle")
     }
 
     // ---- The launcher icon the user picked (see AppIconManager) ----
@@ -121,6 +142,175 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppIcon(key: String) {
         store.edit { it[K.APP_ICON] = key }
+    }
+
+    // ---- Title language for TMDB metadata ----
+    // The app language already localises Hikari's own interface; this decides
+    // whether TMDB's titles and descriptions follow it too. "" = follow the app
+    // language, "none" = stay on English, otherwise an explicit TMDB code.
+
+    fun tmdbLanguageFlow(): Flow<String> =
+        store.data.map { it[K.TMDB_LANGUAGE] ?: "" }
+
+    suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
+
+    suspend fun setTmdbLanguage(mode: String) {
+        store.edit { it[K.TMDB_LANGUAGE] = mode.trim() }
+    }
+
+    // ---- App-wide font (Settings → Appearance → Font) ----
+
+    /** Key of the chosen font in [com.hikari.app.ui.AppFonts.CHOICES]. */
+    fun appFontFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT] ?: com.hikari.app.ui.AppFonts.DEFAULT }
+
+    suspend fun appFont(): String = appFontFlow().first()
+
+    suspend fun setAppFont(key: String) {
+        store.edit { it[K.APP_FONT] = key }
+    }
+
+    /** File name (inside `filesDir/fonts`) of a font the user imported, or "".
+     *  Only meaningful while [appFontFlow] is [com.hikari.app.ui.AppFonts.IMPORTED]. */
+    fun appFontFileFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT_FILE] ?: "" }
+
+    suspend fun appFontFile(): String = appFontFileFlow().first()
+
+    /** The imported font's own name (the file's `familyName`), for Settings. */
+    fun appFontLabelFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT_LABEL] ?: "" }
+
+    suspend fun appFontLabel(): String = appFontLabelFlow().first()
+
+    suspend fun setImportedFont(fileName: String, label: String) {
+        store.edit {
+            it[K.APP_FONT_FILE] = fileName
+            it[K.APP_FONT_LABEL] = label
+        }
+    }
+
+    // ---- Library categories ----
+
+    /** The categories that exist right now (seeded with four on first read). */
+    fun libraryCategoriesFlow(): Flow<List<LibraryCategory>> =
+        store.data.map { parseCategories(it[K.LIBRARY_CATEGORIES]) }
+
+    suspend fun libraryCategories(): List<LibraryCategory> = libraryCategoriesFlow().first()
+
+    suspend fun saveLibraryCategories(list: List<LibraryCategory>) {
+        store.edit { it[K.LIBRARY_CATEGORIES] = encodeCategories(list) }
+    }
+
+    suspend fun addLibraryCategory(name: String): LibraryCategory {
+        val c = LibraryCategory(newId("cat"), name.trim())
+        saveLibraryCategories(libraryCategories() + c)
+        return c
+    }
+
+    /** Renames a category in place — every title filed under it follows. */
+    suspend fun renameLibraryCategory(id: String, name: String) {
+        saveLibraryCategories(
+            libraryCategories().map { if (it.id == id) it.copy(name = name.trim()) else it }
+        )
+    }
+
+    /** Deletes a category and unfiles every title that was in it. */
+    suspend fun removeLibraryCategory(id: String) {
+        saveLibraryCategories(libraryCategories().filter { it.id != id })
+        store.edit { prefs ->
+            val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES])
+            prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(
+                cur.mapValues { (_, set) -> set - id }.filterValues { it.isNotEmpty() }
+            )
+        }
+    }
+
+    /** Title uniqueId → the category ids it is filed under. */
+    fun favoriteCategoriesFlow(): Flow<Map<String, Set<String>>> =
+        store.data.map { parseCategoryMap(it[K.FAVORITE_CATEGORIES]) }
+
+    suspend fun favoriteCategories(): Map<String, Set<String>> = favoriteCategoriesFlow().first()
+
+    /** Replaces one title's filing. An empty set simply forgets the title. */
+    suspend fun setFavoriteCategories(uniqueId: String, categories: Set<String>) {
+        if (uniqueId.isBlank()) return
+        store.edit { prefs ->
+            val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES]).toMutableMap()
+            if (categories.isEmpty()) cur.remove(uniqueId) else cur[uniqueId] = categories
+            prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(cur)
+        }
+    }
+
+    /** Adds categories to whatever a title is already filed under (the
+     *  "Add to library" prompt must never silently unfile something). */
+    suspend fun addFavoriteCategories(uniqueId: String, categories: Set<String>) {
+        if (uniqueId.isBlank() || categories.isEmpty()) return
+        val cur = favoriteCategories()[uniqueId].orEmpty()
+        setFavoriteCategories(uniqueId, cur + categories)
+    }
+
+    // ---- Poster & icon styling ----
+
+    /** Backdrop blur radius in dp behind a poster (0 = the plain art). */
+    fun posterBlurFlow(): Flow<Int> =
+        store.data.map { (it[K.POSTER_BLUR] ?: 0).coerceIn(0, 24) }
+
+    suspend fun posterBlur(): Int = posterBlurFlow().first()
+
+    suspend fun setPosterBlur(value: Int) {
+        store.edit { it[K.POSTER_BLUR] = value.coerceIn(0, 24) }
+    }
+
+    /** Poster corner rounding in dp. */
+    fun posterCornerFlow(): Flow<Int> =
+        store.data.map { (it[K.POSTER_CORNER] ?: 14).coerceIn(0, 28) }
+
+    suspend fun posterCorner(): Int = posterCornerFlow().first()
+
+    suspend fun setPosterCorner(value: Int) {
+        store.edit { it[K.POSTER_CORNER] = value.coerceIn(0, 28) }
+    }
+
+    fun posterShowTitlesFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_TITLES] ?: true }
+
+    suspend fun posterShowTitles(): Boolean = posterShowTitlesFlow().first()
+
+    suspend fun setPosterShowTitles(show: Boolean) {
+        store.edit { it[K.POSTER_SHOW_TITLES] = show }
+    }
+
+    fun posterShowRatingsFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: false }
+
+    suspend fun posterShowRatings(): Boolean = posterShowRatingsFlow().first()
+
+    suspend fun setPosterShowRatings(show: Boolean) {
+        store.edit { it[K.POSTER_SHOW_RATINGS] = show }
+    }
+
+    /** The glass hairline + soft sheen over every poster. */
+    fun posterGlassFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_GLASS] ?: true }
+
+    suspend fun posterGlass(): Boolean = posterGlassFlow().first()
+
+    suspend fun setPosterGlass(on: Boolean) {
+        store.edit { it[K.POSTER_GLASS] = on }
+    }
+
+    // ---- Bottom navigation bar layout ----
+
+    /** "classic" (the seamless bar), "floating" (a detached glass pill) or
+     *  "borderless" (flat, edge to edge, no ring). */
+    fun navStyleFlow(): Flow<String> =
+        store.data.map { it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.FLOATING }
+
+    suspend fun navStyle(): String = navStyleFlow().first()
+
+    suspend fun setNavStyle(style: String) {
+        store.edit { it[K.NAV_STYLE] = style }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----
@@ -659,6 +849,68 @@ class AppStore(private val ctx: Context) {
         }
     }
 
+    // ---- Library categories (encode/parse) ----
+
+    private fun encodeCategories(list: List<LibraryCategory>): String {
+        val arr = JSONArray()
+        for (c in list) {
+            arr.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("name", c.name)
+                    .put("built", c.builtIn)
+            )
+        }
+        return arr.toString()
+    }
+
+    /** A missing value means "never configured" and yields the four defaults;
+     *  an explicitly empty array means the user deleted them all. */
+    private fun parseCategories(s: String?): List<LibraryCategory> {
+        if (s == null) return LibraryCategory.DEFAULTS
+        if (s.isBlank()) return LibraryCategory.DEFAULTS
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                val name = o.optString("name")
+                if (id.isBlank() || name.isBlank()) null
+                else LibraryCategory(id, name, o.optBoolean("built", false))
+            }
+        } catch (e: Exception) {
+            LibraryCategory.DEFAULTS
+        }
+    }
+
+    private fun encodeCategoryMap(map: Map<String, Set<String>>): String {
+        val obj = JSONObject()
+        for ((k, v) in map) {
+            if (v.isEmpty()) continue
+            val arr = JSONArray()
+            for (c in v) arr.put(c)
+            obj.put(k, arr)
+        }
+        return obj.toString()
+    }
+
+    private fun parseCategoryMap(s: String?): Map<String, Set<String>> {
+        if (s.isNullOrBlank()) return emptyMap()
+        return try {
+            val obj = JSONObject(s)
+            val out = LinkedHashMap<String, Set<String>>()
+            obj.keys().forEach { k ->
+                val arr = obj.optJSONArray(k) ?: return@forEach
+                val set = HashSet<String>()
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { set.add(it) }
+                if (set.isNotEmpty()) out[k] = set
+            }
+            out
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
     // ---- Userscripts (run inside the WebView only) ----
 
     fun userscriptsFlow(): Flow<List<Userscript>> =
@@ -839,7 +1091,13 @@ class AppStore(private val ctx: Context) {
     }
 
     suspend fun removeFavorite(id: String) {
-        store.edit { it[K.FAVORITES] = encodeMedia(favorites().filter { f -> f.uniqueId != id }) }
+        store.edit { prefs ->
+            prefs[K.FAVORITES] = encodeMedia(parseMedia(prefs[K.FAVORITES]).filter { f -> f.uniqueId != id })
+            // Unfiling the title is part of removing it: leaving the mapping
+            // behind would file the NEXT title saved under the same id.
+            val cats = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES]).toMutableMap()
+            if (cats.remove(id) != null) prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(cats)
+        }
     }
 
     fun sitesFlow(): Flow<List<Site>> =
@@ -1214,6 +1472,7 @@ class AppStore(private val ctx: Context) {
                             .put("type", s.type.name)
                             .put("raw", s.rawType)
                             .put("preset", s.tmdbPreset)
+                            .put("spec", s.tmdbSpec)
                     )
                 }
                 folders.put(
@@ -1267,12 +1526,14 @@ class AppStore(private val ctx: Context) {
                                         .getOrDefault(MediaType.UNKNOWN),
                                     rawType = so.optString("raw"),
                                     tmdbPreset = so.optString("preset"),
+                                    tmdbSpec = so.optString("spec"),
                                 )
                                 // A source that can't resolve to anything is a
                                 // row that would never load: drop it, but keep
                                 // the folder itself.
                                 val usable = if (kind == CatalogSourceKind.TMDB) {
-                                    TmdbPresets.byKey(source.tmdbPreset) != null
+                                    TmdbPresets.byKey(source.tmdbPreset) != null ||
+                                        (source.spec?.type != null)
                                 } else {
                                     source.providerId.isNotBlank() && source.catalogId.isNotBlank()
                                 }
@@ -1301,6 +1562,7 @@ class AppStore(private val ctx: Context) {
                     .put("poster", m.posterUrl ?: "")
                     .put("year", m.year ?: 0)
                     .put("overview", m.overview ?: "")
+                    .put("rating", m.rating ?: 0.0)
             )
         }
         return arr.toString()
@@ -1321,6 +1583,7 @@ class AppStore(private val ctx: Context) {
                     posterUrl = o.optString("poster").ifBlank { null },
                     year = o.optInt("year", 0).takeIf { it > 0 },
                     overview = o.optString("overview").ifBlank { null },
+                    rating = o.optDouble("rating", 0.0).takeIf { it > 0.0 },
                 )
             }
         } catch (e: Exception) {

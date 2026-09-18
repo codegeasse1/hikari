@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Density
 
 enum class HikariThemeMode(val key: String, val label: String) {
@@ -113,6 +114,9 @@ fun HikariTheme(
     accent: HikariAccent = HikariAccent.DEFAULT_APP,
     uiScaleEnabled: Boolean = false,
     uiScale: Float = 1f,
+    /** The app-wide font (Settings → Appearance → Font); null keeps the stock
+     *  Material scale, which is what "System default" means. */
+    fontFamily: FontFamily? = null,
     content: @Composable () -> Unit,
 ) {
     // In-app UI scale. When ON, this replaces the phone's Font size AND Display
@@ -153,7 +157,7 @@ fun HikariTheme(
     ) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = Typography,
+            typography = typographyWith(fontFamily),
             content = content,
         )
     }

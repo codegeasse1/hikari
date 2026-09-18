@@ -106,6 +106,10 @@ data class MediaItem(
      *  protocol puts this literal string in /catalog /meta /stream URLs, and
      *  many addons refuse requests sent with a different type segment. */
     val rawType: String = "",
+    /** TMDB's `vote_average` (0–10) when the item came from TMDB — what the
+     *  poster's optional rating badge shows. Null for extension items, whose
+     *  catalogs never carry a score. */
+    val rating: Double? = null,
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
 }
@@ -267,10 +271,50 @@ data class CatalogSource(
     val rawType: String = "",
     /** [CatalogSourceKind.TMDB] only: the key of a [com.hikari.app.data.TmdbPresets] entry. */
     val tmdbPreset: String = "",
+    /**
+     * [CatalogSourceKind.TMDB] only: a hand-built TMDB source (a public list, a
+     * production company, a network, a collection, a person, a director, or a
+     * custom discover query) as JSON — see [TmdbSpec]. Blank for a preset, so
+     * collections saved before this existed keep working untouched.
+     */
+    val tmdbSpec: String = "",
 ) {
+    /** The hand-built source behind this entry, or null for a plain preset. */
+    val spec: TmdbSpec? get() = if (kind == CatalogSourceKind.TMDB) TmdbSpec.decode(tmdbSpec) else null
+
     val key: String
-        get() = if (kind == CatalogSourceKind.TMDB) "tmdb|$tmdbPreset"
+        get() = if (kind == CatalogSourceKind.TMDB)
+            "tmdb|" + tmdbSpec.ifBlank { tmdbPreset }
         else "prov|$providerId|$type|$catalogId"
+}
+
+/**
+ * One category a Library title is filed under (Movies, Series, Action, Romance,
+ * or any name the user invents).
+ *
+ * [id] is stable and never shown; renaming a category keeps every title filed
+ * under it. [builtIn] marks the four categories a fresh install starts with, so
+ * Settings can offer to restore them without resurrecting a deleted custom one.
+ */
+data class LibraryCategory(
+    val id: String,
+    val name: String,
+    val builtIn: Boolean = false,
+) {
+    companion object {
+        const val MOVIES = "cat-movies"
+        const val SERIES = "cat-series"
+        const val ACTION = "cat-action"
+        const val ROMANCE = "cat-romance"
+
+        /** What a brand-new install starts with. */
+        val DEFAULTS: List<LibraryCategory> = listOf(
+            LibraryCategory(MOVIES, "Movies", builtIn = true),
+            LibraryCategory(SERIES, "Series", builtIn = true),
+            LibraryCategory(ACTION, "Action", builtIn = true),
+            LibraryCategory(ROMANCE, "Romance", builtIn = true),
+        )
+    }
 }
 
 /**

@@ -119,6 +119,10 @@ object Routes {
     const val COLLECTION_VIEW = "collection-view?cid={cid}&fid={fid}"
     const val COLLECTION_GRID = "collection-grid?cid={cid}"
     const val TMDB_GRID = "tmdb-grid?preset={preset}&title={title}"
+    /** One hand-built TMDB source (a studio, a network, a person, a custom
+     *  discover query…) as a full grid. The spec is JSON in the query string,
+     *  the same way a detail route carries its poster. */
+    const val TMDB_GRID_SPEC = "tmdb-grid-spec?spec={spec}&title={title}"
 
     fun collectionView(collectionId: String, folderId: String = ""): String =
         "collection-view?cid=${Uri.encode(collectionId)}&fid=${Uri.encode(folderId)}"
@@ -129,6 +133,10 @@ object Routes {
 
     fun tmdbGrid(presetKey: String, title: String): String =
         "tmdb-grid?preset=${Uri.encode(presetKey)}&title=${Uri.encode(title)}"
+
+    /** Opens one saved [com.hikari.app.data.TmdbSpec] as a full grid. */
+    fun tmdbGridSpec(specJson: String, title: String): String =
+        "tmdb-grid-spec?spec=${Uri.encode(specJson)}&title=${Uri.encode(title)}"
 
     fun catalog(
         providerId: String,
@@ -214,10 +222,34 @@ object Routes {
 }
 
 
+/**
+ * The bottom bar's three looks (Settings → Appearance → Navigation bar).
+ *
+ * They differ only in the chrome around the same row of tabs: a floating glass
+ * pill (the app's original look), a seamless edge-to-edge plate, and a
+ * completely transparent bar that lets the page show through behind the icons.
+ */
+object NavStyles {
+    const val CLASSIC = "classic"
+    const val FLOATING = "floating"
+    const val BORDERLESS = "borderless"
+
+    data class Option(val key: String, val label: String, val blurb: String)
+
+    val ALL = listOf(
+        Option(FLOATING, "Floating", "A rounded glass pill that hovers above the page."),
+        Option(CLASSIC, "Classic", "Edge-to-edge, flush with the bottom of the screen."),
+        Option(BORDERLESS, "Borderless", "No plate at all — just the icons over the page."),
+    )
+
+    fun labelOf(key: String): String = ALL.firstOrNull { it.key == key }?.label ?: "Floating"
+}
+
 @Composable
 private fun AppBottomBar(
     currentRoute: String?,
     hidden: Set<String>,
+    navStyle: String = NavStyles.FLOATING,
     onNavigate: (String) -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -241,24 +273,34 @@ private fun AppBottomBar(
     // The bar is a floating glass pill: semi-transparent so the page (and its
     // top glow) shows through, ringed by the same hairline every card uses.
     val glass = rememberGlassTokens()
+    val floating = navStyle == NavStyles.FLOATING
     Box(
         Modifier
             .fillMaxWidth()
             // Keep the floating bar clear of the gesture/navigation bar when the
             // system bars are visible (they are hidden while immersive, so this
             // is 0 in the normal case and simply lifts the bar when they show).
+            // The seamless layouts only keep that inset — the plate itself is
+            // flush with the screen edges on purpose.
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(
+                horizontal = if (floating) 12.dp else 0.dp,
+                vertical = if (floating) 10.dp else 0.dp,
+            )
     ) {
         Surface(
-            shape = RoundedCornerShape(26.dp),
-            color = if (glass.dark) {
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
-            } else {
-                MaterialTheme.colorScheme.surface
+            shape = if (floating) RoundedCornerShape(26.dp) else RoundedCornerShape(0.dp),
+            color = when (navStyle) {
+                NavStyles.BORDERLESS -> Color.Transparent
+                NavStyles.CLASSIC -> MaterialTheme.colorScheme.surface
+                else -> if (glass.dark) {
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+                } else {
+                    MaterialTheme.colorScheme.surface
+                }
             },
-            border = BorderStroke(1.dp, glass.border),
-            shadowElevation = if (glass.dark) 0.dp else 8.dp,
+            border = if (floating) BorderStroke(1.dp, glass.border) else null,
+            shadowElevation = if (floating && !glass.dark) 8.dp else 0.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -348,6 +390,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // Which taskbar buttons to draw (Settings → Appearance → Taskbar buttons).
     val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
+    // How the bar itself is drawn (Settings → Appearance → Navigation bar).
+    val navStyleFlow = remember { app.store.navStyleFlow() }
+    val navStyle by navStyleFlow.collectAsState(initial = NavStyles.FLOATING)
     LaunchedEffect(homeRequest) {
         if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
     }
@@ -434,6 +479,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 AppBottomBar(
                     currentRoute = tabRoute,
                     hidden = hiddenTabs,
+                    navStyle = navStyle,
                     onNavigate = { route -> Routes.navigateTab(nav, route) }
                 )
             }
@@ -495,6 +541,17 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val preset = Uri.decode(entry.arguments?.getString("preset").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 TmdbGridScreen(nav, preset, title)
+            }
+            composable(
+                route = Routes.TMDB_GRID_SPEC,
+                arguments = listOf(
+                    navArgument("spec") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val spec = Uri.decode(entry.arguments?.getString("spec").orEmpty())
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                TmdbGridScreen(nav, "", title, spec)
             }
             composable(
                 route = Routes.CATALOG,

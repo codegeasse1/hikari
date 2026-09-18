@@ -100,6 +100,7 @@ import com.hikari.app.data.ContentRepository.StreamLookup
 import com.hikari.app.data.CastMember
 import com.hikari.app.data.Episode
 import com.hikari.app.data.HistoryEntry
+import com.hikari.app.data.LibraryCategory
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
@@ -121,6 +122,7 @@ import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.openYouTubeVideo
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
@@ -1004,6 +1006,14 @@ fun DetailScreen(
     // title is (un)saved from the player or another screen while this is open.
     val favoritesFlow = remember { app.store.favoritesFlow() }
     val favorites by favoritesFlow.collectAsState(initial = emptyList())
+    // The Library's categories themselves, and which ones this title is filed
+    // under. Both are flows, so a category invented from inside the sheet — or
+    // a filing changed on the Library screen — is reflected here at once.
+    val categoriesFlow = remember { app.store.libraryCategoriesFlow() }
+    val categories by categoriesFlow.collectAsState(initial = LibraryCategory.DEFAULTS)
+    val filingsFlow = remember { app.store.favoriteCategoriesFlow() }
+    val filings by filingsFlow.collectAsState(initial = emptyMap())
+    var librarySheet by remember { mutableStateOf(false) }
 
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
@@ -1590,11 +1600,43 @@ fun DetailScreen(
         )
     }
     val isSaved = favorites.any { it.uniqueId == savedItem.uniqueId }
-    val toggleSaved: () -> Unit = {
-        scope.launch {
-            if (isSaved) app.store.removeFavorite(savedItem.uniqueId)
-            else app.store.addFavorite(savedItem)
-        }
+    // A title joins the Library THROUGH a category, so the button opens the
+    // picker rather than saving blind: "Add to library" asks which categories
+    // (the type-appropriate one is pre-ticked, so the common case is one tap),
+    // and an already-saved title re-files from the same sheet — the "Move to"
+    // of the Library screen, in the place the user actually is.
+    val savedCategories: Set<String> = filings[savedItem.uniqueId].orEmpty()
+    val defaultCategories: Set<String> = when (savedItem.type) {
+        MediaType.MOVIE -> setOf(LibraryCategory.MOVIES)
+        MediaType.SERIES -> setOf(LibraryCategory.SERIES)
+        else -> emptySet()
+    }
+    val openLibrary: () -> Unit = { librarySheet = true }
+
+    if (librarySheet) {
+        CategoryPickerSheet(
+            title = if (isSaved) tr("Move to") else tr("Add to library"),
+            subtitle = savedItem.title,
+            categories = categories,
+            selected = if (isSaved) savedCategories else defaultCategories,
+            confirmLabel = if (isSaved) tr("Done") else tr("Add to library"),
+            onConfirm = { picked ->
+                scope.launch {
+                    if (!isSaved) app.store.addFavorite(savedItem)
+                    app.store.setFavoriteCategories(savedItem.uniqueId, picked)
+                }
+                librarySheet = false
+            },
+            onCreateCategory = { name -> app.store.addLibraryCategory(name) },
+            removeLabel = tr("Remove from library"),
+            onRemove = if (isSaved) {
+                {
+                    scope.launch { app.store.removeFavorite(savedItem.uniqueId) }
+                    librarySheet = false
+                }
+            } else null,
+            onDismiss = { librarySheet = false },
+        )
     }
 
     // Arriving from watch history: once metadata/episodes are loaded, offer to
@@ -1787,7 +1829,7 @@ fun DetailScreen(
                         // MediaItem and the same store calls, so the two views
                         // can never disagree about what is saved.
                         if (isSaved) {
-                            FilledTonalButton(onClick = toggleSaved) {
+                            FilledTonalButton(onClick = openLibrary) {
                                 Icon(
                                     Icons.Filled.Favorite,
                                     contentDescription = null,
@@ -1797,7 +1839,7 @@ fun DetailScreen(
                                 Text(tr("Saved"))
                             }
                         } else {
-                            OutlinedButton(onClick = toggleSaved) {
+                            OutlinedButton(onClick = openLibrary) {
                                 Icon(
                                     Icons.Filled.FavoriteBorder,
                                     contentDescription = null,

@@ -302,6 +302,7 @@ object TmdbMeta {
                     overview = o.optString("overview").takeIf { it.isNotBlank() },
                     backdropUrl = backdrop,
                     rawType = "tmdb",
+                    rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
                 )
             )
         }
