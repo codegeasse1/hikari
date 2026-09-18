@@ -137,7 +137,7 @@ fun ChoiceDialog(
  * than a menu in one card and a list of radios in the next.
  *
  * Its rounding matches the settings pages' other inner boxes (14.dp — see
- * `SettingsBoxShape` in SettingsScreen.kt); this is the row the app-language
+ * `SettingsBoxShape` in SettingsChrome.kt); this is the row the app-language
  * card leads with on Appearance & Theme.
  */
 @Composable

@@ -37,9 +37,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Android
@@ -122,7 +120,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
@@ -146,6 +143,9 @@ import com.hikari.app.ui.components.ChoiceDialog
 import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.ChoiceRow
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.SettingsBoxShape
+import com.hikari.app.ui.components.SettingsIconBadge
+import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTabs
@@ -155,7 +155,6 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
-import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
@@ -163,26 +162,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withContext
-
-/**
- * One title size for EVERY folder header, so no page's heading looks bigger or
- * smaller than another's. 16.sp is the largest size that keeps the longest
- * folder name ("Personal Catalog creator") on one line beside the badge — and
- * it is exactly the size the index's folder rows use, so a folder's own page
- * never shouts louder than the row that opened it.
- */
-private val FOLDER_TITLE_SIZE = 16.sp
-
-/**
- * The corner radius of every box drawn INSIDE a settings folder: the outlined
- * action buttons, the preset chips, the row a picker leads with. The outer
- * setting box stays what it is ([SettingsCard]'s GlassCard, 26.dp) — but a
- * Material button defaults to a 50% capsule, and beside a 26.dp card that read
- * as two different designs on the same page. 14.dp is the same proportion of a
- * 40.dp button as 26.dp is of a 76.dp card, so everything inside a folder is
- * now rounded by one rule.
- */
-private val SettingsBoxShape = RoundedCornerShape(14.dp)
 
 @Composable
 private fun SettingsDivider() {
@@ -902,48 +881,14 @@ fun SettingsScreen(nav: NavHostController) {
 }
 
 /**
- * The round accent badge a settings row leads with: a circle of accent wash with
- * a hairline ring, so the icon reads as a glass token rather than a flat square.
- * One composable for every one of them, so the index, the folder headers and the
- * shortcut cards can never drift apart.
- */
-@Composable
-private fun SettingsIconBadge(icon: ImageVector, size: Dp = 46.dp) {
-    val accent = MaterialTheme.colorScheme.primary
-    Box(
-        Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(accent.copy(alpha = 0.14f))
-            .border(1.dp, accent.copy(alpha = 0.22f), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = accent,
-            modifier = Modifier.size(size * 0.46f),
-        )
-    }
-}
-
-/**
- * The folder page's own header: back button, the folder's badge, then its name
- * and one-line summary — all on a SINGLE line, so a folder page starts with the
- * same "icon, then what it is called" shape as the folder row that opened it,
- * and then the longer explanation underneath.
+ * The folder page's own header: the folder's badge, then its name and one-line
+ * summary, on the same line as the back button — so a folder starts with the
+ * same "icon, then what it is called" shape as the row that opened it.
  *
- * The name is one line by construction, not by hope: it uses one fixed size for
- * every folder ([FOLDER_TITLE_SIZE]) and ellipsises rather than wrapping, so no
- * folder's page looks bigger or smaller than another's. It is deliberately
- * *not* the largest text on the page — a one-line header that shares its line
- * with an icon has to be compact, and "Personal Catalog creator" at a display
- * size simply does not fit next to a badge on a phone. The summary keeps its
- * place under the name because the row has the height for it.
- *
- * [parentTitle] is set only when a sub-folder is open, and is printed as a
- * breadcrumb — "Appearance ›" — on the line ABOVE the badge row, not inside it:
- * the title needs every spare dp of that row to stay on one line.
+ * The layout, the one size every settings page's name is drawn at, and the
+ * reason for it all live in [SettingsPageHeader]; this is only the folder-shaped
+ * caller of it. [parentTitle] is set when a sub-folder is open, and is printed as
+ * a breadcrumb ("Appearance ›") on the line above the badge row.
  */
 @Composable
 private fun FolderHeader(
@@ -951,75 +896,14 @@ private fun FolderHeader(
     parentTitle: String? = null,
     onBack: () -> Unit,
 ) {
-    val glass = rememberGlassTokens()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(bottom = 4.dp)
-    ) {
-        if (parentTitle != null) {
-            Text(
-                tr(parentTitle) + " ›",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(8.dp))
-        }
-        // One line, always: back, badge, name, and the summary under the name.
-        // The name is weighted so it takes whatever the badge leaves and
-        // ellipsises there rather than moving anything onto a second row.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(glass.fillTop)
-                    .border(1.dp, glass.border, CircleShape)
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = tr("Back to settings"),
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            Spacer(Modifier.width(10.dp))
-            SettingsIconBadge(folder.icon, 40.dp)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr(folder.title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontSize = FOLDER_TITLE_SIZE,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    tr(folder.subtitle),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            tr(folder.blurb),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-    }
+    SettingsPageHeader(
+        title = tr(folder.title),
+        subtitle = tr(folder.subtitle),
+        blurb = tr(folder.blurb),
+        icon = folder.icon,
+        breadcrumb = parentTitle?.let { tr(it) + " ›" },
+        onBack = onBack,
+    )
 }
 
 /** One folder on the index — and one sub-folder inside a folder page: badge,

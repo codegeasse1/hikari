@@ -25,12 +25,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -58,6 +56,7 @@ import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
 
@@ -119,36 +118,15 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
         ),
     ) {
         item {
-            Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
-                            .clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = tr("Back to settings"),
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            tr("Player controls"),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            tr("Move or hide the player buttons"),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            // The same header as every settings folder page — one line, one
+            // title size (see SettingsPageHeader) — because this page is opened
+            // from one, and Reset has to share that line with the name.
+            SettingsPageHeader(
+                title = tr("Player controls"),
+                subtitle = tr("Move or hide the player buttons"),
+                blurb = tr("Buttons you never use can be hidden."),
+                onBack = onBack,
+                trailing = {
                     TextButton(
                         onClick = {
                             val next = PlayerControlsConfig.defaults()
@@ -162,16 +140,8 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             }
                         }
                     ) { Text(tr("Reset")) }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    tr("Buttons you never use can be hidden."),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-            }
+                },
+            )
         }
 
         item {
