@@ -4483,11 +4483,19 @@ private fun LazyListScope.repoGroup(
 
 @Composable
 private fun AddRepoButton(label: String, onClick: () -> Unit) {
+    // The button is pinned under the list, so on a tab that shows the floating
+    // taskbar it would otherwise sit behind it and be untappable. Lift it by the
+    // bar's height (0.dp on screens with no bar).
     Button(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(
+                start = 16.dp,
+                end = 16.dp,
+                top = 12.dp,
+                bottom = 12.dp + LocalTaskbarInset.current,
+            )
             .height(52.dp),
         shape = RoundedCornerShape(16.dp)
     ) {

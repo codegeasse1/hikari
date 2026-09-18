@@ -57,6 +57,7 @@ import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -86,7 +87,14 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        // Clear of the floating taskbar (0 when there is no bar): this page
+        // replaces the Settings list, so its last row has to clear the bar too.
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
     ) {
         item {
             Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {

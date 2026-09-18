@@ -55,6 +55,7 @@ import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
 
 /**
@@ -103,7 +104,15 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        // Clear of the floating taskbar (0 when there is no bar): this page
+        // replaces the Settings list, so it has to keep the last control out
+        // from under the bar itself.
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
     ) {
         item {
             Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {

@@ -73,8 +73,6 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -131,8 +129,10 @@ import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
+import com.hikari.app.ui.components.ChoiceDialog
+import com.hikari.app.ui.components.ChoiceItem
+import com.hikari.app.ui.components.ChoiceRow
 import com.hikari.app.ui.components.GlassCard
-import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTabs
@@ -485,29 +485,22 @@ fun SettingsScreen(nav: NavHostController) {
                                     },
                                     modifier = Modifier.clickable { themeMenuOpen = true }
                                 )
-                                DropdownMenu(
-                                    expanded = themeMenuOpen,
-                                    onDismissRequest = { themeMenuOpen = false }
-                                ) {
-                                    HikariThemeMode.entries.forEach { mode ->
-                                        DropdownMenuItem(
-                                            text = { Text(mode.label) },
-                                            onClick = {
-                                                themeKey = mode.key
-                                                themeMenuOpen = false
-                                                scope.launch { app.store.setTheme(mode.key) }
-                                            },
-                                            leadingIcon = {
-                                                if (themeKey == mode.key) {
-                                                    Icon(
-                                                        Icons.Filled.CheckCircle,
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-                                            }
-                                        )
-                                    }
+                                // A glass page of themes rather than a Material
+                                // dropdown, so picking one looks like picking a
+                                // language, a font or a DNS resolver.
+                                if (themeMenuOpen) {
+                                    ChoiceDialog(
+                                        title = tr("Theme"),
+                                        items = HikariThemeMode.entries.map {
+                                            ChoiceItem(it.key, it.label)
+                                        },
+                                        selectedKey = themeKey,
+                                        onPick = { pick ->
+                                            themeKey = pick
+                                            scope.launch { app.store.setTheme(pick) }
+                                        },
+                                        onDismiss = { themeMenuOpen = false },
+                                    )
                                 }
                             }
                         }
@@ -1405,6 +1398,7 @@ private fun FontCard(app: HikariApp) {
     val file by fileFlow.collectAsState(initial = "")
     val labelFlow = remember { app.store.appFontLabelFlow() }
     val importedLabel by labelFlow.collectAsState(initial = "")
+    var pickerOpen by remember { mutableStateOf(false) }
 
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -1436,23 +1430,12 @@ private fun FontCard(app: HikariApp) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(8.dp))
-        AppFonts.CHOICES.forEach { choice ->
-            FontRow(label = choice.label, selected = key == choice.key) {
-                if (key != choice.key) scope.launch { runCatching { app.store.setAppFont(choice.key) } }
-            }
-        }
-        if (file.isNotBlank()) {
-            FontRow(
-                label = AppFonts.labelFor(AppFonts.IMPORTED, importedLabel),
-                supporting = tr("Imported from your storage"),
-                selected = key == AppFonts.IMPORTED,
-            ) {
-                if (key != AppFonts.IMPORTED) {
-                    scope.launch { runCatching { app.store.setAppFont(AppFonts.IMPORTED) } }
-                }
-            }
-        }
+        Spacer(Modifier.height(10.dp))
+        ChoiceRow(
+            value = AppFonts.labelFor(key, importedLabel),
+            leadingIcon = Icons.Filled.TextFields,
+            onClick = { pickerOpen = true },
+        )
         Spacer(Modifier.height(10.dp))
         OutlinedButton(
             onClick = {
@@ -1475,38 +1458,28 @@ private fun FontCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
-}
 
-/** One radio row in the font picker. */
-@Composable
-private fun FontRow(
-    label: String,
-    selected: Boolean,
-    supporting: String? = null,
-    onClick: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = onClick)
-        Column(Modifier.weight(1f)) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            if (!supporting.isNullOrBlank()) {
-                Text(
-                    supporting,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("App font"),
+            items = buildList {
+                AppFonts.CHOICES.forEach { choice -> add(ChoiceItem(choice.key, choice.label)) }
+                if (file.isNotBlank()) {
+                    add(
+                        ChoiceItem(
+                            key = AppFonts.IMPORTED,
+                            label = AppFonts.labelFor(AppFonts.IMPORTED, importedLabel),
+                            supporting = tr("Imported from your storage"),
+                        )
+                    )
+                }
+            },
+            selectedKey = key,
+            onPick = { picked ->
+                if (picked != key) scope.launch { runCatching { app.store.setAppFont(picked) } }
+            },
+            onDismiss = { pickerOpen = false },
+        )
     }
 }
 
@@ -1769,6 +1742,8 @@ private fun NavBarCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val styleFlow = remember { app.store.navStyleFlow() }
     val style by styleFlow.collectAsState(initial = NavStyles.ANIMATED)
+    var pickerOpen by remember { mutableStateOf(false) }
+    val chosen = NavStyles.ALL.firstOrNull { it.key == style } ?: NavStyles.ALL.first()
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1782,32 +1757,23 @@ private fun NavBarCard(app: HikariApp) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(4.dp))
-        NavStyles.ALL.forEach { option ->
-            val on = style == option.key
-            val pick = { scope.launch { runCatching { app.store.setNavStyle(option.key) } } }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { pick() },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = on, onClick = { pick() })
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        tr(option.label),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        tr(option.blurb),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+        Spacer(Modifier.height(10.dp))
+        ChoiceRow(
+            value = tr(chosen.label),
+            supporting = tr(chosen.blurb),
+            leadingIcon = Icons.Filled.Dashboard,
+            onClick = { pickerOpen = true },
+        )
+    }
+
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Navigation bar"),
+            items = NavStyles.ALL.map { ChoiceItem(it.key, tr(it.label), tr(it.blurb)) },
+            selectedKey = style,
+            onPick = { pick -> scope.launch { runCatching { app.store.setNavStyle(pick) } } },
+            onDismiss = { pickerOpen = false },
+        )
     }
 }
 
@@ -1828,6 +1794,33 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
     val flow = remember { app.store.tmdbLanguageFlow() }
     val saved by flow.collectAsState(initial = "")
     val followed = TmdbLang.forAppLanguage(appLanguage)
+    var pickerOpen by remember { mutableStateOf(false) }
+    val currentLabel = when {
+        saved.isBlank() -> tr("Follow app language")
+        saved == "none" -> tr("Off (TMDB default)")
+        else -> TmdbLang.CHOICES.firstOrNull { it.first == saved }?.second ?: saved
+    }
+    val items = buildList {
+        add(
+            ChoiceItem(
+                key = "",
+                label = tr("Follow app language"),
+                supporting = if (followed.isBlank()) {
+                    tr("No TMDB translation for the current app language — English is used.")
+                } else {
+                    tr("Currently") + ": " + followed
+                },
+            )
+        )
+        add(
+            ChoiceItem(
+                key = "none",
+                label = tr("Off (TMDB default)"),
+                supporting = tr("Keep the titles exactly as TMDB releases them."),
+            )
+        )
+        TmdbLang.CHOICES.forEach { (code, name) -> add(ChoiceItem(code, name, code)) }
+    }
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1842,65 +1835,23 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(4.dp))
-        NavOptionRow(
-            label = tr("Follow app language"),
-            supporting = if (followed.isBlank()) {
-                tr("No TMDB translation for the current app language — English is used.")
-            } else {
-                tr("Currently") + ": " + followed
-            },
-            selected = saved.isBlank(),
-            onClick = { scope.launch { runCatching { app.store.setTmdbLanguage("") } } },
+        Spacer(Modifier.height(10.dp))
+        ChoiceRow(
+            value = currentLabel,
+            supporting = if (saved.isBlank() && followed.isNotBlank()) tr("Currently") + ": " + followed else null,
+            leadingIcon = Icons.Filled.Translate,
+            onClick = { pickerOpen = true },
         )
-        NavOptionRow(
-            label = tr("Off (TMDB default)"),
-            supporting = tr("Keep the titles exactly as TMDB releases them."),
-            selected = saved == "none",
-            onClick = { scope.launch { runCatching { app.store.setTmdbLanguage("none") } } },
-        )
-        Spacer(Modifier.height(6.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-        Spacer(Modifier.height(6.dp))
-        TmdbLang.CHOICES.forEach { (code, name) ->
-            NavOptionRow(
-                label = name,
-                supporting = code,
-                selected = saved == code,
-                onClick = { scope.launch { runCatching { app.store.setTmdbLanguage(code) } } },
-            )
-        }
     }
-}
 
-/** A radio row used by the navigation-bar and title-language pickers. */
-@Composable
-private fun NavOptionRow(
-    label: String,
-    supporting: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = onClick)
-        Column(Modifier.weight(1f)) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                supporting,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Title language (TMDB)"),
+            items = items,
+            selectedKey = saved,
+            onPick = { pick -> scope.launch { runCatching { app.store.setTmdbLanguage(pick) } } },
+            onDismiss = { pickerOpen = false },
+        )
     }
 }
 
@@ -2057,6 +2008,7 @@ private fun DnsModeCard(app: HikariApp) {
     var testing by remember { mutableStateOf(false) }
     var testReason by remember { mutableStateOf<String?>(null) }
     var testRan by remember { mutableStateOf(false) }
+    var pickerOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         providerKey = app.store.dnsProvider()
@@ -2123,20 +2075,16 @@ private fun DnsModeCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-
-        DnsProviders.ALL.forEach { entry ->
-            NavOptionRow(
-                label = tr(entry.label),
-                supporting = when {
-                    entry.key == DnsProviders.CUSTOM && endpoint != null -> endpoint.url
-                    entry.key == DnsProviders.CUSTOM -> tr("Point Hikari at any DNS-over-HTTPS address you like.")
-                    else -> tr(entry.note)
-                },
-                selected = providerKey == entry.key,
-                onClick = { select(entry.key) },
-            )
-        }
+        ChoiceRow(
+            value = tr(chosen.label),
+            supporting = when {
+                chosen.key == DnsProviders.CUSTOM && endpoint != null -> endpoint.url
+                chosen.key == DnsProviders.CUSTOM -> tr("Point Hikari at any DNS-over-HTTPS address you like.")
+                else -> tr(chosen.note)
+            },
+            leadingIcon = Icons.Filled.Public,
+            onClick = { pickerOpen = true },
+        )
 
         if (providerKey == DnsProviders.CUSTOM) {
             Spacer(Modifier.height(6.dp))
@@ -2207,6 +2155,16 @@ private fun DnsModeCard(app: HikariApp) {
             } else {
                 TextButton(onClick = { runTest() }) { Text(tr("Test")) }
             }
+        }
+
+        if (pickerOpen) {
+            ChoiceDialog(
+                title = tr("DNS mode"),
+                items = DnsProviders.ALL.map { ChoiceItem(it.key, tr(it.label), tr(it.note)) },
+                selectedKey = providerKey,
+                onPick = { select(it) },
+                onDismiss = { pickerOpen = false },
+            )
         }
     }
 }
@@ -2571,8 +2529,6 @@ private fun LanguageCard(app: HikariApp, current: String) {
     // nonsense) in every language but English.
     val systemLabel = "System default (English)"
     val selectedName = if (selected.tag.isBlank()) systemLabel else selected.name
-    val glass = rememberGlassTokens()
-    val pillShape = RoundedCornerShape(16.dp)
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -2587,93 +2543,36 @@ private fun LanguageCard(app: HikariApp, current: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(pillShape)
-                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
-                .border(1.dp, glass.border, pillShape)
-                .clickable { pickerOpen = true }
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Filled.Translate,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                selected.flag,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                selectedName,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        // The pattern every "pick one of several" setting in the app follows:
+        // one glass row showing what is in use, tapping it opens a scrollable
+        // glass page of choices (see ChoiceRow/ChoiceDialog).
+        ChoiceRow(
+            value = selectedName,
+            leadingIcon = Icons.Filled.Translate,
+            leadingText = selected.flag,
+            onClick = { pickerOpen = true },
+        )
     }
 
-    // The picker is a glass panel like every other surface in the app (it used
-    // to be a bare Material dropdown, which looked nothing like Hikari), and a
-    // whole-panel tap-to-dismiss target so cancelling never needs a precise aim.
     if (pickerOpen) {
-        GlassDialog(
-            onDismiss = { pickerOpen = false },
+        ChoiceDialog(
             title = tr("Choose a language"),
-        ) {
-            LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                items(LanguageManager.ALL.size) { index ->
-                    val lang = LanguageManager.ALL[index]
-                    val isOn = lang.tag == selected.tag
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                                else Color.Transparent
-                            )
-                            .clickable {
-                                pickerOpen = false
-                                // Persist FIRST (in memory + on the app scope), then
-                                // hand the locale to the platform: the apply recreates
-                                // the activity, and a write launched on the dying
-                                // composition's scope was cancelled by it — which is
-                                // why the same language had to be picked twice.
-                                LanguageManager.choose(app, lang.tag)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(lang.flag, style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            if (lang.tag.isBlank()) systemLabel else lang.name,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isOn) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (isOn) {
-                            Icon(
-                                Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                }
-            }
-        }
+            items = LanguageManager.ALL.map {
+                ChoiceItem(
+                    key = it.tag,
+                    label = if (it.tag.isBlank()) systemLabel else it.name,
+                    leading = it.flag,
+                )
+            },
+            selectedKey = selected.tag,
+            // Persist FIRST (in memory + on the app scope), then hand the locale
+            // to the platform: the apply recreates the activity, and a write
+            // launched on the dying composition's scope was cancelled by it —
+            // which is why the same language had to be picked twice.
+            onPick = { tag -> LanguageManager.choose(app, tag) },
+            onDismiss = { pickerOpen = false },
+            maxHeight = 420.dp,
+        )
     }
 }
 
@@ -3684,37 +3583,6 @@ private fun VideoEnhanceCard(app: HikariApp) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                EnhancePreset.entries.forEach { p ->
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(p.label)
-                                Text(
-                                    p.desc,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        },
-                        onClick = {
-                            menuOpen = false
-                            scope.launch {
-                                runCatching { app.store.setEnhancePreset(p.key) }
-                            }
-                        },
-                        leadingIcon = {
-                            if (p == preset) {
-                                Icon(
-                                    Icons.Filled.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    )
-                }
-            }
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -3722,6 +3590,23 @@ private fun VideoEnhanceCard(app: HikariApp) {
                 I18n.t("are applied with no quality loss to the source."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    // Eight presets with a description each: a glass page of choices beats a
+    // wall of a Material dropdown menu, and it matches every other "pick one"
+    // setting in the app.
+    if (menuOpen) {
+        ChoiceDialog(
+            title = tr("Video enhance"),
+            items = EnhancePreset.entries.map {
+                ChoiceItem(it.key, tr(it.label), tr(it.desc))
+            },
+            selectedKey = preset.key,
+            onPick = { pick ->
+                scope.launch { runCatching { app.store.setEnhancePreset(pick) } }
+            },
+            onDismiss = { menuOpen = false },
         )
     }
 }

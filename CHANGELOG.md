@@ -1,3 +1,10 @@
+## 0.5.18
+
+Test build — everything here is a polish pass on what 0.5.17 shipped.
+
+- Every "pick one of several" setting in the app now works the same way: one row showing what is in use, and tapping it opens a scrollable panel of choices with the current one ticked. That is the app language, App font, Title language (TMDB), DNS mode, Video enhance preset, Navigation bar layout and Theme. It used to be a wall of radio buttons inside the card for the long ones (DNS mode was eleven rows, the TMDB language list over thirty), which pushed everything else off the page.
+- Nothing is trapped behind the floating bottom bar any more. "Add repo" / "Add Stremio addon" on the extensions screen sat under the bar and could not be tapped; the same for the last rows on the Logs & diagnostics and Player controls pages. Every page that shows the bar now keeps its last row clear of it, and the choice panels inside them scroll clear too.
+
 ## 0.5.17
 
 The last release you got was 0.5.6 — everything below has landed since then. The builds in between were test builds, so every fix here comes out of actually using them.
