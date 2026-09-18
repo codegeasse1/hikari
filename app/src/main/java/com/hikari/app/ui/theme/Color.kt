@@ -31,7 +31,18 @@ val HikariLightMuted = Color(0xFF5F5B52)
 // (the gradient itself is drawn by AppRoot when this theme is active).
 val GlassBackground = Color.Transparent
 val GlassSurface = Color(0xCC171E38)
-val GlassSurfaceVariant = Color(0x2EFFFFFF)
+// A translucent navy, not the translucent WHITE this used to be. Its whole job
+// is to be the theme's `surfaceVariant`/`primaryContainer` — the slightly
+// lighter panel behind a chip, a placeholder or a small button — and every
+// caller pairs it with the theme's light `onSurface` ink. As white it only
+// worked while it stayed very see-through; anywhere a caller raised its alpha
+// to make a solid pill (`.copy(alpha = 0.92f)` on Home's provider pill, 0.7 on
+// the extension-catalog button, 0.6 on Library's chips, 0.5 in the player)
+// it became a nearly-opaque WHITE slab with near-white text on top — the
+// reported "provider button is fully bright and I can't read what it says".
+// Dark, and in the same family as the dark theme's surfaceVariant, it reads
+// correctly at every alpha, in every one of those places.
+val GlassSurfaceVariant = Color(0xB31F2740)
 val GlassScrim = Color(0x99000000)
 
 // AMOLED — for OLED panels, where a lit pixel is a pixel that costs battery

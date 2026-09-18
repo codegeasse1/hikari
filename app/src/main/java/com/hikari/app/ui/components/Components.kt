@@ -247,7 +247,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     // The revision is read so this cell — and only this cell — repaints when a
     // background warm-up lands (see Ratings.revision).
     if (style.showRatings) Ratings.revision(item)
-    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
+    val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
     Column(
         Modifier
             .width(120.dp)
@@ -259,7 +259,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
             contentDescription = item.title,
             style = style,
             rating = item.rating,
-            imdb = imdb,
+            imdb = badge,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

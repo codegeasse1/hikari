@@ -104,9 +104,10 @@ fun PosterStyle.shape(): RoundedCornerShape = RoundedCornerShape(corner.dp)
  * @param model   the Coil model (see [Artwork.model])
  * @param rating  TMDB score to badge, when [PosterStyle.showRatings] is on and
  *                the item actually has one
- * @param imdb    the IMDb score already on file for this title ([Ratings]), which
- *                wins over [rating] when present — it is the number the score
- *                badge is *for*, and the one the reference client prints
+ * @param imdb    the score already on file for this title ([Ratings] — the IMDb
+ *                number when one could be resolved, otherwise TMDB's average),
+ *                which wins over [rating] when present — it is the number the
+ *                score badge is *for*, and the one the reference client prints
  * @param overlay extra content on top of the art (a heart badge, a kebab menu…)
  */
 @Composable
@@ -129,6 +130,9 @@ fun PosterArt(
     // IMDb's own yellow, not the app accent: the badge is a score from that
     // site, and the colour is what makes "9.8" read as an IMDb rating at a
     // glance instead of as one more piece of the app's chrome.
+    // The cached score first (IMDb, else TMDB — see Ratings.cachedBadge), then
+    // the row's own TMDB value: three chances at a number, so a poster that
+    // carries any score at all prints one instead of an empty corner.
     val badge = imdb?.takeIf { it.isNotBlank() }
         ?: rating?.takeIf { it > 0.0 }?.let { ((it * 10f).roundToInt() / 10f).toString() }
     Box(modifier = modifier) {

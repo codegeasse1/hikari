@@ -129,6 +129,9 @@ class AppStore(private val ctx: Context) {
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
         val NAV_STYLE = stringPreferencesKey("navBarStyle")
+        /** Draw the icon labels ("Home", "Library", …) under the taskbar's
+         *  buttons. On by default; off leaves icon-only buttons. */
+        val TAB_LABELS = booleanPreferencesKey("tabLabels")
         /** Draw the rating strip on the detail page (IMDb, RT, …). On by
          *  default: a title's score is part of what the page is for. */
         val SHOW_DETAIL_RATING = booleanPreferencesKey("showDetailRating")
@@ -318,7 +321,7 @@ class AppStore(private val ctx: Context) {
     fun navStyleFlow(): Flow<String> =
         store.data.map {
             com.hikari.app.ui.navigation.NavStyles.normalize(
-                it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.FLOATING
+                it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.ANIMATED
             )
         }
 
@@ -326,6 +329,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setNavStyle(style: String) {
         store.edit { it[K.NAV_STYLE] = style }
+    }
+
+    // ---- The taskbar's icon labels (Settings → App Layout) ----
+
+    /** Whether the bottom bar writes each button's name under its icon. On by
+     *  default — that is how the bar ships. */
+    fun tabLabelsFlow(): Flow<Boolean> =
+        store.data.map { it[K.TAB_LABELS] ?: true }
+
+    suspend fun tabLabels(): Boolean = tabLabelsFlow().first()
+
+    suspend fun setTabLabels(show: Boolean) {
+        store.edit { it[K.TAB_LABELS] = show }
     }
 
     // ---- The detail page's rating strip (Settings → Appearance) ----

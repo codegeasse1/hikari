@@ -1825,7 +1825,16 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(collection.folders, key = { it.id }) { f ->
-                FolderTile(folder = f) {
+                FolderTile(
+                    folder = f,
+                    // A folder with no cover of its own borrows its
+                    // collection's, so an image picked for the collection is
+                    // visible here too instead of every folder showing the
+                    // drawn fallback.
+                    inheritedKind = collection.coverKind,
+                    inheritedValue = collection.coverValue,
+                    inheritedShape = collection.tileShape,
+                ) {
                     Routes.safeNavigate(
                         nav,
                         Routes.collectionView(collection.id, f.id),
@@ -1836,9 +1845,18 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
     }
 }
 
-/** One folder tile: its cover (when it has one), name and catalog count. */
+/** One folder tile: its cover (or the collection's, when the folder has none of
+ *  its own), name and catalog count. */
 @Composable
-private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
+private fun FolderTile(
+    folder: CollectionFolder,
+    inheritedKind: String = CoverKinds.NONE,
+    inheritedValue: String = "",
+    inheritedShape: String = folder.tileShape,
+    onClick: () -> Unit,
+) {
+    val ownCover = CoverKinds.normalize(folder.coverKind) != CoverKinds.NONE &&
+        folder.coverValue.isNotBlank()
     val tokens = rememberGlassTokens()
     Column(
         Modifier
@@ -1850,9 +1868,9 @@ private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
             .padding(10.dp),
     ) {
         CoverArt(
-            kind = folder.coverKind,
-            value = folder.coverValue,
-            shape = folder.tileShape,
+            kind = if (ownCover) folder.coverKind else inheritedKind,
+            value = if (ownCover) folder.coverValue else inheritedValue,
+            shape = if (ownCover) folder.tileShape else inheritedShape,
             name = folder.name,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -2190,7 +2208,7 @@ fun TmdbGridScreen(
 private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
     if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
     if (style.showRatings) Ratings.revision(item)
-    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
+    val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
     Column(
         Modifier
             .clip(style.shape())
@@ -2201,7 +2219,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             contentDescription = item.title,
             style = style,
             rating = item.rating,
-            imdb = imdb,
+            imdb = badge,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

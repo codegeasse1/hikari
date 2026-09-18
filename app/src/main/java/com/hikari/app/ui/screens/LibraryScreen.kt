@@ -295,7 +295,7 @@ private fun LibraryCard(
 ) {
     if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
     if (style.showRatings) Ratings.revision(item)
-    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
+    val badge = if (style.showRatings) Ratings.cachedBadge(item) else null
     Column(
         Modifier
             .clip(style.shape())
@@ -306,7 +306,7 @@ private fun LibraryCard(
             contentDescription = item.title,
             style = style,
             rating = item.rating,
-            imdb = imdb,
+            imdb = badge,
             // The top-right corner is this card's own remove button and the
             // bottom-right its "Move to", so the score takes the free corner.
             ratingAlignment = Alignment.BottomStart,

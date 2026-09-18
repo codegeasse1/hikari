@@ -2366,4 +2366,11 @@ object SearchResultsCache {
     fun put(key: String, value: List<MediaItem>) {
         synchronized(map) { map[key] = value }
     }
+
+    /** Drops every cached result — used when the language TMDB metadata is
+     *  fetched in changes, since the titles in here were localized under the old
+     *  one. See [com.hikari.app.HikariApp.onContentLanguageChanged]. */
+    fun clear() {
+        synchronized(map) { map.clear() }
+    }
 }

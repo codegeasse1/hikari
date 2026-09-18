@@ -1298,6 +1298,8 @@ private fun TaskbarCard(app: HikariApp) {
     val hiddenFlow = remember { app.store.hiddenTabsFlow() }
     val hidden by hiddenFlow.collectAsState(initial = emptySet())
     val visible = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
+    val labelsFlow = remember { app.store.tabLabelsFlow() }
+    val labels by labelsFlow.collectAsState(initial = true)
 
     Column(Modifier.padding(16.dp)) {
         Text(
@@ -1312,6 +1314,16 @@ private fun TaskbarCard(app: HikariApp) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        SettingsToggle(
+            label = tr("Show text on taskbar buttons"),
+            supporting = tr("Write each tab's name under its icon. Turn this off to keep the bar icons-only."),
+            checked = labels,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setTabLabels(on) } }
+            },
+        )
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
         BottomTabs.forEach { tab ->
             val shown = tab.route !in hidden
             Row(
@@ -1721,7 +1733,9 @@ private fun FullscreenCard(app: HikariApp) {
 
 /**
  * The bottom bar's layout (Settings → Appearance → Navigation bar): the
- * floating glass pill, a seamless edge-to-edge plate, or no plate at all.
+ * animated bar (the default — a full labelled bar that shrinks to a small pill
+ * as you scroll back up), a fixed floating glass pill, or a seamless
+ * edge-to-edge plate.
  *
  * The tabs themselves are chosen by [TaskbarCard] right above; this only
  * changes the chrome around them, and it is stored under its own key so the two
@@ -1731,7 +1745,7 @@ private fun FullscreenCard(app: HikariApp) {
 private fun NavBarCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val styleFlow = remember { app.store.navStyleFlow() }
-    val style by styleFlow.collectAsState(initial = NavStyles.FLOATING)
+    val style by styleFlow.collectAsState(initial = NavStyles.ANIMATED)
 
     Column(Modifier.padding(16.dp)) {
         Text(

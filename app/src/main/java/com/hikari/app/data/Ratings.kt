@@ -4,6 +4,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
+import com.hikari.app.nuvio.TmdbResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -117,16 +118,16 @@ object Ratings {
     /**
      * One revision counter per title, for the poster badges.
      *
-     * A poster's score comes from the cache ([cachedImdb]), and a cache read is
+     * A poster's score comes from the cache ([cachedBadge]), and a cache read is
      * deliberately not observable — so a badge whose warm-up ([ensure]) landed
      * after the cell was drawn would stay blank until something else recomposed
-     * it. A cell reads [revision] next to [cachedImdb], and a landing warm-up
+     * it. A cell reads [revision] next to [cachedBadge], and a landing warm-up
      * bumps it, which recomposes exactly the cells showing that title (and
      * nothing else).
      */
     private val revisions = ConcurrentHashMap<String, MutableState<Long>>()
 
-    /** The revision a poster badge should read alongside [cachedImdb]. */
+    /** The revision a poster badge should read alongside [cachedBadge]. */
     fun revision(item: MediaItem): Long =
         revisions.getOrPut(cacheKey(item)) { mutableStateOf(0L) }.value
 
@@ -189,39 +190,65 @@ object Ratings {
         // a fresher tomatometer/Metascore wins over Wikidata's (which is
         // user-maintained and can lag by years); the first source to claim a
         // slot keeps it (see [runSources]).
-        val imdb = resolveImdb(item, imdbId)
+        //
+        // When the caller brought neither an IMDb id nor a TMDB score (an
+        // extension-sourced row, not a TMDB one) ask TMDB once for both: that
+        // single request is also what gives the scraper sources an id to work
+        // with, so the badge shows even when nothing else can name the title.
+        val side = if (imdbId != null && tmdb != null) TmdbSide(null, imdbId)
+        else tmdbSide(item, imdbId)
+        val imdb = resolveImdb(item, side.imdbId)
         val want = applicableSources(item)
         val found = runSources(item, imdb, want)
         markAttempts(key, want)
         val list = found.values.sortedBy { it.source.ordinal }
         memory[key] = list
         writeDisk(key, list)
-        finish(list, tmdb)
+        finish(list, tmdb ?: side.badge)
     }
 
     /**
-     * The IMDb score already on file for [item] ("8.7"), or null when nothing has
-     * been looked up for it yet.
+     * The score a poster's badge should print for [item], or null when nothing
+     * has been looked up for it yet.
+     *
+     * The IMDb number comes first — it is the one the reference clients print,
+     * and the one the yellow badge is for. When nothing could produce one (IMDb
+     * publishes no `tt` id for the title, or every mirror of it is blocked on
+     * the user's network) the TMDB average is used instead, which the same
+     * lookup already fetched. That fallback is what makes a badge appear on
+     * EVERY poster instead of only the ones the scrapers happened to answer for
+     * — the reported "some posters show a rating, some show nothing".
      *
      * Cache-only and synchronous ON PURPOSE: this is what a poster's score badge
      * reads, and a Home row of sixty posters must never fire sixty lookups just
      * to draw itself. The detail page — which does the looking up — is what fills
      * the cache, and [ensure] is what warms it for titles nobody has opened.
      */
-    fun cachedImdb(item: MediaItem): String? {
+    fun cachedBadge(item: MediaItem): String? {
         val key = cacheKey(item)
         val list = memory[key] ?: readDisk(key)?.also { memory[key] = it } ?: return null
-        return list.firstOrNull { it.source == RatingSource.IMDB }
+        list.firstOrNull { it.source == RatingSource.IMDB }
             ?.value?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        // "8.3/10" → "8.3": the badge prints a bare number, like the IMDb one.
+        return list.firstOrNull { it.source == RatingSource.TMDB }
+            ?.average?.substringBefore('/')?.trim()?.takeIf { it.isNotBlank() }
     }
 
     /** How many lookups [ensure] is allowed to have in flight at once. A grid
      *  asks for every poster it draws; without a ceiling, one Home screen would
      *  open hundreds of requests across five review sites and get the device
-     *  rate-limited. Anything over the ceiling is simply skipped — it will be
-     *  asked for again on the next scroll, by which time the earlier ones have
-     *  landed in the cache. */
-    private val ensureSlots = java.util.concurrent.Semaphore(3)
+     *  rate-limited. Suspend-based, so a title waiting for a slot parks its
+     *  coroutine instead of holding a thread. */
+    private val ensureSlots = kotlinx.coroutines.sync.Semaphore(4)
+
+    /** How many warm-ups may be waiting for a slot. Past this the oldest are
+     *  simply not asked for (a Home feed can be thousands of posters long). */
+    private const val MAX_ENSURE_QUEUE = 120
+
+    /** Titles a warm-up has been started for and not yet finished — the dedupe
+     *  that makes scrolling the same row ten times cost one pass. */
+    private val ensureQueued = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Warms the cache for [item] in the background when nothing is on file for it
@@ -230,35 +257,68 @@ object Ratings {
      *
      * Never awaited and deduped per title, so scrolling a row past the same
      * poster ten times costs one pass. Callers use it as a hint, not a request:
-     * the badge reads [cachedImdb] on the next recomposition after this lands.
+     * the badge reads [cachedBadge] on the next recomposition after this lands.
      */
     fun ensure(item: MediaItem) {
         val key = cacheKey(item)
         if (memory.containsKey(key) || readDisk(key) != null) return
-        if (!refreshing.add(key)) return
-        if (!ensureSlots.tryAcquire()) {
-            refreshing.remove(key)
-            return
-        }
+        // WAIT for a slot instead of giving up on it. Dropping the title is what
+        // left whole rows of posters bare: the first four to reach this point
+        // were served and the rest were skipped, and nothing asked for them
+        // again until the user happened to scroll the row back into view.
+        if (ensureQueued.size >= MAX_ENSURE_QUEUE) return
+        if (!ensureQueued.add(key)) return
         refresher.launch {
             try {
-                val imdb = resolveImdb(item, null)
-                val want = applicableSources(item)
-                val found = runSources(item, imdb, want)
-                markAttempts(key, want)
-                if (found.isEmpty()) return@launch
-                val list = found.values.sortedBy { it.source.ordinal }
-                memory[key] = list
-                writeDisk(key, list)
-                bumpRevision(key)
+                ensureSlots.acquire()
+                try {
+                    val side = tmdbSide(item, null)
+                    val imdb = resolveImdb(item, side.imdbId)
+                    val want = applicableSources(item)
+                    val found = runSources(item, imdb, want)
+                    markAttempts(key, want)
+                    val list = finish(found.values.sortedBy { it.source.ordinal }, side.badge)
+                    // Cached even when empty: an empty answer is still an
+                    // answer, and remembering it (for [EMPTY_TTL_MS]) is what
+                    // keeps a title nobody has a score for from being re-asked
+                    // on every scroll.
+                    memory[key] = list
+                    writeDisk(key, list)
+                    bumpRevision(key)
+                } finally {
+                    ensureSlots.release()
+                }
             } catch (e: Exception) {
                 // A failed warm-up is not news: the next scroll tries again.
             } finally {
-                ensureSlots.release()
-                refreshing.remove(key)
+                ensureQueued.remove(key)
             }
         }
     }
+
+    /** The TMDB half of a title: its average (as a badge) and the `tt` id TMDB
+     *  has on file for it, when the caller did not already have one.
+     *
+     *  This is the backstop that makes the badge reliable. The scraper-side
+     *  sources all key off an IMDb id, and when none can be resolved the whole
+     *  strip used to come up empty even for a famous, well-reviewed title; TMDB
+     *  is the app's own resolver, already reachable wherever the rest of the app
+     *  works, and one request answers both halves of the problem. */
+    private suspend fun tmdbSide(item: MediaItem, imdbId: String?): TmdbSide {
+        if (!TmdbResolver.isLikelyResolvable(item)) return TmdbSide(null, imdbId)
+        val resolved = TmdbResolver.resolve(item) ?: return TmdbSide(null, imdbId)
+        val data = TmdbResolver.apiGet(
+            "/${resolved.mediaType}/${resolved.tmdbId}",
+            mapOf("append_to_response" to "external_ids"),
+        ) ?: return TmdbSide(null, imdbId)
+        val fromTmdb = data.optJSONObject("external_ids")
+            ?.optString("imdb_id")?.trim()?.takeIf { isImdbId(it) }
+        val score = data.optDouble("vote_average", 0.0)
+        val votes = data.optInt("vote_count", 0)
+        return TmdbSide(tmdbBadge(score, votes, item), imdbId ?: fromTmdb)
+    }
+
+    private data class TmdbSide(val badge: TitleRating?, val imdbId: String?)
 
     /** Every source that could contribute a badge for [item] — the set the
      *  refresh logic checks a cached answer against. */    private fun applicableSources(item: MediaItem): Set<RatingSource> {
@@ -323,18 +383,27 @@ object Ratings {
         if (!refreshing.add(key)) return
         refresher.launch {
             try {
-                val imdb = resolveImdb(item, imdbId)
+                // Same TMDB backstop as [ensure]: it is what fills a strip whose
+                // every scraper-side answer was empty, and it is the only way a
+                // title with no resolvable `tt` id gets a score at all.
+                val side = if (cached.any { it.source == RatingSource.TMDB }) TmdbSide(null, imdbId)
+                else tmdbSide(item, imdbId)
+                val imdb = resolveImdb(item, side.imdbId)
                 val found = runSources(item, imdb, missing)
                 markAttempts(key, missing)
-                if (found.isEmpty()) return@launch
+                val tmdbNow = tmdb ?: side.badge
+                if (found.isEmpty() && tmdbNow == null) return@launch
                 val merged = LinkedHashMap<RatingSource, TitleRating>()
                 for (r in cached) merged[r.source] = r
                 for ((source, r) in found) if (!merged.containsKey(source)) merged[source] = r
+                if (tmdbNow != null && !merged.containsKey(RatingSource.TMDB)) {
+                    merged[RatingSource.TMDB] = tmdbNow
+                }
                 val list = merged.values.sortedBy { it.source.ordinal }
                 memory[key] = list
                 writeDisk(key, list)
                 bumpRevision(key)
-                runCatching { onUpdate?.invoke(finish(list, tmdb)) }
+                runCatching { onUpdate?.invoke(finish(list, tmdbNow)) }
             } catch (e: Exception) {
                 // A failed re-ask is not news: the next open tries again.
             } finally {

@@ -216,7 +216,10 @@ class MainActivity : AppCompatActivity() {
                 else -> tmdbLanguageMode
             }
             LaunchedEffect(tmdbLanguage) {
-                com.hikari.app.nuvio.TmdbResolver.contentLanguage = tmdbLanguage
+                // Applies the language AND, when it really changed, invalidates
+                // the content that was localized under the previous one — so the
+                // switch is live instead of waiting for a restart.
+                (application as HikariApp).applyContentLanguage(tmdbLanguage)
             }
 
             LaunchedEffect(themeMode) {

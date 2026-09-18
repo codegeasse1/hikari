@@ -210,6 +210,13 @@ object TmdbSources {
         return fallbackName(spec)
     }
 
+    /** Forget the looked-up row titles. They are localized by TMDB, so a change
+     *  to the language TMDB answers in has to drop them or a saved source keeps
+     *  its old-language name. See [com.hikari.app.HikariApp.onContentLanguageChanged]. */
+    fun clearLocalizedNames() {
+        names.clear()
+    }
+
     /** A readable stand-in when TMDB has not (yet) answered with a name. */
     fun fallbackName(spec: TmdbSpec): String = when (spec.type) {
         TmdbSourceType.PRESET -> TmdbPresets.nameOf(spec.preset)

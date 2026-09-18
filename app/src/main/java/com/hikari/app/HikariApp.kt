@@ -126,6 +126,49 @@ class HikariApp : Application() {
      *  view instead of reloading the website's home page). */
     val homeTabRequest = MutableStateFlow(0)
 
+    /** Bumped by [onContentLanguageChanged] whenever the language TMDB titles
+     *  and overviews are fetched in changes. Screens that hold localized
+     *  content watch this and rebuild (see HomeViewModel). */
+    val contentLanguageRevision = MutableStateFlow(0L)
+
+    /** The TMDB language tag last handed to the resolver — null until the first
+     *  one, so the app's own launch value can be told apart from a real change
+     *  (and a change can be spotted even after the Activity was recreated for an
+     *  app-language switch, when nothing else would survive to compare with). */
+    @Volatile
+    private var appliedContentLanguage: String? = null
+
+    /**
+     * Point TMDB at [tag] and, when that is a CHANGE from the language already in
+     * use, drop the localized content that was fetched under the old one. Called
+     * from the main screen whenever the setting (or the app language it follows)
+     * moves — see [onContentLanguageChanged]. */
+    fun applyContentLanguage(tag: String) {
+        val previous = appliedContentLanguage
+        appliedContentLanguage = tag
+        com.hikari.app.nuvio.TmdbResolver.contentLanguage = tag
+        if (previous != null && previous != tag) onContentLanguageChanged()
+    }
+
+    /**
+     * The user just changed the language TMDB metadata is fetched in
+     * (Settings → App Layout → "TMDb language titles").
+     *
+     * `TmdbResolver.contentLanguage` is already switched by then (see
+     * [applyContentLanguage]) — this is about the results that were fetched under
+     * the OLD language and are still held in memory: the built Home feed, a saved
+     * TMDB source's row title, the search grid. Nothing that made those requests
+     * can know the language moved, so they are dropped here, and the screens
+     * watching [contentLanguageRevision] fetch again. That is what makes the
+     * setting take effect the moment it is picked instead of only after the app
+     * is restarted.
+     */
+    fun onContentLanguageChanged() {
+        runCatching { com.hikari.app.data.TmdbSources.clearLocalizedNames() }
+        runCatching { com.hikari.app.data.SearchResultsCache.clear() }
+        contentLanguageRevision.value = contentLanguageRevision.value + 1L
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this

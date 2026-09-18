@@ -95,6 +95,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -173,6 +174,17 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 if (current != lastLoadedCollection) loadInternal()
             }
         }
+        viewModelScope.launch {
+            // The language TMDB metadata is fetched in changed: every row built
+            // under the old one is stale, so the feed is thrown away and built
+            // again. Without this the new language only appeared after a
+            // restart, because this cache is what Home actually draws from.
+            val app = getApplication<Application>() as HikariApp
+            app.contentLanguageRevision.drop(1).collect {
+                homeCache.clear()
+                loadInternal(forceRefresh = true)
+            }
+        }
     }
 
     /** True when a stored Home pick refers to a collection, not an extension. */
@@ -187,7 +199,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         viewModelScope.launch { loadInternal() }
     }
 
-    private suspend fun loadInternal() {
+    /**
+     * [forceRefresh] rebuilds the feed even when a cached one exists — used when
+     * something outside the feed invalidates it (the TMDB title language), and
+     * the cached copy is dropped by the caller first. The rows already on screen
+     * stay put until the new ones arrive, so the page never blanks.
+     */
+    private suspend fun loadInternal(forceRefresh: Boolean = false) {
         loadJob?.cancel()
         val pick = _selectedProvider.value
         // A collection pick resolves to a saved collection; when it has been
@@ -206,14 +224,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         else (_selectedProvider.value ?: "all")
         lastLoadedCollection = pickedCollection
         val cached = homeCache[key]
-        if (cached != null) {
+        if (cached != null && !forceRefresh) {
             // Stale-while-revalidate: show the previous feed immediately (no
             // spinner) and refresh underneath.
             _rows.value = cached
             _loading.value = false
-        } else {
-            _loading.value = true
-            _rows.value = emptyList()
+        } else if (cached == null) {
+            if (forceRefresh) {
+                // A rebuild for a reason the user did not ask for from here (the
+                // TMDB title language moved): leave the rows already on screen
+                // until the new feed arrives rather than blanking the page.
+                _loading.value = false
+            } else {
+                _loading.value = true
+                _rows.value = emptyList()
+            }
         }
         // Keep the process alive (and awake) for the whole load: pressing Home
         // mid-load used to freeze the app and stop every catalog dead. See
@@ -625,7 +650,12 @@ fun HomeScreen(nav: NavHostController) {
         Surface(
             onClick = { showPicker = true },
             shape = RoundedCornerShape(50),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
+            // The pill's own frosted panel, not the theme's `surfaceVariant`:
+            // that variant is a nearly-transparent overlay, and raising its
+            // alpha turned it into a bright slab the white label vanished into
+            // (the Dark Glass UI report). The surface is the same panel every
+            // other glass card in the app is cut from.
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(horizontal = 16.dp, vertical = 14.dp)

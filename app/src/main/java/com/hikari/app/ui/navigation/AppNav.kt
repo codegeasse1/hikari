@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -56,8 +57,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -235,9 +240,10 @@ object Routes {
 /**
  * The bottom bar's three looks (Settings → App Layout → Taskbar & navigation).
  *
- *  * [ANIMATED] — the full-width bar with labels while a page is at its top,
- *    morphing into a compact, icon-only floating pill once the user scrolls
- *    into the content; scrolling back up (or reaching the top) restores it.
+ *  * [ANIMATED] — the full-width, labelled bar the app rests on; it shrinks
+ *    into a small icon-only pill as the user scrolls back up towards the top
+ *    of a page, and swells back to the full bar on any downward scroll (or a
+ *    tab change). This is the default layout.
  *  * [FLOATING] — the detached glass pill, always the same size.
  *  * [CLASSIC] — the seamless edge-to-edge plate: opaque, flush with the bottom
  *    of the screen, closed off by a hairline along its top edge.
@@ -272,7 +278,7 @@ object NavStyles {
     fun normalize(key: String): String = when (key) {
         CLASSIC, FLOATING, ANIMATED -> key
         "borderless" -> ANIMATED
-        else -> FLOATING
+        else -> ANIMATED
     }
 
     fun labelOf(key: String): String =
@@ -283,8 +289,9 @@ object NavStyles {
 private fun AppBottomBar(
     currentRoute: String?,
     hidden: Set<String>,
-    navStyle: String = NavStyles.FLOATING,
+    navStyle: String = NavStyles.ANIMATED,
     expanded: Boolean = true,
+    showLabels: Boolean = true,
     onNavigate: (String) -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -294,42 +301,69 @@ private fun AppBottomBar(
     // instead of leaving a gap. The bar can never end up empty: if the stored
     // set somehow covers every tab, the full list comes back.
     val tabs = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
-    // Equal slots are not much room, and the labels ("Downloads", "Extensions")
-    // are the longest text in the app. On a phone whose accessibility Font size
-    // AND/OR Display size is turned up, the labels grew past their slot and were
-    // hard-clipped mid-word ("Downloa"). Size the label so it always renders at
-    // the SAME physical size — dividing out the font scale — and the worst case
-    // is then a full word in a slightly tight slot. (When "In-app UI scale" is
-    // on, fontScale is 1 here and the scale rides on the density, so the labels
-    // still scale with that setting.) With most of the tabs shown there are
-    // seven slots, so the base size drops a notch to keep every label whole.
-    val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
-    val labelSp = if (tabs.size > 6) 8f else 9f
     val glass = rememberGlassTokens()
     val style = NavStyles.normalize(navStyle)
-    // The animated layout is the same bar in two states: full width with labels
-    // at the top of a page, and a narrow icon-only pill once the user scrolls
-    // into the content (see [AppRoot], which tracks the scroll direction).
-    // Everything below is hoisted so the two states can be animated between
-    // rather than swapped.
-    val pill = style == NavStyles.FLOATING || (style == NavStyles.ANIMATED && !expanded)
-    val withLabels = !(style == NavStyles.ANIMATED && !expanded)
+    // The animated layout is the same bar in two states: the full-width,
+    // labelled bar the app rests on, and a smaller icon-only pill it shrinks
+    // into as the user scrolls back up towards the top of a page (see
+    // [AppRoot], which tracks the scroll direction). Everything below is
+    // hoisted so the two states animate between rather than swap.
+    val animatedCollapsed = style == NavStyles.ANIMATED && !expanded
+    val pill = style == NavStyles.FLOATING || animatedCollapsed
+    // The labels can be switched off wholesale (Settings → App Layout → "Show
+    // text on taskbar buttons"); the animated bar also drops them on its own
+    // while it is shrunk, whichever way that setting points.
+    val withLabels = showLabels && !animatedCollapsed
     val edgeToEdge = style == NavStyles.CLASSIC
+    // One cached text measurer, used below to size the labels to the width
+    // they actually have (see the comment on the Row).
+    val measurer = rememberTextMeasurer()
     val hPad by animateDpAsState(
         when {
             edgeToEdge -> 0.dp
             style == NavStyles.FLOATING -> 12.dp
-            expanded -> 8.dp
-            else -> 30.dp
+            // Shrunk, the pill pulls its own edges in hard so it reads as a
+            // small floating control rather than a half-empty bar.
+            animatedCollapsed -> 64.dp
+            else -> 8.dp
         },
         label = "barHPad",
     )
-    val vPad by animateDpAsState(if (pill) 8.dp else 0.dp, label = "barVPad")
-    val radius by animateDpAsState(if (pill) 26.dp else 0.dp, label = "barRadius")
-    val barHeight by animateDpAsState(if (withLabels) 60.dp else 50.dp, label = "barHeight")
+    val vPad by animateDpAsState(
+        when {
+            animatedCollapsed -> 6.dp
+            pill -> 8.dp
+            else -> 0.dp
+        },
+        label = "barVPad",
+    )
+    val radius by animateDpAsState(
+        if (animatedCollapsed) 20.dp else if (pill) 26.dp else 0.dp,
+        label = "barRadius",
+    )
+    val barHeight by animateDpAsState(
+        when {
+            withLabels -> 60.dp
+            animatedCollapsed -> 38.dp
+            else -> 50.dp
+        },
+        label = "barHeight",
+    )
     val labelHeight by animateDpAsState(if (withLabels) 16.dp else 0.dp, label = "barLabelH")
     val labelAlpha by animateFloatAsState(if (withLabels) 1f else 0f, label = "barLabelA")
-    val iconSize by animateDpAsState(if (withLabels) 20.dp else 22.dp, label = "barIcon")
+    val iconSize by animateDpAsState(
+        when {
+            withLabels -> 20.dp
+            animatedCollapsed -> 16.dp
+            else -> 22.dp
+        },
+        label = "barIcon",
+    )
+    val tabHeight = when {
+        withLabels -> 48.dp
+        animatedCollapsed -> 26.dp
+        else -> 42.dp
+    }
     Box(
         Modifier
             .fillMaxWidth()
@@ -362,50 +396,92 @@ private fun AppBottomBar(
                 shadowElevation = if (pill && !glass.dark) 8.dp else 0.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(barHeight)
-                        .padding(horizontal = 2.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    tabs.forEach { tab ->
-                        val selected = currentRoute == tab.route
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .height(if (withLabels) 48.dp else 42.dp)
-                                // A fully round pill, not a rounded square — that
-                                // is what marks the active tab in the reference
-                                // design.
-                                .clip(RoundedCornerShape(50))
-                                .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
-                                .clickable { onNavigate(tab.route) },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                tab.icon,
-                                contentDescription = if (withLabels) null else tr(tab.label),
-                                modifier = Modifier.size(iconSize),
-                                tint = if (selected) primary else muted
-                            )
-                            if (labelHeight > 0.dp) {
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    tr(tab.label),
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontSize = (labelSp / labelScale).sp,
-                                    textAlign = TextAlign.Center,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selected) primary else muted,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(labelHeight)
-                                        .alpha(labelAlpha)
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    // Equal slots are not much room, and the labels
+                    // ("Downloads", "Extensions") are the longest text in the
+                    // app: on a narrow screen, or with the accessibility Font
+                    // size / Display size turned up, they overran their slots
+                    // and butted straight up against each other ("Extensions"
+                    // running into "Downloads", tails cut off). Rather than
+                    // guess a size, MEASURE the widest label and scale the font
+                    // so it fits its slot with a gutter either side. The result
+                    // is divided by the font scale when it is drawn, so the
+                    // label always renders at this computed size no matter what
+                    // the phone's font-size setting is — it can never grow out
+                    // of its slot. (With "In-app UI scale" on, fontScale is 1
+                    // and the scale rides on the density, so the labels still
+                    // scale with that setting.)
+                    val slotDp = maxWidth / tabs.size
+                    val availDp = (slotDp - 6.dp).coerceAtLeast(12.dp)
+                    val densityNow = LocalDensity.current
+                    val availPx = with(densityNow) { availDp.toPx() }
+                    // Text width is linear in font size, so one measurement of
+                    // the widest label at a 100sp reference gives the size that
+                    // just fits the slot. Bold is the wider weight (the active
+                    // tab), so measuring with it is the safe case.
+                    val widestRef = remember(tabs, densityNow.density, densityNow.fontScale) {
+                        val reference = TextStyle(fontSize = 100.sp, fontWeight = FontWeight.Bold)
+                        tabs.maxOfOrNull { tab ->
+                            measurer.measure(
+                                text = AnnotatedString(tr(tab.label)),
+                                style = reference,
+                                maxLines = 1,
+                                softWrap = false,
+                                constraints = Constraints(maxWidth = 100000),
+                            ).size.width
+                        } ?: 0
+                    }
+                    val labelSp = if (widestRef <= 0) {
+                        9f
+                    } else {
+                        val fontScale = densityNow.fontScale.coerceAtLeast(0.5f)
+                        (availPx * 100f * fontScale / widestRef).coerceIn(6f, 11.5f)
+                    }
+                    val labelScale = densityNow.fontScale.coerceAtLeast(0.5f)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(barHeight)
+                            .padding(horizontal = 2.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        tabs.forEach { tab ->
+                            val selected = currentRoute == tab.route
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .height(tabHeight)
+                                    // A fully round pill, not a rounded square — that
+                                    // is what marks the active tab in the reference
+                                    // design.
+                                    .clip(RoundedCornerShape(50))
+                                    .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
+                                    .clickable { onNavigate(tab.route) },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    tab.icon,
+                                    contentDescription = if (withLabels) null else tr(tab.label),
+                                    modifier = Modifier.size(iconSize),
+                                    tint = if (selected) primary else muted
                                 )
+                                if (labelHeight > 0.dp) {
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        tr(tab.label),
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontSize = (labelSp / labelScale).sp,
+                                        textAlign = TextAlign.Center,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (selected) primary else muted,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .alpha(labelAlpha)
+                                    )
+                                }
                             }
                         }
                     }
@@ -458,7 +534,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
-    val navStyle by navStyleFlow.collectAsState(initial = NavStyles.FLOATING)
+    val navStyle by navStyleFlow.collectAsState(initial = NavStyles.ANIMATED)
+    // Whether the bar writes each button's name under its icon (Settings → App
+    // Layout → "Show text on taskbar buttons").
+    val tabLabelsFlow = remember { app.store.tabLabelsFlow() }
+    val showTabLabels by tabLabelsFlow.collectAsState(initial = true)
     // Whether the phone's own status/navigation bars are visible (Settings →
     // App Layout → "Turn off full screen app mode"). The window stays
     // edge-to-edge either way, so with the bars shown the pages must pad
@@ -466,10 +546,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // what actually brings the bars back).
     val fullscreenOffFlow = remember { app.store.fullscreenOffFlow() }
     val fullscreenOff by fullscreenOffFlow.collectAsState(initial = false)
-    // The animated layout's two states. A page's own scrolling drives it: scroll
-    // into the content and the bar collapses to the floating pill (more of the
-    // page on screen), scroll back up — or open another tab — and it comes back.
-    // The connection sits on the Box that wraps the whole app, so every screen's
+    // The animated layout's two states. A page's own scrolling drives it: the
+    // bar rests at its full, labelled size and shrinks to a small icon-only pill
+    // as the user scrolls back up towards the top of a page (swiping up is the
+    // gesture that "pulls the page down" over the bar); scrolling down into the
+    // content — or opening another tab — swells it back to full size. The
+    // connection sits on the Box that wraps the whole app, so every screen's
     // list feeds it without a single screen having to pass its scroll state up.
     var barExpanded by remember { mutableStateOf(true) }
     val barScroll = remember {
@@ -478,8 +560,8 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val dy = available.y
                 // A few dp of slack: a fling's first event can be tiny, and the
                 // bar flipping on a one-pixel jitter looks broken.
-                if (dy < -8f) barExpanded = false
-                else if (dy > 8f) barExpanded = true
+                if (dy > 8f) barExpanded = false
+                else if (dy < -8f) barExpanded = true
                 return Offset.Zero
             }
         }
@@ -581,6 +663,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                     hidden = hiddenTabs,
                     navStyle = navStyle,
                     expanded = barExpanded,
+                    showLabels = showTabLabels,
                     onNavigate = { route -> Routes.navigateTab(nav, route) }
                 )
             }
