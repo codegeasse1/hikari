@@ -342,8 +342,16 @@ object Ratings {
     private suspend fun tmdbSide(item: MediaItem, imdbId: String?): TmdbSide {
         if (!TmdbResolver.isLikelyResolvable(item)) return TmdbSide(null, imdbId)
         val resolved = TmdbResolver.resolve(item) ?: return TmdbSide(null, imdbId)
+        // The resolved type can read "anime" (the resolver's own hint for a
+        // series), but TMDB has exactly two namespaces. Every other caller maps
+        // the hint through the same test; this one did not, so the details call
+        // was /anime/{id} — a 404 for every anime title, which threw away both
+        // the TMDB average the badge falls back to and the `tt` id the rest of
+        // the lookup keys off. That was a large share of the "some posters show
+        // a rating and some show nothing".
+        val segment = if (resolved.mediaType.equals("movie", true)) "movie" else "tv"
         val data = TmdbResolver.apiGet(
-            "/${resolved.mediaType}/${resolved.tmdbId}",
+            "/$segment/${resolved.tmdbId}",
             mapOf("append_to_response" to "external_ids"),
         ) ?: return TmdbSide(null, imdbId)
         val fromTmdb = data.optJSONObject("external_ids")
