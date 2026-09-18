@@ -303,19 +303,25 @@ object NavStyles {
 object BarMetrics {
     /** The seamless layout's plate. */
     val classicHeight = 50.dp
-    /** The floating bars' resting height. Deliberately compact — the reference
-     *  client's bar is a small pill floating over the artwork, and a bar that
-     *  is as tall as the screen's own navigation bar reads as a band across the
-     *  page even when it is rounded. */
-    val fullHeight = 46.dp
+    /** The floating bars' resting height. The bar is very nearly as wide as
+     *  the screen, so its height is what decides whether it reads as a capsule
+     *  or as a sliver: at 46dp over a 360dp screen it was a 1:8 strip and the
+     *  icons and their names had almost no room above or below them. 54dp gives
+     *  the same proportion the reference bar wears — measured off a screenshot
+     *  of it, its height is a seventh of its length — while staying clearly
+     *  shorter than a full navigation bar, so it still reads as a small pill
+     *  floating over the artwork rather than as a band across the page. */
+    val fullHeight = 54.dp
     /** The animation layout's size once the user scrolls back up. This is a real
      *  step down, not a nudge: at the resting size the drawn-in bar was the same
      *  width, the same height and wore the same labels as the plain floating
      *  bar, so the animation could not be seen at all. Here the bar also drops
      *  its button names and pulls its ends in (see AppBottomBar), leaving the
      *  compact icon pill the reference client scrolls with — still a stadium
-     *  capsule with the same icons, so it is plainly the same bar. */
-    val midHeight = 40.dp
+     *  capsule with the same icons, so it is plainly the same bar. It sits a
+     *  step under the resting pill rather than half its size, so the two states
+     *  are the same bar seen smaller — not two different bars. */
+    val midHeight = 46.dp
     /** Gap between the bar and the bottom of the screen — and, with [hPad], the
      *  room around the pill on every side, which is what makes it float over
      *  the page instead of spanning it. */
@@ -441,18 +447,21 @@ private fun AppBottomBar(
     val labelAlpha by animateFloatAsState(if (withLabels) 1f else 0f, label = "barLabelA")
     // The button cell fills the bar's inner height (the Row below insets itself
     // by 5dp top and bottom, and the label is drawn inside this cell), so the
-    // icon and its name always have the room the bar itself claims. The inset is
-    // as small as the icon + label can live with: the bar is a compact pill, and
-    // every dp of frame it does not need is a dp of artwork it covers.
+    // icon and its name always have the room the bar itself claims. The 5dp
+    // frame is the same one the bar has always worn; at [BarMetrics.fullHeight]
+    // it now leaves the cell real space above and below its contents, which is
+    // what stops the icons from looking squeezed against the pill's edges.
     val tabHeight = (barHeight - 10.dp)
     val iconSize by animateDpAsState(
-        when {
-            edgeToEdge -> 22.dp
-            // Shrunk, the icon is the whole button: with the labels gone it is
-            // given a little MORE room, not less, so the compact pill stays
-            // readable at a glance.
-            animatedShrunk -> 20.dp
-            else -> 18.dp
+        if (edgeToEdge) {
+            22.dp
+        } else {
+            // One icon size for both floating states: the drawn-in bar is the
+            // same bar smaller, and it shrinks by dropping the names and pulling
+            // its frame in (see [hPad] and [labelHeight]) — the icons themselves
+            // stay the size the user is used to, so the taskbar never looks like
+            // a different control after a scroll.
+            20.dp
         },
         label = "barIcon",
     )

@@ -1,3 +1,9 @@
+## 0.5.17
+
+Changed:
+- The floating taskbar has the height its length was asking for. It spans very nearly the whole width of the screen, so its height is the only thing deciding whether it reads as a capsule or as a strip — and at 46dp it was a strip: barely a couple of dp above and below the icon and its name, which is why the buttons looked squeezed into the box rather than sitting in it. It rests at 54dp now, the same height-to-length proportion as the bar in the reference screenshot (a seventh of its length, measured off the image), so the box reads as the stadium capsule it is meant to be with real air above and below the icons. The length, the corners, the colours and the drawn-in behaviour are all untouched.
+- The resting and drawn-in bars now share one icon size (20dp, up from 18dp on the resting bar): with the height to carry them the icons only grew a little, and the taskbar no longer looks like a different control after a scroll — the drawn-in state is still the smaller pill, it shrinks by dropping the button names and pulling its frame in.
+
 ## 0.5.16
 
 Fixed:
