@@ -122,6 +122,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
@@ -162,6 +163,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withContext
+
+/**
+ * One title size for EVERY folder header, so no page's heading looks bigger or
+ * smaller than another's. 16.sp is the largest size that keeps the longest
+ * folder name ("Personal Catalog creator") on one line beside the badge — and
+ * it is exactly the size the index's folder rows use, so a folder's own page
+ * never shouts louder than the row that opened it.
+ */
+private val FOLDER_TITLE_SIZE = 16.sp
+
+/**
+ * The corner radius of every box drawn INSIDE a settings folder: the outlined
+ * action buttons, the preset chips, the row a picker leads with. The outer
+ * setting box stays what it is ([SettingsCard]'s GlassCard, 26.dp) — but a
+ * Material button defaults to a 50% capsule, and beside a 26.dp card that read
+ * as two different designs on the same page. 14.dp is the same proportion of a
+ * 40.dp button as 26.dp is of a 76.dp card, so everything inside a folder is
+ * now rounded by one rule.
+ */
+private val SettingsBoxShape = RoundedCornerShape(14.dp)
 
 @Composable
 private fun SettingsDivider() {
@@ -907,19 +928,22 @@ private fun SettingsIconBadge(icon: ImageVector, size: Dp = 46.dp) {
 }
 
 /**
- * The folder page's own header: a back button and the folder's badge on the
- * first line, then the folder's name across the full width, a one-line summary
- * of what is inside, and the longer explanation — so a page always says where
- * you are without repeating the settings tab's title.
+ * The folder page's own header: back button, the folder's badge, then its name
+ * and one-line summary — all on a SINGLE line, so a folder page starts with the
+ * same "icon, then what it is called" shape as the folder row that opened it,
+ * and then the longer explanation underneath.
  *
- * The name sits on its own line because it is the one piece of text here that
- * must never wrap: a folder name is short by design and a wrapped one reads as
- * a layout mistake. It also ellipsises rather than wrapping, so a future long
- * folder name stays on one line too.
+ * The name is one line by construction, not by hope: it uses one fixed size for
+ * every folder ([FOLDER_TITLE_SIZE]) and ellipsises rather than wrapping, so no
+ * folder's page looks bigger or smaller than another's. It is deliberately
+ * *not* the largest text on the page — a one-line header that shares its line
+ * with an icon has to be compact, and "Personal Catalog creator" at a display
+ * size simply does not fit next to a badge on a phone. The summary keeps its
+ * place under the name because the row has the height for it.
  *
- * [parentTitle] is set only when a sub-folder is open, and is printed at the end
- * of the badge row as a breadcrumb — "Appearance › App icon" — so the way back
- * out is obvious without reading the back button's glyph.
+ * [parentTitle] is set only when a sub-folder is open, and is printed as a
+ * breadcrumb — "Appearance ›" — on the line ABOVE the badge row, not inside it:
+ * the title needs every spare dp of that row to stay on one line.
  */
 @Composable
 private fun FolderHeader(
@@ -933,10 +957,24 @@ private fun FolderHeader(
             .fillMaxWidth()
             .padding(bottom = 4.dp)
     ) {
+        if (parentTitle != null) {
+            Text(
+                tr(parentTitle) + " ›",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        // One line, always: back, badge, name, and the summary under the name.
+        // The name is weighted so it takes whatever the badge leaves and
+        // ellipsises there rather than moving anything onto a second row.
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .size(40.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(glass.fillTop)
                     .border(1.dp, glass.border, CircleShape)
@@ -947,43 +985,32 @@ private fun FolderHeader(
                     Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = tr("Back to settings"),
                     tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
+            Spacer(Modifier.width(10.dp))
+            SettingsIconBadge(folder.icon, 40.dp)
             Spacer(Modifier.width(12.dp))
-            SettingsIconBadge(folder.icon, 44.dp)
-            // The breadcrumb sits at the far end of the badge row rather than
-            // under it: the title below gets the whole width, which is what
-            // keeps a long folder name ("Personal Catalog creator") on one
-            // line instead of wrapping into the subtitle.
-            if (parentTitle != null) {
-                Spacer(Modifier.weight(1f))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    tr(parentTitle) + " ›",
+                    tr(folder.title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = FOLDER_TITLE_SIZE,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(1.dp))
+                Text(
+                    tr(folder.subtitle),
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        Spacer(Modifier.height(12.dp))
-        Text(
-            tr(folder.title),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            tr(folder.subtitle),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
         Spacer(Modifier.height(8.dp))
         Text(
             tr(folder.blurb),
@@ -1525,6 +1552,7 @@ private fun FontCard(app: HikariApp) {
                 }
             },
             modifier = Modifier.fillMaxWidth(),
+            shape = SettingsBoxShape,
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
@@ -2788,7 +2816,11 @@ private fun BackupRow(
             )
         }
         Spacer(Modifier.width(8.dp))
-        OutlinedButton(onClick = onClick, enabled = enabled) { Text(action) }
+        OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            shape = SettingsBoxShape,
+        ) { Text(action) }
     }
 }
 
@@ -2939,7 +2971,10 @@ private fun UserscriptsCard(app: HikariApp) {
                 Spacer(Modifier.height(4.dp))
             }
         }
-        OutlinedButton(onClick = { draft = ""; adding = true }) {
+        OutlinedButton(
+            onClick = { draft = ""; adding = true },
+            shape = SettingsBoxShape,
+        ) {
             Icon(Icons.Filled.Add, contentDescription = null)
             Spacer(Modifier.width(6.dp))
             Text(tr("Add userscript"))
@@ -3072,7 +3107,8 @@ private fun AdBlockingCard(app: HikariApp) {
                                 runCatching { app.store.setAdLists(next) }
                                 runCatching { AdBlocker.download(preset.url, context) }
                             }
-                        }
+                        },
+                        shape = SettingsBoxShape,
                     ) {
                         Text((if (isAdded) "✓ " else "+ ") + preset.name)
                     }
@@ -3350,7 +3386,9 @@ private fun PlayerControlsCard(onOpen: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = onOpen) { Text(tr("Edit control layout")) }
+        OutlinedButton(onClick = onOpen, shape = SettingsBoxShape) {
+            Text(tr("Edit control layout"))
+        }
     }
 }
 
@@ -3575,13 +3613,15 @@ private fun MatchThemeCard(
                 onClick = {
                     scope.launch { runCatching { app.store.setPlayerAccent(appAccentKey) } }
                 },
-                enabled = playerAccentKey != appAccentKey
+                enabled = playerAccentKey != appAccentKey,
+                shape = SettingsBoxShape,
             ) { Text(tr("App \u2192 player")) }
             OutlinedButton(
                 onClick = {
                     scope.launch { runCatching { app.store.setAppAccent(playerAccentKey) } }
                 },
-                enabled = playerAccentKey != appAccentKey
+                enabled = playerAccentKey != appAccentKey,
+                shape = SettingsBoxShape,
             ) { Text(tr("Player \u2192 app")) }
         }
     }

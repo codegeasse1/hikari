@@ -132,9 +132,13 @@ fun ChoiceDialog(
 
 /**
  * The row that opens a [ChoiceDialog]: an optional icon or glyph, the choice in
- * use, the line under it, and a chevron saying it leads somewhere. Same glass
- * pill as the app-language row, so every "tap to choose" setting reads as one
- * control rather than a menu in one card and a list of radios in the next.
+ * use, the line under it, and a chevron saying it leads somewhere. Every "tap to
+ * choose" setting in the app is one of these, so it reads as one control rather
+ * than a menu in one card and a list of radios in the next.
+ *
+ * Its rounding matches the settings pages' other inner boxes (14.dp — see
+ * `SettingsBoxShape` in SettingsScreen.kt); this is the row the app-language
+ * card leads with on Appearance & Theme.
  */
 @Composable
 fun ChoiceRow(
@@ -146,7 +150,7 @@ fun ChoiceRow(
     modifier: Modifier = Modifier,
 ) {
     val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(14.dp)
     val hasLeading = leadingIcon != null || !leadingText.isNullOrBlank()
     Row(
         modifier

@@ -1,3 +1,10 @@
+## 0.5.20
+
+Test build — two fixes on the settings pages.
+
+- Folder headers are one line again. The badge sat above the name; now the back button, the folder's icon, the name and its summary share a single row, so a page starts with the same "icon, then name" shape as the row that opened it. Every folder's name is the same size — no page reads louder than another — and a name is never allowed to wrap: it gets the whole line after the icon and shrinks to a smaller shared size instead.
+- The boxes inside a folder all have the same rounding. Outlined buttons ("Edit control layout", "Import a font from storage", the ad-block presets, the accent copy buttons) were drawn as full capsules next to the softly-rounded cards; they now use the same corner radius family as everything else, and a sub-folder's row matches too. The outer setting box is unchanged.
+
 ## 0.5.19
 
 Test build — another polish pass, this time over the Settings pages and the player-control editor.
