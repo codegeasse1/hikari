@@ -11,7 +11,7 @@ import androidx.compose.ui.text.font.FontFamily
 import java.io.File
 
 /**
- * The app-wide font (Settings → Appearance → Font).
+ * The app-wide font (Settings → Appearance & Theme → App font).
  *
  * Two halves, because Hikari is two apps in one:
  *

@@ -1,3 +1,13 @@
+## 0.5.19
+
+Test build — another polish pass, this time over the Settings pages and the player-control editor.
+
+- Settings folders now open folded. A card that holds more than one control shows its name and what it is set to — "Accent colour · Violet", "Taskbar buttons · 6 / 7 buttons · labels on" — and unfolds when you tap it, so a folder page is a short list of headings instead of a wall of switches. Leaving a folder folds everything again, so a page never reopens half-open.
+- Every folder page's header now puts the folder name on its own line, across the full width. "Personal Catalog creator" used to wrap onto a second line with its icon beside it; no folder name wraps now.
+- Appearance is now "Appearance & Theme", and the folders were re-sorted: App font, Title language (TMDB) and the ratings strip moved to the folders they belong to, and the accent page is now just "Accent colour".
+- The explanations were cut right down — one line at most, and none at all for options whose name already says it. DNS mode lost its paragraph, and the toggles lost the captions that were only repeating their own label.
+- Player controls: the preview opens showing the real button icons (it used to open as words), and the schematic sits on a stand-in video frame instead of a flat black panel, so the layout reads at a glance.
+
 ## 0.5.18
 
 Test build — everything here is a polish pass on what 0.5.17 shipped.

@@ -594,7 +594,7 @@ fun HomeScreen(nav: NavHostController) {
                             title = if (noFolders) tr("This collection has no folders")
                             else tr("Nothing loaded from this collection"),
                             subtitle = if (noFolders) {
-                                tr("Add a folder in Settings → Appearance → Collections.")
+                                tr("Add a folder in Settings → Personal Catalog creator.")
                             } else {
                                 tr(
                                     "Its folders came back empty. Check the extension " +

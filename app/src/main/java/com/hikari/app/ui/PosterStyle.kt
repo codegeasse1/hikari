@@ -43,7 +43,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 /**
- * The user's poster styling — Settings → Appearance → Poster & icons.
+ * The user's poster styling — Settings → App Layout → Poster styling.
  *
  * These are the knobs the reference client offers on its artwork: the dynamic
  * iOS-style blur behind a poster, the corner rounding, and whether the title

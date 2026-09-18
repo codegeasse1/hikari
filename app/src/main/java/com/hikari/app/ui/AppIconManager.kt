@@ -7,7 +7,7 @@ import androidx.annotation.DrawableRes
 import com.hikari.app.R
 
 /**
- * The launcher icons the user can pick between in Settings → Appearance.
+ * The launcher icons the user can pick between in Settings → Appearance & Theme.
  *
  * Every entry has its own `activity-alias` in AndroidManifest.xml, all of them
  * pointing at [com.hikari.app.MainActivity]. Exactly one alias is enabled at a

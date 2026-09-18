@@ -13,6 +13,8 @@ import androidx.annotation.DrawableRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,19 +43,24 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Palette
@@ -65,11 +72,14 @@ import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -91,12 +101,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -164,13 +176,13 @@ private fun SettingsDivider() {
  * instead of one long scroll of every switch the app owns, so it stays readable
  * no matter how many options get added; opening a folder shows only what
  * belongs to it. A folder may itself contain folders (see [parent]) — the two
- * busiest ones do, because "Appearance" and "App Layout" had each grown into a
+ * busiest ones do, because "Appearance & Theme" and "App Layout" had each grown into a
  * long page of unrelated switches.
  *
- * The split: Appearance is only what the app *is* (language, theme, interface
- * scale) plus the two things it wears (icon, colour). Everything about how a
- * page is laid out — titles, posters, fonts, the taskbar — lives under App
- * Layout.
+ * The split: Appearance & Theme is what the app *is* and *wears* — language,
+ * theme, metadata language, interface scale, accent colour, launcher icon,
+ * font. Everything about how a page is laid out — posters, ratings, the
+ * taskbar, full screen — lives under App Layout.
  */
 private enum class SettingsFolder(
     /** Stable id. Also what a sub-folder names as its [parent]. */
@@ -184,16 +196,16 @@ private enum class SettingsFolder(
 ) {
     APPEARANCE(
         "appearance",
-        "Appearance",
-        "Language, theme, icon & interface size",
+        "Appearance & Theme",
+        "Language, theme, accent, icon & font",
         "How Hikari looks and speaks on this phone.",
         Icons.Filled.Palette,
     ),
     APP_LAYOUT(
         "layout",
         "App Layout",
-        "Titles, posters, fonts & navigation",
-        "How the app's pages are arranged, and what they look like in the hand.",
+        "Posters, ratings, taskbar & full screen",
+        "How the app's pages are arranged.",
         Icons.Filled.Dashboard,
     ),
     PLAYER(
@@ -225,7 +237,7 @@ private enum class SettingsFolder(
         Icons.Filled.Download,
     ),
     // The user's own catalogs (Collections) live here rather than under
-    // Appearance: they are something the user CREATES and manages — like the
+    // Appearance & Theme: they are something the user CREATES and manages — like the
     // extensions they install — not a way the app looks, and a folder of their
     // own is where they go looking for it.
     CATALOG(
@@ -266,56 +278,43 @@ private enum class SettingsFolder(
 
     // ---- Sub-folders (never listed on the index; see [parent]) ----
 
-    APPEARANCE_ICON(
-        "appearance.icon",
-        "App icon",
-        "The icon Hikari wears on your home screen",
-        "Pick which launcher icon the app uses. The change takes a moment and " +
-            "your home screen may need a refresh before the new icon shows.",
-        Icons.Filled.Android,
-        parent = "appearance",
-    ),
     APPEARANCE_COLORS(
         "appearance.colors",
-        "App color theme",
-        "Accent colours & player matching",
-        "The accent colour every screen is painted in, and whether the player " +
-            "follows the same one.",
+        "Accent colour",
+        "The app colour & the player's",
+        "The colour every screen is painted in.",
         Icons.Filled.ColorLens,
         parent = "appearance",
     ),
-    LAYOUT_TMDB(
-        "layout.tmdb",
-        "TMDB language titles",
-        "Show titles & descriptions in your language",
-        "What language TMDB metadata — titles, overviews, artwork text — is " +
-            "fetched in. Follows your app language unless you pick one here.",
-        Icons.Filled.Translate,
-        parent = "layout",
+    APPEARANCE_FONT(
+        "appearance.font",
+        "App font",
+        "The typeface used everywhere",
+        "Pick a bundled font, or import your own.",
+        Icons.Filled.TextFields,
+        parent = "appearance",
+    ),
+    APPEARANCE_ICON(
+        "appearance.icon",
+        "App icon",
+        "Your home-screen icon",
+        "Pick the launcher icon the app uses.",
+        Icons.Filled.Android,
+        parent = "appearance",
     ),
     LAYOUT_POSTER(
         "layout.poster",
         "Poster styling",
         "Blur, corners, titles & score badges",
-        "How the artwork cells in every grid are drawn: the iOS-style blur " +
-            "halo, the corner rounding, and whether titles and scores show.",
+        "Blur halo, corner rounding, titles and score badges.",
         Icons.Filled.Wallpaper,
-        parent = "layout",
-    ),
-    LAYOUT_FONT(
-        "layout.font",
-        "App font",
-        "The typeface used everywhere, including the player",
-        "Pick a bundled font, or import one from storage and use it across the " +
-            "whole app.",
-        Icons.Filled.TextFields,
         parent = "layout",
     ),
     LAYOUT_NAV(
         "layout.nav",
         "Taskbar & navigation",
         "Bar layout & which buttons stay",
-        "Which tabs the bottom bar carries, and the three layouts it can wear.",
+        "Which tabs the bottom bar carries.",
         Icons.Filled.Tune,
         parent = "layout",
     ),
@@ -335,6 +334,98 @@ private fun SettingsCard(
     )
 }
 
+/**
+ * Which cards are currently unfolded, keyed by the card's own id (see
+ * [SettingsSection]).
+ *
+ * Deliberately a file-level map rather than per-card `remember`: folder pages
+ * clear it on every entry and exit (see [SettingsScreen]), so a page always
+ * opens folded — tap a heading to unfold it, and it is folded again the next
+ * time the page is opened — while an unfolded card keeps its state while the
+ * user scrolls the page it is on.
+ */
+private val openSettingsSections = mutableStateMapOf<String, Boolean>()
+
+/**
+ * A card that holds more than one setting.
+ *
+ * Folder pages used to be a wall of always-open switches. A card with two or
+ * more controls now reads as a single heading — icon, name, and a one-line
+ * summary of what it is set to — and unfolds in place when tapped; the summary
+ * answers "what is this set to?" without opening anything. Cards with one
+ * control are not sections: there is nothing to fold, so they stay plain
+ * [SettingsCard]s.
+ */
+@Composable
+private fun SettingsSection(
+    id: String,
+    icon: ImageVector,
+    title: String,
+    summary: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val expanded = openSettingsSections[id] == true
+    // The chevron turns over as the card opens rather than snapping.
+    val turn by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        label = "section-chevron",
+    )
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { openSettingsSections[id] = !expanded }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (!summary.isNullOrBlank()) {
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.rotate(turn),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.fillMaxWidth()) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    content = content,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
@@ -346,7 +437,7 @@ fun SettingsScreen(nav: NavHostController) {
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
-    // A sub-folder inside [openFolder] (Appearance → App icon, App Layout →
+    // A sub-folder inside [openFolder] (Appearance & Theme → App icon, App Layout →
     // Poster styling…). Two levels is the whole tree, so two slots is enough and
     // back always has an obvious target.
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
@@ -403,7 +494,13 @@ fun SettingsScreen(nav: NavHostController) {
 
     // A folder opens at its own top: without this, opening one from partway
     // down the index would leave the new page scrolled by the old offset.
-    LaunchedEffect(openFolder, openSub) { listState.scrollToItem(0) }
+    // The same move folds every settings section again: a page always arrives
+    // with its cards closed, so the user never comes back to a page they left
+    // half-unfolded.
+    LaunchedEffect(openFolder, openSub) {
+        listState.scrollToItem(0)
+        openSettingsSections.clear()
+    }
 
     LazyColumn(
         state = listState,
@@ -462,6 +559,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
+                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
                     item {
                         SettingsCard {
                             Box {
@@ -506,11 +604,10 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UiScaleCard(app) } }
-                    item { SettingsCard { DetailRatingCard(app) } }
-                    // The two things the app wears. Each is several choices
-                    // wide (a dozen icon aliases, a wall of accent swatches),
-                    // so they get their own pages instead of turning Appearance
-                    // into a long scroll past everything else.
+                    // The things the app wears. Each is several choices wide (a
+                    // wall of accent swatches, a dozen icon aliases, a stack of
+                    // fonts), so they get their own pages instead of turning
+                    // Appearance into a long scroll past everything else.
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APPEARANCE.key }
                         .forEach { target ->
@@ -549,6 +646,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 // ---- App Layout: how a page is arranged ----
                 SettingsFolder.APP_LAYOUT -> {
+                    item { SettingsCard(top = 2.dp) { DetailRatingCard(app) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
                         .forEach { target ->
@@ -562,13 +660,10 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     item { SettingsCard { FullscreenCard(app) } }
                 }
-                SettingsFolder.LAYOUT_TMDB -> {
-                    item { SettingsCard(top = 2.dp) { TmdbLanguageCard(app, appLanguage) } }
-                }
                 SettingsFolder.LAYOUT_POSTER -> {
                     item { SettingsCard(top = 2.dp) { PosterStyleCard(app) } }
                 }
-                SettingsFolder.LAYOUT_FONT -> {
+                SettingsFolder.APPEARANCE_FONT -> {
                     item { SettingsCard(top = 2.dp) { FontCard(app) } }
                 }
                 SettingsFolder.LAYOUT_NAV -> {
@@ -603,8 +698,7 @@ fun SettingsScreen(nav: NavHostController) {
                                     headlineContent = { Text(tr("App logs & crash reports")) },
                                     supportingContent = {
                                         Text(
-                                            tr("Two rolling app logs and the last crash " + "log. Share them directly instead of ") +
-                                                I18n.t("sending screenshots.")
+                                            tr("Share the log files instead of a screenshot")
                                         )
                                     },
                                     trailingContent = {
@@ -621,7 +715,7 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item {
                         Text(
-                            tr("Logs stay on this device and are only sent when you " + "tap Share or Save on the logs page."),
+                            tr("Stays on this device until you share it."),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 10.dp, start = 4.dp),
@@ -813,13 +907,19 @@ private fun SettingsIconBadge(icon: ImageVector, size: Dp = 46.dp) {
 }
 
 /**
- * The folder page's own header: a back button, the folder's badge and name, and
- * a one-line explanation of what is inside, so a page always says where you are
- * without repeating the settings tab's title.
+ * The folder page's own header: a back button and the folder's badge on the
+ * first line, then the folder's name across the full width, a one-line summary
+ * of what is inside, and the longer explanation — so a page always says where
+ * you are without repeating the settings tab's title.
  *
- * [parentTitle] is set only when a sub-folder is open, and is printed above the
- * title as a breadcrumb — "Appearance › App icon" — so the way back out is
- * obvious without reading the back button's glyph.
+ * The name sits on its own line because it is the one piece of text here that
+ * must never wrap: a folder name is short by design and a wrapped one reads as
+ * a layout mistake. It also ellipsises rather than wrapping, so a future long
+ * folder name stays on one line too.
+ *
+ * [parentTitle] is set only when a sub-folder is open, and is printed at the end
+ * of the badge row as a breadcrumb — "Appearance › App icon" — so the way back
+ * out is obvious without reading the back button's glyph.
  */
 @Composable
 private fun FolderHeader(
@@ -852,29 +952,39 @@ private fun FolderHeader(
             }
             Spacer(Modifier.width(12.dp))
             SettingsIconBadge(folder.icon, 44.dp)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                if (parentTitle != null) {
-                    Text(
-                        tr(parentTitle) + " ›",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+            // The breadcrumb sits at the far end of the badge row rather than
+            // under it: the title below gets the whole width, which is what
+            // keeps a long folder name ("Personal Catalog creator") on one
+            // line instead of wrapping into the subtitle.
+            if (parentTitle != null) {
+                Spacer(Modifier.weight(1f))
                 Text(
-                    tr(folder.title),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    tr(folder.subtitle),
+                    tr(parentTitle) + " ›",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
+        Text(
+            tr(folder.title),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            tr(folder.subtitle),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
         Text(
             tr(folder.blurb),
             style = MaterialTheme.typography.bodySmall,
@@ -1013,9 +1123,7 @@ private fun ContinueWatchingCard(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    tr("Show the Continue Watching shelf on Home. It collects " + "progress from every extension you've watched, so an ") +
-                        I18n.t("episode started on one extension still shows up after ") +
-                        I18n.t("you switch to another."),
+                    tr("Collects progress from every extension"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1065,7 +1173,7 @@ private fun AboutCard() {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            tr("Hikari (光) — a universal streaming app built from scratch. " + "One player, every extension ecosystem."),
+            tr("A universal streaming app built from scratch."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1149,7 +1257,7 @@ private fun DownloadSettingsCard(app: HikariApp) {
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            tr("Slide to 3 to run three downloads at once, 4 for four, and so on (max 10). " + "Videos beyond the limit stay queued and start automatically as slots free up."),
+            tr("Extra videos wait in the queue."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1177,12 +1285,10 @@ private fun CollectionsCard(onOpen: () -> Unit) {
             supportingContent = {
                 Text(
                     if (collections.isEmpty()) {
-                        tr("Group the catalogs you actually watch into folders, then pick the " +
-                            "collection on Home to browse only those.")
+                        tr("Group the catalogs you watch into folders")
                     } else {
                         collections.size.toString() + " " +
                             (if (collections.size == 1) tr("collection") else tr("collections")) +
-                            " · " + folders + " " + (if (folders == 1) tr("folder") else tr("folders")) +
                             " · " + catalogs + " " + (if (catalogs == 1) tr("catalog") else tr("catalogs"))
                     }
                 )
@@ -1210,34 +1316,20 @@ private fun UiScaleCard(app: HikariApp) {
 
     LaunchedEffect(scale) { slider = scale }
 
-    Column(Modifier.padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("In-app UI scale"),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    tr("Force one interface size on every phone"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = { on ->
-                    scope.launch { runCatching { app.store.setUiScaleEnabled(on) } }
-                }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Turning OFF applies your phone's Font size and Display size settings " + "to the app. Turning ON ignores those two phone settings and follows ") +
-                I18n.t("the in-app UI scale size below instead, so the app looks the same on ") +
-                I18n.t("every device."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+    SettingsSection(
+        id = "appearance.ui-scale",
+        icon = Icons.Filled.FormatSize,
+        title = tr("In-app UI scale"),
+        summary = if (enabled) (scale * 100).roundToInt().toString() + "%"
+        else tr("Off — your phone's text size is used"),
+    ) {
+        SettingsToggle(
+            label = tr("Force one interface size"),
+            supporting = tr("Ignores your phone's text size"),
+            checked = enabled,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setUiScaleEnabled(on) } }
+            },
         )
         if (enabled) {
             Spacer(Modifier.height(12.dp))
@@ -1317,22 +1409,16 @@ private fun TaskbarCard(app: HikariApp) {
     val labelsFlow = remember { app.store.tabLabelsFlow() }
     val labels by labelsFlow.collectAsState(initial = true)
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Taskbar buttons"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            tr("Choose which tabs the bottom bar shows. Turn one off and its " + "button disappears — the others share the space. ") +
-                I18n.t("The screen itself still opens from inside the app, and the last remaining tab always stays."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    SettingsSection(
+        id = "nav.taskbar",
+        icon = Icons.Filled.Tune,
+        title = tr("Taskbar buttons"),
+        summary = visible.size.toString() + " / " + BottomTabs.size + " " + tr("buttons") + " · " +
+            (if (labels) tr("labels on") else tr("labels off")),
+    ) {
         SettingsToggle(
             label = tr("Show text on taskbar buttons"),
-            supporting = tr("Write each tab's name under its icon. Turn this off to keep the bar icons-only."),
+            supporting = tr("Write each tab's name under its icon"),
             checked = labels,
             onCheckedChange = { on ->
                 scope.launch { runCatching { app.store.setTabLabels(on) } }
@@ -1418,19 +1504,12 @@ private fun FontCard(app: HikariApp) {
         }
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("App font"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Applies to the whole app — every screen, the player and the built-in browser."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
+    SettingsSection(
+        id = "appearance.font",
+        icon = Icons.Filled.TextFields,
+        title = tr("App font"),
+        summary = AppFonts.labelFor(key, importedLabel),
+    ) {
         ChoiceRow(
             value = AppFonts.labelFor(key, importedLabel),
             leadingIcon = Icons.Filled.TextFields,
@@ -1453,7 +1532,7 @@ private fun FontCard(app: HikariApp) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            tr("Tip: .ttf and .otf files from your Downloads folder work best."),
+            tr("Best with .ttf or .otf files"),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1510,19 +1589,13 @@ private fun PosterStyleCard(app: HikariApp) {
     LaunchedEffect(blur) { blurSlider = blur.toFloat() }
     LaunchedEffect(corner) { cornerSlider = corner.toFloat() }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Poster & icon styling"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("How artwork is drawn in every grid — Home, Search, Library and your collections."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(14.dp))
+    SettingsSection(
+        id = "layout.poster",
+        icon = Icons.Filled.Wallpaper,
+        title = tr("Poster & icon styling"),
+        summary = tr("Blur") + " " + (if (blur < 1) tr("off") else blur.toString()) +
+            " · " + tr("Corners") + " " + corner,
+    ) {
         SettingsSlider(
             label = tr("Dynamic blur"),
             value = blurSlider,
@@ -1537,7 +1610,7 @@ private fun PosterStyleCard(app: HikariApp) {
             },
         )
         Text(
-            tr("A soft coloured halo behind each poster, the way the reference client does it."),
+            tr("Soft coloured halo behind each poster"),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1558,19 +1631,17 @@ private fun PosterStyleCard(app: HikariApp) {
         Spacer(Modifier.height(4.dp))
         SettingsToggle(
             label = tr("Show titles"),
-            supporting = tr("The name under each poster."),
             checked = titles,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowTitles(on) } } },
         )
         SettingsToggle(
-            label = tr("Show ratings"),
-            supporting = tr("A score badge on posters that have one (TMDB titles)."),
+            label = tr("Score badges on posters"),
             checked = ratings,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowRatings(on) } } },
         )
         SettingsToggle(
             label = tr("Glass trim"),
-            supporting = tr("The hairline and frosted backing every card in the app shares."),
+            supporting = tr("The frosted backing every card shares"),
             checked = glass,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterGlass(on) } } },
         )
@@ -1623,7 +1694,7 @@ private fun SettingsSlider(
 @Composable
 private fun SettingsToggle(
     label: String,
-    supporting: String,
+    supporting: String = "",
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
@@ -1639,11 +1710,17 @@ private fun SettingsToggle(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            Text(
-                supporting,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Only when a switch actually needs explaining: a caption under
+            // every one of them made the folder pages read like a manual.
+            if (supporting.isNotBlank()) {
+                Text(
+                    supporting,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onCheckedChange)
@@ -1669,9 +1746,9 @@ private fun SettingsCardHeading(icon: ImageVector, title: String) {
 }
 
 /**
- * Ratings (Settings → Appearance): the IMDb / RT / Metacritic strip on a
- * detail page, and the small score badge on each poster. Off means neither is
- * drawn and no rating lookups are made. On by default.
+ * Ratings (Settings → App Layout): the IMDb / RT / Metacritic strip on a detail
+ * page, and the small score badge on each poster. Off means neither is drawn and
+ * no rating lookups are made. On by default.
  */
 @Composable
 private fun DetailRatingCard(app: HikariApp) {
@@ -1682,12 +1759,8 @@ private fun DetailRatingCard(app: HikariApp) {
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Star, tr("Ratings"))
         SettingsToggle(
-            label = tr("Show ratings"),
-            supporting = tr(
-                "The IMDb / Rotten Tomatoes scores on a detail page, and the " +
-                    "small score badge on each poster. Turning it off skips the " +
-                    "rating lookups too."
-            ),
+            label = tr("Show scores"),
+            supporting = tr("IMDb & Rotten Tomatoes strips"),
             checked = show,
             onCheckedChange = { on ->
                 scope.launch { runCatching { app.store.setShowDetailRating(on) } }
@@ -1715,10 +1788,7 @@ private fun FullscreenCard(app: HikariApp) {
         )
         SettingsToggle(
             label = tr("Turn off full screen app mode"),
-            supporting = tr(
-                "Keep the phone's status bar and its three buttons visible on " +
-                    "every screen. Off keeps the app edge-to-edge."
-            ),
+            supporting = tr("Shows the phone's status bar on every screen"),
             checked = off,
             onCheckedChange = { value ->
                 scope.launch { runCatching { app.store.setFullscreenOff(value) } }
@@ -1728,7 +1798,7 @@ private fun FullscreenCard(app: HikariApp) {
 }
 
 /**
- * The bottom bar's layout (Settings → Appearance → Navigation bar): the
+ * The bottom bar's layout (Settings → App Layout → Taskbar & navigation): the
  * animated bar (the default — a full labelled bar that shrinks to a small pill
  * as you scroll back up), a fixed floating glass pill, or a seamless
  * edge-to-edge plate.
@@ -1750,12 +1820,6 @@ private fun NavBarCard(app: HikariApp) {
             tr("Navigation bar"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Choose how the bottom bar is drawn. Which buttons it shows is set above."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
         ChoiceRow(
@@ -1806,7 +1870,7 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
                 key = "",
                 label = tr("Follow app language"),
                 supporting = if (followed.isBlank()) {
-                    tr("No TMDB translation for the current app language — English is used.")
+                    tr("English is used for this language")
                 } else {
                     tr("Currently") + ": " + followed
                 },
@@ -1816,7 +1880,7 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
             ChoiceItem(
                 key = "none",
                 label = tr("Off (TMDB default)"),
-                supporting = tr("Keep the titles exactly as TMDB releases them."),
+                supporting = tr("Titles as TMDB releases them"),
             )
         )
         TmdbLang.CHOICES.forEach { (code, name) -> add(ChoiceItem(code, name, code)) }
@@ -1827,13 +1891,6 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
             tr("Title language (TMDB)"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Titles and overviews from TMDB are fetched in this language, so the same " +
-                "movie reads correctly after you change the app language."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
         ChoiceRow(
@@ -1897,19 +1954,12 @@ private fun AppIconCard(app: HikariApp) {
     val tile = 64.dp
     val tileShape = RoundedCornerShape(tile * 0.26f)
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("App icon"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            tr("Pick the icon your launcher shows for Hikari."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(14.dp))
+    SettingsSection(
+        id = "appearance.icon",
+        icon = Icons.Filled.Android,
+        title = tr("App icon"),
+        summary = AppIconVariants.firstOrNull { it.key == current }?.let { tr(it.label) },
+    ) {
         FlowRow(horizontalArrangement = Arrangement.Start) {
             AppIconVariants.forEach { v ->
                 val selected = v.key == current
@@ -1976,7 +2026,7 @@ private fun AppIconCard(app: HikariApp) {
         }
         Spacer(Modifier.height(2.dp))
         Text(
-            tr("Some launchers take a moment to refresh the icon. If yours keeps the old one, restart it or remove and re-add the shortcut."),
+            tr("Your launcher may need to refresh"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2028,7 +2078,7 @@ private fun DnsModeCard(app: HikariApp) {
 
     // Hoisted out of runTest(): tr() is @Composable, so a plain local function
     // is not allowed to call it.
-    val addrWarning = tr("Write an address first — e.g. https://dns.google/dns-query")
+    val addrWarning = tr("Write an address first")
 
     fun runTest() {
         val target = when (chosen.key) {
@@ -2051,35 +2101,17 @@ private fun DnsModeCard(app: HikariApp) {
         }
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("DNS mode"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Which resolver Hikari asks for names, for everything it fetches and plays. " +
-                "Most of these answer over an encrypted DNS-over-HTTPS connection, and several " +
-                "block ads or known malicious sites before a connection is even made. Anything " +
-                "marked plain DNS sends its lookups unprotected, readable by whatever network " +
-                "you're on."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("This phone's own resolver is always used for names on your local network, and " +
-                "Hikari keeps its built-in encrypted fallback for whatever a choice here can't answer."),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
+    SettingsSection(
+        id = "network.dns",
+        icon = Icons.Filled.Public,
+        title = tr("DNS mode"),
+        summary = tr(chosen.label),
+    ) {
         ChoiceRow(
             value = tr(chosen.label),
             supporting = when {
                 chosen.key == DnsProviders.CUSTOM && endpoint != null -> endpoint.url
-                chosen.key == DnsProviders.CUSTOM -> tr("Point Hikari at any DNS-over-HTTPS address you like.")
+                chosen.key == DnsProviders.CUSTOM -> tr("Any DNS-over-HTTPS address")
                 else -> tr(chosen.note)
             },
             leadingIcon = Icons.Filled.Public,
@@ -2105,8 +2137,7 @@ private fun DnsModeCard(app: HikariApp) {
                 if (typed.isNotBlank() && endpoint == null) {
                     tr("That doesn't look like a web address.")
                 } else {
-                    tr("A bare host gets https:// and /dns-query added — \"dns.google\" or " +
-                        "\"1.1.1.1\" both work.")
+                    tr("Bare hosts get https:// and /dns-query")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = if (typed.isNotBlank() && endpoint == null) MaterialTheme.colorScheme.error
@@ -2140,7 +2171,7 @@ private fun DnsModeCard(app: HikariApp) {
                     when {
                         testRan && testReason == null -> tr("Working — it resolved example.com.")
                         testRan -> testReason.orEmpty()
-                        else -> tr("Hikari asks it to look up example.com and tells you what came back.")
+                        else -> tr("Looks up example.com to check it")
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = if (testRan && testReason == null) MaterialTheme.colorScheme.primary
@@ -2180,68 +2211,31 @@ private fun SlowConnectionCard(app: HikariApp) {
         tipEnabled = app.store.slowTipEnabled()
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Mobile data / slow internet"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+    SettingsSection(
+        id = "network.slow",
+        icon = Icons.Filled.Speed,
+        title = tr("Mobile data / slow internet"),
+        summary = tr("Slow connection mode") + " " + (if (enabled) tr("on") else tr("off")),
+    ) {
+        SettingsToggle(
+            label = tr("Slow connection mode"),
+            supporting = tr("Longer timeouts, and retries extensions"),
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                NetTuning.setSlowConnection(it)
+                scope.launch { runCatching { app.store.setSlowConnection(it) } }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Gives every source search much more time and retries extensions " + "that time out, so a weak connection doesn't end in ") +
-                I18n.t("\"No playable sources found\". Only turn it on if you need it — ") +
-                I18n.t("fast connections stay quick with it off."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        SettingsToggle(
+            label = tr("Suggest it when videos start slowly"),
+            supporting = tr("The player offers to switch it on"),
+            checked = tipEnabled,
+            onCheckedChange = {
+                tipEnabled = it
+                scope.launch { runCatching { app.store.setSlowTipEnabled(it) } }
+            },
         )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Slow connection mode"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Enable this if your internet is slow."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    NetTuning.setSlowConnection(it)
-                    scope.launch { runCatching { app.store.setSlowConnection(it) } }
-                }
-            )
-        }
-        Spacer(Modifier.height(14.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-        Spacer(Modifier.height(14.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Slow internet suggestion"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("When a video looks slow to start, the player offers to switch " + "Slow connection mode on. Turn this off if it keeps guessing ") +
-                        I18n.t("wrong on a connection that is actually fine."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = tipEnabled,
-                onCheckedChange = {
-                    tipEnabled = it
-                    scope.launch { runCatching { app.store.setSlowTipEnabled(it) } }
-                }
-            )
-        }
     }
 }
 
@@ -2265,19 +2259,16 @@ private fun PlaybackStartCard(app: HikariApp) {
         scope.launch { runCatching { app.store.setPlayWaitServers(wait) } }
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Playback start"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Choose when the player starts after you tap Play."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(6.dp))
+    SettingsSection(
+        id = "player.start",
+        icon = Icons.Filled.PlayArrow,
+        title = tr("Playback start"),
+        summary = when {
+            askServer -> tr("Show the server list first")
+            waitServers -> tr("Wait for") + " " + minServers.roundToInt() + " " + tr("servers")
+            else -> tr("Play the first server found")
+        },
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             RadioButton(selected = !waitServers, onClick = { persist(false) })
             Column(Modifier.weight(1f)) {
@@ -2286,7 +2277,7 @@ private fun PlaybackStartCard(app: HikariApp) {
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    tr("Instant playback — the fastest option. If that server turns out " + "to be dead, the player moves to the next one automatically."),
+                    tr("Instant — falls back if it's dead"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2300,8 +2291,7 @@ private fun PlaybackStartCard(app: HikariApp) {
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    tr("Playback starts once the number chosen below has been found — or " + "when every installed extension has finished searching, ") +
-                        I18n.t("whichever happens first."),
+                    tr("Or when every extension has finished"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2344,9 +2334,7 @@ private fun PlaybackStartCard(app: HikariApp) {
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
-                tr("Slide to 3 to start once three servers are ready. If the whole " + "search finds fewer than that (say only 2), playback starts with ") +
-                    I18n.t("everything that was found the moment every extension has ") +
-                    I18n.t("finished — it never waits forever for a server that doesn't exist."),
+                tr("Fewer found? Playback starts anyway"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2356,21 +2344,15 @@ private fun PlaybackStartCard(app: HikariApp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Don't play directly — show all servers to choose"),
+                    tr("Always show the server list"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     if (askServer) {
-                        "On — tapping Play stops at the server list instead of " +
-                            "starting a server by itself. Every server found is " +
-                            "divided into sections by the engine it came from " +
-                            "(CloudStream, Hikari, Nuvio, Stremio) so you can pick " +
-                            "one deliberately."
+                        tr("On — Play opens the server list")
                     } else {
-                        "Off — the player starts on the first server it finds and " +
-                            "only moves to another one if that server turns out to " +
-                            "be dead."
+                        tr("Off — Play starts the first server")
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2392,16 +2374,12 @@ private fun PlaybackStartCard(app: HikariApp) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        tr("Ask me when a chosen server fails"),
+                        tr("Ask when my server fails"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        tr(
-                            "When a server you picked yourself fails, Hikari offers to try " +
-                                "the next one or lets you choose another — instead of " +
-                                "switching silently."
-                        ),
+                        tr("Offer the next one instead of switching"),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2428,46 +2406,17 @@ private fun LoadingBannerCard(app: HikariApp) {
     }
 
     Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Loading screen"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+        SettingsCardHeading(Icons.Filled.Slideshow, tr("Loading screen"))
+        SettingsToggle(
+            label = tr("Title artwork while loading"),
+            supporting = if (enabled) tr("Artwork and name until video starts")
+            else tr("A plain loading icon instead"),
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                scope.launch { runCatching { app.store.setShowLoadingBanner(it) } }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("What covers the player while it finds a server and buffers the first " + "frame of video."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Show banner until servers load"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    if (enabled) {
-                        "On — the title's artwork and name (breathing in and out) stay " +
-                            "on screen until the first frame of video is ready. Tapping " +
-                            "the banner does nothing."
-                    } else {
-                        "Off — the player opens straight away with just a round loading " +
-                            "icon, no artwork or name."
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    scope.launch { runCatching { app.store.setShowLoadingBanner(it) } }
-                }
-            )
-        }
     }
 }
 
@@ -2481,40 +2430,16 @@ private fun UniversalExtractionCard(app: HikariApp) {
     }
 
     Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Universal extraction (yt-dlp)"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+        SettingsCardHeading(Icons.Filled.Extension, tr("Universal extraction (yt-dlp)"))
+        SettingsToggle(
+            label = tr("Fall back to yt-dlp"),
+            supporting = tr("When no other extractor finds a source"),
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                scope.launch { runCatching { app.store.setYtdlpEnabled(it) } }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("When a provider's own extractors find no playable source, the " + "built-in yt-dlp engine takes over and tries to pull a direct ") +
-                I18n.t("stream from the page. Adds ~60 MB to the APK."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Fall back to yt-dlp when no sources found"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Only kicks in on pages the built-in extractors can't resolve."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    scope.launch { runCatching { app.store.setYtdlpEnabled(it) } }
-                }
-            )
-        }
     }
 }
 
@@ -2590,68 +2515,30 @@ private fun WebViewSafetyCard(app: HikariApp) {
         allowedRedirects = app.store.webviewRedirectAllow()
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("WebView safety"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+    SettingsSection(
+        id = "privacy.webview",
+        icon = Icons.Filled.Shield,
+        title = tr("WebView safety"),
+        summary = if (redirectProtection && popupProtection) tr("Redirects & popups blocked")
+        else tr("Partly blocked"),
+    ) {
+        SettingsToggle(
+            label = tr("Block redirects to other sites"),
+            supporting = tr("Subdomains of the site still load"),
+            checked = redirectProtection,
+            onCheckedChange = {
+                redirectProtection = it
+                scope.launch { runCatching { app.store.setWebviewRedirect(it) } }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Stops sites from redirecting or popping you out to ad pages. " + "Only pages/popups that belong to the site itself are allowed. ") +
-                I18n.t("Turn off if a site's player opens in another tab on a different domain."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Block redirects to other sites"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Same-site pages & subdomains still load normally."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = redirectProtection,
-                onCheckedChange = {
-                    redirectProtection = it
-                    scope.launch { runCatching { app.store.setWebviewRedirect(it) } }
-                }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Block popups from other sites"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Only popups opened by the site itself can appear."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = popupProtection,
-                onCheckedChange = {
-                    popupProtection = it
-                    scope.launch { runCatching { app.store.setWebviewPopup(it) } }
-                }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Nothing opens in a web view on its own — not ads, not pop-ups, and not a site's human-verification page. An extension whose site wants a browser check is skipped instead, and you can open that site yourself with the globe button."),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        SettingsToggle(
+            label = tr("Block popups from other sites"),
+            supporting = tr("Only the site's own popups"),
+            checked = popupProtection,
+            onCheckedChange = {
+                popupProtection = it
+                scope.launch { runCatching { app.store.setWebviewPopup(it) } }
+            },
         )
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
@@ -2664,7 +2551,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            tr("Redirects to these hosts are never blocked, even though they're a " + "different site (e.g. a player or CDN a site must send you to)."),
+            tr("Never blocked, even on other sites"),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2822,7 +2709,7 @@ private fun BackupCard(app: HikariApp) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            tr("Your extensions, sources and settings — not your videos — in one file."),
+            tr("Settings and extensions in one file."),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2830,7 +2717,7 @@ private fun BackupCard(app: HikariApp) {
         BackupRow(
             icon = Icons.Filled.SaveAlt,
             title = tr("Back up Hikari data"),
-            subtitle = tr("Save your extensions, sources and settings to one file you can keep."),
+            subtitle = tr("Save extensions and settings to a file"),
             action = tr("Back up"),
             enabled = !busy,
             onClick = { backup() },
@@ -2839,7 +2726,7 @@ private fun BackupCard(app: HikariApp) {
         BackupRow(
             icon = Icons.Filled.RestorePage,
             title = tr("Restore from a backup"),
-            subtitle = tr("Pick a Hikari backup file and put it back on this device."),
+            subtitle = tr("Bring a Hikari backup back"),
             action = tr("Restore"),
             enabled = !busy,
             onClick = { picker.launch(arrayOf("application/json", "text/plain", "*/*")) },
@@ -2848,7 +2735,7 @@ private fun BackupCard(app: HikariApp) {
         BackupRow(
             icon = Icons.Filled.SettingsBackupRestore,
             title = tr("Coming from CloudStream?"),
-            subtitle = tr("Pick a CloudStream backup file to add the repositories it contains."),
+            subtitle = tr("Add the repositories its backup lists"),
             action = tr("Import"),
             enabled = !busy,
             onClick = { csPicker.launch(arrayOf("text/plain", "application/json", "*/*")) },
@@ -2863,7 +2750,7 @@ private fun BackupCard(app: HikariApp) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            tr("A backup holds your settings and extension files — never your videos and never your passwords. Restoring replaces what is on this device now."),
+            tr("Never includes your videos or passwords."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2913,39 +2800,16 @@ private fun ExtensionVerifyCard(app: HikariApp) {
     LaunchedEffect(Unit) { allowed = app.store.extensionVerifyWebview() }
 
     Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Extension verification pages"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+        SettingsCardHeading(Icons.Filled.VerifiedUser, tr("Verification pages"))
+        SettingsToggle(
+            label = tr("Open their verification pages"),
+            supporting = tr("Off: never opens on its own"),
+            checked = allowed,
+            onCheckedChange = {
+                allowed = it
+                scope.launch { runCatching { app.store.setExtensionVerifyWebview(it) } }
+            },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Hikari only opens a site's verification page when you tap the WebView button yourself. Extensions whose site wants that check are skipped while loading sources, so no page opens on its own."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Let extensions open their own verification page"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Off: an extension's own page can never open uninvited. On: Hikari stops forcing the extension's switch — it never turns that page on for you."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = allowed,
-                onCheckedChange = {
-                    allowed = it
-                    scope.launch { runCatching { app.store.setExtensionVerifyWebview(it) } }
-                }
-            )
-        }
     }
 }
 
@@ -2971,39 +2835,18 @@ private fun WebViewUserAgentCard(app: HikariApp) {
         scope.launch { runCatching { app.store.setWebViewUa(u, custom) } }
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("WebView user agent"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
+    SettingsSection(
+        id = "privacy.user-agent",
+        icon = Icons.Filled.Language,
+        title = tr("WebView user agent"),
+        summary = if (useDefault) tr("Android default") else tr("Custom"),
+    ) {
+        SettingsToggle(
+            label = tr("Use Android default user agent"),
+            supporting = tr("Works on most sites"),
+            checked = useDefault,
+            onCheckedChange = { on -> persist(on, draft) },
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Some sites block the WebView when it advertises a " + "desktop browser it doesn't match. The stock Android user agent ") +
-                I18n.t("works on most sites; a custom one is for sites ") +
-                I18n.t("that need a specific desktop/mobile UA."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Use Android default user agent"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    tr("Stock Android WebView UA — works on most sites."),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = useDefault,
-                onCheckedChange = { on -> persist(on, draft) }
-            )
-        }
         if (!useDefault) {
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3046,22 +2889,16 @@ private fun UserscriptsCard(app: HikariApp) {
         scope.launch { runCatching { app.store.setUserscripts(list) } }
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Userscripts"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Tampermonkey-style scripts that run ONLY inside the app's WebView " + "(@match/@include/@run-at + GM_getValue/setValue). Add as many as you like."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
+    SettingsSection(
+        id = "sources.userscripts",
+        icon = Icons.Filled.Code,
+        title = tr("Userscripts"),
+        summary = if (scripts.isEmpty()) tr("None added")
+        else scripts.size.toString() + " " + (if (scripts.size == 1) tr("script") else tr("scripts")),
+    ) {
         if (scripts.isEmpty()) {
             Text(
-                tr("No userscripts yet."),
+                tr("Tampermonkey-style, WebView-only scripts"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3116,7 +2953,7 @@ private fun UserscriptsCard(app: HikariApp) {
             text = {
                 Column {
                     Text(
-                        tr("Paste a userscript with a // ==UserScript== header " + "(name, @match, @run-at…). It runs only in the WebView."),
+                        tr("Runs only inside the WebView."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3186,33 +3023,21 @@ private fun AdBlockingCard(app: HikariApp) {
         whiteList = app.store.adWhite()
     }
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Ad Blocking"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                tr("Block ads & trackers in websites opened in the browser tab"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-            Switch(
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    scope.launch { app.store.setAdEnabled(it) }
-                }
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            tr("Applies only to WebView sites — the video player is never affected."),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+    SettingsSection(
+        id = "privacy.ad-blocking",
+        icon = Icons.Filled.Block,
+        title = tr("Ad Blocking"),
+        summary = if (!enabled) tr("Off")
+        else tr("On") + " · " + lists.size + " " + (if (lists.size == 1) tr("list") else tr("lists")),
+    ) {
+        SettingsToggle(
+            label = tr("Block ads & trackers"),
+            supporting = tr("In the browser tab, not the player"),
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                scope.launch { app.store.setAdEnabled(it) }
+            },
         )
 
         if (enabled) {
@@ -3349,7 +3174,7 @@ private fun AdBlockingCard(app: HikariApp) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                tr("Add a domain to always block in the browser tab"),
+                tr("Always block this domain"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3408,7 +3233,7 @@ private fun AdBlockingCard(app: HikariApp) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                tr("If a site or video is wrongly blocked, whitelist its domain"),
+                tr("Whitelist a wrongly-blocked site"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3520,7 +3345,7 @@ private fun PlayerControlsCard(onOpen: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            tr("Choose where each button sits in the player — top bar, the left or " + "right end of the bottom row — or hide the ones you never use."),
+            tr("Where each button sits, or hide it"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -3538,19 +3363,12 @@ private fun VideoEnhanceCard(app: HikariApp) {
     var menuOpen by remember { mutableStateOf(false) }
     val preset = EnhancePreset.fromKey(presetKey)
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Video enhance"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("Realtime colour grading applied to the video itself (not an overlay), " + "here and from the Enhance button in the player."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(10.dp))
+    SettingsSection(
+        id = "player.enhance",
+        icon = Icons.Filled.AutoAwesome,
+        title = tr("Video enhance"),
+        summary = tr(preset.label),
+    ) {
         Box {
             Row(
                 Modifier
@@ -3585,12 +3403,6 @@ private fun VideoEnhanceCard(app: HikariApp) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text(
-            tr("Natural applies nothing at all — enhancement only runs while a preset " + "is picked. HDR videos ignore the tint part of a preset, and effects ") +
-                I18n.t("are applied with no quality loss to the source."),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 
     // Eight presets with a description each: a glass page of choices beats a
@@ -3611,7 +3423,7 @@ private fun VideoEnhanceCard(app: HikariApp) {
     }
 }
 
-// ---- Accent colours (Appearance folder) ----
+// ---- Accent colours (Appearance & Theme folder) ----
 
 /** The app accent picker (and the player's own accent while the two are not
  *  linked). Every swatch is drawn from the accent's real gradient, so what you
@@ -3626,19 +3438,12 @@ private fun AccentCard(
 ) {
     val scope = rememberCoroutineScope()
 
-    Column(Modifier.padding(16.dp)) {
-        Text(
-            tr("Accent color"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            tr("The colour of buttons, selected tabs, sliders and highlights " + "throughout the app."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(12.dp))
+    SettingsSection(
+        id = "appearance.accent",
+        icon = Icons.Filled.ColorLens,
+        title = tr("Accent color"),
+        summary = HikariAccent.fromKey(appAccentKey).label,
+    ) {
         AccentSwatches(
             selected = HikariAccent.fromKey(appAccentKey),
             onPick = { accent ->
@@ -3647,26 +3452,20 @@ private fun AccentCard(
         )
 
         if (linked) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Text(
-                tr("The player is following this colour — see \"Match app & player " + "theme\" below to give it its own."),
+                tr("The player follows this colour."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
             Text(
                 tr("Player color"),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                tr("The glow behind the player's pills, badges, play ring and " + "progress bar."),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             AccentSwatches(
                 selected = HikariAccent.fromKey(playerAccentKey),
                 onPick = { accent ->
@@ -3776,11 +3575,9 @@ private fun MatchThemeCard(
         Spacer(Modifier.height(6.dp))
         Text(
             if (linked) {
-                "On: the player always uses the app's accent colour, so the two " +
-                    "can never drift apart."
+                tr("The player follows the app colour.")
             } else {
-                "Off: the app and the player each keep their own colour. Use the " +
-                    "buttons below to copy one onto the other."
+                tr("The two keep their own colours.")
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant

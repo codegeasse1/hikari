@@ -144,7 +144,7 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var whitelistDomains: Set<String> = emptySet()
 
-    // WebView safety toggles (Settings → WebView safety). Default ON:
+    // WebView safety toggles (Settings → Privacy & Browsing → WebView safety). Default ON:
     //  - redirectProtection: the main frame can only navigate within the site
     //    it was opened for — ad-hijack redirects (ad.twinrdengine.com & co)
     //    are cancelled before they load.
@@ -155,7 +155,7 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var popupProtection = true
     @Volatile private var blockedToastShown = false
-    // Hosts the user explicitly allowed redirects to (Settings → WebView safety
+    // Hosts the user explicitly allowed redirects to (Settings → Privacy & Browsing → WebView safety
     // → Allowed redirect links). Navigations to these are never blocked.
     @Volatile
     private var allowedRedirectHosts: Set<String> = emptySet()
@@ -427,7 +427,7 @@ class WebViewActivity : ComponentActivity() {
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
         ws.offscreenPreRaster = true
-        // UA comes from Settings → WebView user agent: stock Android default
+        // UA comes from Settings → Privacy & Browsing → WebView user agent: stock Android default
         // (passes Cloudflare's JS challenge) unless the user overrides with a
         // custom one. See HikariApp.effectiveWebViewUa.
         ws.userAgentString = (application as HikariApp).effectiveWebViewUa()

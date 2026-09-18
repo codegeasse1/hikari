@@ -842,7 +842,7 @@ fun DetailScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     // The score strip (IMDb / RT / …) on the details block is drawn unless the
-    // user switched it off in Settings → Appearance: it is on by default,
+    // user switched it off in Settings → App Layout: it is on by default,
     // because a title's score is part of what the page is for.
     val detailApp = context.applicationContext as HikariApp
     val detailRatingFlow = remember { detailApp.store.showDetailRatingFlow() }
@@ -2549,7 +2549,7 @@ private fun ShelfRow(
  *
  * It draws through [PosterArt] like every other grid in the app, which is what
  * puts the score badge on it: these two rows used to be the only posters in
- * Hikari that ignored Settings → Appearance → "Show ratings", because they
+ * Hikari that ignored Settings → App Layout → "Show scores", because they
  * hand-rolled their own artwork box. Tapping the poster loads the title itself
  * (no trip through the Search tab).
  */

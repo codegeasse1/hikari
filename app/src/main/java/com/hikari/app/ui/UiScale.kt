@@ -6,7 +6,7 @@ import android.util.DisplayMetrics
 import kotlin.math.roundToInt
 
 /**
- * The "In-app UI scale" preference (Settings → In-app UI scale), mirrored into
+ * The "In-app UI scale" preference (Settings → Appearance & Theme → In-app UI scale), mirrored into
  * plain SharedPreferences so it can be read SYNCHRONOUSLY while an Activity is
  * being created.
  *

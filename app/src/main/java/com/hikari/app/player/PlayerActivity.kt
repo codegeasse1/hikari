@@ -731,7 +731,7 @@ class PlayerActivity : ComponentActivity() {
     private var badgeQuality: TextView? = null
     private var badgeSource: TextView? = null
 
-    /** In-app UI scale: when the user turns it on (Settings → In-app UI scale)
+    /** In-app UI scale: when the user turns it on (Settings → Appearance & Theme → In-app UI scale)
      *  the whole app stops following the phone's font/display size settings —
      *  including this View-based player, which is outside the Compose tree. */
     override fun attachBaseContext(newBase: android.content.Context) {
@@ -741,7 +741,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
-        // The app font (Settings → Appearance → Font) reaches this View-based
+        // The app font (Settings → Appearance & Theme → App font) reaches this View-based
         // screen by walking the inflated hierarchy — the Compose theme cannot.
         com.hikari.app.ui.AppFonts.applyToContent(this, window.decorView)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -973,7 +973,7 @@ class PlayerActivity : ComponentActivity() {
         unlockBtn?.setOnClickListener { unlockControls() }
 
         // ---- Player accent, control layout, video enhance ------------------
-        // The accent comes from the AccentStore mirror (Settings → Appearance →
+        // The accent comes from the AccentStore mirror (Settings → Appearance & Theme →
         // Player color, or the app accent while the two are linked). It is read
         // SYNCHRONOUSLY so the very first frame is already the right colour —
         // no flash of the default violet. Everything else in the player that is
@@ -1895,7 +1895,7 @@ class PlayerActivity : ComponentActivity() {
         else -> "${height}p"
     }
 
-    /** The accent the player is drawn with: Settings → Appearance → Player
+    /** The accent the player is drawn with: Settings → Appearance & Theme → Player
      *  color, or the app accent while "Match app & player theme" is on. Read
      *  synchronously from the [AccentStore] mirror at the top of onCreate,
      *  BEFORE anything is coloured, so the first frame is already right
@@ -1935,7 +1935,7 @@ class PlayerActivity : ComponentActivity() {
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
 
-    // ---- Accent palette (Settings → Appearance) ----------------------------
+    // ---- Accent palette (Settings → Appearance & Theme) ----------------------------
 
     /** The accent gradient as a shape (the player's signature fill). */
     private fun accentBadgeDrawable(radiusDp: Float): Drawable = GradientDrawable(

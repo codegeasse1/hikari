@@ -129,7 +129,7 @@ object Routes {
     // "Show All" catalog browser: every item of one provider catalog, paged.
     const val CATALOG = "catalog?providerId={providerId}&catalogId={catalogId}&title={title}&providerName={providerName}&type={type}&rawType={rawType}"
     /**
-     * Collections: the manager (Settings → Appearance → Collections), one
+     * Collections: the manager (Settings → Personal Catalog creator), one
      * collection's page (folders, or one folder's catalogs when `fid` is set),
      * and one TMDB preset as a full grid. Kept as real destinations so the
      * system back button walks the folder hierarchy and the player can open on
@@ -544,7 +544,7 @@ private fun AppBottomBar(
                     val densityNow = LocalDensity.current
                     val availPx = with(densityNow) { availDp.toPx() }
                     // The style the label is actually drawn with, taken from
-                    // the ambient typography: the app font (Settings → App font)
+                    // the ambient typography: the app font (Settings → Appearance & Theme → App font)
                     // and the theme's own metrics are part of the width, and
                     // measuring with a bare TextStyle missed them — which is
                     // exactly how a label "fit" on paper and still came out
@@ -650,7 +650,7 @@ private fun AppBottomBar(
 }
 
 /** One button on the floating bottom bar. Public so Settings can render a
- *  switch per tab (Settings → Appearance → Taskbar buttons) from the very same
+ *  switch per tab (Settings → App Layout → Taskbar buttons) from the very same
  *  list the bar draws, instead of a copy that could drift out of step. */
 data class BottomTab(
     val route: String,
@@ -687,7 +687,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val homeRequest by app.homeTabRequest.collectAsState()
-    // Which taskbar buttons to draw (Settings → Appearance → Taskbar buttons).
+    // Which taskbar buttons to draw (Settings → App Layout → Taskbar buttons).
     val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).

@@ -240,7 +240,7 @@ class WebViewResolver(
                 webViewUserAgent = wv.settings.userAgentString
                 // CloudStream deliberately does not force a UA unless the
                 // plugin asks for one — forcing it makes Cloudflare break.
-                // The app's setting (Settings → WebView user agent) decides the
+                // The app's setting (Settings → Privacy & Browsing → WebView user agent) decides the
                 // UA instead: stock Android default by default (passes the CF
                 // JS challenge), or the user's custom UA when they override.
                 // The plugin-requested UA is only honored when the user turned

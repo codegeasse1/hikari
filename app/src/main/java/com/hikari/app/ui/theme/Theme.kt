@@ -114,7 +114,7 @@ fun HikariTheme(
     accent: HikariAccent = HikariAccent.DEFAULT_APP,
     uiScaleEnabled: Boolean = false,
     uiScale: Float = 1f,
-    /** The app-wide font (Settings → Appearance → Font); null keeps the stock
+    /** The app-wide font (Settings → Appearance & Theme → App font); null keeps the stock
      *  Material scale, which is what "System default" means. */
     fontFamily: FontFamily? = null,
     content: @Composable () -> Unit,

@@ -115,7 +115,7 @@ class MainActivity : AppCompatActivity() {
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
-            // App language (Settings → Appearance → App language). The map is
+            // App language (Settings → Appearance & Theme). The map is
             // handed to the whole tree through I18n.LocalMap, so every screen
             // that wraps a literal with tr(...) re-renders in the new language
             // the moment the choice changes — app-wide, live, no restart.
@@ -135,7 +135,7 @@ class MainActivity : AppCompatActivity() {
                 com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
             }
 
-            // Accent colours (Settings → Appearance). The app accent repaints
+            // Accent colours (Settings → Appearance & Theme). The app accent repaints
             // the whole Compose UI; the player accent is for the View-based
             // player, which reads it synchronously via AccentStore.
             val appAccentFlow = remember { store.appAccentFlow() }
@@ -156,7 +156,7 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // In-app UI scale (Settings → In-app UI scale): when on, the app
+            // In-app UI scale (Settings → Appearance & Theme → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
             val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
             val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
@@ -183,7 +183,7 @@ class MainActivity : AppCompatActivity() {
                 applyImmersiveMode()
             }
 
-            // App-wide font (Settings → Appearance → Font). The Compose half
+            // App-wide font (Settings → Appearance & Theme → App font). The Compose half
             // rides on the theme's typography below; the View-based half (the
             // player, its dialogs, the WebView) reads the synchronous mirror
             // this keeps up to date.

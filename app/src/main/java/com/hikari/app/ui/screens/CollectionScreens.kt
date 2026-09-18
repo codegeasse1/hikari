@@ -1815,7 +1815,7 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = tr("This collection has no folders"),
-                    subtitle = tr("Add a folder in Settings → Appearance → Collections."),
+                    subtitle = tr("Add a folder in Settings → Personal Catalog creator."),
                 )
             }
             return@Column

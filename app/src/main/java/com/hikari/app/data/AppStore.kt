@@ -178,7 +178,7 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.TMDB_LANGUAGE] = mode.trim() }
     }
 
-    // ---- App-wide font (Settings → Appearance → Font) ----
+    // ---- App-wide font (Settings → Appearance & Theme → App font) ----
 
     /** Key of the chosen font in [com.hikari.app.ui.AppFonts.CHOICES]. */
     fun appFontFlow(): Flow<String> =
@@ -351,7 +351,7 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.TAB_LABELS] = show }
     }
 
-    // ---- The detail page's rating strip (Settings → Appearance) ----
+    // ---- The detail page's rating strip (Settings → App Layout) ----
 
     /** Whether the detail page draws the IMDb/RT/… badges. On unless the user
      *  turned it off (see [setShowDetailRating]). */
@@ -623,7 +623,7 @@ class AppStore(private val ctx: Context) {
 
     // ---- Accent colours (app + player) ----
 
-    /** The app UI's accent colour (Settings → Appearance → Accent). Defaults to
+    /** The app UI's accent colour (Settings → Appearance & Theme → Accent colour). Defaults to
      *  the amber/gold the app has always used, so an existing install looks
      *  identical until the user picks something else. */
     fun appAccentFlow(): Flow<String> =

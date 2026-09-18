@@ -288,7 +288,7 @@ fun CatalogScreen(
 @Composable
 private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
     val style = rememberPosterStyle()
-    // The score badge, when Settings → Appearance has it on: warm the ratings
+    // The score badge, when Settings → App Layout has it on: warm the ratings
     // cache for this title and print whatever is known (see
     // rememberPosterScore). Null when the switch is off, so an old device that
     // never wanted badges pays nothing.

@@ -152,7 +152,7 @@ class HikariApp : Application() {
 
     /**
      * The user just changed the language TMDB metadata is fetched in
-     * (Settings → App Layout → "TMDb language titles").
+     * (Settings → Appearance & Theme → Title language (TMDB)).
      *
      * `TmdbResolver.contentLanguage` is already switched by then (see
      * [applyContentLanguage]) — this is about the results that were fetched under
@@ -398,7 +398,7 @@ class HikariApp : Application() {
     }
 
     /**
-     * WebView user-agent override (Settings → WebView user agent). Default ON:
+     * WebView user-agent override (Settings → Privacy & Browsing → WebView user agent). Default ON:
      * the WebView advertises the STOCK Android WebView UA — the fingerprint the
      * engine actually presents, which is what makes Cloudflare's JS challenge
      * (cf_clearance) complete instead of looping on a desktop UA claim. Off +

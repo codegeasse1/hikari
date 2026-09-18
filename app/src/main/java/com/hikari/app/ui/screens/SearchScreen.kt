@@ -364,7 +364,7 @@ fun SearchScreen(
                 // hard crash, so repeats are dropped before the grid is built.
                 items(results.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     val style = rememberPosterStyle()
-                    // Show ratings (Settings → Appearance) draws here too — the
+                    // Show scores (Settings → App Layout) draws here too — the
                     // badge warms the ratings cache for the title and prints
                     // whatever is known. Null when the switch is off.
                     val badge = rememberPosterScore(item, style)
