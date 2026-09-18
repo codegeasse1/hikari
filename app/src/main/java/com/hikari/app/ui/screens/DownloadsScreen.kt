@@ -54,6 +54,7 @@ import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import org.json.JSONArray
 import org.json.JSONObject
@@ -69,7 +70,13 @@ fun DownloadsScreen(nav: NavHostController) {
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp)
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            // Clear of the floating taskbar (0 when there is no bar).
+            bottom = LocalTaskbarInset.current + 16.dp,
+        )
     ) {
         item {
             Text(

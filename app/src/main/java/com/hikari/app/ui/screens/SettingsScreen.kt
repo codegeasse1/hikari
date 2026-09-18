@@ -123,6 +123,8 @@ import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadsRepository
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.net.DnsProviders
+import com.hikari.app.net.DohDns
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
@@ -134,6 +136,7 @@ import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTabs
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.NavStyles
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
@@ -196,9 +199,16 @@ private enum class SettingsFolder(
     PLAYER(
         "player",
         "Player",
-        "Playback start, loading screen, slow internet",
+        "Playback start & loading screen",
         "How the player behaves when you start a video.",
         Icons.Filled.PlayArrow,
+    ),
+    NETWORK(
+        "network",
+        "Network and Internet",
+        "DNS mode & slow connections",
+        "How Hikari reaches the internet from this phone.",
+        Icons.Filled.Public,
     ),
     SOURCES(
         "sources",
@@ -398,7 +408,13 @@ fun SettingsScreen(nav: NavHostController) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp)
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            // Clear of the floating taskbar (0 when there is no bar).
+            bottom = LocalTaskbarInset.current + 16.dp,
+        )
     ) {
         val folder = openFolder
         val sub = openSub
@@ -420,6 +436,13 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlaybackStartCard(app) } }
                     item { SettingsCard { LoadingBannerCard(app) } }
+                }
+                SettingsFolder.NETWORK -> {
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            DnsModeCard(app)
+                        }
+                    }
                     item { SettingsCard { SlowConnectionCard(app) } }
                 }
                 SettingsFolder.SOURCES -> {
@@ -2006,6 +2029,181 @@ private fun AppIconCard(app: HikariApp) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * DNS mode: which resolver Hikari asks for names, for everything it does.
+ *
+ * Every HTTP client the app builds — source searches, extension and repo
+ * downloads, stream probes, playback, the userscript runtime — resolves through
+ * [DohDns], so a choice here changes the whole app's name lookups rather than
+ * just some corner of it. The phone's own resolver can't be replaced by an app
+ * (it belongs to the system), so the options are servers Hikari talks to itself:
+ * the encrypted DNS-over-HTTPS ones, each carrying the addresses of its own
+ * server so the choice still works on a device whose resolver is the thing
+ * that's broken, plus the one plain port-53 server for the resolver that never
+ * added an encrypted service.
+ *
+ * The test row exists because the alternative is finding out a typed address is
+ * wrong from a failed source search later on.
+ */
+@Composable
+private fun DnsModeCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var providerKey by remember { mutableStateOf(DnsProviders.SYSTEM) }
+    var typed by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf("") }
+    var testing by remember { mutableStateOf(false) }
+    var testReason by remember { mutableStateOf<String?>(null) }
+    var testRan by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        providerKey = app.store.dnsProvider()
+        val stored = app.store.customDns()
+        typed = stored
+        saved = stored
+    }
+
+    val chosen = DnsProviders.byKey(providerKey)
+    val endpoint = DnsProviders.customEndpoint(typed)
+
+    fun select(key: String) {
+        providerKey = key
+        testRan = false
+        scope.launch { runCatching { app.store.setDnsProvider(key) } }
+    }
+
+    fun runTest() {
+        val target = when (chosen.key) {
+            DnsProviders.SYSTEM -> null
+            DnsProviders.CUSTOM -> endpoint
+            else -> chosen
+        }
+        if (chosen.key == DnsProviders.CUSTOM && target == null) {
+            testRan = true
+            testReason = tr("Write an address first — e.g. https://dns.google/dns-query")
+            return
+        }
+        testing = true
+        testRan = false
+        scope.launch {
+            val reason = withContext(Dispatchers.IO) { DohDns.probe(target) }
+            testing = false
+            testReason = reason
+            testRan = true
+        }
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("DNS mode"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Which resolver Hikari asks for names, for everything it fetches and plays. " +
+                "Most of these answer over an encrypted DNS-over-HTTPS connection, and several " +
+                "block ads or known malicious sites before a connection is even made. Anything " +
+                "marked plain DNS sends its lookups unprotected, readable by whatever network " +
+                "you're on."),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("This phone's own resolver is always used for names on your local network, and " +
+                "Hikari keeps its built-in encrypted fallback for whatever a choice here can't answer."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+        DnsProviders.ALL.forEach { entry ->
+            NavOptionRow(
+                label = tr(entry.label),
+                supporting = when {
+                    entry.key == DnsProviders.CUSTOM && endpoint != null -> endpoint.url
+                    entry.key == DnsProviders.CUSTOM -> tr("Point Hikari at any DNS-over-HTTPS address you like.")
+                    else -> tr(entry.note)
+                },
+                selected = providerKey == entry.key,
+                onClick = { select(entry.key) },
+            )
+        }
+
+        if (providerKey == DnsProviders.CUSTOM) {
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = typed,
+                onValueChange = {
+                    typed = it
+                    testRan = false
+                },
+                label = { Text(tr("DNS address")) },
+                placeholder = { Text("https://dns.example.com/dns-query") },
+                singleLine = true,
+                isError = typed.isNotBlank() && endpoint == null,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (typed.isNotBlank() && endpoint == null) {
+                    tr("That doesn't look like a web address.")
+                } else {
+                    tr("A bare host gets https:// and /dns-query added — \"dns.google\" or " +
+                        "\"1.1.1.1\" both work.")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (typed.isNotBlank() && endpoint == null) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (typed.trim() != saved) {
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    enabled = endpoint != null,
+                    onClick = {
+                        val value = typed.trim()
+                        saved = value
+                        testRan = false
+                        scope.launch { runCatching { app.store.setCustomDns(value) } }
+                    }
+                ) { Text(tr("Use this address")) }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Check this resolver"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    when {
+                        testRan && testReason == null -> tr("Working — it resolved example.com.")
+                        testRan -> testReason.orEmpty()
+                        else -> tr("Hikari asks it to look up example.com and tells you what came back.")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (testRan && testReason == null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (testing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                TextButton(onClick = { runTest() }) { Text(tr("Test")) }
+            }
+        }
     }
 }
 

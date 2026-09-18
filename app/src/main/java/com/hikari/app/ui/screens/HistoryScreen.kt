@@ -46,6 +46,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -68,7 +69,13 @@ fun HistoryScreen(nav: NavHostController) {
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp)
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            // Clear of the floating taskbar (0 when there is no bar).
+            bottom = LocalTaskbarInset.current + 16.dp,
+        )
     ) {
         item {
             Row(

@@ -62,6 +62,7 @@ import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -344,7 +345,13 @@ fun SearchScreen(
             LazyVerticalGrid(
                 columns = GridCells.Fixed(4),
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(
+                    start = 10.dp,
+                    end = 10.dp,
+                    top = 8.dp,
+                    // Clear of the floating taskbar (0 when there is no bar).
+                    bottom = LocalTaskbarInset.current + 12.dp,
+                ),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {

@@ -210,6 +210,14 @@ class HikariApp : Application() {
         appScope.launch {
             store.slowConnectionFlow().collect { NetTuning.setSlowConnection(it) }
         }
+        // Same for DNS mode: the resolver (Settings → Network and Internet) is
+        // read synchronously by DohDns on every lookup.
+        appScope.launch {
+            store.dnsProviderFlow().collect { NetTuning.setDnsProvider(it) }
+        }
+        appScope.launch {
+            store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
+        }
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {

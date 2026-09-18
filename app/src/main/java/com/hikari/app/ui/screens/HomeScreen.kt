@@ -87,6 +87,7 @@ import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.theme.rememberGlassTokens
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.web.WebViewActivity
@@ -477,7 +478,9 @@ fun HomeScreen(nav: NavHostController) {
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 72.dp)
+            // The taskbar floats over the feed, so the feed has to end below it
+            // rather than above a reserved strip (see LocalTaskbarInset).
+            contentPadding = PaddingValues(bottom = LocalTaskbarInset.current + 16.dp)
         ) {
             // Crash report: NOT inline any more. A stack trace dumped into the
             // feed made the feed look broken; the one-shot warning panel below

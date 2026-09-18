@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.net.DnsProviders
 import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.AccentStore
@@ -95,6 +96,12 @@ class AppStore(private val ctx: Context) {
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
+
+        /** Resolver chosen in Settings → Network and Internet → DNS mode
+         *  ([com.hikari.app.net.DnsProviders] keys), and the address a Custom
+         *  choice points at. */
+        val DNS_PROVIDER = stringPreferencesKey("dnsProvider")
+        val CUSTOM_DNS = stringPreferencesKey("customDns")
         val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
         val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
         val ASK_SERVER = booleanPreferencesKey("askServerOnPlay")
@@ -397,6 +404,29 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setSlowConnection(enabled: Boolean) {
         store.edit { it[K.SLOW_CONNECTION] = enabled }
+    }
+
+    /** The chosen resolver ([com.hikari.app.net.DnsProviders] key). Default is
+     *  "system" — the phone's own DNS, with Hikari's encrypted fallback, i.e.
+     *  exactly the app's behaviour before this setting existed. */
+    fun dnsProviderFlow(): Flow<String> =
+        store.data.map { it[K.DNS_PROVIDER] ?: DnsProviders.SYSTEM }
+
+    suspend fun dnsProvider(): String = dnsProviderFlow().first()
+
+    suspend fun setDnsProvider(key: String) {
+        store.edit { it[K.DNS_PROVIDER] = key }
+    }
+
+    /** What a Custom DNS choice points at, as the user typed it (normalised to
+     *  an endpoint by [DnsProviders.customEndpoint] when it is used). */
+    fun customDnsFlow(): Flow<String> =
+        store.data.map { it[K.CUSTOM_DNS] ?: "" }
+
+    suspend fun customDns(): String = customDnsFlow().first()
+
+    suspend fun setCustomDns(url: String) {
+        store.edit { it[K.CUSTOM_DNS] = url }
     }
 
     /** Playback start rule: false = start the moment the FIRST server is found

@@ -39,7 +39,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +66,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -287,6 +290,46 @@ object NavStyles {
         ALL.firstOrNull { it.key == normalize(key) }?.label ?: ALL.first().label
 }
 
+/**
+ * The bar's numbers in one place, because two of them have to agree: the size
+ * the bar draws itself at, and the room a page leaves at the bottom for it
+ * (see [BarMetrics.inset]).
+ */
+object BarMetrics {
+    val classicHeight = 50.dp
+    /** The animation layout's resting size. */
+    val fullHeight = 54.dp
+    /** The animation layout's size once the user scrolls back up. Close to
+     *  [fullHeight] on purpose — the bar breathes, it does not change into a
+     *  different bar. */
+    val midHeight = 48.dp
+    /** Gap between the bar and the bottom of the screen. */
+    val margin = 6.dp
+    val midMargin = 5.dp
+
+    /**
+     * What a tab page must leave clear at the bottom of its scrolling content,
+     * so the last row can be scrolled out from under the bar. The bar itself
+     * floats OVER the page (it reserves no strip of its own, which is what made
+     * the bottom of every screen look like a black band with a bar sitting in
+     * it), so this is padding inside the scroll container, not screen layout.
+     *
+     * The resting size is used for both animation states so the page does not
+     * re-pad itself every time the bar grows a few dp while scrolling.
+     */
+    fun inset(style: String): Dp = when (style) {
+        NavStyles.CLASSIC -> classicHeight
+        else -> fullHeight + margin * 2
+    }
+}
+
+/**
+ * The room the bottom taskbar covers on a tab page. Screens add it to the
+ * bottom padding of their scrolling content; it is 0 on every page that has no
+ * bar (a detail page, a grid, a settings sub-page outside the tabs).
+ */
+val LocalTaskbarInset = compositionLocalOf { 0.dp }
+
 @Composable
 private fun AppBottomBar(
     currentRoute: String?,
@@ -295,6 +338,7 @@ private fun AppBottomBar(
     expanded: Boolean = true,
     showLabels: Boolean = true,
     onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -333,9 +377,9 @@ private fun AppBottomBar(
             edgeToEdge -> 0.dp
             style == NavStyles.FLOATING -> 16.dp
             // Shrunk, the pill pulls its edges in so it reads as a floating
-            // control rather than a half-empty bar — but only by enough to
-            // float: pulled in hard it stopped looking like the same bar.
-            animatedShrunk -> 32.dp
+            // control rather than a half-empty bar — but only a little, and
+            // never far enough to look like a different, smaller bar.
+            animatedShrunk -> 22.dp
             else -> 8.dp
         },
         label = "barHPad",
@@ -347,8 +391,8 @@ private fun AppBottomBar(
     val vPad by animateDpAsState(
         when {
             edgeToEdge -> 0.dp
-            animatedShrunk -> 5.dp
-            else -> 6.dp
+            animatedShrunk -> BarMetrics.midMargin
+            else -> BarMetrics.margin
         },
         label = "barVPad",
     )
@@ -362,13 +406,9 @@ private fun AppBottomBar(
     )
     val barHeight by animateDpAsState(
         when {
-            edgeToEdge -> 50.dp
-            // The two animated states are deliberately close together: the bar
-            // grows a little as the user scrolls down and settles back as they
-            // scroll up. It used to swell to the full bar and collapse to a
-            // sliver — two different bars, not one bar breathing.
-            animatedShrunk -> 48.dp
-            else -> 54.dp
+            edgeToEdge -> BarMetrics.classicHeight
+            animatedShrunk -> BarMetrics.midHeight
+            else -> BarMetrics.fullHeight
         },
         label = "barHeight",
     )
@@ -387,7 +427,7 @@ private fun AppBottomBar(
         label = "barIcon",
     )
     Box(
-        Modifier
+        modifier = modifier
             .fillMaxWidth()
             // Keep the floating bar clear of the gesture/navigation bar when the
             // system bars are visible (they are hidden while immersive, so this
@@ -723,35 +763,34 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             } else {
                 WindowInsets(0, 0, 0, 0)
             },
-        bottomBar = {
-            if (showBar) {
-                AppBottomBar(
-                    currentRoute = tabRoute,
-                    hidden = hiddenTabs,
-                    navStyle = navStyle,
-                    expanded = barExpanded,
-                    showLabels = showTabLabels,
-                    onNavigate = { route -> Routes.navigateTab(nav, route) }
-                )
-            }
-        }
-    ) { padding ->
-        NavHost(
-            navController = nav,
-            startDestination = Routes.HOME,
-            modifier = Modifier
-                .padding(padding)
-                // A page with no bottom bar (a detail page, a grid) would
-                // otherwise end under the three buttons; the bar itself
-                // already lifts above them.
-                .then(
-                    if (fullscreenOff && !showBar) {
-                        Modifier.windowInsetsPadding(WindowInsets.navigationBars)
-                    } else {
-                        Modifier
-                    }
-                )
-        ) {
+            // No `bottomBar` slot on purpose. A slot RESERVES the bar's height,
+            // so every page ended in a strip of the page background with the bar
+            // drawn inside it — on the dark themes that strip is black, which is
+            // what made the bottom of the screen look like a black band around
+            // the bar in all three layouts. The bar is drawn over the page
+            // instead (see below), so content scrolls behind it and the glass
+            // has something to be glass over; screens keep their last row clear
+            // of it with [LocalTaskbarInset].
+        ) { padding ->
+            CompositionLocalProvider(
+                LocalTaskbarInset provides if (showBar) BarMetrics.inset(navStyle) else 0.dp
+            ) {
+                NavHost(
+                    navController = nav,
+                    startDestination = Routes.HOME,
+                    modifier = Modifier
+                        .padding(padding)
+                        // A page with no bottom bar (a detail page, a grid)
+                        // would otherwise end under the three buttons; the bar
+                        // itself already lifts above them.
+                        .then(
+                            if (fullscreenOff && !showBar) {
+                                Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+                            } else {
+                                Modifier
+                            }
+                        )
+                ) {
             composable(Routes.HOME) { HomeScreen(nav) }
             composable(Routes.SEARCH) { SearchScreen(nav) }
             composable(
@@ -861,7 +900,23 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val startPos = entry.arguments?.getString("startPos")?.toLongOrNull() ?: 0L
                 DetailScreen(nav, providerId, type, mediaId, title, poster, rawType, episodeId, startPos)
             }
+                }
+            }
         }
+        // The bar, drawn over the page rather than in a reserved slot (see the
+        // comment on the Scaffold). It is the last child of the Box, so it sits
+        // on top of every screen, and it is transparent wherever the pill is not
+        // — nothing around it is painted.
+        if (showBar) {
+            AppBottomBar(
+                currentRoute = tabRoute,
+                hidden = hiddenTabs,
+                navStyle = navStyle,
+                expanded = barExpanded,
+                showLabels = showTabLabels,
+                onNavigate = { route -> Routes.navigateTab(nav, route) },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
     }
 }

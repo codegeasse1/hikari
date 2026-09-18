@@ -110,6 +110,7 @@ import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CoroutineScope
@@ -2463,7 +2464,10 @@ private fun RepoBrowserView(
     }
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp)
+        contentPadding = PaddingValues(
+            // Clear of the floating taskbar (0 when there is no bar).
+            bottom = LocalTaskbarInset.current + 24.dp,
+        )
     ) {
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp)) {
@@ -3010,7 +3014,12 @@ private fun RepoPluginsView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             val uninstalled = plugins.count { it.url !in installedUrls }
             if (plugins.isNotEmpty() && uninstalled > 0) {
@@ -4152,7 +4161,10 @@ private fun SourceFolderView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 8.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 8.dp,
+            )
         ) {
             if (kind != null) {
                 if (folderRepos.isEmpty()) {
@@ -4281,7 +4293,10 @@ private fun SourcesOverviewView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             repoGroup(
                 title = cs3GroupTitle,
@@ -4543,7 +4558,10 @@ private fun AllReposView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 8.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 8.dp,
+            )
         ) {
             if (repos.isEmpty()) {
                 item {
@@ -4639,7 +4657,10 @@ private fun InstalledExtensionsView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             item {
                 GlassSearchField(

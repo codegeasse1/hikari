@@ -482,6 +482,10 @@ object BackupManager {
             app.webViewCustomUa = app.store.webviewCustomUa()
         }
         runCatching { NetTuning.setSlowConnection(app.store.slowConnection()) }
+        runCatching {
+            NetTuning.setDnsProvider(app.store.dnsProvider())
+            NetTuning.setCustomDns(app.store.customDns())
+        }
         runCatching { com.hikari.app.ui.LanguageManager.apply(app.store.language()) }
         // The restored pref may be the permissive one; re-assert it against the
         // extensions' own switches (see ExtensionVerifyGuard).

@@ -59,6 +59,7 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.CategoryManagerSheet
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
@@ -112,7 +113,14 @@ fun LibraryScreen(nav: NavHostController) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 104.dp),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 88.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            // Clear of the floating taskbar (LocalTaskbarInset is 0 on a page
+            // with no bar).
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
