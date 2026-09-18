@@ -456,7 +456,18 @@ class HikariApp : Application() {
                 // registered here (once, for the whole app) so repository
                 // listings, installed-extension rows and Stremio addon icons
                 // all render their real logo.
-                .components { add(coil.decode.SvgDecoder.Factory()) }
+                .components {
+                    add(coil.decode.SvgDecoder.Factory())
+                    // Animated GIF covers (collections/folders): Coil's default
+                    // decoders only ever draw the first frame. ImageDecoder
+                    // handles GIFs on API 28+ (and is what the platform
+                    // recommends); the older GifDecoder covers the rest.
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        add(coil.decode.ImageDecoderDecoder.Factory())
+                    } else {
+                        add(coil.decode.GifDecoder.Factory())
+                    }
+                }
                 // Posters whose CDN sends no cache headers (very common on the
                 // aggregator hosts) should still land in Coil's disk cache.
                 .respectCacheHeaders(false)

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,6 +32,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hikari.app.HikariApp
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -104,6 +104,9 @@ fun PosterStyle.shape(): RoundedCornerShape = RoundedCornerShape(corner.dp)
  * @param model   the Coil model (see [Artwork.model])
  * @param rating  TMDB score to badge, when [PosterStyle.showRatings] is on and
  *                the item actually has one
+ * @param imdb    the IMDb score already on file for this title ([Ratings]), which
+ *                wins over [rating] when present — it is the number the score
+ *                badge is *for*, and the one the reference client prints
  * @param overlay extra content on top of the art (a heart badge, a kebab menu…)
  */
 @Composable
@@ -113,11 +116,21 @@ fun PosterArt(
     style: PosterStyle,
     modifier: Modifier = Modifier,
     rating: Double? = null,
+    imdb: String? = null,
     contentScale: ContentScale = ContentScale.Crop,
+    /** Corner the score badge sits in. Overridable because a card that already
+     *  puts its own buttons in the top-right (Library's favourites) needs the
+     *  badge somewhere else rather than on top of them. */
+    ratingAlignment: Alignment = Alignment.TopEnd,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val shape = style.shape()
     val glass = rememberGlassTokens()
+    // IMDb's own yellow, not the app accent: the badge is a score from that
+    // site, and the colour is what makes "9.8" read as an IMDb rating at a
+    // glance instead of as one more piece of the app's chrome.
+    val badge = imdb?.takeIf { it.isNotBlank() }
+        ?: rating?.takeIf { it > 0.0 }?.let { ((it * 10f).roundToInt() / 10f).toString() }
     Box(modifier = modifier) {
         if (style.blur > 0) {
             PosterImage(
@@ -157,12 +170,12 @@ fun PosterArt(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
             )
-            if (style.showRatings && rating != null && rating > 0.0) {
+            if (style.showRatings && badge != null) {
                 RatingBadge(
-                    rating = rating,
+                    text = badge,
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(6.dp),
+                        .align(ratingAlignment)
+                        .padding(5.dp),
                 )
             }
             overlay()
@@ -170,29 +183,27 @@ fun PosterArt(
     }
 }
 
-/** The score chip: one decimal, a star, on a dark translucent pill so it stays
- *  readable over any artwork. */
+/**
+ * The score chip: IMDb's yellow number on a dark translucent pill so it stays
+ * readable over any artwork. Deliberately SMALL and tucked into the poster's
+ * top-right corner — a grid is for the art, and a score the size of the title
+ * would be the loudest thing on the page.
+ */
 @Composable
-fun RatingBadge(rating: Double, modifier: Modifier = Modifier) {
-    Row(
+fun RatingBadge(text: String, modifier: Modifier = Modifier) {
+    Box(
         modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.62f))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color.Black.copy(alpha = 0.66f))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
     ) {
-        Icon(
-            Icons.Filled.Star,
-            contentDescription = null,
-            tint = Color(0xFFFFC94D),
-            modifier = Modifier.size(11.dp),
-        )
-        Spacer(Modifier.width(3.dp))
         Text(
-            ((rating * 10f).roundToInt() / 10f).toString(),
+            text,
             style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = Color(0xFFF5C518),
+            maxLines = 1,
         )
     }
 }

@@ -838,6 +838,12 @@ fun DetailScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    // The score strip (IMDb / RT / …) on the details block is drawn unless the
+    // user switched it off in Settings → Appearance: it is on by default,
+    // because a title's score is part of what the page is for.
+    val detailApp = context.applicationContext as HikariApp
+    val detailRatingFlow = remember { detailApp.store.showDetailRatingFlow() }
+    val showDetailRating by detailRatingFlow.collectAsState(initial = true)
     // The multi-provider source search must OUTLIVE this screen. Playback now
     // opens the player the instant Play is tapped, and on a memory-tight device
     // (the reported Infinix) the activity behind the player can be torn down
@@ -1856,7 +1862,16 @@ fun DetailScreen(
                 // language and the director/writer credits. Renders only once
                 // the background TMDB lookup has landed.
                 extras?.details?.let { det ->
-                    item { DetailsBlock(det, ratings) { ratingInfo = it } }
+                    item {
+                        DetailsBlock(
+                            d = det,
+                            ratings = if (showDetailRating) ratings else emptyList(),
+                            // Even with the strip hidden the block's own rows
+                            // (year, certification, director) still render, so
+                            // the callback stays wired for when it comes back.
+                            onRatingClick = { ratingInfo = it },
+                        )
+                    }
                 }
                 // Cast + Trailers sit ABOVE the episode list — the order the
                 // Nuvio/Stremio detail page uses. Below it they were buried under

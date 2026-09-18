@@ -25,6 +25,14 @@ import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+    /** Settings → App Layout → "Turn off full screen app mode". The system
+     *  bars are shown/hidden from onResume, onWindowFocusChanged and the
+     *  Compose side, none of which can await DataStore — so the value is
+     *  mirrored here (read once at launch, kept current by a flow collector in
+     *  setContent). See [applyImmersiveMode]. */
+    @Volatile
+    private var fullscreenOff = false
+
     /** In-app UI scale: when on, the app ignores the phone's Font size and
      *  Display size settings everywhere (Compose screens scale themselves in
      *  HikariTheme; this covers the Activity's View-based content too). */
@@ -88,11 +96,17 @@ class MainActivity : AppCompatActivity() {
             },
             true,
         )
-        // True fullscreen: hide the system status + navigation bars everywhere
-        // (swipe from any edge to briefly reveal them). Content fills the whole
-        // screen instead of stopping below a status bar.
-        applyImmersiveMode()
         val store = (application as HikariApp).store
+        // True fullscreen (the default): hide the system status + navigation
+        // bars everywhere (swipe from any edge to briefly reveal them), so
+        // content fills the whole screen instead of stopping below a status
+        // bar. Settings → App Layout can turn that off; the mirror is seeded
+        // here because onResume/onWindowFocusChanged re-apply the mode and
+        // cannot await DataStore.
+        fullscreenOff = runCatching {
+            kotlinx.coroutines.runBlocking { store.fullscreenOff() }
+        }.getOrDefault(false)
+        applyImmersiveMode()
         setContent {
             val scope = rememberCoroutineScope()
             // Remember the Flow — a fresh store.themeFlow() per recomposition
@@ -156,6 +170,17 @@ class MainActivity : AppCompatActivity() {
                 com.hikari.app.ui.UiScale.sync(
                     this@MainActivity, uiScaleEnabled, uiScale
                 )
+            }
+
+            // Full screen app mode (Settings → App Layout): switching it shows
+            // or hides the phone's own status + navigation bars right away,
+            // without a restart. The mirror above is kept in step so the next
+            // onResume/onWindowFocusChanged re-applies the same mode.
+            val fullscreenOffFlow = remember { store.fullscreenOffFlow() }
+            val fullscreenOffPref by fullscreenOffFlow.collectAsState(initial = false)
+            LaunchedEffect(fullscreenOffPref) {
+                fullscreenOff = fullscreenOffPref
+                applyImmersiveMode()
             }
 
             // App-wide font (Settings → Appearance → Font). The Compose half
@@ -283,13 +308,24 @@ class MainActivity : AppCompatActivity() {
      * sticky on its own, and when the bars come back they leave an empty band
      * above the content (the "fullscreen leaves a blank bar under the status
      * bar" report), which shows up on some devices and not others.
+     *
+     * When Settings → App Layout → "Turn off full screen app mode" is on, the
+     * bars are shown instead and left to behave normally. Either way the window
+     * stays edge-to-edge (the bars are transparent over the app's own
+     * backdrop), and the screens pad themselves by the reported insets.
      */
     private fun applyImmersiveMode() {
         runCatching {
             androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
-            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-                systemBarsBehavior =
+            val controller =
+                androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            if (fullscreenOff) {
+                controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            } else {
+                controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior =
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         }

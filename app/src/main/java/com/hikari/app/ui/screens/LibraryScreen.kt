@@ -52,6 +52,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.LibraryCategory
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.Ratings
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterStyle
@@ -292,6 +293,9 @@ private fun LibraryCard(
     onMove: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
+    if (style.showRatings) Ratings.revision(item)
+    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
     Column(
         Modifier
             .clip(style.shape())
@@ -302,6 +306,10 @@ private fun LibraryCard(
             contentDescription = item.title,
             style = style,
             rating = item.rating,
+            imdb = imdb,
+            // The top-right corner is this card's own remove button and the
+            // bottom-right its "Move to", so the score takes the free corner.
+            ratingAlignment = Alignment.BottomStart,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

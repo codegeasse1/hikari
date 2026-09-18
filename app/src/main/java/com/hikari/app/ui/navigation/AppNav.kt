@@ -2,6 +2,9 @@ package com.hikari.app.ui.navigation
 import com.hikari.app.i18n.tr
 
 import android.net.Uri
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,9 +39,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -223,26 +233,50 @@ object Routes {
 
 
 /**
- * The bottom bar's three looks (Settings → Appearance → Navigation bar).
+ * The bottom bar's three looks (Settings → App Layout → Taskbar & navigation).
  *
- * They differ only in the chrome around the same row of tabs: a floating glass
- * pill (the app's original look), a seamless edge-to-edge plate, and a
- * completely transparent bar that lets the page show through behind the icons.
+ *  * [ANIMATED] — the full-width bar with labels while a page is at its top,
+ *    morphing into a compact, icon-only floating pill once the user scrolls
+ *    into the content; scrolling back up (or reaching the top) restores it.
+ *  * [FLOATING] — the detached glass pill, always the same size.
+ *  * [CLASSIC] — the seamless edge-to-edge plate: opaque, flush with the bottom
+ *    of the screen, closed off by a hairline along its top edge.
+ *
+ * The three used to be indistinguishable in practice: "classic" and the old
+ * "borderless" both drew radius 0, no border and no elevation, and differed
+ * only in a plate colour that matches the page background on the dark and AMOLED
+ * themes — so picking either looked like nothing had changed. Classic is now an
+ * opaque tonal plate with its own top divider, and the third layout is the
+ * animated one the reference client uses instead of a flat borderless bar.
  */
 object NavStyles {
     const val CLASSIC = "classic"
     const val FLOATING = "floating"
-    const val BORDERLESS = "borderless"
+    const val ANIMATED = "animated"
 
     data class Option(val key: String, val label: String, val blurb: String)
 
     val ALL = listOf(
+        Option(
+            ANIMATED,
+            "Floating animation",
+            "A full bar at the top of a page that shrinks into a floating pill as you scroll."
+        ),
         Option(FLOATING, "Floating", "A rounded glass pill that hovers above the page."),
         Option(CLASSIC, "Classic", "Edge-to-edge, flush with the bottom of the screen."),
-        Option(BORDERLESS, "Borderless", "No plate at all — just the icons over the page."),
     )
 
-    fun labelOf(key: String): String = ALL.firstOrNull { it.key == key }?.label ?: "Floating"
+    /** Maps a stored preference onto a layout this build can draw. The old
+     *  "borderless" value is upgraded to the animated bar rather than dropped,
+     *  so anyone who had picked it gets the new look instead of being reset. */
+    fun normalize(key: String): String = when (key) {
+        CLASSIC, FLOATING, ANIMATED -> key
+        "borderless" -> ANIMATED
+        else -> FLOATING
+    }
+
+    fun labelOf(key: String): String =
+        ALL.firstOrNull { it.key == normalize(key) }?.label ?: ALL.first().label
 }
 
 @Composable
@@ -250,12 +284,13 @@ private fun AppBottomBar(
     currentRoute: String?,
     hidden: Set<String>,
     navStyle: String = NavStyles.FLOATING,
+    expanded: Boolean = true,
     onNavigate: (String) -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    // Only the buttons the user kept, in their fixed order (Settings →
-    // Appearance → Taskbar buttons). Hiding one re-flows the remaining slots
+    // Only the buttons the user kept, in their fixed order (Settings → App
+    // Layout → Taskbar & navigation). Hiding one re-flows the remaining slots
     // instead of leaving a gap. The bar can never end up empty: if the stored
     // set somehow covers every tab, the full list comes back.
     val tabs = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
@@ -270,78 +305,109 @@ private fun AppBottomBar(
     // seven slots, so the base size drops a notch to keep every label whole.
     val labelScale = LocalDensity.current.fontScale.coerceAtLeast(0.5f)
     val labelSp = if (tabs.size > 6) 8f else 9f
-    // The bar is a floating glass pill: semi-transparent so the page (and its
-    // top glow) shows through, ringed by the same hairline every card uses.
     val glass = rememberGlassTokens()
-    val floating = navStyle == NavStyles.FLOATING
+    val style = NavStyles.normalize(navStyle)
+    // The animated layout is the same bar in two states: full width with labels
+    // at the top of a page, and a narrow icon-only pill once the user scrolls
+    // into the content (see [AppRoot], which tracks the scroll direction).
+    // Everything below is hoisted so the two states can be animated between
+    // rather than swapped.
+    val pill = style == NavStyles.FLOATING || (style == NavStyles.ANIMATED && !expanded)
+    val withLabels = !(style == NavStyles.ANIMATED && !expanded)
+    val edgeToEdge = style == NavStyles.CLASSIC
+    val hPad by animateDpAsState(
+        when {
+            edgeToEdge -> 0.dp
+            style == NavStyles.FLOATING -> 12.dp
+            expanded -> 8.dp
+            else -> 30.dp
+        },
+        label = "barHPad",
+    )
+    val vPad by animateDpAsState(if (pill) 8.dp else 0.dp, label = "barVPad")
+    val radius by animateDpAsState(if (pill) 26.dp else 0.dp, label = "barRadius")
+    val barHeight by animateDpAsState(if (withLabels) 60.dp else 50.dp, label = "barHeight")
+    val labelHeight by animateDpAsState(if (withLabels) 16.dp else 0.dp, label = "barLabelH")
+    val labelAlpha by animateFloatAsState(if (withLabels) 1f else 0f, label = "barLabelA")
+    val iconSize by animateDpAsState(if (withLabels) 20.dp else 22.dp, label = "barIcon")
     Box(
         Modifier
             .fillMaxWidth()
             // Keep the floating bar clear of the gesture/navigation bar when the
             // system bars are visible (they are hidden while immersive, so this
             // is 0 in the normal case and simply lifts the bar when they show).
-            // The seamless layouts only keep that inset — the plate itself is
-            // flush with the screen edges on purpose.
+            // The seamless layout only keeps that inset — its plate is flush
+            // with the screen edges on purpose.
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(
-                horizontal = if (floating) 12.dp else 0.dp,
-                vertical = if (floating) 10.dp else 0.dp,
-            )
+            .padding(horizontal = hPad, vertical = vPad)
     ) {
-        Surface(
-            shape = if (floating) RoundedCornerShape(26.dp) else RoundedCornerShape(0.dp),
-            color = when (navStyle) {
-                NavStyles.BORDERLESS -> Color.Transparent
-                NavStyles.CLASSIC -> MaterialTheme.colorScheme.surface
-                else -> if (glass.dark) {
+        Column {
+            // Classic's plate is opaque and tonally lighter than the page, so
+            // its top edge needs the hairline that separates a toolbar from the
+            // content scrolling under it (the plate colour alone disappeared
+            // against the dark and AMOLED page backgrounds).
+            if (edgeToEdge) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(glass.border))
+            }
+            Surface(
+                shape = RoundedCornerShape(radius),
+                color = if (edgeToEdge) {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                } else if (glass.dark) {
                     MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
                 } else {
                     MaterialTheme.colorScheme.surface
-                }
-            },
-            border = if (floating) BorderStroke(1.dp, glass.border) else null,
-            shadowElevation = if (floating && !glass.dark) 8.dp else 0.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(60.dp)
-                    .padding(horizontal = 2.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                },
+                border = if (pill) BorderStroke(1.dp, glass.border) else null,
+                shadowElevation = if (pill && !glass.dark) 8.dp else 0.dp,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                tabs.forEach { tab ->
-                    val selected = currentRoute == tab.route
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            // A fully round pill, not a rounded square — that is
-                            // what marks the active tab in the reference design.
-                            .clip(RoundedCornerShape(50))
-                            .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
-                            .clickable { onNavigate(tab.route) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            tab.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = if (selected) primary else muted
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            tr(tab.label),
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            fontSize = (labelSp / labelScale).sp,
-                            textAlign = TextAlign.Center,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (selected) primary else muted,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(barHeight)
+                        .padding(horizontal = 2.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    tabs.forEach { tab ->
+                        val selected = currentRoute == tab.route
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .height(if (withLabels) 48.dp else 42.dp)
+                                // A fully round pill, not a rounded square — that
+                                // is what marks the active tab in the reference
+                                // design.
+                                .clip(RoundedCornerShape(50))
+                                .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
+                                .clickable { onNavigate(tab.route) },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                tab.icon,
+                                contentDescription = if (withLabels) null else tr(tab.label),
+                                modifier = Modifier.size(iconSize),
+                                tint = if (selected) primary else muted
+                            )
+                            if (labelHeight > 0.dp) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    tr(tab.label),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = (labelSp / labelScale).sp,
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selected) primary else muted,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(labelHeight)
+                                        .alpha(labelAlpha)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -390,14 +456,40 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // Which taskbar buttons to draw (Settings → Appearance → Taskbar buttons).
     val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
-    // How the bar itself is drawn (Settings → Appearance → Navigation bar).
+    // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
     val navStyle by navStyleFlow.collectAsState(initial = NavStyles.FLOATING)
+    // Whether the phone's own status/navigation bars are visible (Settings →
+    // App Layout → "Turn off full screen app mode"). The window stays
+    // edge-to-edge either way, so with the bars shown the pages must pad
+    // themselves by the reported insets (MainActivity.show(systemBars()) is
+    // what actually brings the bars back).
+    val fullscreenOffFlow = remember { app.store.fullscreenOffFlow() }
+    val fullscreenOff by fullscreenOffFlow.collectAsState(initial = false)
+    // The animated layout's two states. A page's own scrolling drives it: scroll
+    // into the content and the bar collapses to the floating pill (more of the
+    // page on screen), scroll back up — or open another tab — and it comes back.
+    // The connection sits on the Box that wraps the whole app, so every screen's
+    // list feeds it without a single screen having to pass its scroll state up.
+    var barExpanded by remember { mutableStateOf(true) }
+    val barScroll = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                val dy = available.y
+                // A few dp of slack: a fling's first event can be tiny, and the
+                // bar flipping on a one-pixel jitter looks broken.
+                if (dy < -8f) barExpanded = false
+                else if (dy > 8f) barExpanded = true
+                return Offset.Zero
+            }
+        }
+    }
+    LaunchedEffect(tabRoute) { barExpanded = true }
     LaunchedEffect(homeRequest) {
         if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().nestedScroll(barScroll)) {
         // The page backdrop, drawn here rather than by the Scaffold so the
         // translucent cards have something to be glass OVER (the Scaffold below
         // is transparent for exactly that reason).
@@ -473,13 +565,22 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             // it (the reported "blank bar in the status bar area" on Home and on
             // "Show All"). Screens now draw from y=0; the floating bottom bar
             // lifts itself above the navigation bar instead.
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            //
+            // With "Turn off full screen app mode" the bars ARE on screen, so
+            // the top inset comes back; the bottom is left to the bar itself
+            // (see the navigationBars padding on the NavHost below).
+            contentWindowInsets = if (fullscreenOff) {
+                WindowInsets.statusBars
+            } else {
+                WindowInsets(0, 0, 0, 0)
+            },
         bottomBar = {
             if (showBar) {
                 AppBottomBar(
                     currentRoute = tabRoute,
                     hidden = hiddenTabs,
                     navStyle = navStyle,
+                    expanded = barExpanded,
                     onNavigate = { route -> Routes.navigateTab(nav, route) }
                 )
             }
@@ -488,7 +589,18 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         NavHost(
             navController = nav,
             startDestination = Routes.HOME,
-            modifier = Modifier.padding(padding)
+            modifier = Modifier
+                .padding(padding)
+                // A page with no bottom bar (a detail page, a grid) would
+                // otherwise end under the three buttons; the bar itself
+                // already lifts above them.
+                .then(
+                    if (fullscreenOff && !showBar) {
+                        Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+                    } else {
+                        Modifier
+                    }
+                )
         ) {
             composable(Routes.HOME) { HomeScreen(nav) }
             composable(Routes.SEARCH) { SearchScreen(nav) }

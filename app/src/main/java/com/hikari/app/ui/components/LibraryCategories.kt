@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -81,7 +83,13 @@ fun CategoryPickerSheet(
     var creating by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // Full height from the start. A partially-expanded sheet is a little over
+    // half the screen, which is shorter than title + list + "Create a new
+    // category" + the confirm button — the reported "the Add to library button
+    // is hidden below the fold" (the sheet could be dragged up, but nothing
+    // said so, and a drag on the list just scrolled the list).
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -101,7 +109,9 @@ fun CategoryPickerSheet(
             LazyColumn(
                 Modifier
                     .fillMaxWidth()
-                    .height(if (categories.size > 6) 320.dp else 300.dp),
+                    // Capped, not fixed: a two-category list must not push the
+                    // buttons down the way a 300dp box would.
+                    .heightIn(max = 300.dp),
             ) {
                 items(categories, key = { it.id }) { c ->
                     CategoryToggleRow(
@@ -240,7 +250,10 @@ fun CategoryManagerSheet(
     var editingId by remember { mutableStateOf<String?>(null) }
     var editingText by remember { mutableStateOf("") }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // Opens fully expanded so the list, the new-category field and every row's
+    // actions are on screen together (see CategoryPickerSheet).
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -257,7 +270,7 @@ fun CategoryManagerSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
             )
-            LazyColumn(Modifier.height(300.dp)) {
+            LazyColumn(Modifier.heightIn(max = 300.dp)) {
                 items(categories, key = { it.id }) { c ->
                     if (editingId == c.id) {
                         Row(

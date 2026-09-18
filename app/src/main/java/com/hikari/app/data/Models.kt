@@ -322,12 +322,52 @@ data class LibraryCategory(
  * reference client's "folders" are what make a collection useful for a user
  * who only watches one kind of thing: instead of one long mixed feed, each
  * folder answers exactly one question ("Marvel films", "HBO series").
+ *
+ * A folder can also wear a cover of its own (an emoji, an image URL, or a GIF)
+ * and pick the shape of its tile on the collection page — see [TileShapes] and
+ * [CoverKinds]. Stored as plain strings so a save written before these existed
+ * simply parses back to "no cover, poster shape".
  */
 data class CollectionFolder(
     val id: String,
     val name: String,
     val sources: List<CatalogSource> = emptyList(),
+    val coverKind: String = CoverKinds.NONE,
+    val coverValue: String = "",
+    val tileShape: String = TileShapes.POSTER,
 )
+
+/** How a collection/folder tile is shaped. The cover is drawn into it. */
+object TileShapes {
+    /** 2:3 — a poster, the default (what a grid of posters looks like). */
+    const val POSTER = "poster"
+    /** 1:1 — a square tile. */
+    const val SQUARE = "square"
+    /** 16:9 — a wide/backdrop tile. */
+    const val WIDE = "wide"
+    val ALL = listOf(POSTER, SQUARE, WIDE)
+    fun normalize(key: String?): String = if (key in ALL) key as String else POSTER
+    /** width / height for [key]. */
+    fun aspect(key: String?): Float = when (normalize(key)) {
+        SQUARE -> 1f
+        WIDE -> 16f / 9f
+        else -> 2f / 3f
+    }
+}
+
+/** What a collection/folder tile shows behind its name. */
+object CoverKinds {
+    const val NONE = "none"
+    const val EMOJI = "emoji"
+    /** A still image: an https:// URL, or a file:// path to a copy the app
+     *  made from the user's gallery (see [com.hikari.app.ui.CollectionCovers]). */
+    const val URL = "url"
+    /** An animated GIF URL — the same field, played only while the tile has
+     *  focus (a wall of animating GIFs is a battery fire). */
+    const val GIF = "gif"
+    val ALL = listOf(NONE, EMOJI, URL, GIF)
+    fun normalize(kind: String?): String = if (kind in ALL) kind as String else NONE
+}
 
 /**
  * A user-made collection: a name plus one or more folders of catalog sources.
@@ -342,6 +382,10 @@ data class Collection(
     val id: String,
     val name: String,
     val folders: List<CollectionFolder> = emptyList(),
+    val coverKind: String = CoverKinds.NONE,
+    val coverValue: String = "",
+    /** The shape of this collection's own tile in the collections grid. */
+    val tileShape: String = TileShapes.POSTER,
 ) {
     val isEmpty: Boolean get() = folders.isEmpty()
     /** Every source of every folder, deduped — the collection's whole diet. */

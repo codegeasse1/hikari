@@ -2,11 +2,17 @@ package com.hikari.app.ui.screens
 import com.hikari.app.i18n.tr
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,9 +38,11 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -58,6 +66,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -70,11 +79,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -90,7 +102,10 @@ import com.hikari.app.data.CatalogSourceKind
 import com.hikari.app.data.Collection
 import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.CollectionsRepository
+import com.hikari.app.data.CoverKinds
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.Ratings
+import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
 import com.hikari.app.data.TmdbHit
@@ -109,6 +124,7 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.MediaRow
+import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
@@ -119,6 +135,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * The Collections manager: the "New Collection" / "New Folder" screens of the
@@ -260,18 +277,20 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
     }
 
     if (askNewCollection) {
-        NameDialog(
+        NameCoverDialog(
             title = tr("New collection"),
-            label = tr("Collection name"),
-            initial = "",
+            nameLabel = tr("Collection name"),
             onDismiss = { askNewCollection = false },
-            onConfirm = { name ->
+            onConfirm = { name, kind, value, shape ->
                 askNewCollection = false
                 openEditor(
                     Collection(
                         id = app.store.newId("col"),
                         name = name,
                         folders = emptyList(),
+                        coverKind = kind,
+                        coverValue = value,
+                        tileShape = shape,
                     )
                 )
             },
@@ -280,14 +299,19 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
 
     val editingForFolder = draft
     if (askNewFolder && editingForFolder != null) {
-        NameDialog(
+        NameCoverDialog(
             title = tr("New folder"),
-            label = tr("Folder name"),
-            initial = "",
+            nameLabel = tr("Folder name"),
             onDismiss = { askNewFolder = false },
-            onConfirm = { name ->
+            onConfirm = { name, kind, value, shape ->
                 askNewFolder = false
-                val f = CollectionFolder(id = app.store.newId("fld"), name = name)
+                val f = CollectionFolder(
+                    id = app.store.newId("fld"),
+                    name = name,
+                    coverKind = kind,
+                    coverValue = value,
+                    tileShape = shape,
+                )
                 draft = editingForFolder.copy(folders = editingForFolder.folders + f)
                 folderDraft = f
             },
@@ -308,7 +332,15 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = null
-                    scope.launch { app.store.removeCollection(toDelete.id) }
+                    scope.launch {
+                        // The cover copies this app made for the collection are
+                        // not the user's files — drop them with it.
+                        CollectionCovers.deleteCopy(context, toDelete.coverValue)
+                        toDelete.folders.forEach {
+                            CollectionCovers.deleteCopy(context, it.coverValue)
+                        }
+                        app.store.removeCollection(toDelete.id)
+                    }
                 }) {
                     Text(tr("Delete"))
                 }
@@ -340,20 +372,15 @@ private fun CollectionListRow(
                 .padding(start = 16.dp, end = 6.dp, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.FolderOpen,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
+            CoverArt(
+                kind = collection.coverKind,
+                value = collection.coverValue,
+                shape = collection.tileShape,
+                name = collection.name,
+                modifier = Modifier.size(48.dp),
+                shaped = false,
+                emojiSize = 22.sp,
+            )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -428,6 +455,17 @@ private fun CollectionEditorPage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
+                )
+            }
+            item {
+                CoverSection(
+                    kind = collection.coverKind,
+                    value = collection.coverValue,
+                    shape = collection.tileShape,
+                    onKind = { onChange(collection.copy(coverKind = it)) },
+                    onValue = { onChange(collection.copy(coverValue = it)) },
+                    onShape = { onChange(collection.copy(tileShape = it)) },
+                    name = collection.name,
                 )
             }
             item {
@@ -560,6 +598,9 @@ private fun FolderEditorPage(
 ) {
     var name by remember { mutableStateOf(folder.name) }
     var sources by remember { mutableStateOf(folder.sources) }
+    var coverKind by remember { mutableStateOf(folder.coverKind) }
+    var coverValue by remember { mutableStateOf(folder.coverValue) }
+    var tileShape by remember { mutableStateOf(folder.tileShape) }
 
     var tmdbSheet by remember { mutableStateOf(false) }
     var providerSheet by remember { mutableStateOf(false) }
@@ -596,6 +637,17 @@ private fun FolderEditorPage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
+                )
+            }
+            item {
+                CoverSection(
+                    kind = coverKind,
+                    value = coverValue,
+                    shape = tileShape,
+                    onKind = { coverKind = it },
+                    onValue = { coverValue = it },
+                    onShape = { tileShape = it },
+                    name = name,
                 )
             }
             item {
@@ -675,7 +727,17 @@ private fun FolderEditorPage(
             }
             item {
                 Surface(
-                    onClick = { onSave(folder.copy(name = name.trim(), sources = sources)) },
+                    onClick = {
+                        onSave(
+                            folder.copy(
+                                name = name.trim(),
+                                sources = sources,
+                                coverKind = coverKind,
+                                coverValue = coverValue,
+                                tileShape = tileShape,
+                            )
+                        )
+                    },
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.primary,
                     enabled = name.isNotBlank(),
@@ -719,7 +781,11 @@ private fun FolderEditorPage(
     val provider = pickProvider
     if (provider != null) {
         val loaded = catalogs
-        ModalBottomSheet(onDismissRequest = { pickProvider = null }) {
+        val catalogSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { pickProvider = null },
+            sheetState = catalogSheetState,
+        ) {
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -1215,7 +1281,8 @@ private fun ExtensionPickerSheet(
         if (query.isBlank()) sorted
         else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1258,7 +1325,11 @@ private fun ExtensionPickerSheet(
     }
 }
 
-/** One line in a picker sheet: a label, an optional caption, a check. */
+/**
+ * One line in a picker sheet: a label, an optional caption, a check. Flat, with
+ * a hairline under it — the same minimal list the Home extension picker uses
+ * (a card per row turned a long list of near-identical names into a wall).
+ */
 @Composable
 private fun PickerLine(
     label: String,
@@ -1266,21 +1337,23 @@ private fun PickerLine(
     supporting: String? = null,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-        else MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else Color.Transparent
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
                     label,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1294,13 +1367,27 @@ private fun PickerLine(
                 }
             }
             if (selected) {
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
         }
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+            modifier = Modifier.padding(start = 10.dp),
+        )
     }
 }
 
@@ -1315,34 +1402,349 @@ private fun SheetHeading(text: String) {
     )
 }
 
-/** A name prompt — used for a new collection and a new folder. */
+/**
+ * Covers for collections and folders.
+ *
+ * A cover is one of: nothing (the folder glyph), an emoji, an image URL, or an
+ * animated GIF URL — the four choices of the reference client's "Edit Folder"
+ * screen. The value lives in [com.hikari.app.data.Collection] /
+ * [com.hikari.app.data.CollectionFolder].
+ */
+private object CollectionCovers {
+
+    private fun dir(context: Context): File =
+        File(context.filesDir, "covers").apply { if (!exists()) mkdirs() }
+
+    /**
+     * Copies a picked gallery image into the app's own storage and returns the
+     * `file://` URI to store.
+     *
+     * The copy is the point: a `content://` URI from the photo picker is a
+     * grant that dies with the process, so storing the URI directly is how a
+     * cover becomes a blank tile after the next launch.
+     */
+    fun copyFromUri(context: Context, uri: Uri): String? = runCatching {
+        val name = "cover-" + System.currentTimeMillis().toString(36) +
+            "-" + (1000 + (Math.random() * 8999).toInt())
+        val file = File(dir(context), name)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            file.outputStream().use { out -> input.copyTo(out) }
+        } ?: return null
+        if (file.length() <= 0L) {
+            file.delete()
+            return null
+        }
+        Uri.fromFile(file).toString()
+    }.getOrNull()
+
+    /** Deletes a copy [copyFromUri] made, when the cover it belonged to is
+     *  replaced or thrown away. Anything that is not one of our own files is
+     *  left alone (an https:// URL is the user's, not ours). */
+    fun deleteCopy(context: Context, value: String) {
+        if (!value.startsWith("file:")) return
+        runCatching {
+            val path = Uri.parse(value).path ?: return
+            val file = File(path)
+            if (file.absolutePath.startsWith(dir(context).absolutePath)) file.delete()
+        }
+    }
+}
+
+/** The cover choices, in the reference design's order. */
+private val COVER_CHOICES: List<Pair<String, String>>
+    get() = listOf(
+        CoverKinds.NONE to "None",
+        CoverKinds.EMOJI to "Emoji",
+        CoverKinds.URL to "Image URL",
+        CoverKinds.GIF to "Animated GIF URL",
+    )
+
+/** A handful of one-tap covers for the Emoji choice. */
+private val COVER_EMOJIS = listOf("🎬", "📺", "🍿", "🎭", "🔥", "⭐", "🌙", "🎞️")
+
+/**
+ * A collection/folder cover, drawn into the tile shape the user picked: a
+ * poster (2:3), a square, or a wide 16:9 tile. With no cover configured it
+ * falls back to the folder glyph, so a tile always has something in it.
+ */
 @Composable
-private fun NameDialog(
-    title: String,
-    label: String,
-    initial: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
+private fun CoverArt(
+    kind: String,
+    value: String,
+    shape: String,
+    name: String = "",
+    modifier: Modifier = Modifier,
+    /** False when the caller has already fixed the size (a list-row thumb):
+     *  the tile then fills it instead of imposing its own aspect. */
+    shaped: Boolean = true,
+    emojiSize: TextUnit = 34.sp,
 ) {
-    var text by remember { mutableStateOf(initial) }
+    val tokens = rememberGlassTokens()
+    val k = CoverKinds.normalize(kind)
+    Box(
+        modifier
+            .then(if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier)
+            .clip(RoundedCornerShape(16.dp))
+            .background(tokens.fillTop)
+            .border(1.dp, tokens.border, RoundedCornerShape(16.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            (k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank() -> {
+                PosterImage(
+                    model = value,
+                    contentDescription = name.ifBlank { null },
+                    modifier = Modifier.matchParentSize(),
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.TopCenter,
+                )
+            }
+            k == CoverKinds.EMOJI && value.isNotBlank() -> {
+                Text(value, fontSize = emojiSize)
+            }
+            else -> {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.FolderOpen,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The "Appearance" half of a collection/folder form: the cover choice, its
+ * input (a text field, an emoji strip, or a gallery pick), a live preview, and
+ * the shape of the tile. Shared by the editor pages and the create dialogs so
+ * creating something and editing it later offer exactly the same options.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CoverSection(
+    kind: String,
+    value: String,
+    shape: String,
+    onKind: (String) -> Unit,
+    onValue: (String) -> Unit,
+    onShape: (String) -> Unit,
+    name: String = "",
+) {
+    val context = LocalContext.current
+    val k = CoverKinds.normalize(kind)
+
+    // "Choose from storage": the photo picker (no storage permission needed on
+    // any supported Android version), copied into the app before it can go away.
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val stored = CollectionCovers.copyFromUri(context, uri)
+        if (stored != null) {
+            CollectionCovers.deleteCopy(context, value)
+            onKind(CoverKinds.URL)
+            onValue(stored)
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 18.dp)) {
+        Text(
+            tr("Cover"),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(8.dp))
+        ChipRow {
+            COVER_CHOICES.forEach { (key, label) ->
+                ChoiceChip(label = tr(label), selected = k == key) { onKind(key) }
+            }
+        }
+        when (k) {
+            CoverKinds.EMOJI -> {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    COVER_EMOJIS.forEach { e ->
+                        Surface(
+                            onClick = { onValue(e) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (value == e) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            } else {
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+                            },
+                        ) {
+                            Text(
+                                e,
+                                fontSize = 22.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValue,
+                    singleLine = true,
+                    label = { Text(tr("Or type/paste an emoji")) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            CoverKinds.URL, CoverKinds.GIF -> {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValue,
+                    singleLine = true,
+                    label = {
+                        Text(
+                            if (k == CoverKinds.GIF) tr("Animated GIF link (https://…)")
+                            else tr("Image link (https://…)")
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.AddPhotoAlternate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tr("Choose from storage"),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                if (k == CoverKinds.GIF) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        tr("A GIF plays while its tile is on screen; otherwise the first frame is shown."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            else -> Unit
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text(
+            tr("Tile shape"),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(8.dp))
+        ChipRow {
+            ChoiceChip(tr("Poster"), TileShapes.normalize(shape) == TileShapes.POSTER) {
+                onShape(TileShapes.POSTER)
+            }
+            ChoiceChip(tr("Square"), TileShapes.normalize(shape) == TileShapes.SQUARE) {
+                onShape(TileShapes.SQUARE)
+            }
+            ChoiceChip(tr("Wide"), TileShapes.normalize(shape) == TileShapes.WIDE) {
+                onShape(TileShapes.WIDE)
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Text(
+            tr("Preview"),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        CoverArt(
+            kind = k,
+            value = value,
+            shape = shape,
+            name = name,
+            modifier = Modifier.width(128.dp),
+        )
+    }
+}
+
+/**
+ * The create dialog for a new collection or folder: its name, and the same
+ * cover + tile-shape choices the editor pages offer, so the cover is asked for
+ * at the moment the thing is made (and can still be changed later).
+ */
+@Composable
+private fun NameCoverDialog(
+    title: String,
+    nameLabel: String,
+    initialName: String = "",
+    initialKind: String = CoverKinds.NONE,
+    initialValue: String = "",
+    initialShape: String = TileShapes.POSTER,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, kind: String, value: String, shape: String) -> Unit,
+) {
+    var text by remember { mutableStateOf(initialName) }
+    var kind by remember { mutableStateOf(initialKind) }
+    var value by remember { mutableStateOf(initialValue) }
+    var shape by remember { mutableStateOf(initialShape) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                singleLine = true,
-                label = { Text(label) },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    label = { Text(nameLabel) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                CoverSection(
+                    kind = kind,
+                    value = value,
+                    shape = shape,
+                    onKind = { kind = it },
+                    onValue = { value = it },
+                    onShape = { shape = it },
+                    name = text,
+                )
+            }
         },
         confirmButton = {
             TextButton(
                 enabled = text.isNotBlank(),
-                onClick = { onConfirm(text.trim()) },
+                onClick = { onConfirm(text.trim(), kind, value, shape) },
             ) {
-                Text(tr("Save"))
+                Text(tr("Create"))
             }
         },
         dismissButton = {
@@ -1350,9 +1752,6 @@ private fun NameDialog(
         },
     )
 }
-
-/**
- * A collection's own page: its folder tiles, or — once a folder is picked — the
  * catalogs inside that folder as rows, exactly like a Home shelf.
  *
  * Both shapes live in one destination ([Routes.collectionView]) because they
@@ -1434,7 +1833,7 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
     }
 }
 
-/** One folder tile: its name and how many catalogs are in it. */
+/** One folder tile: its cover (when it has one), name and catalog count. */
 @Composable
 private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
     val tokens = rememberGlassTokens()
@@ -1445,22 +1844,15 @@ private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
             .background(tokens.fillTop)
             .border(1.dp, tokens.border, RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(10.dp),
     ) {
-        Box(
-            Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(13.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Filled.FolderOpen,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(21.dp),
-            )
-        }
+        CoverArt(
+            kind = folder.coverKind,
+            value = folder.coverValue,
+            shape = folder.tileShape,
+            name = folder.name,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(10.dp))
         Text(
             folder.name,
@@ -1468,6 +1860,7 @@ private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 6.dp),
         )
         Text(
             folder.sources.firstOrNull()?.title?.let { first ->
@@ -1478,6 +1871,7 @@ private fun FolderTile(folder: CollectionFolder, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 6.dp),
         )
     }
 }
@@ -1791,6 +2185,9 @@ fun TmdbGridScreen(
 
 @Composable
 private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
+    if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
+    if (style.showRatings) Ratings.revision(item)
+    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
     Column(
         Modifier
             .clip(style.shape())
@@ -1801,6 +2198,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             contentDescription = item.title,
             style = style,
             rating = item.rating,
+            imdb = imdb,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

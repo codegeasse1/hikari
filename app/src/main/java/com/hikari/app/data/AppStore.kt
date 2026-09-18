@@ -125,8 +125,18 @@ class AppStore(private val ctx: Context) {
         val POSTER_SHOW_TITLES = booleanPreferencesKey("posterShowTitles")
         val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
         val POSTER_GLASS = booleanPreferencesKey("posterGlass")
-        /** Bottom navigation bar layout: "classic" | "floating" | "borderless". */
+        /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
+         *  "classic" | "floating" | "animated" (an old stored "borderless" is
+         *  upgraded to "animated" when read). */
         val NAV_STYLE = stringPreferencesKey("navBarStyle")
+        /** Draw the rating strip on the detail page (IMDb, RT, …). On by
+         *  default: a title's score is part of what the page is for. */
+        val SHOW_DETAIL_RATING = booleanPreferencesKey("showDetailRating")
+        /** "Turn off full screen app mode": keep the system status bar and the
+         *  three-button navigation bar visible everywhere instead of hiding
+         *  them behind an immersive, swipe-to-reveal fullscreen. Off = the app
+         *  is immersive (the way it ships); on = normal windowed layout. */
+        val FULLSCREEN_OFF = booleanPreferencesKey("fullscreenOff")
     }
 
     // ---- The launcher icon the user picked (see AppIconManager) ----
@@ -302,15 +312,46 @@ class AppStore(private val ctx: Context) {
 
     // ---- Bottom navigation bar layout ----
 
-    /** "classic" (the seamless bar), "floating" (a detached glass pill) or
-     *  "borderless" (flat, edge to edge, no ring). */
+    /** "classic" (the seamless tonal plate), "floating" (a detached glass pill)
+     *  or "animated" (full bar at the top of a page, floating pill once you
+     *  scroll — see [com.hikari.app.ui.navigation.NavStyles]). */
     fun navStyleFlow(): Flow<String> =
-        store.data.map { it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.FLOATING }
+        store.data.map {
+            com.hikari.app.ui.navigation.NavStyles.normalize(
+                it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.FLOATING
+            )
+        }
 
     suspend fun navStyle(): String = navStyleFlow().first()
 
     suspend fun setNavStyle(style: String) {
         store.edit { it[K.NAV_STYLE] = style }
+    }
+
+    // ---- The detail page's rating strip (Settings → Appearance) ----
+
+    /** Whether the detail page draws the IMDb/RT/… badges. On unless the user
+     *  turned it off (see [setShowDetailRating]). */
+    fun showDetailRatingFlow(): Flow<Boolean> =
+        store.data.map { it[K.SHOW_DETAIL_RATING] ?: true }
+
+    suspend fun showDetailRating(): Boolean = showDetailRatingFlow().first()
+
+    suspend fun setShowDetailRating(show: Boolean) {
+        store.edit { it[K.SHOW_DETAIL_RATING] = show }
+    }
+
+    // ---- Full screen app mode (Settings → App Layout) ----
+
+    /** True when the user asked for the normal, windowed layout: system status
+     *  bar and the phone's own navigation bar visible on every screen. */
+    fun fullscreenOffFlow(): Flow<Boolean> =
+        store.data.map { it[K.FULLSCREEN_OFF] ?: false }
+
+    suspend fun fullscreenOff(): Boolean = fullscreenOffFlow().first()
+
+    suspend fun setFullscreenOff(off: Boolean) {
+        store.edit { it[K.FULLSCREEN_OFF] = off }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----
@@ -1479,6 +1520,9 @@ class AppStore(private val ctx: Context) {
                     JSONObject()
                         .put("id", f.id)
                         .put("name", f.name)
+                        .put("coverKind", f.coverKind)
+                        .put("coverValue", f.coverValue)
+                        .put("tileShape", f.tileShape)
                         .put("sources", sources)
                 )
             }
@@ -1486,6 +1530,9 @@ class AppStore(private val ctx: Context) {
                 JSONObject()
                     .put("id", c.id)
                     .put("name", c.name)
+                    .put("coverKind", c.coverKind)
+                    .put("coverValue", c.coverValue)
+                    .put("tileShape", c.tileShape)
                     .put("folders", folders)
             )
         }
@@ -1540,10 +1587,26 @@ class AppStore(private val ctx: Context) {
                                 if (usable) sources.add(source)
                             }
                         }
-                        folders.add(CollectionFolder(id = fid, name = fname, sources = sources))
+                        folders.add(
+                            CollectionFolder(
+                                id = fid,
+                                name = fname,
+                                sources = sources,
+                                coverKind = CoverKinds.normalize(fo.optString("coverKind")),
+                                coverValue = fo.optString("coverValue"),
+                                tileShape = TileShapes.normalize(fo.optString("tileShape")),
+                            )
+                        )
                     }
                 }
-                Collection(id = id, name = name, folders = folders)
+                Collection(
+                    id = id,
+                    name = name,
+                    folders = folders,
+                    coverKind = CoverKinds.normalize(o.optString("coverKind")),
+                    coverValue = o.optString("coverValue"),
+                    tileShape = TileShapes.normalize(o.optString("tileShape")),
+                )
             }
         } catch (e: Exception) {
             emptyList()

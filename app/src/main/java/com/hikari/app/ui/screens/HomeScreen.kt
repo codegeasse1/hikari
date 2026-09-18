@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -24,12 +27,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -55,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -793,7 +800,12 @@ private fun ProviderPickerSheet(
         if (query.isBlank()) collections
         else collections.filter { it.name.contains(query, ignoreCase = true) }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // Minimal, list-first: a heading, a flat search field, the chip row, then
+    // plain rows separated by hairlines (the glass cards are gone — a long list
+    // of nearly identical names read as a wall of glass). Opens fully expanded
+    // so the whole list is reachable without a drag nobody knows about.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text(
                 tr("Choose an extension"),
@@ -804,12 +816,29 @@ private fun ProviderPickerSheet(
                 tr("Only the selected extension's catalog is shown on Home."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
+                modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
             )
-            GlassSearchField(
+            OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = tr("Search extensions…"),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                placeholder = {
+                    Text(
+                        tr("Search extensions…"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
             // Categories: All first, then one chip per engine that is actually
@@ -840,17 +869,11 @@ private fun ProviderPickerSheet(
             LazyColumn(
                 Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 24.dp),
+                    .padding(top = 6.dp, bottom = 24.dp),
             ) {
                 if (shownCollections.isNotEmpty()) {
                     item {
-                        Text(
-                            tr("Collections").uppercase(),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
-                        )
+                        PickerSectionLabel(tr("Collections"))
                     }
                     items(shownCollections, key = { "collection|${it.id}" }) { c ->
                         PickerRow(
@@ -866,18 +889,19 @@ private fun ProviderPickerSheet(
                         PickerRow(
                             label = tr("Manage collections"),
                             isSelected = false,
+                            leadingIcon = Icons.Filled.Tune,
+                            showDivider = false,
                             onClick = onManageCollections,
                         )
                     }
-                    item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
+                }
+                item {
+                    PickerSectionLabel(tr("Providers"))
                 }
                 item {
                     PickerRow("All providers", isSelected = selectedId == null) {
                         onPick(null)
                     }
-                }
-                if (filtered.isNotEmpty()) {
-                    item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
                 }
                 items(filtered, key = { it.config.id }) { p ->
                     PickerRow(p.config.name, isSelected = selectedId == p.config.id) {
@@ -899,92 +923,91 @@ private fun ProviderPickerSheet(
     }
 }
 
-/** One engine chip in the picker ("All", "CloudStream", "Nuvio", …) — a glass
- *  pill, so the filter row reads as part of the same roundy material as the
- *  rows below it instead of flat grey blocks. Deliberately COMPACT: the row
- *  carries one chip per installed engine (up to a handful), so a big pill
- *  pushed the last ones off the right edge and made the filter look like a
- *  primary action instead of a small narrowing control. */
+/**
+ * One engine chip in the picker ("All", "CloudStream", "Nuvio", …).
+ *
+ * The selected chip is SOLID accent with contrast text; the rest are flat and
+ * outlined. That is the whole signal — no gradients, no glass: on a row of
+ * pills the filled one reads instantly as "this is the filter in force", and
+ * the outlined ones read as the alternatives.
+ */
 @Composable
 private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit) {
-    val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(50)
     Surface(
         onClick = onClick,
-        shape = shape,
-        color = Color.Transparent,
-        modifier = Modifier
-            .padding(vertical = 2.dp)
-            .clip(shape)
-            .background(
-                if (selected) {
-                    Brush.horizontalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.34f else 0.20f),
-                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.20f else 0.12f),
-                        )
-                    )
-                } else {
-                    Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom))
-                },
-                shape,
-            )
-            .border(1.dp, if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else glass.border, shape),
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+        border = if (selected) null else BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.55f),
+        ),
+        modifier = Modifier.padding(vertical = 2.dp),
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelMedium,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary
+            color = if (selected) MaterialTheme.colorScheme.onPrimary
             else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
     }
 }
 
+/** An all-caps section heading inside the picker ("Collections", "Providers"). */
+@Composable
+private fun PickerSectionLabel(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp),
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 12.dp, bottom = 2.dp),
+    )
+}
+
 /**
- * One row of the extension picker. Glassy by design: the same translucent
- * top-to-bottom fill and 1px hairline the settings cards use (see
- * [rememberGlassTokens]), with a 14dp radius and a small vertical gap between
- * rows — so the list reads as separate round cards floating over the sheet
- * rather than a wall of flat charcoal rows.
+ * One row of the extension picker. Deliberately FLAT: a plain row with a
+ * hairline under it, not a floating glass card. The picker is a long list of
+ * nearly identical names, and a card per name turned it into a wall of glass —
+ * the flat list (with the tinted selected row and its filled accent
+ * circle-check) is what makes the current choice readable at a glance.
+ *
+ * [leadingIcon] is for the one row that does something rather than selects
+ * ("Manage collections"); [showDivider] is turned off on the last row of a
+ * section so the heading below it is not fenced off by two lines.
  */
 @Composable
 private fun PickerRow(
     label: String,
     isSelected: Boolean,
     supporting: String? = null,
+    leadingIcon: ImageVector? = null,
+    showDivider: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val glass = rememberGlassTokens()
-    val shape = RoundedCornerShape(14.dp)
-    Surface(
-        onClick = onClick,
-        shape = shape,
-        color = Color.Transparent,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp)
-            .clip(shape)
-            .background(
-                if (isSelected) {
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.28f else 0.16f),
-                            MaterialTheme.colorScheme.primary.copy(alpha = if (glass.dark) 0.16f else 0.09f),
-                        )
-                    )
-                } else {
-                    Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom))
-                },
-                shape,
-            )
-            .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else glass.border, shape),
-    ) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else Color.Transparent
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (leadingIcon != null) {
+                Icon(
+                    leadingIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+            }
             Column(Modifier.weight(1f)) {
                 Text(
                     label,
@@ -1004,12 +1027,28 @@ private fun PickerRow(
                 }
             }
             if (isSelected) {
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
+        }
+        if (showDivider) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                modifier = Modifier.padding(start = if (leadingIcon != null) 38.dp else 10.dp),
+            )
         }
     }
 }

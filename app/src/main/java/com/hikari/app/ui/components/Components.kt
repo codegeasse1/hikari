@@ -74,6 +74,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.Ratings
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
@@ -239,6 +240,14 @@ fun HeroArtwork(
 @Composable
 fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     val style = rememberPosterStyle()
+    // With the score badge switched on, ask the ratings cache to warm itself for
+    // this title (a no-op once it is on file) so scores fill the rows instead of
+    // only the titles the user has opened. Off, it costs nothing at all.
+    if (style.showRatings) LaunchedEffect(item.uniqueId) { Ratings.ensure(item) }
+    // The revision is read so this cell — and only this cell — repaints when a
+    // background warm-up lands (see Ratings.revision).
+    if (style.showRatings) Ratings.revision(item)
+    val imdb = if (style.showRatings) Ratings.cachedImdb(item) else null
     Column(
         Modifier
             .width(120.dp)
@@ -250,6 +259,7 @@ fun PosterCard(item: MediaItem, onClick: () -> Unit) {
             contentDescription = item.title,
             style = style,
             rating = item.rating,
+            imdb = imdb,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

@@ -1,5 +1,7 @@
 package com.hikari.app.data
 
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import kotlinx.coroutines.CoroutineScope
@@ -112,6 +114,29 @@ object Ratings {
 
     private val memory = ConcurrentHashMap<String, List<TitleRating>>()
 
+    /**
+     * One revision counter per title, for the poster badges.
+     *
+     * A poster's score comes from the cache ([cachedImdb]), and a cache read is
+     * deliberately not observable — so a badge whose warm-up ([ensure]) landed
+     * after the cell was drawn would stay blank until something else recomposed
+     * it. A cell reads [revision] next to [cachedImdb], and a landing warm-up
+     * bumps it, which recomposes exactly the cells showing that title (and
+     * nothing else).
+     */
+    private val revisions = ConcurrentHashMap<String, MutableState<Long>>()
+
+    /** The revision a poster badge should read alongside [cachedImdb]. */
+    fun revision(item: MediaItem): Long =
+        revisions.getOrPut(cacheKey(item)) { mutableStateOf(0L) }.value
+
+    private fun bumpRevision(key: String) {
+        runCatching {
+            val state = revisions.getOrPut(key) { mutableStateOf(0L) }
+            state.value = state.value + 1L
+        }
+    }
+
     /** `key → source → when it was last asked`, so a source that answered
      *  nothing can be re-asked on a schedule instead of being frozen into the
      *  cached answer for a day. Persisted with the cache. */
@@ -174,9 +199,69 @@ object Ratings {
         finish(list, tmdb)
     }
 
+    /**
+     * The IMDb score already on file for [item] ("8.7"), or null when nothing has
+     * been looked up for it yet.
+     *
+     * Cache-only and synchronous ON PURPOSE: this is what a poster's score badge
+     * reads, and a Home row of sixty posters must never fire sixty lookups just
+     * to draw itself. The detail page — which does the looking up — is what fills
+     * the cache, and [ensure] is what warms it for titles nobody has opened.
+     */
+    fun cachedImdb(item: MediaItem): String? {
+        val key = cacheKey(item)
+        val list = memory[key] ?: readDisk(key)?.also { memory[key] = it } ?: return null
+        return list.firstOrNull { it.source == RatingSource.IMDB }
+            ?.value?.takeIf { it.isNotBlank() }
+    }
+
+    /** How many lookups [ensure] is allowed to have in flight at once. A grid
+     *  asks for every poster it draws; without a ceiling, one Home screen would
+     *  open hundreds of requests across five review sites and get the device
+     *  rate-limited. Anything over the ceiling is simply skipped — it will be
+     *  asked for again on the next scroll, by which time the earlier ones have
+     *  landed in the cache. */
+    private val ensureSlots = java.util.concurrent.Semaphore(3)
+
+    /**
+     * Warms the cache for [item] in the background when nothing is on file for it
+     * yet — what the poster-rating switch uses so scores start appearing on the
+     * rows instead of only on titles the user has already opened.
+     *
+     * Never awaited and deduped per title, so scrolling a row past the same
+     * poster ten times costs one pass. Callers use it as a hint, not a request:
+     * the badge reads [cachedImdb] on the next recomposition after this lands.
+     */
+    fun ensure(item: MediaItem) {
+        val key = cacheKey(item)
+        if (memory.containsKey(key) || readDisk(key) != null) return
+        if (!refreshing.add(key)) return
+        if (!ensureSlots.tryAcquire()) {
+            refreshing.remove(key)
+            return
+        }
+        refresher.launch {
+            try {
+                val imdb = resolveImdb(item, null)
+                val want = applicableSources(item)
+                val found = runSources(item, imdb, want)
+                markAttempts(key, want)
+                if (found.isEmpty()) return@launch
+                val list = found.values.sortedBy { it.source.ordinal }
+                memory[key] = list
+                writeDisk(key, list)
+                bumpRevision(key)
+            } catch (e: Exception) {
+                // A failed warm-up is not news: the next scroll tries again.
+            } finally {
+                ensureSlots.release()
+                refreshing.remove(key)
+            }
+        }
+    }
+
     /** Every source that could contribute a badge for [item] — the set the
-     *  refresh logic checks a cached answer against. */
-    private fun applicableSources(item: MediaItem): Set<RatingSource> {
+     *  refresh logic checks a cached answer against. */    private fun applicableSources(item: MediaItem): Set<RatingSource> {
         val want = LinkedHashSet<RatingSource>(5)
         want.add(RatingSource.IMDB)
         want.add(RatingSource.TOMATOMETER)
@@ -248,6 +333,7 @@ object Ratings {
                 val list = merged.values.sortedBy { it.source.ordinal }
                 memory[key] = list
                 writeDisk(key, list)
+                bumpRevision(key)
                 runCatching { onUpdate?.invoke(finish(list, tmdb)) }
             } catch (e: Exception) {
                 // A failed re-ask is not news: the next open tries again.

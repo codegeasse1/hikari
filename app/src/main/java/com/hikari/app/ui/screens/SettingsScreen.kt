@@ -40,13 +40,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
@@ -60,8 +65,12 @@ import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -151,71 +160,154 @@ private fun SettingsDivider() {
  * One category of settings. The Settings tab is a short INDEX of these folders
  * instead of one long scroll of every switch the app owns, so it stays readable
  * no matter how many options get added; opening a folder shows only what
- * belongs to it.
+ * belongs to it. A folder may itself contain folders (see [parent]) — the two
+ * busiest ones do, because "Appearance" and "App Layout" had each grown into a
+ * long page of unrelated switches.
+ *
+ * The split: Appearance is only what the app *is* (language, theme, interface
+ * scale) plus the two things it wears (icon, colour). Everything about how a
+ * page is laid out — titles, posters, fonts, the taskbar — lives under App
+ * Layout.
  */
 private enum class SettingsFolder(
+    /** Stable id. Also what a sub-folder names as its [parent]. */
+    val key: String,
     val title: String,
     val subtitle: String,
     val blurb: String,
     val icon: ImageVector,
+    /** Id of the folder this one lives inside, or null for a top-level folder. */
+    val parent: String? = null,
 ) {
+    APPEARANCE(
+        "appearance",
+        "Appearance",
+        "Language, theme, icon & interface size",
+        "How Hikari looks and speaks on this phone.",
+        Icons.Filled.Palette,
+    ),
+    APP_LAYOUT(
+        "layout",
+        "App Layout",
+        "Titles, posters, fonts & navigation",
+        "How the app's pages are arranged, and what they look like in the hand.",
+        Icons.Filled.Dashboard,
+    ),
     PLAYER(
+        "player",
         "Player",
         "Playback start, loading screen, slow internet",
         "How the player behaves when you start a video.",
         Icons.Filled.PlayArrow,
     ),
     SOURCES(
+        "sources",
         "Sources & Extensions",
         "yt-dlp fallback, userscripts, Continue Watching",
         "How Hikari finds, plays and remembers videos.",
         Icons.Filled.Extension,
     ),
     DOWNLOADS(
+        "downloads",
         "Downloads",
         "Offline copies & parallel saves",
         "Saving videos to this device.",
         Icons.Filled.Download,
-    ),
-    APPEARANCE(
-        "Appearance",
-        "Language, theme & in-app interface size",
-        "How Hikari looks and speaks on this phone.",
-        Icons.Filled.Palette,
     ),
     // The user's own catalogs (Collections) live here rather than under
     // Appearance: they are something the user CREATES and manages — like the
     // extensions they install — not a way the app looks, and a folder of their
     // own is where they go looking for it.
     CATALOG(
+        "catalog",
         "Personal Catalog creator",
         "Your own collections, folders & catalogs",
         "Build collections out of the catalogs you actually watch.",
         Icons.Filled.FolderOpen,
     ),
     PRIVACY(
+        "privacy",
         "Privacy & Browsing",
         "Ad blocking, redirects & user agent",
         "What the built-in browser is allowed to do.",
         Icons.Filled.Shield,
     ),
     LOGS(
+        "logs",
         "Logs & Diagnostics",
         "App logs & crash reports",
         "Share what the app recorded, so a bug needs no screenshot.",
         Icons.Filled.BugReport,
     ),
     BACKUP(
+        "backup",
         "Backup & Restore",
         "One file with your whole setup",
         "Carry your extensions, sources and settings to another phone.",
         Icons.Filled.SettingsBackupRestore,
     ),
     ABOUT(
+        "about",
         "About & Updates",
         "Version, links, roadmap & reset",
         "What this build is, and where it comes from.",
         Icons.Filled.Info,
+    ),
+
+    // ---- Sub-folders (never listed on the index; see [parent]) ----
+
+    APPEARANCE_ICON(
+        "appearance.icon",
+        "App icon",
+        "The icon Hikari wears on your home screen",
+        "Pick which launcher icon the app uses. The change takes a moment and " +
+            "your home screen may need a refresh before the new icon shows.",
+        Icons.Filled.Android,
+        parent = "appearance",
+    ),
+    APPEARANCE_COLORS(
+        "appearance.colors",
+        "App color theme",
+        "Accent colours & player matching",
+        "The accent colour every screen is painted in, and whether the player " +
+            "follows the same one.",
+        Icons.Filled.ColorLens,
+        parent = "appearance",
+    ),
+    LAYOUT_TMDB(
+        "layout.tmdb",
+        "TMDB language titles",
+        "Show titles & descriptions in your language",
+        "What language TMDB metadata — titles, overviews, artwork text — is " +
+            "fetched in. Follows your app language unless you pick one here.",
+        Icons.Filled.Translate,
+        parent = "layout",
+    ),
+    LAYOUT_POSTER(
+        "layout.poster",
+        "Poster styling",
+        "Blur, corners, titles & score badges",
+        "How the artwork cells in every grid are drawn: the iOS-style blur " +
+            "halo, the corner rounding, and whether titles and scores show.",
+        Icons.Filled.Wallpaper,
+        parent = "layout",
+    ),
+    LAYOUT_FONT(
+        "layout.font",
+        "App font",
+        "The typeface used everywhere, including the player",
+        "Pick a bundled font, or import one from storage and use it across the " +
+            "whole app.",
+        Icons.Filled.TextFields,
+        parent = "layout",
+    ),
+    LAYOUT_NAV(
+        "layout.nav",
+        "Taskbar & navigation",
+        "Bar layout & which buttons stay",
+        "Which tabs the bottom bar carries, and the three layouts it can wear.",
+        Icons.Filled.Tune,
+        parent = "layout",
     ),
 }
 
@@ -244,6 +336,10 @@ fun SettingsScreen(nav: NavHostController) {
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
+    // A sub-folder inside [openFolder] (Appearance → App icon, App Layout →
+    // Poster styling…). Two levels is the whole tree, so two slots is enough and
+    // back always has an obvious target.
+    var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
     var showPlayerControls by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
 
@@ -274,9 +370,12 @@ fun SettingsScreen(nav: NavHostController) {
     val installedProviders by app.providers.providers.collectAsState()
     val listState = rememberLazyListState()
 
-    // System back steps out of the open settings folder (Player, Sources…)
-    // instead of popping the whole Settings destination and landing on Home.
-    BackHandler(enabled = openFolder != null) { openFolder = null }
+    // System back steps out of the open settings folder (Player, Sources…) —
+    // and out of a sub-folder before that — instead of popping the whole
+    // Settings destination and landing on Home.
+    BackHandler(enabled = openSub != null || openFolder != null) {
+        if (openSub != null) openSub = null else openFolder = null
+    }
 
     // The Player controls editor is its own full screen (fifteen controls × a
     // four-way placement each does not fit in one card).
@@ -294,7 +393,7 @@ fun SettingsScreen(nav: NavHostController) {
 
     // A folder opens at its own top: without this, opening one from partway
     // down the index would leave the new page scrolled by the old offset.
-    LaunchedEffect(openFolder) { listState.scrollToItem(0) }
+    LaunchedEffect(openFolder, openSub) { listState.scrollToItem(0) }
 
     LazyColumn(
         state = listState,
@@ -302,11 +401,16 @@ fun SettingsScreen(nav: NavHostController) {
         contentPadding = PaddingValues(16.dp)
     ) {
         val folder = openFolder
+        val sub = openSub
         if (folder != null) {
             item {
-                FolderHeader(folder = folder, onBack = { openFolder = null })
+                FolderHeader(
+                    folder = sub ?: folder,
+                    parentTitle = if (sub != null) folder.title else null,
+                    onBack = { if (sub != null) openSub = null else openFolder = null },
+                )
             }
-            when (folder) {
+            when (sub ?: folder) {
                 SettingsFolder.PLAYER -> {
                     item {
                         SettingsCard(top = 2.dp) {
@@ -386,14 +490,28 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UiScaleCard(app) } }
-                    item { SettingsCard { TaskbarCard(app) } }
-                    item { SettingsCard { FontCard(app) } }
-                    item { SettingsCard { PosterStyleCard(app) } }
-                    item { SettingsCard { NavBarCard(app) } }
-                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
-                    item { SettingsCard { AppIconCard(app) } }
+                    item { SettingsCard { DetailRatingCard(app) } }
+                    // The two things the app wears. Each is several choices
+                    // wide (a dozen icon aliases, a wall of accent swatches),
+                    // so they get their own pages instead of turning Appearance
+                    // into a long scroll past everything else.
+                    SettingsFolder.entries
+                        .filter { it.parent == SettingsFolder.APPEARANCE.key }
+                        .forEach { target ->
+                            item {
+                                SettingsFolderRow(
+                                    folder = target,
+                                    onClick = { openSub = target },
+                                )
+                            }
+                        }
+                }
+                SettingsFolder.APPEARANCE_ICON -> {
+                    item { SettingsCard(top = 2.dp) { AppIconCard(app) } }
+                }
+                SettingsFolder.APPEARANCE_COLORS -> {
                     item {
-                        SettingsCard {
+                        SettingsCard(top = 2.dp) {
                             AccentCard(
                                 app = app,
                                 appAccentKey = appAccentKey,
@@ -412,6 +530,34 @@ fun SettingsScreen(nav: NavHostController) {
                             )
                         }
                     }
+                }
+                // ---- App Layout: how a page is arranged ----
+                SettingsFolder.APP_LAYOUT -> {
+                    SettingsFolder.entries
+                        .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
+                        .forEach { target ->
+                            item {
+                                SettingsFolderRow(
+                                    folder = target,
+                                    top = 12.dp,
+                                    onClick = { openSub = target },
+                                )
+                            }
+                        }
+                    item { SettingsCard { FullscreenCard(app) } }
+                }
+                SettingsFolder.LAYOUT_TMDB -> {
+                    item { SettingsCard(top = 2.dp) { TmdbLanguageCard(app, appLanguage) } }
+                }
+                SettingsFolder.LAYOUT_POSTER -> {
+                    item { SettingsCard(top = 2.dp) { PosterStyleCard(app) } }
+                }
+                SettingsFolder.LAYOUT_FONT -> {
+                    item { SettingsCard(top = 2.dp) { FontCard(app) } }
+                }
+                SettingsFolder.LAYOUT_NAV -> {
+                    item { SettingsCard(top = 2.dp) { NavBarCard(app) } }
+                    item { SettingsCard { TaskbarCard(app) } }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -597,7 +743,9 @@ fun SettingsScreen(nav: NavHostController) {
                     Spacer(Modifier.height(14.dp))
                 }
             }
-            SettingsFolder.entries.forEach { target ->
+            // Only the top-level folders: a sub-folder is reached from inside its
+            // parent, not from the index.
+            SettingsFolder.entries.filter { it.parent == null }.forEach { target ->
                 item {
                     SettingsFolderRow(folder = target, onClick = { openFolder = target })
                 }
@@ -652,9 +800,17 @@ private fun SettingsIconBadge(icon: ImageVector, size: Dp = 46.dp) {
  * The folder page's own header: a back button, the folder's badge and name, and
  * a one-line explanation of what is inside, so a page always says where you are
  * without repeating the settings tab's title.
+ *
+ * [parentTitle] is set only when a sub-folder is open, and is printed above the
+ * title as a breadcrumb — "Appearance › App icon" — so the way back out is
+ * obvious without reading the back button's glyph.
  */
 @Composable
-private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
+private fun FolderHeader(
+    folder: SettingsFolder,
+    parentTitle: String? = null,
+    onBack: () -> Unit,
+) {
     val glass = rememberGlassTokens()
     Column(
         Modifier
@@ -682,6 +838,14 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
             SettingsIconBadge(folder.icon, 44.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
+                if (parentTitle != null) {
+                    Text(
+                        tr(parentTitle) + " ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
                 Text(
                     tr(folder.title),
                     style = MaterialTheme.typography.titleLarge,
@@ -705,14 +869,16 @@ private fun FolderHeader(folder: SettingsFolder, onBack: () -> Unit) {
     }
 }
 
-/** One folder on the index: badge, name, what is inside, and its own chevron. */
+/** One folder on the index — and one sub-folder inside a folder page: badge,
+ *  name, what is inside, and its own chevron. [top] is the gap above it, so a
+ *  sub-folder row can sit tighter under its parent's heading. */
 @Composable
-private fun SettingsFolderRow(folder: SettingsFolder, onClick: () -> Unit) {
+private fun SettingsFolderRow(folder: SettingsFolder, top: Dp = 12.dp, onClick: () -> Unit) {
     GlassCard(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 12.dp)
+            .padding(top = top)
     ) {
         Row(
             Modifier
@@ -1473,6 +1639,83 @@ private fun SettingsToggle(
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** A card's leading row: the icon token plus the card's own heading. */
+@Composable
+private fun SettingsCardHeading(icon: ImageVector, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * Ratings (Settings → Appearance): the IMDb / RT / Metacritic strip on a
+ * detail page, and the small score badge on each poster. Off means neither is
+ * drawn and no rating lookups are made. On by default.
+ */
+@Composable
+private fun DetailRatingCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.showDetailRatingFlow() }
+    val show by flow.collectAsState(initial = true)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Star, tr("Ratings"))
+        SettingsToggle(
+            label = tr("Show ratings"),
+            supporting = tr(
+                "The IMDb / Rotten Tomatoes scores on a detail page, and the " +
+                    "small score badge on each poster. Turning it off skips the " +
+                    "rating lookups too."
+            ),
+            checked = show,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setShowDetailRating(on) } }
+            },
+        )
+    }
+}
+
+/**
+ * Full screen app mode (Settings → App Layout). Hikari normally hides the
+ * phone's status bar and its three buttons so a page fills the screen; this
+ * switch brings them back, everywhere (the player's own fullscreen video is
+ * untouched — that is a separate, per-video choice).
+ */
+@Composable
+private fun FullscreenCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.fullscreenOffFlow() }
+    val off by flow.collectAsState(initial = false)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(
+            if (off) Icons.Filled.Fullscreen else Icons.Filled.FullscreenExit,
+            tr("Full screen app mode"),
+        )
+        SettingsToggle(
+            label = tr("Turn off full screen app mode"),
+            supporting = tr(
+                "Keep the phone's status bar and its three buttons visible on " +
+                    "every screen. Off keeps the app edge-to-edge."
+            ),
+            checked = off,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setFullscreenOff(value) } }
+            },
+        )
     }
 }
 

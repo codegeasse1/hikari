@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 125
-        versionName = "0.5.9"
+        versionCode = 126
+        versionName = "0.5.10"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -206,6 +206,9 @@ dependencies {
     // and Coil 2 answers those with a decode failure — i.e. the monochrome
     // glyph placeholder on every row. Registered in HikariApp's ImageLoader.
     implementation(libs.coil.svg)
+    // Animated GIF decoding, for collection/folder covers ("Animated GIF URL"
+    // in the cover editor): without it Coil draws only the first frame.
+    implementation(libs.coil.gif)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlin.reflect)
     implementation(libs.jackson.databind)
