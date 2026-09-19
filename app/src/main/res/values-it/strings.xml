@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Lingua dell\'app</string>
+    <string name="settings_language_subtitle">Cambia i testi dell\'app e i comandi del player</string>
+    <string name="settings_language_system">Predefinita del sistema</string>
+    <string name="player_options">Opzioni del player</string>
+    <string name="player_fit_video">Adatta video</string>
+    <string name="player_fit_video_desc">Mostra l\'intero fotogramma</string>
+    <string name="player_crop_to_fill">Ritaglia per riempire</string>
+    <string name="player_crop_to_fill_desc">Ingrandisci fino a riempire il riquadro</string>
+    <string name="player_rotate_screen">Ruota schermo</string>
+    <string name="player_rotate_screen_desc">Ruota il video di 90° alla volta</string>
+    <string name="player_server_chooser">Scelta del server</string>
+    <string name="player_server_on">Attivo — scegli un server ogni volta</string>
+    <string name="player_server_off">Disattivo — parti dal server migliore</string>
+    <string name="player_options_hint">Adattamento video, rotazione e avvio automatico dei server.</string>
+    <string name="player_episodes">Episodi</string>
+    <string name="player_source">Fonte</string>
+    <string name="player_quality">Qualità</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Sottotitoli</string>
+    <string name="player_rotate">Ruota</string>
+    <string name="player_skip_intro">Salta intro</string>
+    <string name="player_enhance">Migliora</string>
+    <string name="player_tap_to_play">Tocca per riprodurre</string>
+    <string name="cd_back">Indietro</string>
+    <string name="cd_add_to_library">Aggiungi alla libreria</string>
+    <string name="cd_download">Scarica</string>
+    <string name="cd_pip">Immagine nell\'immagine</string>
+    <string name="cd_player_options">Opzioni del player</string>
+    <string name="cd_lock_controls">Blocca i comandi</string>
+    <string name="cd_fit_or_crop">Adatta o ritaglia il video</string>
+</resources>

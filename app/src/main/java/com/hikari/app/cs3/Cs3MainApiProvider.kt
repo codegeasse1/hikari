@@ -32,6 +32,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Adapts a loaded CloudStream MainAPI to Hikari's ContentProvider contract so
@@ -266,6 +267,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return Cs3PluginManager.ensureSettingsLoaded(HikariApp.instance, file)
     }
 
+    /** Hard rebuild: drops the cached plugin instance so the next
+     *  [prepareSettings] re-runs the plugin's `load()` against the CURRENT
+     *  activity (see [ContentProvider.rebuildSettings]). Used when a plugin's
+     *  settings screen failed with a stale-activity error. */
+    override fun rebuildSettings(context: android.content.Context): Boolean {
+        val file = File(config.url)
+        if (!file.exists()) return false
+        return runCatching { Cs3PluginManager.reload(context, file) }.isSuccess &&
+            Cs3PluginManager.hasSettings(file)
+    }
+
     private val loadCache = ConcurrentHashMap<String, LoadResponse>()
 
     /**
@@ -311,7 +323,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
             }
         }
-        out
+        // One entry per catalog, whatever the plugin answered with: a plugin
+        // whose mainPage list repeats itself (or repeats a page's data as an id)
+        // would otherwise hand Hikari two catalogs with the same id, and every
+        // row they produced would carry the same Lazy key — which Compose treats
+        // as a crash, not a warning.
+        out.distinctBy { it.type to it.id }
     }
 
     private fun rowRefId(pageIndex: Int, rowIndex: Int): String = "row:$pageIndex:$rowIndex"
@@ -621,8 +638,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             // API pages (MovieBlast, AllMovieLand, …) routinely blows past that
             // on a phone network, so Hikari declared "no playable sources" while
             // CloudStream happily waited. Respect the plugin's own budget now.
-            val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
-            val subs = mutableListOf<SubtitleFile>()
+            // CopyOnWriteArrayList, not mutableListOf: a plugin's loadLinks
+            // invokes these callbacks from its OWN coroutines, and providers
+            // that fan out over several extractors (Goojara-style) call back
+            // from several threads at once. Two concurrent `ArrayList.add` calls
+            // is how a source list gets corrupted — the recorded crash
+            // (`ArrayIndexOutOfBoundsException: length=49; index=49` at
+            // `java.util.ArrayList.add`, thrown from an extension's callback) is
+            // exactly that race, so the app's own callbacks are never plain
+            // ArrayLists.
+            val links = CopyOnWriteArrayList<com.lagradost.cloudstream3.utils.ExtractorLink>()
+            val subs = CopyOnWriteArrayList<SubtitleFile>()
             val worker = Thread.currentThread()
             val rawTimeout = a.loadLinksTimeoutMs
             val pluginTimeout = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L

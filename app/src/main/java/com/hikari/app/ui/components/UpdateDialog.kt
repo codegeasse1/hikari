@@ -1,4 +1,6 @@
 package com.hikari.app.ui.components
+import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.I18n
 
 import android.content.Context
 import android.content.Intent
@@ -59,7 +61,7 @@ fun UpdateDialog(
     AlertDialog(
         onDismissRequest = { if (downloading == null && !checking) onDismiss() },
         title = {
-            Text(if (s?.available == true) "Update available" else "Hikari updates")
+            Text(if (s?.available == true) I18n.t("Update available") else I18n.t("Hikari updates"))
         },
         text = {
             Column {
@@ -72,7 +74,7 @@ fun UpdateDialog(
                                 .height(22.dp),
                             strokeWidth = 2.5.dp
                         )
-                        Text("Checking for updates…")
+                        Text(tr("Checking for updates…"))
                     }
 
                     downloading != null -> {
@@ -81,30 +83,28 @@ fun UpdateDialog(
                             Modifier.fillMaxWidth()
                         )
                         Spacer8()
-                        Text("Downloading update…")
+                        Text(tr("Downloading update…"))
                     }
 
                     installed -> Text(
-                        "Update downloaded. The Android installer will now open — " +
-                            "confirm install there, or open GitHub for the manual APK."
+                        tr("Update downloaded. The Android installer will now open — " + "confirm install there, or open GitHub for the manual APK.")
                     )
 
                     error != null -> Text(error!!)
 
                     s == null -> Text(
-                        "Couldn't reach GitHub. Check your connection and try again."
+                        tr("Couldn't reach GitHub. Check your connection and try again.")
                     )
 
                     s.available -> Column {
                         Text(
-                            "A new version is available " +
-                                "(v${s.latestVersion} — you're on v${s.currentVersion}).\n\n" +
-                                "Download and install it right here, or grab the APK from GitHub."
+                            tr("A new version is available " + "(v${s.latestVersion} — you're on v${s.currentVersion}).\n\n") +
+                                I18n.t("Download and install it right here, or grab the APK from GitHub.")
                         )
                     }
 
                     else -> Text(
-                        "You're on the latest version (v${s.currentVersion})."
+                        I18n.t("You're on the latest version (v%s).").replace("%s", s.currentVersion)
                     )
                 }
             }
@@ -147,12 +147,12 @@ fun UpdateDialog(
                             }
                         )
                     }
-                }) { Text("Download & install") }
+                }) { Text(tr("Download & install")) }
             }
         },
         dismissButton = {
             if (installed || error != null) {
-                TextButton(onClick = onDismiss) { Text("Close") }
+                TextButton(onClick = onDismiss) { Text(tr("Close")) }
             } else if (!checking && downloading == null) {
                 TextButton(onClick = {
                     if (s?.available == true) {
@@ -161,7 +161,7 @@ fun UpdateDialog(
                         )
                     }
                     onDismiss()
-                }) { Text(if (s?.available == true) "Open GitHub" else "Close") }
+                }) { Text(if (s?.available == true) I18n.t("Open GitHub") else I18n.t("Close")) }
             }
         }
     )

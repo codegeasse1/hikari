@@ -13,6 +13,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.hikari.app.HikariApp
+import com.hikari.app.net.CloudflareVerifier
 import com.lagradost.cloudstream3.USER_AGENT
 import okhttp3.Interceptor
 import okhttp3.Request
@@ -59,10 +60,42 @@ class WebViewResolver(
 ) : Interceptor {
 
     companion object {
-        const val DEFAULT_TIMEOUT = 60_000L
+        /**
+         * Deliberately SHORT. A WebView resolver only ever waits for a page
+         * that fires a matching media request; the pages that never do (a WAF
+         * interstitial, a dead embed, a renderer crash) would otherwise hold a
+         * plugin's `loadLinks` for the FULL timeout, and with several
+         * extractors tried per movie that turned into minutes of "Searching
+         * servers…" before the fallback server appeared. A real player fires
+         * its manifest within a few seconds, so 30s is generous; a Cloudflare
+         * interstitial is now detected by page title and cut off in
+         * milliseconds (see onPageFinished) rather than left to time out.
+         */
+        const val DEFAULT_TIMEOUT = 30_000L
 
         @Volatile
         var webViewUserAgent: String? = null
+
+        /**
+         * The UA a WebView resolver should advertise, as a NON-NULL string.
+         *
+         * This exists purely for link compatibility: CloudStream's Android
+         * `WebViewResolver` exposes a second UA accessor under this name, and
+         * code compiled against it — the jar's own `CloudflareKiller`, and any
+         * extension that vendors a copy of that class — calls
+         * `getWebViewUserAgent1()`. The jar's desktop stub (which this class
+         * shadows) never declared it, so every such call died with
+         * `NoSuchMethodError: No virtual method getWebViewUserAgent1()...` on
+         * an OkHttp dispatcher thread, taking the whole app down (Hikari 0.3.85
+         * crash reports: `CloudflareKiller.proceed(CloudflareKiller.kt:99)`).
+         * Declaring it makes that bytecode link and degrade gracefully.
+         */
+        @JvmStatic
+        fun getWebViewUserAgent1(): String =
+            webViewUserAgent
+                ?: runCatching { com.hikari.app.HikariApp.instance.effectiveWebViewUa() }
+                    .getOrNull()
+                ?: USER_AGENT
 
         /** Forces a muted play + clicks common play overlays. Kept as a shared
          *  constant so both the throttled nudge and the post-finish retries use
@@ -147,6 +180,15 @@ class WebViewResolver(
         request: Request,
         requestCallBack: (Request) -> Boolean = { false },
     ): Pair<Request?, List<Request>> {
+        val url = request.url.toString()
+        // A host that already answered with an unsolved Cloudflare challenge in
+        // this session will answer the same way to a WebView — loading it here
+        // would only burn the plugin's whole loadLinks budget (and, on a hard
+        // WAF block, wait out the full timeout) before returning nothing. Skip
+        // instantly so the caller falls through to its other extractors and the
+        // "Searching servers…" pass stays fast. The record is dropped the
+        // moment the user's own verify WebView earns a clearance.
+        if (CloudflareVerifier.needsVerification(url)) return null to emptyList()
         // The FIRST WebView on a fresh process is slow (renderer spawn, cookie
         // store init) and some CDNs need the page loaded twice to establish
         // the session — a plugin that gets nothing on attempt #1 often succeeds
@@ -154,6 +196,9 @@ class WebViewResolver(
         // symptom). Retry once when the first pass captured nothing.
         val first = resolveOnce(request, requestCallBack)
         if (first.first != null || first.second.isNotEmpty()) return first
+        // The first pass turned out to be a Cloudflare interstitial (it recorded
+        // the host): a second load would hit the very same wall, so don't.
+        if (CloudflareVerifier.needsVerification(url)) return first
         return resolveOnce(request, requestCallBack)
     }
 
@@ -195,7 +240,7 @@ class WebViewResolver(
                 webViewUserAgent = wv.settings.userAgentString
                 // CloudStream deliberately does not force a UA unless the
                 // plugin asks for one — forcing it makes Cloudflare break.
-                // The app's setting (Settings → WebView user agent) decides the
+                // The app's setting (Settings → Privacy & Browsing → WebView user agent) decides the
                 // UA instead: stock Android default by default (passes the CF
                 // JS challenge), or the user's custom UA when they override.
                 // The plugin-requested UA is only honored when the user turned
@@ -243,6 +288,20 @@ class WebViewResolver(
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
+                        // A Cloudflare interstitial — a managed challenge or a
+                        // hard WAF block — sets its page title before its script
+                        // even runs, and whatever follows on that page is never
+                        // the player. Detect it here and stop waiting
+                        // immediately: the blocked host is recorded so every
+                        // LATER attempt at it is skipped in milliseconds instead
+                        // of waiting out another full timeout.
+                        val challengeTitle = runCatching { view?.title }.getOrNull()
+                        if (CloudflareVerifier.isChallengeTitle(challengeTitle)) {
+                            val pageUrl = url ?: runCatching { view?.url }.getOrNull()
+                            pageUrl?.let { CloudflareVerifier.markBlocked(it) }
+                            finished.countDown()
+                            return
+                        }
                         // Page loaded (possibly a WAF challenge that then
                         // reloads) — start the player if one exists. Players
                         // initialize lazily, so keep nudging for a few seconds.

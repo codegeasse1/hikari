@@ -5,6 +5,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +25,14 @@ import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+    /** Settings → App Layout → "Turn off full screen app mode". The system
+     *  bars are shown/hidden from onResume, onWindowFocusChanged and the
+     *  Compose side, none of which can await DataStore — so the value is
+     *  mirrored here (read once at launch, kept current by a flow collector in
+     *  setContent). See [applyImmersiveMode]. */
+    @Volatile
+    private var fullscreenOff = false
+
     /** In-app UI scale: when on, the app ignores the phone's Font size and
      *  Display size settings everywhere (Compose screens scale themselves in
      *  HikariTheme; this covers the Activity's View-based content too). */
@@ -87,11 +96,17 @@ class MainActivity : AppCompatActivity() {
             },
             true,
         )
-        // True fullscreen: hide the system status + navigation bars everywhere
-        // (swipe from any edge to briefly reveal them). Content fills the whole
-        // screen instead of stopping below a status bar.
-        applyImmersiveMode()
         val store = (application as HikariApp).store
+        // True fullscreen (the default): hide the system status + navigation
+        // bars everywhere (swipe from any edge to briefly reveal them), so
+        // content fills the whole screen instead of stopping below a status
+        // bar. Settings → App Layout can turn that off; the mirror is seeded
+        // here because onResume/onWindowFocusChanged re-apply the mode and
+        // cannot await DataStore.
+        fullscreenOff = runCatching {
+            kotlinx.coroutines.runBlocking { store.fullscreenOff() }
+        }.getOrDefault(false)
+        applyImmersiveMode()
         setContent {
             val scope = rememberCoroutineScope()
             // Remember the Flow — a fresh store.themeFlow() per recomposition
@@ -100,7 +115,27 @@ class MainActivity : AppCompatActivity() {
             val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
-            // Accent colours (Settings → Appearance). The app accent repaints
+            // App language (Settings → Appearance & Theme). The map is
+            // handed to the whole tree through I18n.LocalMap, so every screen
+            // that wraps a literal with tr(...) re-renders in the new language
+            // the moment the choice changes — app-wide, live, no restart.
+            val languageFlow = remember { store.languageFlow() }
+            val storedLanguage by languageFlow.collectAsState(initial = "")
+            // The picker's choice is kept in memory (LanguageManager.pending)
+            // until the store catches up, so the activity recreation the locale
+            // change triggers can never show the previous language.
+            val languageTag = com.hikari.app.ui.LanguageManager.pending() ?: storedLanguage
+            val i18nMap = remember(languageTag) {
+                com.hikari.app.i18n.I18n.mapFor(this@MainActivity, languageTag)
+            }
+            LaunchedEffect(i18nMap) {
+                com.hikari.app.i18n.I18n.setCurrent(i18nMap)
+            }
+            LaunchedEffect(storedLanguage) {
+                com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
+            }
+
+            // Accent colours (Settings → Appearance & Theme). The app accent repaints
             // the whole Compose UI; the player accent is for the View-based
             // player, which reads it synchronously via AccentStore.
             val appAccentFlow = remember { store.appAccentFlow() }
@@ -121,7 +156,7 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // In-app UI scale (Settings → In-app UI scale): when on, the app
+            // In-app UI scale (Settings → Appearance & Theme → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
             val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
             val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
@@ -135,6 +170,56 @@ class MainActivity : AppCompatActivity() {
                 com.hikari.app.ui.UiScale.sync(
                     this@MainActivity, uiScaleEnabled, uiScale
                 )
+            }
+
+            // Full screen app mode (Settings → App Layout): switching it shows
+            // or hides the phone's own status + navigation bars right away,
+            // without a restart. The mirror above is kept in step so the next
+            // onResume/onWindowFocusChanged re-applies the same mode.
+            val fullscreenOffFlow = remember { store.fullscreenOffFlow() }
+            val fullscreenOffPref by fullscreenOffFlow.collectAsState(initial = false)
+            LaunchedEffect(fullscreenOffPref) {
+                fullscreenOff = fullscreenOffPref
+                applyImmersiveMode()
+            }
+
+            // App-wide font (Settings → Appearance & Theme → App font). The Compose half
+            // rides on the theme's typography below; the View-based half (the
+            // player, its dialogs, the WebView) reads the synchronous mirror
+            // this keeps up to date.
+            val appFontFlow = remember { store.appFontFlow() }
+            val appFontFileFlow = remember { store.appFontFileFlow() }
+            val appFontKey by appFontFlow.collectAsState(initial = com.hikari.app.ui.AppFonts.DEFAULT)
+            val appFontFile by appFontFileFlow.collectAsState(initial = "")
+            var importedFontLabel by remember { mutableStateOf("") }
+            LaunchedEffect(appFontKey, appFontFile) {
+                com.hikari.app.ui.AppFonts.sync(this@MainActivity, appFontKey, appFontFile)
+                importedFontLabel = if (appFontKey == com.hikari.app.ui.AppFonts.IMPORTED) {
+                    runCatching { store.appFontLabel() }.getOrDefault("")
+                } else {
+                    ""
+                }
+            }
+            val appFontFamily = remember(appFontKey, appFontFile) {
+                com.hikari.app.ui.AppFonts.fontFamily(this@MainActivity, appFontKey, appFontFile)
+            }
+
+            // Which language TMDB answers in. "" follows the app language (the
+            // point of the feature: switch the app to Spanish and the movies
+            // and series are titled in Spanish too), "none" leaves TMDB on
+            // English, anything else is an explicit TMDB code.
+            val tmdbLanguageFlow = remember { store.tmdbLanguageFlow() }
+            val tmdbLanguageMode by tmdbLanguageFlow.collectAsState(initial = "")
+            val tmdbLanguage = when (tmdbLanguageMode) {
+                "" -> com.hikari.app.data.TmdbLang.forAppLanguage(languageTag)
+                "none" -> ""
+                else -> tmdbLanguageMode
+            }
+            LaunchedEffect(tmdbLanguage) {
+                // Applies the language AND, when it really changed, invalidates
+                // the content that was localized under the previous one — so the
+                // switch is live instead of waiting for a restart.
+                (application as HikariApp).applyContentLanguage(tmdbLanguage)
             }
 
             LaunchedEffect(themeMode) {
@@ -166,11 +251,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            CompositionLocalProvider(
+                com.hikari.app.i18n.I18n.LocalMap provides i18nMap
+            ) {
             HikariTheme(
                 mode = themeMode,
                 accent = appAccent,
                 uiScaleEnabled = uiScaleEnabled,
                 uiScale = uiScale,
+                fontFamily = appFontFamily,
             ) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
@@ -189,6 +278,7 @@ class MainActivity : AppCompatActivity() {
                         },
                     )
                 }
+            }
             }
         }
     }
@@ -221,13 +311,24 @@ class MainActivity : AppCompatActivity() {
      * sticky on its own, and when the bars come back they leave an empty band
      * above the content (the "fullscreen leaves a blank bar under the status
      * bar" report), which shows up on some devices and not others.
+     *
+     * When Settings → App Layout → "Turn off full screen app mode" is on, the
+     * bars are shown instead and left to behave normally. Either way the window
+     * stays edge-to-edge (the bars are transparent over the app's own
+     * backdrop), and the screens pad themselves by the reported insets.
      */
     private fun applyImmersiveMode() {
         runCatching {
             androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
-            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-                systemBarsBehavior =
+            val controller =
+                androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            if (fullscreenOff) {
+                controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            } else {
+                controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior =
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         }
@@ -267,9 +368,22 @@ class MainActivity : AppCompatActivity() {
         // focus shows the system bars again; re-hide them the moment we get
         // focus back so the UI stays fullscreen.
         applyImmersiveMode()
+        val app = application as HikariApp
+        // Focus coming back is also the one moment an extension can flip its own
+        // Cloudflare-WebView switch — a plugin's settings sheet writes plugin
+        // prefs straight through CloudStreamApp.setKey. Re-assert the user's
+        // choice, so closing a plugin's settings can never leave an extension
+        // able to open a verification page on its own (see ExtensionVerifyGuard).
+        app.appScope.launch {
+            runCatching {
+                com.hikari.app.net.ExtensionVerifyGuard.apply(
+                    app,
+                    app.store.extensionVerifyWebview(),
+                )
+            }
+        }
         val path = com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload ?: return
         com.hikari.app.cs3.Cs3PluginManager.pendingSettingsReload = null
-        val app = application as HikariApp
         app.appScope.launch {
             runCatching {
                 val file = java.io.File(path)

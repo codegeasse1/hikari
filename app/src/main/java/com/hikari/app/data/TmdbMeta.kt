@@ -302,6 +302,14 @@ object TmdbMeta {
                     overview = o.optString("overview").takeIf { it.isNotBlank() },
                     backdropUrl = backdrop,
                     rawType = "tmdb",
+                    rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                    // The name the extensions index this title under (a shelf is
+                    // built from TMDB, so a non-English language renames it).
+                    originalTitle = o.optString("original_title")
+                        .ifBlank { o.optString("original_name") }
+                        .trim()
+                        .takeIf { it.isNotBlank() && it != "null" }
+                        .orEmpty(),
                 )
             )
         }
@@ -328,7 +336,7 @@ object TmdbMeta {
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"
         val d = TmdbResolver.apiGet(
             "/$seg/${resolved.tmdbId}",
-            mapOf("append_to_response" to "credits,videos,$certKey"),
+            mapOf("append_to_response" to "credits,videos,$certKey,external_ids"),
         ) ?: return null
 
         val isMovie = seg == "movie"
@@ -365,6 +373,9 @@ object TmdbMeta {
                 .takeIf { it.isNotBlank() }?.uppercase(),
             director = directors.takeIf { it.isNotEmpty() }?.joinToString(", "),
             writers = writers,
+            imdbId = d.optJSONObject("external_ids")
+                ?.optString("imdb_id")?.trim()
+                ?.takeIf { it.startsWith("tt") && it.length >= 8 },
         )
 
         val cast = ArrayList<CastMember>(20)
@@ -381,6 +392,28 @@ object TmdbMeta {
                     profileUrl = o.tmdbPath("profile_path")?.let { IMG_PROFILE + it },
                 )
             )
+        }
+
+        // Anime: the credits list voice actors, whose faces mean nothing to
+        // someone who knows the show — the characters do. AniList is asked for
+        // them (see [AnimeCast]), and only a confident title+year match is
+        // trusted; anything else keeps TMDB's list, so the row can be wrong in
+        // the direction of "still correct, just the actors".
+        var castIsCharacters = false
+        val displayCast = if (isAnimeTitle(d) && item.title.isNotBlank()) {
+            val characters = AnimeCast.characters(
+                item.title,
+                yearOf(d),
+                cacheKey = "tmdb:$seg:${resolved.tmdbId}",
+            )
+            if (characters.isNotEmpty()) {
+                castIsCharacters = true
+                characters
+            } else {
+                cast
+            }
+        } else {
+            cast
         }
 
         // Trailers before teasers, official before unofficial — the order the
@@ -415,7 +448,94 @@ object TmdbMeta {
         ranked.sortByDescending { it.score }
         val trailers = ranked.take(12).map { it.trailer }
 
-        return TitleExtras(details = details, cast = cast, trailers = trailers)
+        return TitleExtras(
+            details = details,
+            cast = displayCast,
+            trailers = trailers,
+            castIsCharacters = castIsCharacters,
+            // The same response that was localized for the page also carries the
+            // original name — so the two names a provider lookup needs arrive
+            // together, for free, in the call the page already makes.
+            localizedTitle = d.optString("title").ifBlank { d.optString("name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" },
+            originalTitle = d.optString("original_title").ifBlank { d.optString("original_name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" },
+        )
+    }
+
+    /**
+     * The (localized, original) pair of names for an item, from TMDB alone.
+     *
+     * Used where the two matter and [extras] is not being fetched — the play
+     * intents (so the player's artwork card can print the title in the chosen
+     * language) and a detail page whose origin provider is gone (so a provider
+     * lookup has the original name to search with). One request, cached per
+     * title, and null whenever TMDB cannot resolve the item at all.
+     */
+    suspend fun titles(item: MediaItem): Pair<String, String>? {
+        val key = item.originalTitle + "\u0001" + item.title + "\u0001" + item.type.name
+        synchronized(titleCache) { titleCache[key] }?.let { return it }
+        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
+        val seg = segment(resolved.mediaType)
+        val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap()) ?: return null
+        val localized = d.optString("title").ifBlank { d.optString("name") }
+            .trim().takeIf { it.isNotBlank() && it != "null" }
+        val original = d.optString("original_title").ifBlank { d.optString("original_name") }
+            .trim().takeIf { it.isNotBlank() && it != "null" }
+        if (localized == null && original == null) return null
+        val out = (localized ?: original!!) to (original ?: localized!!)
+        synchronized(titleCache) { titleCache[key] = out }
+        return out
+    }
+
+    /** Bounded per-session memo for [titles] — a title is opened over and over. */
+    private val titleCache = HashMap<String, Pair<String, String>>()
+
+    /**
+     * The (localized, original) pair for a bare TMDB id — the case a detail page
+     * arrives in, where all it has is `providerId = "tmdb"` and a numeric id
+     * (the row's own localized name came through the route, and a stored item
+     * from an older build may carry no `originalTitle` at all). Probes both
+     * namespaces when [type] does not say which one it is.
+     */
+    suspend fun titlesForId(id: String, type: MediaType): Pair<String, String>? {
+        val numeric = id.trim()
+        if (numeric.isBlank() || !numeric.all { it.isDigit() }) return null
+        val segs = when (type) {
+            MediaType.MOVIE -> listOf("movie")
+            MediaType.SERIES -> listOf("tv")
+            else -> listOf("movie", "tv")
+        }
+        for (seg in segs) {
+            val d = TmdbResolver.apiGet("/$seg/$numeric", emptyMap()) ?: continue
+            val localized = d.optString("title").ifBlank { d.optString("name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
+            val original = d.optString("original_title").ifBlank { d.optString("original_name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" }
+            return localized to (original ?: localized)
+        }
+        return null
+    }
+
+    /**
+     * True when TMDB's own detail response describes an ANIME title: an animated
+     * work whose original language is Japanese (or which is from Japan). The
+     * distinction matters because only for those does a character list exist
+     * somewhere that can be paired with the title (see [AnimeCast]); Western
+     * animation's "cast" is already its voice cast, which TMDB lists with the
+     * character each actor plays, so those rows need no substitution.
+     */
+    private fun isAnimeTitle(d: JSONObject): Boolean {
+        val animated = d.optJSONArray("genres")?.let { arr ->
+            (0 until arr.length()).any {
+                arr.optJSONObject(it)?.optString("name")?.equals("Animation", true) == true
+            }
+        } ?: false
+        if (!animated) return false
+        if (d.optString("original_language").trim().equals("ja", true)) return true
+        return d.optJSONArray("origin_country")?.let { arr ->
+            (0 until arr.length()).any { arr.optString(it).equals("JP", true) }
+        } ?: false
     }
 
     /** Names of the crew members whose `job` is in [jobs], in listing order. */
@@ -432,30 +552,36 @@ object TmdbMeta {
         return out
     }
 
-    /** US age rating when TMDB has one, else the first non-blank region's. */
+    /** Age rating, preferred the way a viewer recognises it: the US rating
+     *  first (R / PG-13 / TV-MA), then the other English-speaking boards, and
+     *  only then whatever region TMDB happens to list first. Every title that
+     *  has *any* rating gets one, which is what puts a certification on nearly
+     *  every detail page instead of only the ones TMDB rated for the US. */
     private fun certificationOf(d: JSONObject, seg: String): String? {
         val arr = d.optJSONObject(if (seg == "movie") "release_dates" else "content_ratings")
             ?.optJSONArray("results") ?: return null
+        val preferred = listOf("US", "GB", "AU", "CA", "IE", "NZ")
         var fallback: String? = null
+        var preferredHit: String? = null
         for (i in 0 until arr.length()) {
             val r = arr.optJSONObject(i) ?: continue
             val iso = r.optString("iso_3166_1")
+            var cert: String? = null
             if (seg == "movie") {
                 val dates = r.optJSONArray("release_dates") ?: continue
                 for (j in 0 until dates.length()) {
                     val c = dates.optJSONObject(j)?.optString("certification")?.trim().orEmpty()
-                    if (c.isBlank()) continue
-                    if (iso == "US") return c
-                    if (fallback == null) fallback = c
+                    if (c.isNotBlank()) { cert = c; break }
                 }
             } else {
-                val c = r.optString("rating").trim()
-                if (c.isBlank()) continue
-                if (iso == "US") return c
-                if (fallback == null) fallback = c
+                cert = r.optString("rating").trim().takeIf { it.isNotBlank() }
             }
+            if (cert == null) continue
+            if (iso == "US") return cert
+            if (iso in preferred && preferredHit == null) preferredHit = cert
+            if (fallback == null) fallback = cert
         }
-        return fallback
+        return preferredHit ?: fallback
     }
 
     private fun originCountryOf(d: JSONObject): String? {

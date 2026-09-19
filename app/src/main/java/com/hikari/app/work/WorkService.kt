@@ -1,5 +1,6 @@
 package com.hikari.app.work
 
+import com.hikari.app.i18n.I18n
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -104,7 +105,7 @@ class WorkService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_work)
             .setContentTitle(label)
-            .setContentText("Hikari keeps running while you use other apps")
+            .setContentText(I18n.t("Hikari keeps running while you use other apps"))
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setSilent(true)

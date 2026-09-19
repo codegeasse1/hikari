@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.I18n
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import android.content.Context
@@ -9,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -99,12 +103,16 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.data.RepoLoadState
 import com.hikari.app.data.Site
+import com.hikari.app.data.SourceUrls
 import com.hikari.app.net.Http
+import com.hikari.app.net.PromoGuard
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.navigation.LocalTaskbarInset
+import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -130,7 +138,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val repos = MutableStateFlow<List<Cs3Repo>>(emptyList())
     val pluginsByRepo = MutableStateFlow<Map<String, List<Cs3RepoPlugin>>>(emptyMap())
     val installedUrls = MutableStateFlow<Set<String>>(emptySet())
+    /** Source URLs of installed extensions whose published `fileHash` no
+     *  longer matches the file on disk — i.e. the repo has a newer build.
+     *  Filled by [checkUpdates], shown as an Update button on the row. */
+    val outdatedUrls = MutableStateFlow<Set<String>>(emptySet())
     val repoState = MutableStateFlow<Map<String, RepoLoadState>>(emptyMap())
+    /** Repo URLs that turned out to be "bundle" repos (the Mega repo and
+     *  friends): they hold no plugins of their own, they only list other
+     *  repos, which get imported into the store. The UI shows a short
+     *  explanation instead of a bare "0 plugins". */
+    val bundleRepos = MutableStateFlow<Set<String>>(emptySet())
     val sites = MutableStateFlow<List<Site>>(emptyList())
 
     // Install/uninstall/busy status lives in the ViewModel (not the
@@ -153,6 +170,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Repos whose plugin list is being fetched right now — guards the window
      *  between a load starting and `repoState` reporting it as loading. */
     private val reposLoading = mutableSetOf<String>()
+
+    /** True when the last [addRepo] hit a repo that was already in the list
+     *  (same repo, possibly a different URL spelling) — the dialog says so
+     *  instead of claiming it was added a second time. */
+    var duplicateRepoAdd: Boolean = false
+        private set
 
     private inline fun <T> cancellableCatching(block: () -> T): Result<T> =
         try {
@@ -417,6 +440,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // Aniyomi extensions live in `filesDir/aniyomi/exts` and are shared by
+        // every source they publish — only the last referencing provider takes
+        // the `.ext` with it.
+        if (target != null && target.type == ProviderType.ANIYOMI &&
+            target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
+        ) {
+            val stillUsed = store.providers().any { it.url == target.url }
+            if (!stillUsed) {
+                withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
+            }
+        }
     }
 
     suspend fun installHikiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -560,12 +594,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         installedUrls.value = buildSet {
             store.providers().forEach { p ->
                 val extra = p.extra ?: return@forEach
-                when (p.type) {
-                    ProviderType.CS3 -> if (extra.startsWith("http")) add(extra)
-                    ProviderType.HIKARI -> if (extra.startsWith("http")) add(extra.substringBeforeLast('|'))
-                    ProviderType.NUVIO -> if (extra.startsWith("http")) add(extra)
-                    else -> {}
+                val source = when (p.type) {
+                    ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
+                    ProviderType.ANIYOMI -> extra
+                    ProviderType.HIKARI -> extra.substringBeforeLast('|')
+                    else -> return@forEach
                 }
+                if (!source.startsWith("http")) return@forEach
+                // Remember every spelling of the source URL, not just the one
+                // the repo served at install time: a repo build can move a file
+                // (a new branch, `refs/heads/x` vs `x`, the jsDelivr mirror),
+                // and a literal comparison used to greet the extension the user
+                // already installed with an Install button again.
+                addAll(SourceUrls.matchKeys(source))
             }
         }
     }
@@ -599,11 +640,189 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Removes every NUVIO provider that came from [pluginUrl]. */
     suspend fun uninstallNuvioPlugin(pluginUrl: String) {
-        com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(
-            getApplication<Application>(),
-            pluginUrl,
-        )
+        val app = getApplication<Application>()
+        // The manager removes by exact source URL, so hand it the spelling each
+        // installed provider actually stored (they can differ from the repo's
+        // current listing) — otherwise "Uninstalled" would leave the provider
+        // in place when the repo moved the file.
+        val stored = store.providers()
+            .filter { it.type == ProviderType.NUVIO && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
+        }
         reloadInstalled()
+    }
+
+    /** Registers a SkyStream extension repository (`repo.json`). A bare
+     *  shortcode is resolved through [SkyStreamPluginManager.resolveRepoUrl]
+     *  first, mirroring the official app's "type myrepo" flow. */
+    suspend fun addSkyStreamRepo(rawUrl: String): Result<Cs3Repo> {
+        val trimmed = rawUrl.trim()
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            val resolved = com.hikari.app.skystream.SkyStreamPluginManager.resolveRepoUrl(trimmed)
+                ?: return Result.failure(
+                    Exception("Must start with http(s):// — or a SkyStream shortcode")
+                )
+            return addRepo(resolved, RepoKind.SKYSTREAM)
+        }
+        return addRepo(trimmed, RepoKind.SKYSTREAM)
+    }
+
+    suspend fun installSkyStreamPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        withContext(Dispatchers.IO) {
+            val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+                ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
+            com.hikari.app.skystream.SkyStreamPluginManager.install(
+                getApplication<Application>(),
+                bytes,
+                sourceUrl = plugin.url,
+                iconUrl = plugin.iconUrl,
+            ).also { manager.refresh(); reloadInstalled() }
+        }
+
+    /** Removes every SKYSTREAM extension that came from [pluginUrl]. */
+    suspend fun uninstallSkyStreamPlugin(pluginUrl: String) {
+        val app = getApplication<Application>()
+        val stored = store.providers()
+            .filter { it.type == ProviderType.SKYSTREAM && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.skystream.SkyStreamPluginManager.uninstall(app, source)
+        }
+        reloadInstalled()
+    }
+
+    suspend fun installSkyStreamFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            return@withContext Result.failure(Exception("Must start with http(s)://"))
+        }
+        val bytes = Http.fetchBytesRobust(clean)
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        com.hikari.app.skystream.SkyStreamPluginManager.install(
+            getApplication<Application>(),
+            bytes,
+            sourceUrl = clean,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    suspend fun installSkyStreamFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = runCatching {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
+        com.hikari.app.skystream.SkyStreamPluginManager.install(
+            getApplication<Application>(),
+            bytes,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    /**
+     * Registers an Aniyomi extension repository. This one CANNOT go through
+     * [addRepoUrl]: an Aniyomi repo publishes a **bare JSON array** (every other
+     * kind nests its entries under a `plugins` key), so `JSONObject(text)` would
+     * throw "Invalid index.min.json" on a perfectly good repo. A bare folder,
+     * host or shortcode is normalised to `<dir>/index.min.json` first, mirroring
+     * Aniyomi's own "add repo" flow.
+     */
+    suspend fun addAniyomiRepo(rawUrl: String): Result<Cs3Repo> {
+        val resolved = com.hikari.app.aniyomi.AniyomiExtensionManager.resolveRepoUrl(rawUrl)
+            ?: return Result.failure(
+                Exception("Must be a link to an index.min.json (or the repo folder)")
+            )
+        return addAniyomiRepoUrl(resolved)
+    }
+
+    /** The fetch + validate + store half of [addAniyomiRepo] — shared with the
+     *  shortcode aliases, whose URLs are already resolved. */
+    private suspend fun addAniyomiRepoUrl(url: String): Result<Cs3Repo> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val text = fetchRepoRaw(url, ANIYOMI_INDEX).getOrElse { throw it }
+                // Validate BEFORE storing: a wrong URL (or an HTML page) must
+                // not end up as a repo whose every open fails.
+                val arr = runCatching { JSONArray(text) }.getOrElse {
+                    throw Exception("Invalid $ANIYOMI_INDEX: ${it.message}")
+                }
+                if (arr.length() == 0) throw Exception("That $ANIYOMI_INDEX lists no extensions")
+                val repo = Cs3Repo(
+                    url = lastGoodRepoUrl,
+                    name = niceRepoName(url, ""),
+                    description = "",
+                    kind = RepoKind.ANIYOMI,
+                )
+                val key = SourceUrls.canonical(repo.url)
+                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
+                store.addCs3Repo(repo)
+                repos.value = store.repos()
+                store.repos().firstOrNull { SourceUrls.canonical(it.url) == key } ?: repo
+            }
+        }
+
+    suspend fun installAniyomiPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        withContext(Dispatchers.IO) {
+            // Aniyomi extensions are a couple of MB at most, but the biggest
+            // ones (allanime, aniwatch) sit behind slow mirrors, so the ceiling
+            // is looser than the JS-plugin installs'.
+            val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(plugin.url) }
+                ?: return@withContext Result.failure(
+                    Exception("Download timed out — check your connection")
+                )
+            com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+                getApplication<Application>(),
+                bytes,
+                sourceUrl = plugin.url,
+                iconUrl = plugin.iconUrl,
+            ).also { manager.refresh(); reloadInstalled() }
+        }
+
+    /** Removes every ANIYOMI provider that came from [pluginUrl] (and the `.ext`
+     *  itself once nothing references it). */
+    suspend fun uninstallAniyomiPlugin(pluginUrl: String) {
+        val app = getApplication<Application>()
+        // The manager removes by exact source URL, so hand it the spelling each
+        // installed provider actually stored — a repo build can move the file
+        // (a new branch, the jsDelivr mirror) between listing and uninstall.
+        val stored = store.providers()
+            .filter { it.type == ProviderType.ANIYOMI && sourceMatches(it, pluginUrl) }
+            .mapNotNull { it.extra }
+            .distinct()
+            .ifEmpty { listOf(pluginUrl) }
+        for (source in stored) {
+            com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
+        }
+        manager.refresh()
+        reloadInstalled()
+    }
+
+    suspend fun installAniyomiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+            return@withContext Result.failure(Exception("Must start with http(s)://"))
+        }
+        val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(clean) }
+            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+            getApplication<Application>(),
+            bytes,
+            sourceUrl = clean,
+        ).also { manager.refresh(); reloadInstalled() }
+    }
+
+    /** Installs a local `.apk`/`.ext` the user picked (an Aniyomi extension
+     *  downloaded from a browser has no repo URL at all). */
+    suspend fun installAniyomiFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val bytes = runCatching {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
+        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+            getApplication<Application>(),
+            bytes,
+        ).also { manager.refresh(); reloadInstalled() }
     }
 
     suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
@@ -624,27 +843,45 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // desktop-Chrome UA but serves the nuvio app's own UA fine — override
         // for nuvio repos (mirrors the real nuvio app's client).
         val headers = if (ua != null) mapOf("User-Agent" to ua) else emptyMap()
-        val variants = repoUrlVariants(url, file)
-        if (variants.isEmpty()) {
-            lastGoodRepoUrl = url
-            return Http.fetchStringRobust(url, headers).map { text ->
-                if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
-            }
+        val variants = repoUrlVariants(url, file).ifEmpty { listOf(url) }
+        // Try every variant, then the jsDelivr CDN mirror of each (a different
+        // host, so it survives an ISP/DNS block on raw.githubusercontent.com),
+        // and finally the pasted URL as-is. A candidate whose body is an HTML
+        // page (an ISP "blocked" notice served with HTTP 200, a GitHub web
+        // page, …) is skipped rather than treated as a repo — that 200-with-HTML
+        // case is what produced the bogus "returned an HTML page instead of a
+        // repo.json" error and made the Mega bundle add 0 repos.
+        val candidates = LinkedHashSet<String>()
+        for (v in variants) {
+            candidates += v
+            jsDelivrMirror(v)?.let { candidates += it }
         }
-        for (candidate in variants) {
+        candidates += url
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
             val r = Http.fetchStringRobust(candidate, headers)
-            if (r.isSuccess) {
-                val text = r.getOrNull() ?: continue
-                if (looksLikeHtml(text)) continue
-                lastGoodRepoUrl = candidate
-                return r
+            val text = r.getOrNull()
+            if (text == null) {
+                lastError = r.exceptionOrNull() ?: lastError
+                continue
             }
+            if (looksLikeHtml(text)) {
+                lastError = friendlyRepoError(file)
+                continue
+            }
+            lastGoodRepoUrl = candidate
+            return Result.success(text)
         }
-        // last resort: the pasted URL as-is (a non-main/mixed-branch manifest)
-        lastGoodRepoUrl = url
-        return Http.fetchStringRobust(url, headers).map { text ->
-            if (looksLikeHtml(text)) throw friendlyRepoError(file) else text
-        }
+        return Result.failure(lastError ?: friendlyRepoError(file))
+    }
+
+    /** The jsDelivr CDN equivalent of a raw.githubusercontent.com URL, or null
+     *  when [url] isn't one. jsDelivr is a separate domain/IP from GitHub, so it
+     *  still answers when raw.githubusercontent.com is blocked or rate-limited. */
+    private fun jsDelivrMirror(url: String): String? {
+        val m = Regex("^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$")
+            .find(url.trim()) ?: return null
+        return "https://cdn.jsdelivr.net/gh/${m.groupValues[1]}/${m.groupValues[2]}@${m.groupValues[3]}/${m.groupValues[4]}"
     }
 
     private fun looksLikeHtml(text: String): Boolean {
@@ -662,8 +899,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private fun repoUrlVariants(raw: String, file: String = "repo.json"): List<String> {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
-        // Already a direct raw URL — fetch as-is, no variant guessing.
-        if (t.contains("raw.githubusercontent.com") || t.endsWith("/$file")) return emptyList()
+        // Already a direct raw URL — fetch as-is, no variant guessing. A raw
+        // link pasted with GitHub's web-style "/refs/heads/<branch>/" segment
+        // is normalised to the canonical "/<branch>/" form and tried FIRST:
+        // some repos' build branches answer the web-style path with a 404 HTML
+        // page (phisher98's "builds", several entries in the official
+        // CloudStream repos-db.json), which used to surface as "returned an
+        // HTML page instead of a repo.json". Both forms are tried so either
+        // paste shape works.
+        if (t.contains("raw.githubusercontent.com")) {
+            val refsHeads = t.replace("/refs/heads/", "/")
+            return if (refsHeads != t) listOf(refsHeads, t) else emptyList()
+        }
+        if (t.endsWith("/$file")) return emptyList()
         val gh = Regex("https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)").find(t)
         if (gh != null) {
             val owner = gh.groupValues[1]
@@ -709,6 +957,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json",
             RepoKind.HIKARI,
         )
+        fun cs3(url: String) = RepoAlias(url, RepoKind.CS3)
+        // CloudStream extension repos, mirroring the official repos-db.json
+        // (https://github.com/recloudstream/cs-repos) plus the popular ones.
+        // Each short name adds ONE repo; the mnemonic is usually the maintainer.
+        val csOfficial = cs3("https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json")
+        val phisherCs3 = cs3("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json")
+        val hexated = cs3("https://raw.githubusercontent.com/hexated/cloudstream-extensions-hexated/master/repo.json")
+        val csx = cs3("https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json")
+        val cnc = cs3("https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/CNC.json")
+        val aniyomi = cs3("https://raw.githubusercontent.com/CranberrySoup/AniyomiCompatExtension/master/repo.json")
+        val uk = cs3("https://raw.githubusercontent.com/CakesTwix/cloudstream-extensions-uk/master/repo.json")
+        val italian = cs3("https://raw.githubusercontent.com/Gian-Fr/ItalianProvider/builds/repo.json")
+        val italiaInStreaming = cs3("https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json")
+        val german = cs3("https://raw.githubusercontent.com/Bnyro/GermanProviders/refs/heads/master/repo.json")
+        val turkish = cs3("https://raw.githubusercontent.com/keyiflerolsun/Kekik-cloudstream/master/repo.json")
+        val indo = cs3("https://raw.githubusercontent.com/TeKuma25/IndoStream/builds/repo.json")
+        val skillshare = cs3("https://raw.githubusercontent.com/techtanic/SkillShare-Repo/builds/repo.json")
+        val luna = cs3("https://raw.githubusercontent.com/Luna712/Luna712-CloudStream-Extensions/master/repo.json")
+        val redowan = cs3("https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json")
+        val dogior = cs3("https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/builds/repo.json")
+        val karma = cs3("https://raw.githubusercontent.com/Kraptor123/cs-Karma/refs/heads/master/repo.json")
+        val storm = cs3("https://raw.githubusercontent.com/redblacker8/storm-ext/refs/heads/builds/repo.json")
+        val cinephile = cs3("https://raw.githubusercontent.com/rockhero1234/cinephile/refs/heads/builds/repo.json")
+        val saimuelRepo = cs3("https://raw.githubusercontent.com/saimuelbr/saimuelrepo/refs/heads/main/builds/repo.json")
+        val fstream = cs3("https://git.disroot.org/ayza/FStream/raw/branch/main/repo.json")
         fun nuvio(url: String) = RepoAlias(url, RepoKind.NUVIO)
         val yoru = nuvio("https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json")
         val gowaru = nuvio("https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json")
@@ -720,18 +993,72 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val mooncrown = nuvio("https://raw.githubusercontent.com/mooncrown04/nuviotr/refs/heads/main/manifest.json")
         val kenneth = nuvio("https://raw.githubusercontent.com/KennethJYS/Nuvio-Providers-Latino/refs/heads/main/manifest.json")
         val eclipsia = nuvio("https://plugin.eclipsia.dpdns.org/manifest.json")
+        fun sky(url: String) = RepoAlias(url, RepoKind.SKYSTREAM)
+        val skyOfficial = sky("https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json")
+        val skyRouge = sky("https://raw.githubusercontent.com/rougegz/SkystreamPlugins/main/repo.json")
+        // Aniyomi extension repos. These publish `index.min.json` — a BARE JSON
+        // ARRAY of extensions (every other kind nests entries under a `plugins`
+        // key), which is why this kind has its own repo parser and its own
+        // install path. Aniyomi's official repo is the only one seeded; these
+        // aliases are the shortcut for re-adding it (or a mirror) by hand.
+        fun aniyomiExt(url: String) = RepoAlias(url, RepoKind.ANIYOMI)
+        val aniyomiOfficial = aniyomiExt(
+            "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
+        )
         val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
         put("csrepos", listOf(mega))
         put("hikari", listOf(hikari))
         put("hikariextensions", listOf(hikari))
+        put("csofficial", listOf(csOfficial))
+        put("official", listOf(csOfficial))
+        put("recloudstream", listOf(csOfficial))
+        put("cloudstream", listOf(csOfficial))
+        put("phisher", listOf(phisherCs3))
+        put("phisherrepo", listOf(phisherCs3))
+        put("phisher98", listOf(phisherCs3))
+        put("phishercs3", listOf(phisherCs3))
+        put("hexated", listOf(hexated))
+        put("csx", listOf(csx))
+        put("megix", listOf(csx))
+        put("cnc", listOf(cnc))
+        put("cncverse", listOf(cnc))
+        put("aniyomi", listOf(aniyomi))
+        put("aniyomicompat", listOf(aniyomi))
+        put("uk", listOf(uk))
+        put("italian", listOf(italian))
+        put("italianprovider", listOf(italian))
+        put("italiainstreaming", listOf(italiaInStreaming))
+        put("diegon", listOf(italiaInStreaming))
+        put("german", listOf(german))
+        put("germanproviders", listOf(german))
+        put("bnyro", listOf(german))
+        put("turkish", listOf(turkish))
+        put("kekik", listOf(turkish))
+        put("indostream", listOf(indo))
+        put("indo", listOf(indo))
+        put("skillshare", listOf(skillshare))
+        put("luna", listOf(luna))
+        put("luna712", listOf(luna))
+        put("redowan", listOf(redowan))
+        put("bdix", listOf(redowan))
+        put("dogior", listOf(dogior))
+        put("karma", listOf(karma))
+        put("cskarma", listOf(karma))
+        put("storm", listOf(storm))
+        put("stormext", listOf(storm))
+        put("cinephile", listOf(cinephile))
+        put("saimuelrepo", listOf(saimuelRepo))
+        put("saimuelcs3", listOf(saimuelRepo))
+        put("fstream", listOf(fstream))
+        put("ayza", listOf(fstream))
         put("nuvio", everyNuvio)
         put("nuvioall", everyNuvio)
         put("yoru", listOf(yoru))
         put("yoruix", listOf(yoru))
         put("gowaru", listOf(gowaru))
-        put("phisher", listOf(phisher))
+        put("phishernuvio", listOf(phisher))
         put("allinone", listOf(allInOne))
         put("d3adlyrocket", listOf(allInOne))
         put("michat", listOf(michat))
@@ -744,6 +1071,18 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("kennethjys", listOf(kenneth))
         put("latino", listOf(kenneth))
         put("eclipsia", listOf(eclipsia))
+        put("skystream", listOf(skyOfficial))
+        put("skystreamplugins", listOf(skyOfficial))
+        put("akash", listOf(skyOfficial))
+        put("akashdh11", listOf(skyOfficial))
+        put("sky", listOf(skyOfficial))
+        put("skyourge", listOf(skyRouge))
+        put("rougegz", listOf(skyRouge))
+        put("aniyomiext", listOf(aniyomiOfficial))
+        put("aniyomiextensions", listOf(aniyomiOfficial))
+        put("aniyomiindex", listOf(aniyomiOfficial))
+        put("aniyomiofficial", listOf(aniyomiOfficial))
+        put("aniyomirepo", listOf(aniyomiOfficial))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -762,7 +1101,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             var first: Cs3Repo? = null
             var lastError: Throwable? = null
             for (alias in aliases) {
-                val result = addRepoUrl(alias.url, alias.kind)
+                val result = if (alias.kind == RepoKind.ANIYOMI) addAniyomiRepoUrl(alias.url)
+                else addRepoUrl(alias.url, alias.kind)
                 val added = result.getOrNull()
                 if (added != null) {
                     if (first == null) first = added
@@ -793,18 +1133,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
                     name = niceRepoName(url, obj.optString("name")),
-                    description = obj.optString("description"),
+                    description = PromoGuard.cleanText(obj.optString("description")),
                     kind = kind,
                 )
+                // Adding a repo that is already in the list (same repo — the
+                // URL spelling may differ: refs/heads vs plain branch, the
+                // jsDelivr mirror) must not grow a second copy: that copy's
+                // extensions all looked uninstalled again while the originals
+                // kept working on Home. The store merges it into the one entry
+                // it belongs to; report which of the two happened so the dialog
+                // can say "already added" instead of "added".
+                val key = SourceUrls.canonical(repo.url)
+                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
                 store.addCs3Repo(repo)
                 // A "Mega"-style bundle repo isn't a plugin repo — its single
                 // plugin only exists to add every CloudStream repo from the
                 // canonical repos-db.json (and relies on the real CloudStream
                 // RepositoryManager, which Hikari doesn't run). Import the
                 // repos natively instead so they all show up and install.
-                if (isMegaBundle(obj)) importMegaRepos()
+                if (isMegaBundle(obj)) {
+                    markBundle(repo.url)
+                    importMegaRepos()
+                }
+                val saved = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }
                 repos.value = store.repos()
-                repo
+                saved ?: repo
             }
         }
     }
@@ -851,11 +1204,36 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
-        val file = if (repo.kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
+        val file = when (repo.kind) {
+            RepoKind.NUVIO -> "manifest.json"
+            RepoKind.ANIYOMI -> ANIYOMI_INDEX
+            else -> "repo.json"
+        }
         val text = fetchRepoRaw(
             repo.url, file, ua = if (repo.kind == RepoKind.NUVIO) Http.NUVIO_UA else null
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
+        if (repo.kind == RepoKind.ANIYOMI) {
+            // An Aniyomi index is a BARE ARRAY (not an object with a `plugins`
+            // key), so it can't go through JSONObject below. Each entry's `apk`
+            // is a filename served from `<repo root>/apk/`, and the icon from
+            // `<repo root>/icon/<pkg>.png` — see AniyomiExtensionManager.repoPlugin.
+            val arr = runCatching { JSONArray(text) }.getOrElse {
+                throw Exception("Invalid $file: ${it.message}")
+            }
+            val out = LinkedHashMap<String, Cs3RepoPlugin>()
+            val trimmed = repo.url.trimEnd('/')
+            val baseUrl = if (trimmed.endsWith("/$ANIYOMI_INDEX", ignoreCase = true))
+                trimmed.removeSuffix("/$ANIYOMI_INDEX") else trimmed
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { o ->
+                    com.hikari.app.aniyomi.AniyomiExtensionManager.repoPlugin(o, baseUrl)
+                        ?.let { p -> out[p.url] = p }
+                }
+            }
+            if (out.isEmpty()) throw Exception("No extensions found in $file")
+            return out.values.toList() to null
+        }
         val root = runCatching { JSONObject(text) }.getOrElse {
             throw Exception("Invalid $file: ${it.message}")
         }
@@ -873,7 +1251,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val name = niceRepoName(repo.url, root.optString("name"))
-            val description = root.optString("description")
+            val description = PromoGuard.cleanText(root.optString("description"))
             val meta = if (name != repo.name || description != repo.description)
                 repo.copy(name = name, description = description)
             else null
@@ -884,6 +1262,53 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             for (i in 0 until arr.length()) {
                 arr.optJSONObject(i)?.let { parsePlugin(it)?.let { p -> out[p.url] = p } }
             }
+        }
+        if (repo.kind == RepoKind.SKYSTREAM) {
+            // A SkyStream repo lists its extensions either inline (`plugins`),
+            // through one or more `pluginLists` files (the official repo's
+            // dist/plugins.json), or as nested `repos` (repo.json URLs). Each
+            // entry names a `.sky` to download; entries only carry a
+            // `packageName` when they have no `name`, which is why they are
+            // mapped through the SkyStream manager rather than parsePlugin.
+            val sky = LinkedHashMap<String, Cs3RepoPlugin>()
+            fun addSky(arr: JSONArray?) {
+                if (arr == null) return
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { o ->
+                        com.hikari.app.skystream.SkyStreamPluginManager.repoPlugin(o, "")
+                            ?.let { p -> sky[p.url] = p }
+                    }
+                }
+            }
+            addSky(root.optJSONArray("plugins"))
+            root.optJSONArray("pluginLists")?.let { lists ->
+                for (i in 0 until lists.length()) {
+                    val listUrl = lists.optString(i).ifBlank { null } ?: continue
+                    val listText = Http.fetchStringRobust(listUrl).getOrNull() ?: continue
+                    addSky(runCatching { JSONArray(listText) }.getOrNull())
+                }
+            }
+            root.optJSONArray("repos")?.let { nested ->
+                for (i in 0 until nested.length()) {
+                    val nestedUrl = nested.optString(i).ifBlank { null } ?: continue
+                    val nestedText = Http.fetchStringRobust(nestedUrl).getOrNull() ?: continue
+                    val nestedRoot = runCatching { JSONObject(nestedText) }.getOrNull() ?: continue
+                    addSky(nestedRoot.optJSONArray("plugins"))
+                    nestedRoot.optJSONArray("pluginLists")?.let { lists ->
+                        for (j in 0 until lists.length()) {
+                            val listUrl = lists.optString(j).ifBlank { null } ?: continue
+                            val listText = Http.fetchStringRobust(listUrl).getOrNull() ?: continue
+                            addSky(runCatching { JSONArray(listText) }.getOrNull())
+                        }
+                    }
+                }
+            }
+            val name = niceRepoName(repo.url, root.optString("name"))
+            val description = PromoGuard.cleanText(root.optString("description"))
+            val meta = if (name != repo.name || description != repo.description)
+                repo.copy(name = name, description = description)
+            else null
+            return sky.values.toList() to meta
         }
         root.optJSONArray("pluginLists")?.let { lists ->
             for (i in 0 until lists.length()) {
@@ -901,11 +1326,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // repos natively (they land in the repo list, installable as usual)
         // and hide the useless bundle plugin instead of offering it.
         if (isMegaBundle(root) || out.values.any { it.name == "MegaProvider" }) {
+            markBundle(repo.url)
             importMegaRepos()
             return emptyList<Cs3RepoPlugin>() to null
         }
         val name = niceRepoName(repo.url, root.optString("name"))
-        val description = root.optString("description")
+        val description = PromoGuard.cleanText(root.optString("description"))
         val meta = if (name != repo.name || description != repo.description)
             repo.copy(name = name, description = description)
         else null
@@ -915,50 +1341,111 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private val MEGA_REPOS_DB =
         "https://raw.githubusercontent.com/recloudstream/cs-repos/master/repos-db.json"
 
+    /** Fired when [url] is discovered to be a bundle repo (see [isMegaBundle]). */
+    private fun markBundle(url: String) {
+        if (url.isBlank()) return
+        bundleRepos.value = bundleRepos.value + url
+    }
+
     /** True for the self-similarity/MegaRepo style "add every repo" bundle. */
     private fun isMegaBundle(root: JSONObject): Boolean {
         val name = root.optString("name")
         return name.contains("mega", true) && name.contains("repo", true)
     }
 
-    /** Imports every repo URL from the canonical CS repos-db.json (deduped),
-     *  naming each folder with its repo.json's own name when it can be fetched
-     *  (bounded + parallel) so the list reads "Phisher", "MRDS", "CNC" …
-     *  instead of a raw URL — the URL-only derivation the old code produced
-     *  for every mega-imported repo. */
-    private suspend fun importMegaRepos(): Int {
-        val text = Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull() ?: return 0
-        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return 0
-        data class Entry(val url: String, val name: String)
-        val entries = buildList {
-            for (i in 0 until arr.length()) {
-                val entry = arr.opt(i)
-                val repoUrl = when (entry) {
-                    is String -> entry
-                    is JSONObject -> entry.optString("url")
-                    else -> null
-                } ?: continue
-                if (!repoUrl.startsWith("http")) continue
-                val entryName = (entry as? JSONObject)?.optString("name")
-                    ?.takeIf { it.isNotBlank() } ?: ""
-                add(Entry(repoUrl, entryName))
-            }
+    /** The repos the "Mega repo" bundles — a mirror of recloudstream's
+     *  repos-db.json, used only when that database can't be fetched at all
+     *  (blocked network, an ISP HTML notice served as HTTP 200, …). Without a
+     *  fallback a blocked fetch left the bundle import at exactly 0 repos,
+     *  which is the other half of the "Mega repo shows nothing" bug. */
+    private val MEGA_FALLBACK_REPOS: List<String> = listOf(
+        "https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json",
+        "https://raw.githubusercontent.com/CranberrySoup/AniyomiCompatExtension/master/repo.json",
+        "https://raw.githubusercontent.com/Gian-Fr/ItalianProvider/builds/repo.json",
+        "https://raw.githubusercontent.com/CakesTwix/cloudstream-extensions-uk/master/repo.json",
+        "https://raw.githubusercontent.com/techtanic/SkillShare-Repo/builds/repo.json",
+        "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json",
+        "https://git.disroot.org/ayza/FStream/raw/branch/main/repo.json",
+        "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/CNC.json",
+        "https://raw.githubusercontent.com/Luna712/Luna712-CloudStream-Extensions/master/repo.json",
+        "https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json",
+        "https://raw.githubusercontent.com/Abodabodd/re-3arabi/refs/heads/main/repo",
+        "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json",
+        "https://gitlab.com/tearrs/cloudstream-vietnamese/-/raw/main/repo.json",
+        "https://raw.githubusercontent.com/Bnyro/GermanProviders/refs/heads/master/repo.json",
+        "https://raw.githubusercontent.com/TeKuma25/IndoStream/builds/repo.json",
+        "https://raw.githubusercontent.com/saimuelbr/saimuelrepo/refs/heads/main/builds/repo.json",
+        "https://raw.githubusercontent.com/Kraptor123/cs-Karma/refs/heads/master/repo.json",
+        "https://raw.githubusercontent.com/redblacker8/storm-ext/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/rockhero1234/cinephile/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/med1245/cartoonyrepo/builds/repo.json",
+        "https://raw.githubusercontent.com/Reflex755/ReflexRepo/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/KSHITIJ8473/raghav/builds/repo.json",
+        "https://raw.githubusercontent.com/mouradchaouche/cloudstream-frenchrepo/main/repo.json",
+        "https://raw.githubusercontent.com/yorik100/Cloudstream/refs/heads/builds/repo.json",
+        "https://raw.githubusercontent.com/RVRBEAST76/allforu-repo/builds/repo.json",
+    )
+
+    /** Parses repos-db.json (or an equivalent array of URL strings / {url}
+     *  objects) into (url, name) pairs. */
+    private fun parseMegaRepoEntries(text: String): List<Pair<String, String>> {
+        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Pair<String, String>>()
+        for (i in 0 until arr.length()) {
+            val entry = arr.opt(i)
+            val repoUrl = when (entry) {
+                is String -> entry
+                is JSONObject -> entry.optString("url")
+                else -> null
+            } ?: continue
+            if (!repoUrl.startsWith("http")) continue
+            val name = (entry as? JSONObject)?.optString("name")
+                ?.takeIf { it.isNotBlank() } ?: ""
+            out += repoUrl to name
         }
+        return out
+    }
+
+    /** True when [url] is a bundle repo rather than a real plugin repo — used
+     *  so a bundle listing another bundle never re-imports itself. */
+    private fun isMegaBundleUrl(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("megarepo") || u.contains("mega-repo") ||
+            (u.contains("mega") && u.contains("repo"))
+    }
+
+    /** Imports every repo URL a bundle lists (deduped, bundles skipped), naming
+     *  each folder with its repo.json's own name when it can be fetched
+     *  (bounded + parallel) so the list reads "Phisher", "CNC", "CSX" … instead
+     *  of a raw URL. Falls back to the bundled list above when the canonical
+     *  repos-db.json can't be fetched. Returns the number of repos added. */
+    private suspend fun importMegaRepos(): Int {
+        val dbText = listOfNotNull(
+            Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull(),
+            jsDelivrMirror(MEGA_REPOS_DB)?.let { Http.fetchStringRobust(it).getOrNull() },
+        ).firstOrNull { it.isNotBlank() && !looksLikeHtml(it) }
+        val entries = (dbText?.let { parseMegaRepoEntries(it) } ?: emptyList())
+            .ifEmpty { MEGA_FALLBACK_REPOS.map { it to "" } }
+            .filterNot { (url, _) -> isMegaBundleUrl(url) }
         val existing = store.repos().map { it.url }.toSet()
-        val fresh = entries.filter { it.url !in existing }
+        val fresh = entries.filter { (url, _) -> url !in existing }
         val names = coroutineScope {
-            fresh.map { e ->
+            fresh.map { (url, name) ->
                 async(Dispatchers.IO) {
-                    if (e.name.isNotBlank()) e.name else fetchRepoDisplayName(e.url)
+                    if (name.isNotBlank()) name else fetchRepoDisplayName(url)
                 }
             }.awaitAll()
         }
         var added = 0
-        for ((entry, name) in fresh.zip(names)) {
-            runCatching {
-                store.addCs3Repo(Cs3Repo(url = entry.url, name = name, kind = RepoKind.CS3))
-            }
-            added++
+        for (i in fresh.indices) {
+            val (url, _) = fresh[i]
+            val name = names.getOrElse(i) { url }
+            val ok = runCatching {
+                store.addCs3Repo(Cs3Repo(url = url, name = name, kind = RepoKind.CS3))
+            }.isSuccess
+            if (ok) added++
         }
         return added
     }
@@ -981,9 +1468,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 ?: emptyList()
         return Cs3RepoPlugin(
             name = name,
-            description = o.optString("description"),
+            description = PromoGuard.cleanText(o.optString("description")),
             url = url,
-            iconUrl = o.optString("iconUrl").ifBlank { null },
+            // Repos spell this field three ways depending on who wrote them
+            // (CloudStream → iconUrl, SkyStream/Nuvio → logo, others → icon).
+            // Reading only `iconUrl` left most listings icon-less.
+            iconUrl = o.optString("iconUrl")
+                .ifBlank { o.optString("icon") }
+                .ifBlank { o.optString("logo") }
+                .ifBlank { null },
             authors = strings("authors"),
             version = o.optInt("version", 1),
             tvTypes = strings("tvTypes"),
@@ -1013,10 +1506,24 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * True when [p]'s stored source URL is the same file as [source] — however
+     * either side spells it (refs/heads vs a plain branch, the jsDelivr mirror,
+     * %20 vs a space). Install, uninstall and the update check all key on the
+     * source URL, so they all have to agree on what "the same file" means.
+     */
+    private fun sourceMatches(p: ProviderConfig, source: String): Boolean {
+        val extra = p.extra ?: return false
+        if (!extra.startsWith("http")) return false
+        val raw = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+        val wanted = SourceUrls.matchKeys(source)
+        return SourceUrls.matchKeys(raw).any { it in wanted }
+    }
+
     suspend fun uninstallCs3Plugin(pluginUrl: String) {
         val all = store.providers()
-        val paths = all.filter { it.extra == pluginUrl }.map { it.url }.toSet()
-        store.saveProviders(all.filter { it.extra != pluginUrl })
+        val paths = all.filter { sourceMatches(it, pluginUrl) }.map { it.url }.toSet()
+        store.saveProviders(all.filterNot { sourceMatches(it, pluginUrl) })
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {
@@ -1057,6 +1564,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val unit = when (kind) {
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
+            RepoKind.SKYSTREAM -> "extension"
+            RepoKind.ANIYOMI -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         val pending = plugins.filter { it.url !in installedUrls }
@@ -1078,6 +1587,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                             RepoKind.CS3 -> installCs3Plugin(p)
                             RepoKind.HIKARI -> installHikiPlugin(p)
                             RepoKind.NUVIO -> installNuvioPlugin(p)
+                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                         }
                     }
                 }.getOrNull()
@@ -1095,11 +1606,94 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Compares the file each installed extension was saved as against the
+     * `fileHash` its repo publishes. A mismatch IS the update signal: it needs
+     * no version bookkeeping of our own, and it also catches a re-released
+     * build that kept the same version number. Repos that publish no `fileHash`
+     * can't be checked this way, and are simply never flagged.
+     */
+    suspend fun checkUpdates() = withContext(Dispatchers.IO) {
+        // installed source URL -> the .cs3/.hiki/.js file it was stored as
+        val onDisk = HashMap<String, String>()
+        // saved file -> the source URL it was installed from (the raw spelling)
+        val sourceOfPath = HashMap<String, String>()
+        for (p in store.providers()) {
+            val extra = p.extra ?: continue
+            if (!extra.startsWith("http")) continue
+            if (p.url.isBlank()) continue
+            val source = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+            // A repo build can move a file without changing it (a new branch,
+            // `refs/heads/x` vs `x`, the jsDelivr mirror), so index the
+            // installed file under every spelling of its source URL — else the
+            // update check can't find the file and never offers the Update.
+            for (key in SourceUrls.matchKeys(source)) onDisk.putIfAbsent(key, p.url)
+            sourceOfPath.putIfAbsent(p.url, source)
+        }
+        val outdated = HashSet<String>()
+        if (onDisk.isNotEmpty()) {
+            for (plugins in pluginsByRepo.value.values) {
+                for (plugin in plugins) {
+                    val hash = plugin.fileHash ?: continue
+                    if (!hash.startsWith("sha256-")) continue
+                    val path = onDisk[plugin.url] ?: continue
+                    val expected = hash.removePrefix("sha256-").lowercase()
+                    val actual = runCatching { sha256Hex(File(path).readBytes()) }.getOrNull()
+                        ?: continue
+                    if (actual == expected) continue
+                    outdated += plugin.url
+                    // Light the Update button up on the installed-provider row
+                    // too, whatever spelling that row's stored source has.
+                    sourceOfPath[path]?.let { s -> outdated += SourceUrls.matchKeys(s) }
+                }
+            }
+        }
+        outdatedUrls.value = outdated
+    }
+
+    /**
+     * Re-installs already-installed extensions from their repo's current file —
+     * the Update button on a row, and Update all. [items] are run one after
+     * another inside ONE background job (an install cancels the previous job,
+     * so a loop of individual installs would cancel itself).
+     */
+    fun updatePlugins(items: List<Pair<Cs3RepoPlugin, RepoKind>>) {
+        if (items.isEmpty()) return
+        installJob?.cancel()
+        installJob = startBackground {
+            clearStatus()
+            var ok = 0
+            val failed = mutableListOf<String>()
+            for ((i, item) in items.withIndex()) {
+                val (p, kind) = item
+                _busyMsg.value = "Updating ${p.name} (${i + 1}/${items.size})…"
+                val r = runCatching {
+                    withTimeoutOrNull(90_000) {
+                        when (effectiveRepoKind(kind, p.url)) {
+                            RepoKind.CS3 -> installCs3Plugin(p)
+                            RepoKind.HIKARI -> installHikiPlugin(p)
+                            RepoKind.NUVIO -> installNuvioPlugin(p)
+                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+                        }
+                    }
+                }.getOrNull()
+                if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+            }
+            // Re-hash: anything that came back clean loses its Update button.
+            checkUpdates()
+            setSuccess(
+                if (failed.isEmpty()) "Updated $ok extension${if (ok == 1) "" else "s"}"
+                else "Updated $ok of ${items.size} — failed: " +
+                    failed.take(3).joinToString(", ") + (if (failed.size > 3) "…" else "")
+            )
+        }
+    }
+
     /** Removes every HIKARI provider that came from [pluginUrl]. */
     suspend fun uninstallHikiPlugin(pluginUrl: String) {
         fun fromPlugin(p: ProviderConfig) =
-            p.type == ProviderType.HIKARI &&
-                (p.extra == pluginUrl || p.extra?.startsWith("$pluginUrl|") == true)
+            p.type == ProviderType.HIKARI && sourceMatches(p, pluginUrl)
         val all = store.providers()
         val paths = all.filter { fromPlugin(it) }.map { it.url }.toSet()
         store.saveProviders(all.filter { !fromPlugin(it) })
@@ -1125,8 +1719,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
     url.endsWith(".cs3", ignoreCase = true) -> RepoKind.CS3
     url.endsWith(".hiki", ignoreCase = true) -> RepoKind.HIKARI
+    url.endsWith(".sky", ignoreCase = true) -> RepoKind.SKYSTREAM
+    // Aniyomi repos serve plain `.apk` files (saved locally with an `.ext`
+    // suffix), so a repo whose own kind was guessed wrong still installs
+    // through the Aniyomi path instead of the CloudStream one.
+    url.endsWith(".apk", ignoreCase = true) -> RepoKind.ANIYOMI
+    url.endsWith(".ext", ignoreCase = true) -> RepoKind.ANIYOMI
     else -> default
 }
+
+/** The file an Aniyomi extension repo publishes (a bare JSON array). */
+private const val ANIYOMI_INDEX = "index.min.json"
 
 @Composable
 fun ExtensionsScreen() {
@@ -1145,10 +1748,14 @@ fun ExtensionsScreen() {
     var showRepoDialog by remember { mutableStateOf(false) }
     var repoDialogKind by remember { mutableStateOf(RepoKind.CS3) }
     var showHikiUrl by remember { mutableStateOf(false) }
+    var showSkyUrl by remember { mutableStateOf(false) }
+    var showAniyomiUrl by remember { mutableStateOf(false) }
     var stremioUrl by remember { mutableStateOf("") }
     var scraperJson by remember { mutableStateOf("") }
     var cs3Url by remember { mutableStateOf("") }
     var hikiUrl by remember { mutableStateOf("") }
+    var skyUrl by remember { mutableStateOf("") }
+    var aniyomiUrl by remember { mutableStateOf("") }
     var repoUrl by remember { mutableStateOf("") }
     val busy by vm.busy.collectAsState()
     val busyMsg by vm.busyMsg.collectAsState()
@@ -1158,7 +1765,16 @@ fun ExtensionsScreen() {
     val repos by vm.repos.collectAsState()
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
+    val outdated by vm.outdatedUrls.collectAsState()
+    // Every outdated plugin together with the kind of repo it came from, so
+    // "Update all" can re-install each one the same way its row would.
+    val outdatedItems = remember(outdated, pluginsByRepo, repos) {
+        repos.flatMap { repo ->
+            (pluginsByRepo[repo.url] ?: emptyList()).map { repo.kind to it }
+        }.filter { (_, p) -> p.url in outdated }
+    }
     val repoState by vm.repoState.collectAsState()
+    val bundleRepos by vm.bundleRepos.collectAsState()
     val sites by vm.sites.collectAsState()
     val openRepo = repos.firstOrNull { it.url == openRepoUrl }
     val context = LocalContext.current
@@ -1176,6 +1792,13 @@ fun ExtensionsScreen() {
         vm.loadReposIfNeeded()
     }
 
+    // Re-hash installed extensions whenever a plugin list or the installed set
+    // changes: a completed install/update clears its own Update button, and a
+    // refreshed repo reveals a new one.
+    LaunchedEffect(pluginsByRepo, installed, providers) {
+        vm.checkUpdates()
+    }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             vm.runInstall("Installing .cs3 plugin…") { vm.installCs3FromUri(uri) }
@@ -1188,6 +1811,19 @@ fun ExtensionsScreen() {
         }
     }
 
+    val skyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            vm.runInstall("Installing .sky extension…") { vm.installSkyStreamFromUri(uri) }
+        }
+    }
+
+    val aniyomiPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                vm.runInstall("Installing Aniyomi extension…") { vm.installAniyomiFromUri(uri) }
+            }
+        }
+
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runInstall(
             "Installing ${p.name}…",
@@ -1197,6 +1833,8 @@ fun ExtensionsScreen() {
                 RepoKind.CS3 -> vm.installCs3Plugin(p)
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
+                RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
+                RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
             }
         }
     }
@@ -1207,8 +1845,28 @@ fun ExtensionsScreen() {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
                 RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)
+                RepoKind.SKYSTREAM -> vm.uninstallSkyStreamPlugin(p.url)
+                RepoKind.ANIYOMI -> vm.uninstallAniyomiPlugin(p.url)
             }
         }
+    }
+
+    /** Update from the Installed list: the row only knows the provider, so the
+     *  matching repo entry (which carries the file + hash to download) is looked
+     *  up in the update list. */
+    fun updateProvider(prov: ContentProvider) {
+        val source = providerSource(prov) ?: return
+        // The installed row stores the spelling that was live at install time;
+        // the repo entry may spell the same file differently by now.
+        val wanted = SourceUrls.matchKeys(source)
+        val match = outdatedItems.firstOrNull { (_, plugin) ->
+            plugin.url == source || SourceUrls.matchKeys(plugin.url).any { it in wanted }
+        }
+        if (match == null) {
+            vm.setError("This extension's repo isn't loaded — refresh the repo in Extensions.")
+            return
+        }
+        vm.updatePlugins(listOf(match.second to match.first))
     }
 
     val folder = openFolder
@@ -1236,8 +1894,10 @@ fun ExtensionsScreen() {
             repo = openRepo,
             plugins = pluginsByRepo[openRepo.url] ?: emptyList(),
             state = repoState[openRepo.url] ?: RepoLoadState(loading = true),
+            isBundle = openRepo.url in bundleRepos,
             providers = providers,
             installedUrls = installed,
+            outdatedUrls = outdated,
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -1246,6 +1906,7 @@ fun ExtensionsScreen() {
             onRefresh = { vm.refreshRepo(openRepo) },
             onInstall = { installPlugin(it, openRepo.kind) },
             onUninstall = { uninstallPlugin(it, openRepo.kind) },
+            onUpdate = { vm.updatePlugins(listOf(it to openRepo.kind)) },
             onOpenSettings = { openProviderSettings(it) },
             onInstallAll = {
                 vm.installAllPlugins(
@@ -1276,6 +1937,8 @@ fun ExtensionsScreen() {
                 repoDialogKind = when (folder) {
                     SourceFolder.HIKARI -> RepoKind.HIKARI
                     SourceFolder.NUVIO -> RepoKind.NUVIO
+                    SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
+                    SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -1313,6 +1976,8 @@ fun ExtensionsScreen() {
         )
         installedOpen -> InstalledExtensionsView(
             providers = providers,
+            outdatedUrls = outdated,
+            onUpdateProvider = { prov -> updateProvider(prov) },
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -1339,6 +2004,8 @@ fun ExtensionsScreen() {
             onAddRepo = { vm.clearStatus(); repoDialogKind = RepoKind.CS3; showRepoDialog = true },
             onAddHikiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.HIKARI; showRepoDialog = true },
             onAddNuvioRepo = { vm.clearStatus(); repoDialogKind = RepoKind.NUVIO; showRepoDialog = true },
+            onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
+            onAddAniyomiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANIYOMI; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
@@ -1376,6 +2043,16 @@ fun ExtensionsScreen() {
                 vm.clearStatus()
                 hikiPicker.launch(arrayOf("application/octet-stream", "*/*"))
             },
+            onAddSkyStreamUrl = { vm.clearStatus(); showSkyUrl = true },
+            onPickSkyStreamFile = {
+                vm.clearStatus()
+                skyPicker.launch(arrayOf("application/octet-stream", "*/*"))
+            },
+            onAddAniyomiUrl = { vm.clearStatus(); showAniyomiUrl = true },
+            onPickAniyomiFile = {
+                vm.clearStatus()
+                aniyomiPicker.launch(arrayOf("application/vnd.android.package-archive", "*/*"))
+            },
             onAddSite = { vm.clearStatus(); showSite = true },
             onOpenSite = { site ->
                 context.startActivity(
@@ -1401,8 +2078,11 @@ fun ExtensionsScreen() {
                 vm.refreshRepo(repo)
             },
             installedUrls = installed,
+            outdatedUrls = outdated,
+            onUpdateAll = { vm.updatePlugins(outdatedItems.map { (kind, p) -> p to kind }) },
             onInstallPlugin = { p, kind -> installPlugin(p, kind) },
             onUninstallPlugin = { p, kind -> uninstallPlugin(p, kind) },
+            onUpdatePlugin = { p, kind -> vm.updatePlugins(listOf(p to kind)) },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onOpenSettings = { openProviderSettings(it) },
@@ -1412,6 +2092,8 @@ fun ExtensionsScreen() {
     if (showRepoDialog) {
         val isHikari = repoDialogKind == RepoKind.HIKARI
         val isNuvio = repoDialogKind == RepoKind.NUVIO
+        val isSky = repoDialogKind == RepoKind.SKYSTREAM
+        val isAniyomi = repoDialogKind == RepoKind.ANIYOMI
         AlertDialog(
             onDismissRequest = { if (!busy) showRepoDialog = false },
             title = {
@@ -1419,6 +2101,8 @@ fun ExtensionsScreen() {
                     when (repoDialogKind) {
                         RepoKind.HIKARI -> "Add Hikari repo"
                         RepoKind.NUVIO -> "Add Nuvio repo"
+                        RepoKind.SKYSTREAM -> "Add SkyStream repo"
+                        RepoKind.ANIYOMI -> "Add Aniyomi repo"
                         RepoKind.CS3 -> "Add CloudStream repo"
                     }
                 )
@@ -1433,6 +2117,13 @@ fun ExtensionsScreen() {
                             isNuvio ->
                                 "Paste a Nuvio provider repo URL (a manifest.json). For example:\n" +
                                     "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json"
+                            isSky ->
+                                "Paste a SkyStream repo URL (a repo.json), or just its short " +
+                                    "code. For example:\n" +
+                                    "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json"
+                            isAniyomi ->
+                                "Paste an Aniyomi repo URL (an index.min.json). For example:\n" +
+                                    "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
                             else ->
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
@@ -1440,9 +2131,17 @@ fun ExtensionsScreen() {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Short names work too: megarepo (every CloudStream repo), hikari, " +
-                            "nuvio, yoru, gowaru, phisher, allinone, michat88, spidey, " +
-                            "saimuel, mooncrown, kennethjys, eclipsia.",
+                        tr(
+                            "Short names work too — CloudStream repos: megarepo (every " +
+                                "CloudStream repo), csofficial, phisher, hexated, csx, cnc, " +
+                                "aniyomi, uk, italian, italiaInStreaming, german, turkish, " +
+                                "indostream, skillshare, luna712, redowan, dogior, cskarma, " +
+                                "storm, cinephile, fstream, hikari. Nuvio repos: nuvio, yoru, " +
+                                "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
+                                "mooncrown, kennethjys, eclipsia. SkyStream repos: skystream, " +
+                                "akash, skyourge, rougegz. Aniyomi repos: aniyomiext " +
+                                "(the official Aniyomi extensions repo)."
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1450,7 +2149,11 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = repoUrl,
                         onValueChange = { repoUrl = it },
-                        placeholder = { Text("https://…/repo.json") },
+                        placeholder = {
+                            Text(
+                                tr(if (isAniyomi) "https://…/index.min.json" else "https://…/repo.json")
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1474,21 +2177,26 @@ fun ExtensionsScreen() {
                                 when (repoDialogKind) {
                                     RepoKind.HIKARI -> vm.addHikiRepo(repoUrl)
                                     RepoKind.NUVIO -> vm.addNuvioRepo(repoUrl)
+                                    RepoKind.SKYSTREAM -> vm.addSkyStreamRepo(repoUrl)
+                                    RepoKind.ANIYOMI -> vm.addAniyomiRepo(repoUrl)
                                     RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
                                 }
                             },
                             onSuccess = { repo ->
                                 showRepoDialog = false
                                 repoUrl = ""
-                                vm.setSuccess("Added repo: ${repo.name}")
+                                vm.setSuccess(
+                                    if (vm.duplicateRepoAdd) "Repo already added: ${repo.name}"
+                                    else "Added repo: ${repo.name}"
+                                )
                                 vm.refreshRepo(repo)
                             },
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1496,15 +2204,15 @@ fun ExtensionsScreen() {
     if (showStremio) {
         AlertDialog(
             onDismissRequest = { if (!busy) showStremio = false },
-            title = { Text("Add Stremio addon") },
+            title = { Text(tr("Add Stremio addon")) },
             text = {
                 Column {
-                    Text("Paste the addon URL — it must serve a manifest.json.")
+                    Text(tr("Paste the addon URL — it must serve a manifest.json."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = stremioUrl,
                         onValueChange = { stremioUrl = it },
-                        placeholder = { Text("https://addon.example.com") },
+                        placeholder = { Text(tr("https://addon.example.com")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1529,13 +2237,13 @@ fun ExtensionsScreen() {
                                 showStremio = false
                                 stremioUrl = ""
                             },
-                            successMsg = "Added Stremio addon",
+                            successMsg = I18n.t("Added Stremio addon"),
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showStremio = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showStremio = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1543,15 +2251,15 @@ fun ExtensionsScreen() {
     if (showScraper) {
         AlertDialog(
             onDismissRequest = { if (!busy) showScraper = false },
-            title = { Text("Add universal scraper") },
+            title = { Text(tr("Add universal scraper")) },
             text = {
                 Column {
-                    Text("Paste the JSON config (name + baseUrl + search/episodes/streams rules).")
+                    Text(tr("Paste the JSON config (name + baseUrl + search/episodes/streams rules)."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = scraperJson,
                         onValueChange = { scraperJson = it },
-                        placeholder = { Text("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}") },
+                        placeholder = { Text(tr("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}")) },
                         minLines = 6,
                         maxLines = 12,
                         modifier = Modifier.fillMaxWidth()
@@ -1577,13 +2285,13 @@ fun ExtensionsScreen() {
                                 showScraper = false
                                 scraperJson = ""
                             },
-                            successMsg = "Added scraper",
+                            successMsg = I18n.t("Added scraper"),
                         )
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showScraper = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showScraper = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1591,15 +2299,15 @@ fun ExtensionsScreen() {
     if (showCs3Url) {
         AlertDialog(
             onDismissRequest = { if (!busy) showCs3Url = false },
-            title = { Text("Install .cs3 plugin") },
+            title = { Text(tr("Install .cs3 plugin")) },
             text = {
                 Column {
-                    Text("Paste a direct link to a compiled CloudStream .cs3 file.")
+                    Text(tr("Paste a direct link to a compiled CloudStream .cs3 file."))
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = cs3Url,
                         onValueChange = { cs3Url = it },
-                        placeholder = { Text("https://…/JustAnimeProvider.cs3") },
+                        placeholder = { Text(tr("https://…/JustAnimeProvider.cs3")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1625,10 +2333,10 @@ fun ExtensionsScreen() {
                             },
                         ) { vm.installCs3FromUrl(cs3Url) }
                     }
-                ) { Text("Install") }
+                ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showCs3Url = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showCs3Url = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1636,20 +2344,22 @@ fun ExtensionsScreen() {
     if (showHikiUrl) {
         AlertDialog(
             onDismissRequest = { if (!busy) showHikiUrl = false },
-            title = { Text("Install .hiki extension") },
+            title = { Text(tr("Install .hiki extension")) },
             text = {
                 Column {
                     Text(
-                        "Paste a direct link to a compiled Hikari extension (.hiki). " +
-                            "Extensions run against Hikari's own SDK — no CloudStream " +
-                            "dependencies, Cloudflare solvers and WebView stream capture " +
-                            "built in. See docs/HIKARI_EXTENSIONS.md."
+                        tr(
+                            "Paste a direct link to a compiled Hikari extension (.hiki). " +
+                                "Extensions run against Hikari's own SDK — no CloudStream " +
+                                "dependencies, no separate solver add-ons, with WebView " +
+                                "stream capture built in. See docs/HIKARI_EXTENSIONS.md."
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = hikiUrl,
                         onValueChange = { hikiUrl = it },
-                        placeholder = { Text("https://…/MyExtension.hiki") },
+                        placeholder = { Text(tr("https://…/MyExtension.hiki")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1675,10 +2385,120 @@ fun ExtensionsScreen() {
                             },
                         ) { vm.installHikiFromUrl(hikiUrl) }
                     }
-                ) { Text("Install") }
+                ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
+    if (showSkyUrl) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showSkyUrl = false },
+            title = { Text(tr("Install .sky extension")) },
+            text = {
+                Column {
+                    Text(
+                        tr(
+                            "Paste a direct link to a SkyStream extension (.sky) — the " +
+                                "zip that contains plugin.js + plugin.json. Look for a " +
+                                "\"SkyStream repo\" in the list above instead if you want " +
+                                "to browse a whole repository."
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = skyUrl,
+                        onValueChange = { skyUrl = it },
+                        placeholder = { Text(tr("https://…/dev.akash.stars.yts.sky")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
+                                showSkyUrl = false
+                                skyUrl = ""
+                            },
+                        ) { vm.installSkyStreamFromUrl(skyUrl) }
+                    }
+                ) { Text(tr("Install")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showSkyUrl = false }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
+    if (showAniyomiUrl) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showAniyomiUrl = false },
+            title = { Text(tr("Install Aniyomi extension (.apk)")) },
+            text = {
+                Column {
+                    Text(
+                        tr(
+                            "Paste a direct link to an Aniyomi extension (.apk) — the " +
+                                "same file the Aniyomi app installs. Look for an " +
+                                "\"Aniyomi repo\" in the list above instead if you want " +
+                                "to browse a whole repository."
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = aniyomiUrl,
+                        onValueChange = { aniyomiUrl = it },
+                        placeholder = {
+                            Text(
+                                tr(
+                                    "https://…/repo/apk/aniyomi-all.jellyfin-v14.17.apk"
+                                )
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        vm.runInstall(
+                            "Downloading and installing…",
+                            onSuccess = {
+                                showAniyomiUrl = false
+                                aniyomiUrl = ""
+                            },
+                        ) { vm.installAniyomiFromUrl(aniyomiUrl) }
+                    }
+                ) { Text(tr("Install")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!busy) showAniyomiUrl = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1686,19 +2506,21 @@ fun ExtensionsScreen() {
     if (showSite) {
         AlertDialog(
             onDismissRequest = { if (!busy) showSite = false },
-            title = { Text("Add website") },
+            title = { Text(tr("Add website")) },
             text = {
                 Column {
                     Text(
-                        "Paste the URL of any movie/streaming website. It opens in an " +
-                            "ad-free web view — ads, trackers and popups are blocked, " +
-                            "and videos can be handed to the built-in player."
+                        tr(
+                            "Paste the URL of any movie/streaming website. It opens in an " +
+                                "ad-free web view — ads, trackers and popups are blocked, " +
+                                "and videos can be handed to the built-in player."
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = siteName,
                         onValueChange = { siteName = it },
-                        placeholder = { Text("Name (optional)") },
+                        placeholder = { Text(tr("Name (optional)")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1706,7 +2528,7 @@ fun ExtensionsScreen() {
                     OutlinedTextField(
                         value = siteUrl,
                         onValueChange = { siteUrl = it },
-                        placeholder = { Text("https://example.com") },
+                        placeholder = { Text(tr("https://example.com")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1740,14 +2562,14 @@ fun ExtensionsScreen() {
                                     siteUrl = ""
                                     siteName = ""
                                 },
-                                successMsg = "Website added",
+                                successMsg = I18n.t("Website added"),
                             )
                         }
                     }
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showSite = false }) { Text("Cancel") }
+                TextButton(onClick = { if (!busy) showSite = false }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -1858,6 +2680,8 @@ private fun RepoBrowserView(
     errorMsg: String?,
     onEnsureReposLoaded: () -> Unit,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String> = emptySet(),
+    onUpdateAll: () -> Unit = {},
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
     onOpenFolder: (SourceFolder) -> Unit,
@@ -1868,6 +2692,10 @@ private fun RepoBrowserView(
     onPickCs3File: () -> Unit,
     onAddHikiUrl: () -> Unit,
     onPickHikiFile: () -> Unit,
+    onAddSkyStreamUrl: () -> Unit,
+    onPickSkyStreamFile: () -> Unit,
+    onAddAniyomiUrl: () -> Unit,
+    onPickAniyomiFile: () -> Unit,
     onRemoveRepo: (String) -> Unit,
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
@@ -1875,6 +2703,7 @@ private fun RepoBrowserView(
     onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUpdatePlugin: (Cs3RepoPlugin, RepoKind) -> Unit = { _, _ -> },
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
@@ -1892,17 +2721,20 @@ private fun RepoBrowserView(
     }
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp)
+        contentPadding = PaddingValues(
+            // Clear of the floating taskbar (0 when there is no bar).
+            bottom = LocalTaskbarInset.current + 24.dp,
+        )
     ) {
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp)) {
                 Text(
-                    "Extensions",
+                    tr("Extensions"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "Sources, repos & providers",
+                    tr("Sources, repos & providers"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1912,11 +2744,53 @@ private fun RepoBrowserView(
             GlassSearchField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = "Search extensions & sources…",
+                placeholder = tr("Search extensions & sources…"),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             )
+        }
+        // Updates found by re-hashing every installed extension against its
+        // repo's published fileHash (see ExtensionsViewModel.checkUpdates).
+        if (query.isBlank() && outdatedUrls.isNotEmpty()) {
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("Extension updates available"),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                I18n.t(
+                                        if (outdatedUrls.size == 1) "%s installed extension can be updated"
+                                        else "%s installed extensions can be updated"
+                                    ).replace("%s", outdatedUrls.size.toString()),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(onClick = onUpdateAll, enabled = !busy) {
+                            Text(tr("Update all"))
+                        }
+                    }
+                }
+            }
         }
         if (busy) {
             item {
@@ -1956,11 +2830,13 @@ private fun RepoBrowserView(
                 repoState = repoState,
                 providers = providers,
                 installedUrls = installedUrls,
+                outdatedUrls = outdatedUrls,
                 busy = busy,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onInstallPlugin = onInstallPlugin,
                 onUninstallPlugin = onUninstallPlugin,
+                onUpdatePlugin = { p, kind -> onUpdatePlugin(p, kind) },
                 onDeleteProvider = onDeleteProvider,
                 onToggleProvider = onToggleProvider,
                 cs3SettingsIds = cs3SettingsIds,
@@ -1999,12 +2875,12 @@ private fun RepoBrowserView(
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            providers.size.toString() + " extension" + (if (providers.size == 1) "" else "s") + " installed",
+                            I18n.t(if (providers.size == 1) "%s extension installed" else "%s extensions installed").replace("%s", providers.size.toString()),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            repos.size.toString() + " repo" + (if (repos.size == 1) "" else "s") + " · " + enabledCount + " enabled",
+                            I18n.t(if (repos.size == 1) "%s repo" else "%s repos").replace("%s", repos.size.toString()) + " · " + I18n.t("%s enabled").replace("%s", enabledCount.toString()),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2028,43 +2904,57 @@ private fun RepoBrowserView(
                 Column {
                     SourceActionRow(
                         icon = Icons.Filled.Public,
-                        title = "CloudStream repos",
-                        subtitle = "repo.json · CloudStream extensions",
+                        title = tr("CloudStream repos"),
+                        subtitle = tr("repo.json · CloudStream extensions"),
                         onClick = { onOpenFolder(SourceFolder.CLOUDSTREAM) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Extension,
-                        title = "Hikari repos",
-                        subtitle = "repo.json · Hikari extensions",
+                        title = tr("Hikari repos"),
+                        subtitle = tr("repo.json · Hikari extensions"),
                         onClick = { onOpenFolder(SourceFolder.HIKARI) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.FolderOpen,
-                        title = "Nuvio repos",
-                        subtitle = "manifest.json · Nuvio providers",
+                        title = tr("Nuvio repos"),
+                        subtitle = tr("manifest.json · Nuvio providers"),
                         onClick = { onOpenFolder(SourceFolder.NUVIO) }
                     )
                     SourceDivider()
                     SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("SkyStream repos"),
+                        subtitle = tr("repo.json · SkyStream extensions"),
+                        onClick = { onOpenFolder(SourceFolder.SKYSTREAM) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("Aniyomi repos"),
+                        subtitle = tr("index.min.json · Aniyomi extensions"),
+                        onClick = { onOpenFolder(SourceFolder.ANIYOMI) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
                         icon = Icons.Filled.PlayArrow,
-                        title = "Stremio addons",
-                        subtitle = "manifest.json · Stremio addons",
+                        title = tr("Stremio addons"),
+                        subtitle = tr("manifest.json · Stremio addons"),
                         onClick = { onOpenFolder(SourceFolder.STREMIO) }
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Build,
-                        title = "Add universal scraper",
-                        subtitle = "JSON config · scriptable scraper",
+                        title = tr("Add universal scraper"),
+                        subtitle = tr("JSON config · scriptable scraper"),
                         onClick = onAddScraper
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Download,
-                        title = "Install .cs3 plugin",
-                        subtitle = "From a URL or a local file",
+                        title = tr("Install .cs3 plugin"),
+                        subtitle = tr("From a URL or a local file"),
                         onClick = onAddCs3Url,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickCs3File
@@ -2072,31 +2962,49 @@ private fun RepoBrowserView(
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Add,
-                        title = "Install .hiki extension",
-                        subtitle = "From a URL or a local file",
+                        title = tr("Install .hiki extension"),
+                        subtitle = tr("From a URL or a local file"),
                         onClick = onAddHikiUrl,
                         trailingIcon = Icons.Filled.FolderOpen,
                         onTrailing = onPickHikiFile
                     )
                     SourceDivider()
                     SourceActionRow(
+                        icon = Icons.Filled.Add,
+                        title = tr("Install .sky extension"),
+                        subtitle = tr("SkyStream plugin · from a URL or a local file"),
+                        onClick = onAddSkyStreamUrl,
+                        trailingIcon = Icons.Filled.FolderOpen,
+                        onTrailing = onPickSkyStreamFile
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Add,
+                        title = tr("Install Aniyomi extension (.apk)"),
+                        subtitle = tr("Aniyomi extension · from a URL or a local file"),
+                        onClick = onAddAniyomiUrl,
+                        trailingIcon = Icons.Filled.FolderOpen,
+                        onTrailing = onPickAniyomiFile
+                    )
+                    SourceDivider()
+                    SourceActionRow(
                         icon = Icons.Filled.Public,
-                        title = "Add website",
-                        subtitle = "Opens in the ad-free web view",
+                        title = tr("Add website"),
+                        subtitle = tr("Opens in the ad-free web view"),
                         onClick = onAddSite
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Folder,
-                        title = "All installed repos",
-                        subtitle = "All repos you've added · " + repos.size + " total",
+                        title = tr("All installed repos"),
+                        subtitle = tr("All repos you've added · ") + repos.size + " total",
                         onClick = onOpenAllRepos
                     )
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Extension,
-                        title = "Installed extensions",
-                        subtitle = "Manage, toggle & uninstall · " + providers.size + " installed",
+                        title = tr("Installed extensions"),
+                        subtitle = tr("Manage, toggle & uninstall · ") + providers.size + " installed",
                         onClick = onOpenInstalled
                     )
                 }
@@ -2128,11 +3036,13 @@ private fun LazyListScope.extensionsSearchItems(
     repoState: Map<String, RepoLoadState>,
     providers: List<ContentProvider>,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String>,
     busy: Boolean,
     onOpenRepo: (Cs3Repo) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
+    onUpdatePlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     cs3SettingsIds: Set<String>,
@@ -2216,6 +3126,10 @@ private fun LazyListScope.extensionsSearchItems(
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
                     onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                         ?.let { target -> { onOpenSettings(target) } },
+                    updateAvailable = p.url in outdatedUrls,
+                    onUpdate = { onUpdatePlugin(p, repo.kind) },
+                    kind = repo.kind,
+                    repoUrl = repo.url,
                 )
             }
         }
@@ -2263,7 +3177,7 @@ private fun LazyListScope.repoStatusItems(
                 )
             }
             if (err != null) {
-                TextButton(onClick = { onRefreshRepo(repo) }) { Text("Retry") }
+                TextButton(onClick = { onRefreshRepo(repo) }) { Text(tr("Retry")) }
             } else {
                 CircularProgressIndicator(
                     Modifier.size(18.dp),
@@ -2279,8 +3193,10 @@ private fun RepoPluginsView(
     repo: Cs3Repo,
     plugins: List<Cs3RepoPlugin>,
     state: RepoLoadState,
+    isBundle: Boolean = false,
     providers: List<ContentProvider>,
     installedUrls: Set<String>,
+    outdatedUrls: Set<String>,
     busy: Boolean,
     busyMsg: String,
     successMsg: String?,
@@ -2289,6 +3205,7 @@ private fun RepoPluginsView(
     onRefresh: () -> Unit,
     onInstall: (Cs3RepoPlugin) -> Unit,
     onUninstall: (Cs3RepoPlugin) -> Unit,
+    onUpdate: (Cs3RepoPlugin) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
     onInstallAll: () -> Unit,
 ) {
@@ -2297,6 +3214,8 @@ private fun RepoPluginsView(
         val unit = when (repo.kind) {
             RepoKind.HIKARI -> "extension"
             RepoKind.NUVIO -> "provider"
+            RepoKind.SKYSTREAM -> "extension"
+            RepoKind.ANIYOMI -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         Row(
@@ -2306,7 +3225,7 @@ private fun RepoPluginsView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
                 Text(
@@ -2333,7 +3252,7 @@ private fun RepoPluginsView(
             IconButton(onClick = onRefresh) {
                 Icon(
                     Icons.Filled.Refresh,
-                    contentDescription = "Refresh repo",
+                    contentDescription = tr("Refresh repo"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -2369,7 +3288,12 @@ private fun RepoPluginsView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             val uninstalled = plugins.count { it.url !in installedUrls }
             if (plugins.isNotEmpty() && uninstalled > 0) {
@@ -2389,7 +3313,9 @@ private fun RepoPluginsView(
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Install all $uninstalled ${unit}s")
+                        Text(
+                            tr("Install all (%s)").replace("%s", uninstalled.toString())
+                        )
                     }
                 }
             }
@@ -2409,11 +3335,22 @@ private fun RepoPluginsView(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
-                    TextButton(onClick = onRefresh) { Text("Retry") }
+                    TextButton(onClick = onRefresh) { Text(tr("Retry")) }
+                }
+                plugins.isEmpty() && isBundle -> item {
+                        Text(
+                            I18n.t(
+                                "This is a bundle repo — it holds no %s of its own. Its repos were " +
+                                    "added to your repo list: open Phisher, CNC, CSX… and install %s from there."
+                            ).replace("%s", "${unit}s"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
                 }
                 plugins.isEmpty() -> item {
                     Text(
-                        "No ${unit}s found in this repo.",
+                        I18n.t("No %s found in this repo.").replace("%s", "${unit}s"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -2426,7 +3363,11 @@ private fun RepoPluginsView(
                         onInstall = { onInstall(p) },
                         onUninstall = { onUninstall(p) },
                         onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
-                            ?.let { target -> { onOpenSettings(target) } }
+                            ?.let { target -> { onOpenSettings(target) } },
+                        updateAvailable = p.url in outdatedUrls,
+                        onUpdate = { onUpdate(p) },
+                        kind = repo.kind,
+                        repoUrl = repo.url,
                     )
                 }
             }
@@ -2436,9 +3377,16 @@ private fun RepoPluginsView(
 
 @Composable
 private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
+    // Repo icon URLs are templates in the wild: CloudStream repos serve
+    // `…/icon.png?size=%size%` (and the `%exact_size%` variant), and plenty of
+    // listings use protocol-relative `//host/icon.png`. Neither survives being
+    // handed straight to Coil from an Android app, so normalize first — an
+    // unfetchable URL is exactly how a perfectly good icon degrades into the
+    // placeholder glyph.
     val safe = url
+        ?.replace("%exact_size%", "48")
         ?.replace("%size%", "48")
-        ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        ?.let { com.hikari.app.ui.ExtensionIcons.absolute(it, null) }
     if (safe == null) {
         Icon(
             Icons.Filled.Extension,
@@ -2468,6 +3416,32 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
             else -> SubcomposeAsyncImageContent()
         }
     }
+}
+
+@Composable
+private fun RepoPluginIcon(
+    p: Cs3RepoPlugin,
+    kind: RepoKind,
+    repoUrl: String,
+    modifier: Modifier = Modifier,
+) {
+    // A repo listing is resolved before anything is installed, so the row only
+    // has what the listing declared — and most SkyStream listings declare no
+    // icon at all (1 of 25 entries in the community repo carries an `iconUrl`,
+    // and 20 of 25 carry a placeholder `baseUrl`), which is why every row fell
+    // back to the puzzle-piece glyph. Resolve the rest lazily off the main
+    // thread: the entry's own image fields, else its first addon manifest's
+    // logo, else the site favicon. ExtensionIcons caches per entry, so
+    // scrolling the listing never refetches.
+    var icon by remember(p.url, kind) { mutableStateOf(p.iconUrl) }
+    LaunchedEffect(p.url, kind) {
+        if (icon.isNullOrBlank()) {
+            icon = withContext(Dispatchers.IO) {
+                com.hikari.app.ui.ExtensionIcons.forRepoPlugin(p, kind, repoUrl)
+            }
+        }
+    }
+    ExtensionIcon(url = icon, modifier = modifier)
 }
 
 @Composable
@@ -2531,23 +3505,85 @@ private fun openProviderSettingsSafely(
         return
     }
     if (!p.settingsReady) {
-        Toast.makeText(context, "Loading ${p.config.name}…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, I18n.t("Loading %s…").replace("%s", p.config.name), Toast.LENGTH_SHORT).show()
     }
     scope.launch {
-        val ready = withContext(Dispatchers.IO) {
+        var ready = withContext(Dispatchers.IO) {
             runCatching { p.prepareSettings() }.getOrDefault(false)
         }
-        val opened = ready && withContext(Dispatchers.Main) {
+        var opened = ready && withContext(Dispatchers.Main) {
             runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
         }
+        // A plugin's settings screen is third-party code, and some of them bail
+        // out on a transient condition (an activity that was briefly stopped
+        // while the plugin was being loaded, a sheet that was left behind).
+        // The commonest real cause is a STALE activity: the plugin's
+        // `openSettings` closure captured an activity that has since been
+        // destroyed and then throws "FragmentManager has been destroyed" the
+        // moment it shows its DialogFragment. Retrying the same instance just
+        // re-runs that closure, so the plugin is REBUILT here (dropping the
+        // cached instance) and then retried against a live activity.
+        if (!opened) {
+            kotlinx.coroutines.delay(250)
+            withContext(Dispatchers.IO) {
+                runCatching { p.rebuildSettings(context) }
+            }
+            kotlinx.coroutines.delay(250)
+            ready = withContext(Dispatchers.IO) {
+                runCatching { p.prepareSettings() }.getOrDefault(false)
+            }
+            opened = ready && withContext(Dispatchers.Main) {
+                runCatching {
+                    val live = HikariApp.mainActivity
+                        ?.takeIf { !it.isFinishing && !it.isDestroyed }
+                    p.openSettings(live)
+                }.getOrDefault(false)
+            }
+        }
         if (opened) return@launch
-        val detail = Cs3PluginManager.lastError?.take(240)
-        Toast.makeText(
-            context,
-            if (detail.isNullOrBlank()) "${p.config.name} has no settings screen"
-            else "Couldn't open ${p.config.name} settings: $detail",
-            Toast.LENGTH_LONG,
-        ).show()
+        val detail = Cs3PluginManager.lastError.orEmpty()
+        if (detail.isBlank()) {
+            Toast.makeText(
+                context,
+                I18n.t("%s has no settings screen").replace("%s", p.config.name),
+                Toast.LENGTH_LONG,
+            ).show()
+            return@launch
+        }
+        // The reason a plugin's own screen refused to open is a full exception
+        // description (the plugin class and line now included) — far too long
+        // for a toast, which only ever showed "… threw: Il…". Show it in a
+        // dialog the user can read and copy, so a broken extension settings
+        // screen can actually be reported instead of guessed at.
+        showSettingsFailureDialog(context, p.config.name, detail)
+    }
+}
+
+/** Full, copyable report of why an extension's own settings screen didn't
+ *  open. The text is whatever [Cs3PluginManager.lastError] recorded — the
+ *  plugin's exception class, message and first stack frames — plus a line
+ *  telling the user what to do with it. */
+private fun showSettingsFailureDialog(context: Context, name: String, detail: String) {
+    val activity = context as? android.app.Activity
+        ?: HikariApp.mainActivity
+        ?: return
+    runCatching {
+        val report = "${name}: $detail"
+        android.app.AlertDialog.Builder(activity)
+            .setTitle(I18n.t("Couldn't open %s settings").replace("%s", name))
+            .setMessage(report)
+            .setPositiveButton(I18n.t("Copy report")) { _, _ ->
+                runCatching {
+                    val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(
+                        android.content.ClipData.newPlainText("Hikari settings error", report)
+                    )
+                    Toast.makeText(activity, I18n.t("Report copied"), Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(I18n.t("Close"), null)
+            .show()
     }
 }
 
@@ -2558,15 +3594,21 @@ private fun ProviderCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
-) {    GlassCard(Modifier
+    updateAvailable: Boolean = false,
+    onUpdate: (() -> Unit)? = null,
+) {
+    val glass = rememberGlassTokens()
+    val tileShape = RoundedCornerShape(12.dp)
+    GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
                     .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .clip(tileShape)
+                    .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                    .border(1.dp, glass.border, tileShape),
                 contentAlignment = Alignment.Center
             ) {
                 ProviderIcon(
@@ -2597,13 +3639,30 @@ private fun ProviderCard(
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
+                if (updateAvailable) {
+                    Text(
+                        tr("Update available"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             Switch(checked = p.config.enabled, onCheckedChange = onToggle)
+            if (updateAvailable && onUpdate != null) {
+                IconButton(onClick = onUpdate) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = tr("Update"),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
             if (onSettings != null) {
                 IconButton(onClick = onSettings) {
                     Icon(
                         Icons.Filled.Settings,
-                        contentDescription = "Provider settings",
+                        contentDescription = tr("Provider settings"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -2611,7 +3670,7 @@ private fun ProviderCard(
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove",
+                    contentDescription = tr("Remove"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -2637,7 +3696,7 @@ private fun NuvioSettingsDialog(
     LaunchedEffect(provider.config.id) {
         val source = runCatching { File(provider.config.url).readText() }.getOrNull()
         if (source.isNullOrBlank()) {
-            loadError = "Provider file missing — reinstall this extension"
+            loadError = I18n.t("Provider file missing — reinstall this extension")
             loading = false
             return@LaunchedEffect
         }
@@ -2681,13 +3740,13 @@ private fun NuvioSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${provider.config.name} settings") },
+        title = { Text(I18n.t("%s settings").replace("%s", provider.config.name)) },
         text = {
             when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
-                    Text("Loading settings…")
+                    Text(tr("Loading settings…"))
                 }
                 loadError != null -> Text(
                     loadError!!,
@@ -2708,7 +3767,7 @@ private fun NuvioSettingsDialog(
                         )
                     }
                 }
-                else -> Text("No settings available")
+                else -> Text(tr("No settings available"))
             }
         },
         confirmButton = {
@@ -2730,10 +3789,10 @@ private fun NuvioSettingsDialog(
                     com.hikari.app.nuvio.NuvioRuntime.saveSettings(provider.config.id, out.toString())
                     onDismiss()
                 }
-            ) { Text("Save") }
+            ) { Text(tr("Save")) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
         }
     )
 }
@@ -2747,8 +3806,16 @@ private fun SettingsElementRow(
     onToggle: (String, Boolean) -> Unit,
 ) {
     val type = el.optString("type")
-    val label = el.optString("label")
-    val description = el.optString("description").ifBlank { null }
+    val rawLabel = el.optString("label")
+    val rawDescription = el.optString("description").ifBlank { null }
+    // Extensions write this screen's rows themselves, and a "header"/"info"
+    // row is a favourite place for a funding ask ("Support us on Patreon", a
+    // ko-fi link). Nothing about MONEY belongs in an extension's settings, so
+    // a promo-only row is dropped outright and every other string is cleaned
+    // (markup and donation links stripped) before it is drawn.
+    if ((type == "header" || type == "info") && PromoGuard.isPromoText(rawLabel)) return
+    val label = PromoGuard.cleanText(rawLabel).ifBlank { rawLabel }
+    val description = rawDescription?.let { PromoGuard.cleanText(it).ifBlank { null } }
     when (type) {
         "header" -> Column(Modifier.padding(top = 12.dp, bottom = 4.dp)) {
             Text(
@@ -2908,6 +3975,8 @@ private fun RepoCard(
                             RepoKind.CS3 -> "CloudStream"
                             RepoKind.HIKARI -> "Hikari"
                             RepoKind.NUVIO -> "Nuvio"
+                            RepoKind.SKYSTREAM -> "SkyStream"
+                            RepoKind.ANIYOMI -> "Aniyomi"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -2923,7 +3992,12 @@ private fun RepoCard(
                         state?.loading == true -> "Loading plugins…"
                         state?.error != null -> "Load failed — tap refresh to retry"
                         pluginCount > 0 -> {
-                            val unit = if (repo.kind == RepoKind.NUVIO) "provider" else "plugin"
+                            val unit = when (repo.kind) {
+                                RepoKind.NUVIO -> "provider"
+                                RepoKind.SKYSTREAM -> "extension"
+                                RepoKind.ANIYOMI -> "extension"
+                                else -> "plugin"
+                            }
                             "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
                         }
                         else -> repo.description.ifBlank { "No plugins found" }
@@ -2946,14 +4020,14 @@ private fun RepoCard(
             IconButton(onClick = onRefresh) {
                 Icon(
                     Icons.Filled.Refresh,
-                    contentDescription = "Refresh repo",
+                    contentDescription = tr("Refresh repo"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             IconButton(onClick = onRemoveRepo) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove repo",
+                    contentDescription = tr("Remove repo"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -2968,7 +4042,13 @@ private fun PluginRow(
     onInstall: () -> Unit,
     onUninstall: () -> Unit,
     onSettings: (() -> Unit)? = null,
+    updateAvailable: Boolean = false,
+    onUpdate: (() -> Unit)? = null,
+    kind: RepoKind = RepoKind.CS3,
+    repoUrl: String = "",
 ) {
+    val glass = rememberGlassTokens()
+    val tileShape = RoundedCornerShape(12.dp)
     Row(
         Modifier
             .fillMaxWidth()
@@ -2977,17 +4057,20 @@ private fun PluginRow(
     ) {
         Box(
             Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .size(40.dp)
+                .clip(tileShape)
+                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                .border(1.dp, glass.border, tileShape),
             contentAlignment = Alignment.Center
         ) {
-            ExtensionIcon(
-                url = p.iconUrl,
+            RepoPluginIcon(
+                p = p,
+                kind = kind,
+                repoUrl = repoUrl,
                 modifier = Modifier.size(28.dp)
             )
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 p.name,
@@ -3013,21 +4096,39 @@ private fun PluginRow(
             IconButton(onClick = onSettings) {
                 Icon(
                     Icons.Filled.Settings,
-                    contentDescription = "Plugin settings",
+                    contentDescription = tr("Plugin settings"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
         Spacer(Modifier.width(8.dp))
         if (installed) {
-            TextButton(onClick = onUninstall) {
-                Text("Uninstall", color = MaterialTheme.colorScheme.error)
+            if (updateAvailable && onUpdate != null) {
+                TextButton(onClick = onUninstall) {
+                    Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
+                }
+                Button(
+                    onClick = onUpdate,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(tr("Update"))
+                }
+            } else {
+                TextButton(onClick = onUninstall) {
+                    Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
+                }
             }
         } else {
             Button(onClick = onInstall) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Install")
+                Text(tr("Install"))
             }
         }
     }
@@ -3041,15 +4142,28 @@ private fun PluginRow(
  * permissions/settings screen; Hikari extensions append a "|index" suffix to
  * their source URL.
  */
+/** The repo URL an installed provider was installed from — the key both
+ *  uninstall and the update check use. Hikari extensions append a "|index"
+ *  suffix (one file can hold several providers); a provider installed from a
+ *  local file has no repo URL at all. */
+private fun providerSource(p: ContentProvider): String? {
+    val extra = p.config.extra ?: return null
+    if (!extra.startsWith("http")) return null
+    return if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+}
+
 private fun repoPluginSettingsTarget(
     plugin: Cs3RepoPlugin,
     providers: List<ContentProvider>,
     cs3SettingsIds: Set<String>,
-): ContentProvider? = providers.firstOrNull { p ->
-    val extra = p.config.extra ?: return@firstOrNull false
-    val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-    if (source != plugin.url) return@firstOrNull false
-    p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
+): ContentProvider? {
+    val wanted = SourceUrls.matchKeys(plugin.url)
+    return providers.firstOrNull { p ->
+        val extra = p.config.extra ?: return@firstOrNull false
+        val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+        if (SourceUrls.matchKeys(source).none { it in wanted }) return@firstOrNull false
+        p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
+    }
 }
 
 private fun pluginStatus(p: ContentProvider): String? {
@@ -3059,9 +4173,39 @@ private fun pluginStatus(p: ContentProvider): String? {
         }
         return null
     }
+    if (p.config.type == ProviderType.SKYSTREAM) {
+        if (com.hikari.app.skystream.SkyStreamPluginManager.fileMissing(p.config)) {
+            return "Extension file missing — reinstall this extension"
+        }
+        val err = com.hikari.app.skystream.SkyStreamProvider.catalogErrors[p.config.id]
+        // No verification story here: an extension whose site answers with a
+        // browser check is simply left out of searches (see
+        // ContentRepository.crossCfSkip), so naming the wall only adds a scary,
+        // unactionable line about a different site.
+        if (err != null &&
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)
+        ) return null
+        return err?.take(200)
+    }
+    if (p.config.type == ProviderType.ANIYOMI) {
+        if (com.hikari.app.aniyomi.AniyomiExtensionManager.fileMissing(p.config)) {
+            return "Extension file missing — reinstall this extension"
+        }
+        val err = com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id]
+        // Same rule as below: a browser check on the scraped site is never
+        // reported as a scary, unactionable line.
+        if (err != null &&
+            com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)
+        ) return null
+        return err?.take(200)
+    }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
-    if (err != null) return err.take(200)
+    if (err != null) {
+        // Same rule as above: a verification wall is never reported.
+        if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)) return null
+        return err.take(200)
+    }
     if (!File(p.config.url).exists()) return "Plugin file missing — reinstall this extension"
     return null
 }
@@ -3103,14 +4247,14 @@ private fun SitesFolder(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Webview sites",
+                        tr("Webview sites"),
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        if (sites.isEmpty()) "No sites added yet — tap to expand"
-                        else "${sites.size} site${if (sites.size == 1) "" else "s"}",
+                        if (sites.isEmpty()) I18n.t("No sites added yet — tap to expand")
+                        else I18n.t(if (sites.size == 1) "%s site" else "%s sites").replace("%s", sites.size.toString()),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3125,7 +4269,7 @@ private fun SitesFolder(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 if (sites.isEmpty()) {
                     Text(
-                        "Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player.",
+                        tr("Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp)
@@ -3188,12 +4332,12 @@ private fun SiteRow(
             Button(onClick = onOpen) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Open")
+                Text(tr("Open"))
             }
             IconButton(onClick = onRemove) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove website",
+                    contentDescription = tr("Remove website"),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
@@ -3201,7 +4345,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, STREMIO }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, STREMIO }
 
 @Composable
 private fun SourceFolderView(
@@ -3228,18 +4372,24 @@ private fun SourceFolderView(
         SourceFolder.CLOUDSTREAM -> RepoKind.CS3
         SourceFolder.HIKARI -> RepoKind.HIKARI
         SourceFolder.NUVIO -> RepoKind.NUVIO
+        SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
+        SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
         SourceFolder.STREMIO -> null
     }
     val (title, subtitle) = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream repos" to "repo.json · CloudStream extensions"
         SourceFolder.HIKARI -> "Hikari repos" to "repo.json · Hikari extensions"
         SourceFolder.NUVIO -> "Nuvio repos" to "manifest.json · Nuvio providers"
+        SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
+        SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
     }
     val kindLabel = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream"
         SourceFolder.HIKARI -> "Hikari"
         SourceFolder.NUVIO -> "Nuvio"
+        SourceFolder.SKYSTREAM -> "SkyStream"
+        SourceFolder.ANIYOMI -> "Aniyomi"
         SourceFolder.STREMIO -> "Stremio"
     }
     val folderRepos = if (kind != null) repos.filter { it.kind == kind } else emptyList()
@@ -3255,7 +4405,7 @@ private fun SourceFolderView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
                 Text(
@@ -3274,9 +4424,9 @@ private fun SourceFolderView(
             }
             Text(
                 if (folder == SourceFolder.STREMIO)
-                    "${stremioProviders.size} addon${if (stremioProviders.size == 1) "" else "s"}"
+                    I18n.t(if (stremioProviders.size == 1) "%s addon" else "%s addons").replace("%s", stremioProviders.size.toString())
                 else
-                    "${folderRepos.size} repo${if (folderRepos.size == 1) "" else "s"}",
+                    I18n.t(if (folderRepos.size == 1) "%s repo" else "%s repos").replace("%s", folderRepos.size.toString()),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -3310,14 +4460,17 @@ private fun SourceFolderView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 8.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 8.dp,
+            )
         ) {
             if (kind != null) {
                 if (folderRepos.isEmpty()) {
                     item {
                         EmptyState(
-                            title = "No $title yet",
-                            subtitle = "Tap \"Add repo\" below to add your first $kindLabel repo.",
+                            title = I18n.t("No %s yet").replace("%s", title),
+                            subtitle = I18n.t("Tap \"Add repo\" below to add your first %s repo.").replace("%s", kindLabel),
                             actionLabel = null,
                             action = null
                         )
@@ -3337,14 +4490,16 @@ private fun SourceFolderView(
                 if (stremioProviders.isEmpty()) {
                     item {
                         EmptyState(
-                            title = "No Stremio addons yet",
-                            subtitle = "Tap \"Add Stremio addon\" below to add your first addon.",
+                            title = tr("No Stremio addons yet"),
+                            subtitle = tr("Tap \"Add Stremio addon\" below to add your first addon."),
                             actionLabel = null,
                             action = null
                         )
                     }
                 }
-                items(stremioProviders, key = { it.config.id }) { p ->
+        // The same repo can be installed twice, and two identical Lazy keys are a
+        // crash in Compose rather than a warning.
+        items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     ProviderCard(
                         p = p,
                         status = null,
@@ -3377,6 +4532,8 @@ private fun SourcesOverviewView(
     onAddRepo: () -> Unit,
     onAddHikiRepo: () -> Unit,
     onAddNuvioRepo: () -> Unit,
+    onAddSkyStreamRepo: () -> Unit,
+    onAddAniyomiRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -3386,6 +4543,11 @@ private fun SourcesOverviewView(
 ) {
     var extFilter by remember { mutableStateOf("") }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    val cs3GroupTitle = tr("CloudStream")
+    val hikiGroupTitle = tr("Hikari")
+    val nuvioGroupTitle = tr("Nuvio")
+    val skyGroupTitle = tr("SkyStream")
+    val aniyomiGroupTitle = tr("Aniyomi")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3394,12 +4556,12 @@ private fun SourcesOverviewView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("All sources", style = MaterialTheme.typography.titleMedium)
+                Text(tr("All sources"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${providers.size} extensions · ${repos.size} repos",
+                    I18n.t("%s extensions").replace("%s", providers.size.toString()) + " · " + I18n.t("%s repos").replace("%s", repos.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3434,10 +4596,13 @@ private fun SourcesOverviewView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             repoGroup(
-                title = "CloudStream",
+                title = cs3GroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.CS3 },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3447,7 +4612,7 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = "Hikari",
+                title = hikiGroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.HIKARI },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
@@ -3457,11 +4622,31 @@ private fun SourcesOverviewView(
                 onRemoveRepo = onRemoveRepo,
             )
             repoGroup(
-                title = "Nuvio",
+                title = nuvioGroupTitle,
                 groupRepos = repos.filter { it.kind == RepoKind.NUVIO },
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
                 onAdd = onAddNuvioRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = skyGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.SKYSTREAM },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddSkyStreamRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = aniyomiGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.ANIYOMI },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddAniyomiRepo,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onRemoveRepo = onRemoveRepo,
@@ -3474,7 +4659,7 @@ private fun SourcesOverviewView(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "STREMIO ADDONS",
+                        tr("STREMIO ADDONS"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.2.sp,
@@ -3484,7 +4669,7 @@ private fun SourcesOverviewView(
                     TextButton(onClick = onAddStremio) {
                         Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Add")
+                        Text(tr("Add"))
                     }
                 }
             }
@@ -3492,7 +4677,7 @@ private fun SourcesOverviewView(
             if (stremioProviders.isEmpty()) {
                 item {
                     Text(
-                        "No Stremio addons yet",
+                        tr("No Stremio addons yet"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -3513,7 +4698,7 @@ private fun SourcesOverviewView(
                 GlassSearchField(
                     value = extFilter,
                     onValueChange = { extFilter = it },
-                    placeholder = "Search installed extensions…",
+                    placeholder = tr("Search installed extensions…"),
                     height = 48.dp,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3536,7 +4721,7 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(filteredProviders, key = { it.config.id }) { p ->
+            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     status = pluginStatus(p),
@@ -3581,14 +4766,14 @@ private fun LazyListScope.repoGroup(
             TextButton(onClick = onAdd) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Add")
+                Text(tr("Add"))
             }
         }
     }
     if (groupRepos.isEmpty()) {
         item {
             Text(
-                "No $title repos yet",
+                I18n.t("No %s repos yet").replace("%s", title),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -3609,11 +4794,19 @@ private fun LazyListScope.repoGroup(
 
 @Composable
 private fun AddRepoButton(label: String, onClick: () -> Unit) {
+    // The button is pinned under the list, so on a tab that shows the floating
+    // taskbar it would otherwise sit behind it and be untappable. Lift it by the
+    // bar's height (0.dp on screens with no bar).
     Button(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(
+                start = 16.dp,
+                end = 16.dp,
+                top = 12.dp,
+                bottom = 12.dp + LocalTaskbarInset.current,
+            )
             .height(52.dp),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -3646,12 +4839,12 @@ private fun AllReposView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("All installed repos", style = MaterialTheme.typography.titleMedium)
+                Text(tr("All installed repos"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${repos.size} repo${if (repos.size == 1) "" else "s"} added",
+                    I18n.t(if (repos.size == 1) "%s repo added" else "%s repos added").replace("%s", repos.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3686,13 +4879,16 @@ private fun AllReposView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 8.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 8.dp,
+            )
         ) {
             if (repos.isEmpty()) {
                 item {
                     EmptyState(
-                        title = "No repos added yet",
-                        subtitle = "Tap \"Add repo\" below to add a CloudStream, Hikari or Nuvio repo.",
+                        title = tr("No repos added yet"),
+                        subtitle = tr("Tap \"Add repo\" below to add a CloudStream, Hikari or Nuvio repo."),
                         actionLabel = null,
                         action = null
                     )
@@ -3709,7 +4905,7 @@ private fun AllReposView(
                 )
             }
         }
-        AddRepoButton(label = "Add repo", onClick = onAddRepo)
+        AddRepoButton(label = tr("Add repo"), onClick = onAddRepo)
     }
 }
 
@@ -3720,6 +4916,8 @@ private fun InstalledExtensionsView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    outdatedUrls: Set<String> = emptySet(),
+    onUpdateProvider: (ContentProvider) -> Unit = {},
     onBack: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
@@ -3740,12 +4938,12 @@ private fun InstalledExtensionsView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text("Installed extensions", style = MaterialTheme.typography.titleMedium)
+                Text(tr("Installed extensions"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${providers.size} extension${if (providers.size == 1) "" else "s"} installed",
+                    I18n.t(if (providers.size == 1) "%s extension installed" else "%s extensions installed").replace("%s", providers.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3780,13 +4978,16 @@ private fun InstalledExtensionsView(
             Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = PaddingValues(
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 24.dp,
+            )
         ) {
             item {
                 GlassSearchField(
                     value = extFilter,
                     onValueChange = { extFilter = it },
-                    placeholder = "Search installed extensions…",
+                    placeholder = tr("Search installed extensions…"),
                     height = 48.dp,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3809,7 +5010,7 @@ private fun InstalledExtensionsView(
                     )
                 }
             }
-            items(filteredProviders, key = { it.config.id }) { p ->
+            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     status = pluginStatus(p),
@@ -3820,6 +5021,8 @@ private fun InstalledExtensionsView(
                         p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
                         else -> null
                     },
+                    updateAvailable = providerSource(p) in outdatedUrls,
+                    onUpdate = { onUpdateProvider(p) },
                 )
             }
         }

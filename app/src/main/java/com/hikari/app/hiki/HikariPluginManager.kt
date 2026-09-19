@@ -1,6 +1,7 @@
 package com.hikari.app.hiki
 
 import android.content.Context
+import com.hikari.app.core.LoadGate
 import com.hikari.ext.HikariProvider
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,11 +26,14 @@ import java.io.InputStreamReader
  */
 object HikariPluginManager {
 
-    private val cache = HashMap<String, List<HikariProvider>>()
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, List<HikariProvider>>()
 
     // Paths whose load() just failed, with the failure timestamp — a failed
     // load is not retried hot (see providersFor).
-    private val lastFail = HashMap<String, Long>()
+    private val lastFail = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Paths whose load() is running on this thread (re-entrancy guard). */
+    private val loading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private const val FAIL_RETRY_MS = 60_000L
 
@@ -37,34 +41,75 @@ object HikariPluginManager {
     var lastError: String? = null
         private set
 
-    @Synchronized
+    /**
+     * Loading is serialised PER PATH and shares the process-wide load slots with
+     * the CloudStream runtime (see [LoadGate]). Both entry points used to be
+     * `@Synchronized`, i.e. ONE lock on the whole object, so with a few hundred
+     * `.hiki` extensions installed every load queued behind the slowest one —
+     * which is why Home and the cross-extension search crawled.
+     */
     fun providersFor(context: Context, file: File): List<HikariProvider> {
         val path = file.absolutePath
         cache[path]?.let { return it }
         val failAt = lastFail[path]
         if (failAt != null && System.currentTimeMillis() - failAt < FAIL_RETRY_MS) return emptyList()
-        val list = loadFile(context, file)
-        if (list.isNotEmpty()) {
-            cache[path] = list
-            lastFail.remove(path)
-        } else {
-            lastFail[path] = System.currentTimeMillis()
+        val lock = LoadGate.lockFor("hiki:$path")
+        if (!LoadGate.acquire(lock)) return emptyList()
+        try {
+            cache[path]?.let { return it }
+            if (path in loading) return emptyList()
+            loading.add(path)
+            try {
+                val list = try {
+                    LoadGate.withSlot { loadFile(context, file) }
+                } catch (e: LoadGate.LoadQueueBusyException) {
+                    // Bounded slot wait expired: treat it as a failure of THIS
+                    // extension and let the caller carry on with the rest,
+                    // instead of throwing into the Home / search coroutine
+                    // (a single jam used to abort the entire sweep, which is
+                    // why nothing was searched after it got stuck once).
+                    lastError = e.message
+                    emptyList()
+                }
+                if (list.isNotEmpty()) {
+                    cache[path] = list
+                    lastFail.remove(path)
+                } else {
+                    lastFail[path] = System.currentTimeMillis()
+                }
+                return list
+            } finally {
+                loading.remove(path)
+            }
+        } finally {
+            lock.unlock()
         }
-        return list
     }
 
-    @Synchronized
     fun reload(context: Context, file: File): List<HikariProvider> {
-        val list = loadFile(context, file)
         val path = file.absolutePath
-        if (list.isNotEmpty()) {
-            cache[path] = list
-            lastFail.remove(path)
-        } else {
-            cache.remove(path)
-            lastFail[path] = System.currentTimeMillis()
+        val lock = LoadGate.lockFor("hiki:$path")
+        if (!LoadGate.acquire(lock)) return emptyList()
+        try {
+            loading.add(path)
+            val list = try {
+                LoadGate.withSlot { loadFile(context, file) }
+            } catch (e: LoadGate.LoadQueueBusyException) {
+                lastError = e.message
+                emptyList()
+            }
+            if (list.isNotEmpty()) {
+                cache[path] = list
+                lastFail.remove(path)
+            } else {
+                cache.remove(path)
+                lastFail[path] = System.currentTimeMillis()
+            }
+            return list
+        } finally {
+            loading.remove(path)
+            lock.unlock()
         }
-        return list
     }
 
     private fun loadFile(context: Context, file: File): List<HikariProvider> {

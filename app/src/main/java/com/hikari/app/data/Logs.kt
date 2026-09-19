@@ -9,6 +9,9 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * On-device rolling logs, so a bug report is a share button instead of a photo
@@ -26,6 +29,16 @@ import java.util.Locale
  * Everything is best-effort: a log write must never be the thing that crashes
  * the app, so every file operation is wrapped and the in-memory ring keeps
  * working even if the directory can't be created.
+ *
+ * FILE I/O IS OFF THE CALLING THREAD. [log] is called for every interesting UI
+ * event — i.e. on the MAIN thread — and it used to append to `app.log` and
+ * stat the file inline to check the roll-over size. On a slow/cheap device that
+ * is a disk write plus an `fstat` in the middle of a frame, on every event, and
+ * it is invisible in a profile until the list starts to jank. Now [log] only
+ * touches the in-memory ring and hands the line to a single daemon writer
+ * thread ([queue]), which owns the files: ordering is preserved, rotation
+ * happens there, and a caller that needs to READ the files (Settings → share
+ * logs, the crash banner) calls [flush] first.
  */
 object Logs {
 
@@ -35,6 +48,10 @@ object Logs {
     /** How many recent lines the crash report carries as breadcrumbs. */
     private const val RING_MAX = 300
 
+    /** How long a reader waits for the writer to drain before giving up (a
+     *  log file must never be able to hang the Settings screen). */
+    private const val FLUSH_TIMEOUT_MS = 2_000L
+
     private val lock = Any()
     private val ring = ArrayDeque<String>(RING_MAX)
     private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -43,6 +60,84 @@ object Logs {
     /** SimpleDateFormat is not thread-safe: every format call happens under
      *  [lock] (logging runs on the main thread AND on IO threads). */
     private fun stampOf(fmt: SimpleDateFormat): String = synchronized(lock) { fmt.format(Date()) }
+
+    /** One queued file operation. The writer thread is the ONLY thing that ever
+     *  touches the log files — that is what keeps `log()` free of disk I/O. */
+    private sealed class Op {
+        /** Append [text] (already newline-terminated) to app.log. */
+        class Append(val text: String) : Op()
+        /** Overwrite a whole file (the crash report). */
+        class Replace(val name: String, val text: String) : Op()
+        /** Delete everything (or just the crash report) on the writer thread. */
+        class Delete(val name: String?) : Op()
+        /** Signal that every earlier op has been applied. */
+        class Flush(val done: CountDownLatch) : Op()
+    }
+
+    private val queue = LinkedBlockingQueue<Op>()
+
+    /**
+     * The single log writer. Daemon + owned by this object, so the app shutting
+     * down is never delayed by it, and its own failures can never propagate
+     * into user code (every op is wrapped).
+     */
+    private val writer: Thread by lazy {
+        Thread({
+            while (true) {
+                val op = try {
+                    queue.take()
+                } catch (e: InterruptedException) {
+                    break
+                }
+                try {
+                    applyOp(op)
+                } catch (t: Throwable) {
+                    // Best effort by design: logging must never be the thing
+                    // that crashes the app.
+                }
+            }
+        }, "hikari-log").apply { isDaemon = true; start() }
+    }
+
+    private fun applyOp(op: Op) {
+        val d = dir
+        when (op) {
+            is Op.Append -> {
+                if (d == null) return
+                runCatching {
+                    if (fileBytes(d, "app.log") > FILE_MAX_BYTES) rotate(d)
+                    File(d, "app.log").appendText(op.text)
+                }
+            }
+            is Op.Replace -> {
+                if (d == null) return
+                runCatching { File(d, op.name).writeText(op.text) }
+            }
+            is Op.Delete -> {
+                if (d == null) return
+                runCatching {
+                    if (op.name == null) {
+                        File(d, "app.log").delete()
+                        File(d, "app.previous.log").delete()
+                        File(d, "crash.log").delete()
+                    } else {
+                        File(d, op.name).delete()
+                    }
+                }
+            }
+            is Op.Flush -> op.done.countDown()
+        }
+    }
+
+    /** Blocks until the writer has applied everything queued before this call
+     *  (bounded by [FLUSH_TIMEOUT_MS]), so a reader sees a complete file. */
+    fun flush() {
+        if (!enabled) return
+        val done = CountDownLatch(1)
+        queue.offer(Op.Flush(done))
+        writer // ensure the thread exists even if every earlier op was dropped
+        runCatching { done.await(FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+    }
 
     @Volatile
     private var dir: File? = null
@@ -77,8 +172,9 @@ object Logs {
                 if (!d.isDirectory) return
                 dir = d
                 enabled = true
-                writeLineUnlocked("app.log", "=".repeat(64))
-                writeLineUnlocked("app.log", "session start · $versionLine · ${deviceLine()}")
+                writer // start the writer before anything is queued
+                append("=".repeat(64) + "\n")
+                append("session start · $versionLine · ${deviceLine()}\n")
             }.onFailure { Log.w("HikariLogs", "init failed", it) }
         }
     }
@@ -88,10 +184,8 @@ object Logs {
     /** Append one line to the in-memory ring and (when ready) to `app.log`. */
     fun log(tag: String, message: String) {
         val line = "${stampOf(stamp)} [${Thread.currentThread().name}] $tag: $message"
-        synchronized(lock) {
-            pushRing(line)
-            if (enabled) writeLineUnlocked("app.log", line)
-        }
+        synchronized(lock) { pushRing(line) }
+        if (enabled) append(line + "\n")
         runCatching { Log.d("Hikari/$tag", message) }
     }
 
@@ -99,18 +193,16 @@ object Logs {
     fun logError(tag: String, message: String, t: Throwable? = null) {
         val suffix = if (t == null) "" else " · ${t.javaClass.simpleName}: ${t.message}"
         log("$tag!", message + suffix)
-        if (t != null) {
-            synchronized(lock) {
-                if (enabled) {
-                    runCatching { File(dir, "app.log").appendText(stackTrace(t)) }
-                }
-            }
-        }
+        if (t != null && enabled) append(stackTrace(t))
     }
 
     /**
      * Write the full crash report for an uncaught exception. Returns the report
      * text so the caller can surface it in the in-app crash banner.
+     *
+     * crash.log is written SYNCHRONOUSLY (after draining the queue, so its
+     * breadcrumbs include everything that happened): the process may be killed
+     * the instant this returns, and a queued write could be lost.
      */
     fun recordCrash(threadName: String, t: Throwable): String {
         val report = buildString {
@@ -125,13 +217,16 @@ object Logs {
             appendLine("--- last log lines (breadcrumbs) ---")
             snapshotLocked(RING_MAX).forEach { appendLine(it) }
         }
-        synchronized(lock) {
-            pushRing("${stampOf(stamp)} [crash] $threadName: ${t.javaClass.name}: ${t.message}")
-            if (enabled) {
-                // Exactly one crash file: the newest crash replaces the last.
-                runCatching { File(dir, "crash.log").writeText(report) }
-                writeLineUnlocked("app.log", "${stampOf(stamp)} [crash] ${t.javaClass.simpleName}: ${t.message}")
-            }
+        val crashLine = "${stampOf(stamp)} [crash] $threadName: ${t.javaClass.name}: ${t.message}"
+        synchronized(lock) { pushRing(crashLine) }
+        if (enabled) {
+            // Drain first: the report's breadcrumbs are already snapshotted on
+            // the main thread, but app.log should reach the crash line before
+            // the report is offered for sharing.
+            flush()
+            // Exactly one crash file: the newest crash replaces the last.
+            runCatching { dir?.let { File(it, "crash.log").writeText(report) } }
+            append("$crashLine\n")
         }
         return report
     }
@@ -165,34 +260,42 @@ object Logs {
     }
 
     /** Files that actually exist — what the share button hands to Android. */
-    fun existingFiles(context: Context): List<LogFile> =
-        logFiles(context).filter { it.file.exists() && it.file.length() > 0L }
+    fun existingFiles(context: Context): List<LogFile> {
+        flush()
+        return logFiles(context).filter { it.file.exists() && it.file.length() > 0L }
+    }
 
     /** True when a crash has been recorded (the Home banner uses this too). */
-    fun hasCrash(context: Context): Boolean =
-        runCatching { File(dir ?: File(context.filesDir, "logs"), "crash.log").let { it.exists() && it.length() > 0L } }
-            .getOrDefault(false)
+    fun hasCrash(context: Context): Boolean {
+        flush()
+        return runCatching {
+            File(dir ?: File(context.filesDir, "logs"), "crash.log").let { it.exists() && it.length() > 0L }
+        }.getOrDefault(false)
+    }
 
     /** The last recorded crash report, or null. */
-    fun crashText(context: Context): String? =
-        runCatching {
+    fun crashText(context: Context): String? {
+        flush()
+        return runCatching {
             val f = File(dir ?: File(context.filesDir, "logs"), "crash.log")
             if (f.exists() && f.length() > 0L) f.readText() else null
         }.getOrNull()
+    }
 
     /** Delete all three files (and the in-memory breadcrumbs). */
     fun clear(context: Context) {
-        synchronized(lock) {
-            ring.clear()
-            logFiles(context).forEach { runCatching { it.file.delete() } }
-        }
+        // Drain first, then delete ON THE WRITER THREAD — a delete racing a
+        // queued append would otherwise resurrect the file it just removed.
+        flush()
+        synchronized(lock) { ring.clear() }
+        if (enabled) queue.offer(Op.Delete(null))
+        else logFiles(context).forEach { runCatching { it.file.delete() } }
     }
 
     /** Delete only the crash report (the Home banner's dismiss button). */
     fun clearCrash(context: Context) {
-        synchronized(lock) {
-            runCatching { File(dir ?: File(context.filesDir, "logs"), "crash.log").delete() }
-        }
+        if (enabled) queue.offer(Op.Delete("crash.log"))
+        else runCatching { File(dir ?: File(context.filesDir, "logs"), "crash.log").delete() }
     }
 
     /** The in-memory breadcrumb snapshot, newest last. */
@@ -206,15 +309,14 @@ object Logs {
         ring.addLast(line)
     }
 
-    private fun writeLineUnlocked(name: String, line: String) {
-        val d = dir ?: return
-        runCatching {
-            if (name == "app.log" && fileBytes(d, name) > FILE_MAX_BYTES) rotateUnlocked(d)
-            File(d, name).appendText(line + "\n")
-        }
+    /** Hands [text] to the writer thread. Returns immediately — this is the
+     *  whole point of the queue (it is called on the main thread). */
+    private fun append(text: String) {
+        queue.offer(Op.Append(text))
+        writer
     }
 
-    private fun rotateUnlocked(d: File) {
+    private fun rotate(d: File) {
         runCatching {
             val previous = File(d, "app.previous.log")
             if (previous.exists()) previous.delete()

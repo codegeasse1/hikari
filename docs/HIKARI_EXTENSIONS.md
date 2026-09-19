@@ -38,6 +38,25 @@ interface HikariProvider {
 A minimal extension implements `search` + `getStreams` (or `catalogs` +
 `getCatalog` for a catalog-only source). Everything else has a safe default.
 
+**`page` is 1-based.** The first page is `1`, and every caller passes `1` (the
+catalog pager starts at 1, `skip` is computed as `(page - 1) * 100`). An
+extension that has no real pagination should return its content for `page <= 1`
+and an empty list for anything higher — guarding on `page > 0` makes the
+provider look permanently empty (this exact off-by-one made every installed
+SkyStream extension report "Couldn't load …" on Home and answer every search in
+5ms with "no matching title").
+
+## Extensions behind a verification wall are skipped silently
+
+If an extension answers with a browser-verification wall (its own error text is
+a challenge page, or its declared site is a host that already answered a
+challenge we could not pass), Hikari does **not** search it again for the rest
+of the session: no search slot, no cold plugin load, no entry in the server
+chooser's progress line, and no message about the block anywhere in the UI. The
+record expires after 10 minutes, so an extension becomes askable again on its
+own. The globe (WebView) button still opens the extension's own site if the user
+wants to look.
+
 ## The SDK helpers (`HikariNet`)
 
 ```kotlin

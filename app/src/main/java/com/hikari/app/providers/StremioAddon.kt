@@ -164,7 +164,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val m = loadManifest() ?: run {
             catalogErrors[config.id] =
                 "Could not load manifest from $base/manifest.json — the host may be down, " +
-                    "blocking non-browser requests, or behind Cloudflare."
+                    "or blocking non-browser requests."
             streamOnlyAddons.remove(config.id)
             return emptyList()
         }

@@ -10,8 +10,10 @@ import com.hikari.app.data.Logs
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
+import com.hikari.app.net.DohDns
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
+import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.providers.ProviderManager
 import com.lagradost.api.setContext
@@ -31,6 +33,9 @@ import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.conscrypt.Conscrypt
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.addSingleton
+import uy.kohesive.injekt.api.addSingletonFactory
 import java.io.File
 import java.security.Security
 import java.util.concurrent.TimeUnit
@@ -41,10 +46,25 @@ class HikariApp : Application() {
         lateinit var instance: HikariApp
             private set
 
-        /** Stack trace of the last uncaught crash (shown as a Home banner). */
+        /** Stack trace of the last uncaught crash (shown as a one-shot Home
+         *  warning — see [crashNoticeShown]). */
         @Volatile
         var lastCrash: String? = null
             private set
+
+        /**
+         * True when this exact crash has already been announced to the user
+         * before, so the warning is shown ONCE per crash instead of on every
+         * launch (the log file itself is kept for Settings → Logs, which is why
+         * the warning can't simply call [clearCrash]).
+         */
+        @Volatile
+        var crashNoticeShown: Boolean = false
+            private set
+
+        /** Fingerprint of the crash currently in [lastCrash]. */
+        @Volatile
+        private var crashFp: Int = 0
 
         /**
          * The current MainActivity, set on create and cleared on destroy. The
@@ -109,6 +129,49 @@ class HikariApp : Application() {
      *  view instead of reloading the website's home page). */
     val homeTabRequest = MutableStateFlow(0)
 
+    /** Bumped by [onContentLanguageChanged] whenever the language TMDB titles
+     *  and overviews are fetched in changes. Screens that hold localized
+     *  content watch this and rebuild (see HomeViewModel). */
+    val contentLanguageRevision = MutableStateFlow(0L)
+
+    /** The TMDB language tag last handed to the resolver — null until the first
+     *  one, so the app's own launch value can be told apart from a real change
+     *  (and a change can be spotted even after the Activity was recreated for an
+     *  app-language switch, when nothing else would survive to compare with). */
+    @Volatile
+    private var appliedContentLanguage: String? = null
+
+    /**
+     * Point TMDB at [tag] and, when that is a CHANGE from the language already in
+     * use, drop the localized content that was fetched under the old one. Called
+     * from the main screen whenever the setting (or the app language it follows)
+     * moves — see [onContentLanguageChanged]. */
+    fun applyContentLanguage(tag: String) {
+        val previous = appliedContentLanguage
+        appliedContentLanguage = tag
+        com.hikari.app.nuvio.TmdbResolver.contentLanguage = tag
+        if (previous != null && previous != tag) onContentLanguageChanged()
+    }
+
+    /**
+     * The user just changed the language TMDB metadata is fetched in
+     * (Settings → Appearance & Theme → Title language (TMDB)).
+     *
+     * `TmdbResolver.contentLanguage` is already switched by then (see
+     * [applyContentLanguage]) — this is about the results that were fetched under
+     * the OLD language and are still held in memory: the built Home feed, a saved
+     * TMDB source's row title, the search grid. Nothing that made those requests
+     * can know the language moved, so they are dropped here, and the screens
+     * watching [contentLanguageRevision] fetch again. That is what makes the
+     * setting take effect the moment it is picked instead of only after the app
+     * is restarted.
+     */
+    fun onContentLanguageChanged() {
+        runCatching { com.hikari.app.data.TmdbSources.clearLocalizedNames() }
+        runCatching { com.hikari.app.data.SearchResultsCache.clear() }
+        contentLanguageRevision.value = contentLanguageRevision.value + 1L
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -117,9 +180,40 @@ class HikariApp : Application() {
         Logs.init(this)
         Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
+        // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
+        // loader builds a class loader over the .ext and instantiates a source,
+        // and the source immediately resolves its own dependencies out of
+        // Mihon's global `Injekt` container (`Injekt.get<Application>()` for its
+        // preferences, `Json`, `NetworkHelper`, `JavaScriptEngine`, …). Hikari
+        // has no DI container, so the patched Injekt singleton is installed and
+        // primed here — before anything can possibly load an extension.
+        runCatching { dev.mihon.injekt.patchInjekt() }
+        runCatching { registerAniyomiSingletons() }
         initCloudStream(this)
         store = AppStore(this)
+        // Restore the saved app language BEFORE any Activity is created, so the
+        // whole UI (player overlay labels, content descriptions, settings)
+        // comes up in the chosen language instead of flashing English first.
+        runCatching {
+            com.hikari.app.ui.LanguageManager.apply(
+                kotlinx.coroutines.runBlocking { store.language() }
+            )
+        }
         providers = ProviderManager(store)
+        // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
+        // verification page opens only when the user taps the WebView (globe)
+        // button themselves (see CloudflareVerifier).
+        //
+        // Extensions don't have to play by that rule — Cinemacity opens its own
+        // Cloudflare WebView in the middle of loading sources — so the switches
+        // that gate those pages are forced off here (and again whenever a
+        // plugin's settings sheet closes). Settings → Privacy & Browsing can
+        // let them back through.
+        appScope.launch {
+            runCatching {
+                ExtensionVerifyGuard.apply(this@HikariApp, store.extensionVerifyWebview())
+            }
+        }
         // "Your connection looks slow?" tip: measures in the background while a
         // play is starting and only speaks up with real evidence (see SlowNetTip).
         SlowNetTip.init(this)
@@ -128,6 +222,20 @@ class HikariApp : Application() {
         appScope.launch {
             store.slowConnectionFlow().collect { NetTuning.setSlowConnection(it) }
         }
+        // Same for DNS mode: the resolver (Settings → Network and Internet) is
+        // read synchronously by DohDns on every lookup.
+        appScope.launch {
+            store.dnsProviderFlow().collect { NetTuning.setDnsProvider(it) }
+        }
+        appScope.launch {
+            store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
+        }
+        // Player UI skin (Settings → Player → Player UI): mirrored into
+        // PlayerSkins because PlayerActivity is a View-based screen that has to
+        // know the value synchronously while its controller is being inflated.
+        appScope.launch {
+            store.playerSkinFlow().collect { com.hikari.app.player.PlayerSkins.setCurrent(it) }
+        }
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
@@ -135,6 +243,10 @@ class HikariApp : Application() {
             // (fast DataStore read) so a WebView opened right after launch can
             // apply them on its first page instead of showing them after a race.
             runCatching { elementBlocks = store.elementBlocks() }
+            // Player UI skin: seed the synchronous mirror as well as collecting
+            // the flow, so a player opened immediately after launch (before the
+            // flow's first emission) still gets the right skin.
+            runCatching { com.hikari.app.player.PlayerSkins.setCurrent(store.playerSkin()) }
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()
@@ -170,6 +282,18 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
             }
+            // First run: seed the community SkyStream extension repos too, so
+            // SkyStream extensions are installable from the Extensions screen
+            // without hunting for a repo URL.
+            runCatching {
+                com.hikari.app.skystream.SkyStreamPluginManager.seedDefaults(this@HikariApp, store)
+            }
+            // First run: seed the Aniyomi extension repo (Aniyomi's official
+            // index.min.json) so Aniyomi-extensions are installable from the
+            // Extensions screen without hunting for a repo URL.
+            runCatching {
+                com.hikari.app.aniyomi.AniyomiExtensionManager.seedDefaults(this@HikariApp, store)
+            }
             // First run only: add the bundled Hikari (.hiki) and CloudStream
             // extension repos, so the Extensions screen ("Sources, repos &
             // providers") is never empty on a fresh install and the built-in
@@ -202,9 +326,65 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
+            // Aniyomi extensions are the same story: one installed .ext can
+            // register several sources, and the set can move when the extension
+            // is updated, so rebuild the stored configs from the loaded
+            // extension and refresh if anything moved.
+            runCatching {
+                if (com.hikari.app.aniyomi.AniyomiProviderSync.reconcile(this@HikariApp, store)) {
+                    Logs.log("Providers", "Aniyomi sync changed the provider list — refreshing")
+                    providers.refresh()
+                }
+            }
+            // Warm the installed Aniyomi extensions here so the first catalog or
+            // search tap doesn't pay the class-loading cost on the UI thread.
+            runCatching {
+                providers.providers.value
+                    .filterIsInstance<com.hikari.app.aniyomi.AniyomiProvider>()
+                    .forEach { it.warm() }
+            }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
+            // Re-assert the chosen launcher icon. The enabled `activity-alias` is
+            // part of the installed app, not of the restored preferences, so a
+            // backup restore / device copy would otherwise leave the user with
+            // the default icon while Settings still shows their pick.
+            runCatching {
+                com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
+            }
             Logs.log("App", "startup complete (${providers.providers.value.size} providers)")
+        }
+    }
+
+    /**
+     * Prime Mihon's Injekt container with the singletons an Aniyomi extension
+     * can ask for. `Application` is the one that matters most — every
+     * `ConfigurableAnimeSource` / `AnimeHttpSource` preferences accessor is
+     * `Injekt.get<Application>().getSharedPreferences(...)`, and a source that
+     * can't get its preferences throws before it can list anything. `Json`,
+     * `NetworkHelper` and `JavaScriptEngine` are what `JsonExtensions.defaultJson`,
+     * `AnimeHttpSource.network` and the JS-driven sources inject.
+     *
+     * All of them are singletons so every installed extension shares Hikari's
+     * one OkHttp stack (cookies + 5 MiB cache) instead of building its own.
+     * Failures are swallowed: an extension asking for something unregistered
+     * gets an `InjektionException` at its own call site, which the provider
+     * already turns into a per-source error message rather than a crash.
+     */
+    private fun registerAniyomiSingletons() {
+        Injekt.addSingleton<Application>(this)
+        Injekt.addSingleton<Context>(this)
+        Injekt.addSingletonFactory<kotlinx.serialization.json.Json> {
+            kotlinx.serialization.json.Json {
+                ignoreUnknownKeys = true
+                explicitNulls = false
+            }
+        }
+        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.NetworkHelper> {
+            eu.kanade.tachiyomi.network.NetworkHelper(this)
+        }
+        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.JavaScriptEngine> {
+            eu.kanade.tachiyomi.network.JavaScriptEngine(this)
         }
     }
 
@@ -217,7 +397,15 @@ class HikariApp : Application() {
         runCatching {
             val text = Logs.crashText(this)
                 ?: File(cacheDir, "crash.log").takeIf { it.exists() }?.readText()
-            if (!text.isNullOrBlank()) lastCrash = text.take(1600)
+            if (!text.isNullOrBlank()) {
+                lastCrash = text.take(1600)
+                crashFp = text.hashCode()
+                // Announce a given crash once: the log stays in Settings → Logs
+                // forever, so re-warning on every launch is pure nagging.
+                crashNoticeShown = runCatching {
+                    crashNoticeFpFile().takeIf { it.exists() }?.readText()?.trim() == crashFp.toString()
+                }.getOrDefault(false)
+            }
         }
         Thread.setDefaultUncaughtExceptionHandler { thread, t ->
             // The full report (with breadcrumbs) goes to filesDir/logs/crash.log
@@ -268,8 +456,26 @@ class HikariApp : Application() {
         runCatching { Logs.clearCrash(this) }
     }
 
+    /** Where the fingerprint of the already-announced crash is kept. */
+    private fun crashNoticeFpFile() = File(filesDir, "logs/crash.notified")
+
     /**
-     * WebView user-agent override (Settings → WebView user agent). Default ON:
+     * The user has seen the crash warning. Unlike [clearCrash] this KEEPS the
+     * crash log (Settings → Logs still has it to share with the developer) and
+     * only remembers that this crash was already announced, so the warning never
+     * reappears for it.
+     */
+    fun markCrashNoticeShown() {
+        lastCrash = null
+        crashNoticeShown = true
+        runCatching {
+            crashNoticeFpFile().parentFile?.mkdirs()
+            crashNoticeFpFile().writeText(crashFp.toString())
+        }
+    }
+
+    /**
+     * WebView user-agent override (Settings → Privacy & Browsing → WebView user agent). Default ON:
      * the WebView advertises the STOCK Android WebView UA — the fingerprint the
      * engine actually presents, which is what makes Cloudflare's JS challenge
      * (cf_clearance) complete instead of looping on a desktop UA claim. Off +
@@ -317,6 +523,7 @@ class HikariApp : Application() {
                 maxRequestsPerHost = 32
             }
             val client = OkHttpClient.Builder()
+                .dns(DohDns)
                 .dispatcher(dispatcher)
                 .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
@@ -368,6 +575,27 @@ class HikariApp : Application() {
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
+                // Extension logos and addon icons are frequently `.svg`
+                // (SkyStream addon manifests point at e.g.
+                // dramayo.stream/static/dramayo.svg, several CS3 repos ship
+                // vector icons), and Coil 2 has no SVG support at all — every
+                // one of those decodes to a failure, which is why such rows
+                // showed the monochrome puzzle-piece glyph. The decoder is
+                // registered here (once, for the whole app) so repository
+                // listings, installed-extension rows and Stremio addon icons
+                // all render their real logo.
+                .components {
+                    add(coil.decode.SvgDecoder.Factory())
+                    // Animated GIF covers (collections/folders): Coil's default
+                    // decoders only ever draw the first frame. ImageDecoder
+                    // handles GIFs on API 28+ (and is what the platform
+                    // recommends); the older GifDecoder covers the rest.
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        add(coil.decode.ImageDecoderDecoder.Factory())
+                    } else {
+                        add(coil.decode.GifDecoder.Factory())
+                    }
+                }
                 // Posters whose CDN sends no cache headers (very common on the
                 // aggregator hosts) should still land in Coil's disk cache.
                 .respectCacheHeaders(false)
@@ -447,6 +675,7 @@ class HikariApp : Application() {
             // 50MiB cache, optional SSL-ignore) so slow anime sites don't throw
             // on the 10s okhttp defaults.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
+                .dns(DohDns)
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .retryOnConnectionFailure(true)
@@ -479,6 +708,33 @@ class HikariApp : Application() {
                     Class.forName("com.lagradost.cloudstream3.utils.ExtractorApiKt")
                 } catch (t: Throwable) {
                     android.util.Log.e("HikariApp", "extractor registry init failed", t)
+                }
+            }
+
+            // Pre-warm the classes the plugin path is known to touch, so a
+            // missing/broken one shows up as a clear, logged cause chain at
+            // startup instead of a bare NoClassDefFoundError thrown from deep
+            // inside a plugin (or — worse — a plugin settings dialog, which is
+            // where CloudStream's own CommonActivity.showToast died on
+            // `databinding/ToastBinding` and took the app down with it).
+            CoroutineScope(Dispatchers.IO).launch {
+                val probes = listOf(
+                    "com.lagradost.cloudstream3.syncproviders.AccountManager",
+                    "com.lagradost.cloudstream3.databinding.ToastBinding",
+                    "com.lagradost.cloudstream3.CommonActivity",
+                    "com.lagradost.cloudstream3.R${'$'}string",
+                )
+                for (name in probes) {
+                    try {
+                        Class.forName(name)
+                        Logs.log("CloudStream", "pre-warm ok: $name")
+                    } catch (t: Throwable) {
+                        Logs.log(
+                            "CloudStream",
+                            "pre-warm FAILED: $name — ${t.javaClass.name}: ${t.message}" +
+                                (t.cause?.let { " (cause ${it.javaClass.name}: ${it.message})" } ?: ""),
+                        )
+                    }
                 }
             }
         } catch (t: Throwable) {

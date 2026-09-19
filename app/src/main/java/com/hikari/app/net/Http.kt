@@ -31,18 +31,55 @@ object Http {
 
     private lateinit var client: OkHttpClient
 
+    /** Same tuning, WITHOUT the Cloudflare interceptor — see [getQuiet]. */
+    private lateinit var quietClient: OkHttpClient
+
     fun init() {
         client = OkHttpClient.Builder()
             .followRedirects(true)
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            // Auto Cloudflare handling: attaches a WebView cf_clearance cookie
-            // when present, and on a challenge auto-opens the verify WebView
-            // and retries with the fresh cookie (see CloudflareVerifier).
+            // Cloudflare handling: attaches a WebView cf_clearance cookie when
+            // one is present, and marks the host as blocked when a challenge
+            // comes back — Hikari itself NEVER opens the verify WebView here.
+            // The user opens it by tapping the globe button, and the requests
+            // retry with the cookie that tap earned (see CloudflareVerifier).
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
+            .dns(DohDns)
+            .build()
+        quietClient = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .dns(DohDns)
             .build()
     }
+
+    /**
+     * A request that bypasses [CloudflareVerifier] entirely. Used by the
+     * background decorating lookups ([com.hikari.app.data.Ratings]): those go to
+     * third-party review sites that put a challenge in front of a plain HTTP
+     * client, and the interceptor would record that host as "blocked" — the flag
+     * the Home screen turns into "verification needed on X". That banner is
+     * about the user's own extensions, so a review site must never be able to
+     * raise it.
+     */
+    fun getQuiet(url: String, headers: Map<String, String> = emptyMap()): Response {
+        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        return quietClient.newCall(builder.build()).execute()
+    }
+
+    /** [getQuiet] as text, null for any non-2xx (so a guessed page URL that
+     *  does not exist is simply "nothing found"). */
+    fun getStringQuiet(url: String, headers: Map<String, String> = emptyMap()): String? =
+        try {
+            getQuiet(url, headers).use { if (it.isSuccessful) it.body?.string() else null }
+        } catch (e: Exception) {
+            null
+        }
 
     fun get(url: String, headers: Map<String, String> = emptyMap()): Response {
         val builder = Request.Builder().url(url).header("User-Agent", UA)
@@ -71,6 +108,29 @@ object Http {
         contentType: String = "application/json; charset=utf-8",
     ): String? = try {
         post(url, body, headers, contentType).use { if (it.isSuccessful) it.body?.string() else null }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * [postString] without [CloudflareVerifier]: for the background decorating
+     * lookups (anime characters from AniList, see [com.hikari.app.data.AnimeCast])
+     * whose host must never be able to raise the Home screen's "verification
+     * needed" banner — that banner is about the user's own extensions.
+     */
+    fun postStringQuiet(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): String? = try {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .post(body.toRequestBody(contentType.toMediaType()))
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        quietClient.newCall(builder.build()).execute()
+            .use { if (it.isSuccessful) it.body?.string() else null }
     } catch (e: Exception) {
         null
     }

@@ -2,12 +2,19 @@ package com.hikari.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.byteArrayPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hikari.app.net.AdBlocker
+import com.hikari.app.net.DnsProviders
+import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.UiScale
@@ -30,6 +37,19 @@ data class LastSource(
     val headerVariant: Int = 0,
 )
 
+/**
+ * One stored preference in a backup file: its key, a one-letter type code and
+ * the value itself (already flattened to something JSON can carry). See
+ * [AppStore.snapshotPreferences] for why the type rides along explicitly.
+ */
+data class PrefRecord(
+    val key: String,
+    /** "s" string · "b" boolean · "i" int · "l" long · "f" float · "d" double ·
+     *  "ss" set of strings · "bin" base64 bytes. */
+    val type: String,
+    val value: Any?,
+)
+
 class AppStore(private val ctx: Context) {
 
     private val store get() = ctx.hkDataStore
@@ -38,6 +58,9 @@ class AppStore(private val ctx: Context) {
         val PROVIDERS = stringPreferencesKey("providers")
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
+        /** User-made collections (name + folders of catalog sources), stored as
+         *  one JSON array. See [Collection]. */
+        val COLLECTIONS = stringPreferencesKey("collections")
         val SITES = stringPreferencesKey("sites")
         val USERS = stringPreferencesKey("userscripts")
         val THEME = stringPreferencesKey("theme")
@@ -60,9 +83,12 @@ class AppStore(private val ctx: Context) {
         val AD_WHITE = stringPreferencesKey("adWhite")
         val WEBVIEW_REDIRECT = booleanPreferencesKey("webviewRedirect")
         val WEBVIEW_POPUP = booleanPreferencesKey("webviewPopup")
+        val CF_AUTO_SOLVE = booleanPreferencesKey("cfAutoSolve")
+        val EXT_VERIFY_WEBVIEW = booleanPreferencesKey("extVerifyWebview")
         val WEBVIEW_REDIRECT_ALLOW = stringPreferencesKey("webviewRedirectAllow")
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
+        val LANGUAGE = stringPreferencesKey("appLanguage")
         val YTDLP_ENABLED = booleanPreferencesKey("ytdlpEnabled")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
@@ -70,14 +96,403 @@ class AppStore(private val ctx: Context) {
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
+
+        /** Resolver chosen in Settings → Network and Internet → DNS mode
+         *  ([com.hikari.app.net.DnsProviders] keys), and the address a Custom
+         *  choice points at. */
+        val DNS_PROVIDER = stringPreferencesKey("dnsProvider")
+        val CUSTOM_DNS = stringPreferencesKey("customDns")
         val PLAY_WAIT_SERVERS = booleanPreferencesKey("playWaitServers")
         val PLAY_MIN_SERVERS = intPreferencesKey("playMinServers")
         val ASK_SERVER = booleanPreferencesKey("askServerOnPlay")
+        val FAILOVER_ASK = booleanPreferencesKey("failoverAskOnFailure")
         val SHOW_LOADING_BANNER = booleanPreferencesKey("showLoadingBanner")
         val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
+        val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
+        val APP_ICON = stringPreferencesKey("appIcon")
+        /** Language TMDB titles are shown in. "" = follow the app language,
+         *  "none" = leave TMDB on English, otherwise a TMDB code ("es-ES"). */
+        val TMDB_LANGUAGE = stringPreferencesKey("tmdbLanguage")
+        /** Key of the app-wide font (see [com.hikari.app.ui.AppFonts]). */
+        val APP_FONT = stringPreferencesKey("appFont")
+        /** File name (inside filesDir/fonts) of a font the user imported. */
+        val APP_FONT_FILE = stringPreferencesKey("appFontFile")
+        /** The imported font's own display name, for Settings. */
+        val APP_FONT_LABEL = stringPreferencesKey("appFontLabel")
+        /** The user's Library categories ([LibraryCategory] JSON array). */
+        val LIBRARY_CATEGORIES = stringPreferencesKey("libraryCategories")
+        /** uniqueId → category ids ([favoriteCategories]). */
+        val FAVORITE_CATEGORIES = stringPreferencesKey("favoriteCategories")
+        /** Poster & icon styling (see [com.hikari.app.ui.PosterStyle]). */
+        val POSTER_BLUR = intPreferencesKey("posterBlur")
+        val POSTER_CORNER = intPreferencesKey("posterCorner")
+        val POSTER_SHOW_TITLES = booleanPreferencesKey("posterShowTitles")
+        val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
+        val POSTER_GLASS = booleanPreferencesKey("posterGlass")
+        /** The animated/visual treatment drawn over every poster card — see
+         *  [com.hikari.app.ui.PosterEffects]. Stored as its key, so an unknown
+         *  value (a save from a newer build) reads back as "none". */
+        val POSTER_EFFECT = stringPreferencesKey("posterEffect")
+        /** Shape of Home's featured banner — see
+         *  [com.hikari.app.ui.components.HeroStyles]. */
+        val HERO_STYLE = stringPreferencesKey("heroStyle")
+        /** Extra lines the featured banner may draw over its artwork. */
+        val HERO_OVERVIEW = booleanPreferencesKey("heroOverview")
+        val HERO_RATING = booleanPreferencesKey("heroRating")
+        val HERO_META = booleanPreferencesKey("heroMeta")
+        /** How the detail page's header art is laid out — see
+         *  [com.hikari.app.ui.screens.DetailHeroStyles]. */
+        val DETAIL_HERO_STYLE = stringPreferencesKey("detailHeroStyle")
+        /** Which player control shell the player wears — see
+         *  [com.hikari.app.player.PlayerSkins]. */
+        val PLAYER_SKIN = stringPreferencesKey("playerSkin")
+        /** Look of the "finding your server" card — see
+         *  [com.hikari.app.ui.LoadingStyles]. */
+        val LOADING_STYLE = stringPreferencesKey("loadingStyle")
+        /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
+         *  "classic" | "floating" | "animated" (an old stored "borderless" is
+         *  upgraded to "animated" when read). */
+        val NAV_STYLE = stringPreferencesKey("navBarStyle")
+        /** Draw the icon labels ("Home", "Library", …) under the taskbar's
+         *  buttons. On by default; off leaves icon-only buttons. */
+        val TAB_LABELS = booleanPreferencesKey("tabLabels")
+        /** Draw the rating strip on the detail page (IMDb, RT, …). On by
+         *  default: a title's score is part of what the page is for. */
+        val SHOW_DETAIL_RATING = booleanPreferencesKey("showDetailRating")
+        /** "Turn off full screen app mode": keep the system status bar and the
+         *  three-button navigation bar visible everywhere instead of hiding
+         *  them behind an immersive, swipe-to-reveal fullscreen. Off = the app
+         *  is immersive (the way it ships); on = normal windowed layout. */
+        val FULLSCREEN_OFF = booleanPreferencesKey("fullscreenOff")
+    }
+
+    // ---- The launcher icon the user picked (see AppIconManager) ----
+
+    /** Key of the launcher-icon variant in use — one of
+     *  [com.hikari.app.ui.AppIconVariants]. The choice lives in the manifest as
+     *  the enabled `activity-alias`, so this mirror is what lets the app put the
+     *  manifest back in sync after a backup restore drops the setting. */
+    fun appIconFlow(): Flow<String> =
+        store.data.map { it[K.APP_ICON] ?: com.hikari.app.ui.AppIconManager.DEFAULT_KEY }
+
+    suspend fun appIcon(): String = appIconFlow().first()
+
+    suspend fun setAppIcon(key: String) {
+        store.edit { it[K.APP_ICON] = key }
+    }
+
+    // ---- Title language for TMDB metadata ----
+    // The app language already localises Hikari's own interface; this decides
+    // whether TMDB's titles and descriptions follow it too. "" = follow the app
+    // language, "none" = stay on English, otherwise an explicit TMDB code.
+
+    fun tmdbLanguageFlow(): Flow<String> =
+        store.data.map { it[K.TMDB_LANGUAGE] ?: "" }
+
+    suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
+
+    suspend fun setTmdbLanguage(mode: String) {
+        store.edit { it[K.TMDB_LANGUAGE] = mode.trim() }
+    }
+
+    // ---- App-wide font (Settings → Appearance & Theme → App font) ----
+
+    /** Key of the chosen font in [com.hikari.app.ui.AppFonts.CHOICES]. */
+    fun appFontFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT] ?: com.hikari.app.ui.AppFonts.DEFAULT }
+
+    suspend fun appFont(): String = appFontFlow().first()
+
+    suspend fun setAppFont(key: String) {
+        store.edit { it[K.APP_FONT] = key }
+    }
+
+    /** File name (inside `filesDir/fonts`) of a font the user imported, or "".
+     *  Only meaningful while [appFontFlow] is [com.hikari.app.ui.AppFonts.IMPORTED]. */
+    fun appFontFileFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT_FILE] ?: "" }
+
+    suspend fun appFontFile(): String = appFontFileFlow().first()
+
+    /** The imported font's own name (the file's `familyName`), for Settings. */
+    fun appFontLabelFlow(): Flow<String> =
+        store.data.map { it[K.APP_FONT_LABEL] ?: "" }
+
+    suspend fun appFontLabel(): String = appFontLabelFlow().first()
+
+    suspend fun setImportedFont(fileName: String, label: String) {
+        store.edit {
+            it[K.APP_FONT_FILE] = fileName
+            it[K.APP_FONT_LABEL] = label
+        }
+    }
+
+    // ---- Library categories ----
+
+    /** The categories that exist right now (seeded with four on first read). */
+    fun libraryCategoriesFlow(): Flow<List<LibraryCategory>> =
+        store.data.map { parseCategories(it[K.LIBRARY_CATEGORIES]) }
+
+    suspend fun libraryCategories(): List<LibraryCategory> = libraryCategoriesFlow().first()
+
+    suspend fun saveLibraryCategories(list: List<LibraryCategory>) {
+        store.edit { it[K.LIBRARY_CATEGORIES] = encodeCategories(list) }
+    }
+
+    suspend fun addLibraryCategory(name: String): LibraryCategory {
+        val c = LibraryCategory(newId("cat"), name.trim())
+        saveLibraryCategories(libraryCategories() + c)
+        return c
+    }
+
+    /** Renames a category in place — every title filed under it follows. */
+    suspend fun renameLibraryCategory(id: String, name: String) {
+        saveLibraryCategories(
+            libraryCategories().map { if (it.id == id) it.copy(name = name.trim()) else it }
+        )
+    }
+
+    /** Deletes a category and unfiles every title that was in it. */
+    suspend fun removeLibraryCategory(id: String) {
+        saveLibraryCategories(libraryCategories().filter { it.id != id })
+        store.edit { prefs ->
+            val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES])
+            prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(
+                cur.mapValues { (_, set) -> set - id }.filterValues { it.isNotEmpty() }
+            )
+        }
+    }
+
+    /** Title uniqueId → the category ids it is filed under. */
+    fun favoriteCategoriesFlow(): Flow<Map<String, Set<String>>> =
+        store.data.map { parseCategoryMap(it[K.FAVORITE_CATEGORIES]) }
+
+    suspend fun favoriteCategories(): Map<String, Set<String>> = favoriteCategoriesFlow().first()
+
+    /** Replaces one title's filing. An empty set simply forgets the title. */
+    suspend fun setFavoriteCategories(uniqueId: String, categories: Set<String>) {
+        if (uniqueId.isBlank()) return
+        store.edit { prefs ->
+            val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES]).toMutableMap()
+            if (categories.isEmpty()) cur.remove(uniqueId) else cur[uniqueId] = categories
+            prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(cur)
+        }
+    }
+
+    /** Adds categories to whatever a title is already filed under (the
+     *  "Add to library" prompt must never silently unfile something). */
+    suspend fun addFavoriteCategories(uniqueId: String, categories: Set<String>) {
+        if (uniqueId.isBlank() || categories.isEmpty()) return
+        val cur = favoriteCategories()[uniqueId].orEmpty()
+        setFavoriteCategories(uniqueId, cur + categories)
+    }
+
+    // ---- Poster & icon styling ----
+
+    /** Backdrop blur radius in dp behind a poster (0 = the plain art). */
+    fun posterBlurFlow(): Flow<Int> =
+        store.data.map { (it[K.POSTER_BLUR] ?: 0).coerceIn(0, 24) }
+
+    suspend fun posterBlur(): Int = posterBlurFlow().first()
+
+    suspend fun setPosterBlur(value: Int) {
+        store.edit { it[K.POSTER_BLUR] = value.coerceIn(0, 24) }
+    }
+
+    /** Poster corner rounding in dp. */
+    fun posterCornerFlow(): Flow<Int> =
+        store.data.map { (it[K.POSTER_CORNER] ?: 14).coerceIn(0, 28) }
+
+    suspend fun posterCorner(): Int = posterCornerFlow().first()
+
+    suspend fun setPosterCorner(value: Int) {
+        store.edit { it[K.POSTER_CORNER] = value.coerceIn(0, 28) }
+    }
+
+    fun posterShowTitlesFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_TITLES] ?: true }
+
+    suspend fun posterShowTitles(): Boolean = posterShowTitlesFlow().first()
+
+    suspend fun setPosterShowTitles(show: Boolean) {
+        store.edit { it[K.POSTER_SHOW_TITLES] = show }
+    }
+
+    fun posterShowRatingsFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: false }
+
+    suspend fun posterShowRatings(): Boolean = posterShowRatingsFlow().first()
+
+    suspend fun setPosterShowRatings(show: Boolean) {
+        store.edit { it[K.POSTER_SHOW_RATINGS] = show }
+    }
+
+    /** The glass hairline + soft sheen over every poster. */
+    fun posterGlassFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_GLASS] ?: true }
+
+    suspend fun posterGlass(): Boolean = posterGlassFlow().first()
+
+    suspend fun setPosterGlass(on: Boolean) {
+        store.edit { it[K.POSTER_GLASS] = on }
+    }
+
+    /** The visual effect drawn over every poster card. */
+    fun posterEffectFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.PosterEffects.normalize(it[K.POSTER_EFFECT]) }
+
+    suspend fun posterEffect(): String = posterEffectFlow().first()
+
+    suspend fun setPosterEffect(key: String) {
+        store.edit { it[K.POSTER_EFFECT] = com.hikari.app.ui.PosterEffects.normalize(key) }
+    }
+
+    // ---- Home's featured banner ----
+
+    /** How the featured banner is shaped: the carousel, a full-width spotlight,
+     *  a compact strip or the side-by-side showcase. */
+    fun heroStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.components.HeroStyles.normalize(it[K.HERO_STYLE]) }
+
+    suspend fun heroStyle(): String = heroStyleFlow().first()
+
+    suspend fun setHeroStyle(key: String) {
+        store.edit { it[K.HERO_STYLE] = com.hikari.app.ui.components.HeroStyles.normalize(key) }
+    }
+
+    fun heroOverviewFlow(): Flow<Boolean> = store.data.map { it[K.HERO_OVERVIEW] ?: true }
+
+    suspend fun heroOverview(): Boolean = heroOverviewFlow().first()
+
+    suspend fun setHeroOverview(on: Boolean) {
+        store.edit { it[K.HERO_OVERVIEW] = on }
+    }
+
+    fun heroRatingFlow(): Flow<Boolean> = store.data.map { it[K.HERO_RATING] ?: true }
+
+    suspend fun heroRating(): Boolean = heroRatingFlow().first()
+
+    suspend fun setHeroRating(on: Boolean) {
+        store.edit { it[K.HERO_RATING] = on }
+    }
+
+    fun heroMetaFlow(): Flow<Boolean> = store.data.map { it[K.HERO_META] ?: true }
+
+    suspend fun heroMeta(): Boolean = heroMetaFlow().first()
+
+    suspend fun setHeroMeta(on: Boolean) {
+        store.edit { it[K.HERO_META] = on }
+    }
+
+    /** How the detail page's header art is laid out. */
+    fun detailHeroStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.screens.DetailHeroStyles.normalize(it[K.DETAIL_HERO_STYLE]) }
+
+    suspend fun detailHeroStyle(): String = detailHeroStyleFlow().first()
+
+    suspend fun setDetailHeroStyle(key: String) {
+        store.edit { it[K.DETAIL_HERO_STYLE] = com.hikari.app.ui.screens.DetailHeroStyles.normalize(key) }
+    }
+
+    /** Which player control shell the player wears. */
+    fun playerSkinFlow(): Flow<String> =
+        store.data.map { com.hikari.app.player.PlayerSkins.normalize(it[K.PLAYER_SKIN]) }
+
+    suspend fun playerSkin(): String = playerSkinFlow().first()
+
+    suspend fun setPlayerSkin(key: String) {
+        store.edit { it[K.PLAYER_SKIN] = com.hikari.app.player.PlayerSkins.normalize(key) }
+    }
+
+    // ---- The "finding your server" card (Settings → App Layout) ----
+
+    /** Which look the loading card wears — see
+     *  [com.hikari.app.ui.LoadingStyles]. One choice, two screens: the detail
+     *  page shows the card from the tap, and the player continues with the same
+     *  look until the video is on screen. */
+    fun loadingStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.LoadingStyles.normalize(it[K.LOADING_STYLE]) }
+
+    suspend fun loadingStyle(): String = loadingStyleFlow().first()
+
+    suspend fun setLoadingStyle(key: String) {
+        store.edit { it[K.LOADING_STYLE] = com.hikari.app.ui.LoadingStyles.normalize(key) }
+    }
+
+    // ---- Bottom navigation bar layout ----
+
+    /** "classic" (the seamless tonal plate), "floating" (a detached glass pill)
+     *  or "animated" (full bar at the top of a page, floating pill once you
+     *  scroll — see [com.hikari.app.ui.navigation.NavStyles]). */
+    fun navStyleFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.navigation.NavStyles.normalize(
+                it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.ANIMATED
+            )
+        }
+
+    suspend fun navStyle(): String = navStyleFlow().first()
+
+    suspend fun setNavStyle(style: String) {
+        store.edit { it[K.NAV_STYLE] = style }
+    }
+
+    // ---- The taskbar's icon labels (Settings → App Layout) ----
+
+    /** Whether the bottom bar writes each button's name under its icon. On by
+     *  default — that is how the bar ships. */
+    fun tabLabelsFlow(): Flow<Boolean> =
+        store.data.map { it[K.TAB_LABELS] ?: true }
+
+    suspend fun tabLabels(): Boolean = tabLabelsFlow().first()
+
+    suspend fun setTabLabels(show: Boolean) {
+        store.edit { it[K.TAB_LABELS] = show }
+    }
+
+    // ---- The detail page's rating strip (Settings → App Layout) ----
+
+    /** Whether the detail page draws the IMDb/RT/… badges. On unless the user
+     *  turned it off (see [setShowDetailRating]). */
+    fun showDetailRatingFlow(): Flow<Boolean> =
+        store.data.map { it[K.SHOW_DETAIL_RATING] ?: true }
+
+    suspend fun showDetailRating(): Boolean = showDetailRatingFlow().first()
+
+    suspend fun setShowDetailRating(show: Boolean) {
+        store.edit { it[K.SHOW_DETAIL_RATING] = show }
+    }
+
+    // ---- Full screen app mode (Settings → App Layout) ----
+
+    /** True when the user asked for the normal, windowed layout: system status
+     *  bar and the phone's own navigation bar visible on every screen. */
+    fun fullscreenOffFlow(): Flow<Boolean> =
+        store.data.map { it[K.FULLSCREEN_OFF] ?: false }
+
+    suspend fun fullscreenOff(): Boolean = fullscreenOffFlow().first()
+
+    suspend fun setFullscreenOff(off: Boolean) {
+        store.edit { it[K.FULLSCREEN_OFF] = off }
+    }
+
+    // ---- The floating bottom bar: which tab buttons the user keeps ----
+
+    /** Routes of the bottom-bar tabs the user has switched off (see
+     *  [com.hikari.app.ui.navigation.BottomTabs]). Hiding one only removes its
+     *  button — the screen itself stays reachable from inside the app. */
+    fun hiddenTabsFlow(): Flow<Set<String>> =
+        store.data.map { parseStringList(it[K.HIDDEN_TABS]).toSet() }
+
+    suspend fun hiddenTabs(): Set<String> = hiddenTabsFlow().first()
+
+    suspend fun setTabHidden(route: String, hidden: Boolean) {
+        val cur = hiddenTabs()
+        val next = if (hidden) cur + route else cur - route
+        store.edit { it[K.HIDDEN_TABS] = encodeStringList(next.toList()) }
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe
@@ -91,6 +506,29 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setSlowConnection(enabled: Boolean) {
         store.edit { it[K.SLOW_CONNECTION] = enabled }
+    }
+
+    /** The chosen resolver ([com.hikari.app.net.DnsProviders] key). Default is
+     *  "system" — the phone's own DNS, with Hikari's encrypted fallback, i.e.
+     *  exactly the app's behaviour before this setting existed. */
+    fun dnsProviderFlow(): Flow<String> =
+        store.data.map { it[K.DNS_PROVIDER] ?: DnsProviders.SYSTEM }
+
+    suspend fun dnsProvider(): String = dnsProviderFlow().first()
+
+    suspend fun setDnsProvider(key: String) {
+        store.edit { it[K.DNS_PROVIDER] = key }
+    }
+
+    /** What a Custom DNS choice points at, as the user typed it (normalised to
+     *  an endpoint by [DnsProviders.customEndpoint] when it is used). */
+    fun customDnsFlow(): Flow<String> =
+        store.data.map { it[K.CUSTOM_DNS] ?: "" }
+
+    suspend fun customDns(): String = customDnsFlow().first()
+
+    suspend fun setCustomDns(url: String) {
+        store.edit { it[K.CUSTOM_DNS] = url }
     }
 
     /** Playback start rule: false = start the moment the FIRST server is found
@@ -132,6 +570,27 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAskServerOnPlay(ask: Boolean) {
         store.edit { it[K.ASK_SERVER] = ask }
+    }
+
+    /**
+     * What the player does when the server it is playing dies mid-video (a
+     * signed link expired, the mirror went away): on (the default) it asks —
+     * "try the next server" or "choose another server", with a countdown that
+     * switches automatically if the question is ignored. Off, it walks the list
+     * silently like it always did.
+     *
+     * Only a server the USER picked gets the question: a dead link discovered
+     * while the player is still walking the list on its own (the instant-play
+     * start, an automatic failover) keeps advancing on its own, so a title with
+     * a few dud servers never turns into a wall of dialogs.
+     */
+    fun failoverAskOnFailureFlow(): Flow<Boolean> =
+        store.data.map { it[K.FAILOVER_ASK] ?: true }
+
+    suspend fun failoverAskOnFailure(): Boolean = failoverAskOnFailureFlow().first()
+
+    suspend fun setFailoverAskOnFailure(ask: Boolean) {
+        store.edit { it[K.FAILOVER_ASK] = ask }
     }
 
     /** Show the full-screen title card (backdrop + breathing name) from Play
@@ -266,7 +725,7 @@ class AppStore(private val ctx: Context) {
 
     // ---- Accent colours (app + player) ----
 
-    /** The app UI's accent colour (Settings → Appearance → Accent). Defaults to
+    /** The app UI's accent colour (Settings → Appearance & Theme → Accent colour). Defaults to
      *  the amber/gold the app has always used, so an existing install looks
      *  identical until the user picks something else. */
     fun appAccentFlow(): Flow<String> =
@@ -440,6 +899,50 @@ class AppStore(private val ctx: Context) {
         store.edit { it[K.WEBVIEW_POPUP] = enabled }
     }
 
+    /** Legacy preference: "Solve Cloudflare checks automatically" used to exist
+     *  in Settings, and the value is left in place so an old install's stored
+     *  key still reads back cleanly. NOTHING reads it any more and the switch is
+     *  gone on purpose: no Cloudflare challenge is ever loaded on its own, so
+     *  there is nothing to toggle (see CloudflareVerifier). */
+    fun cfAutoSolveFlow(): Flow<Boolean> =
+        store.data.map { it[K.CF_AUTO_SOLVE] ?: false }
+
+    suspend fun cfAutoSolve(): Boolean = cfAutoSolveFlow().first()
+
+    suspend fun setCfAutoSolve(enabled: Boolean) {
+        store.edit { it[K.CF_AUTO_SOLVE] = enabled }
+    }
+
+    /**
+     * Whether EXTENSIONS may open their own Cloudflare verification page.
+     *
+     * OFF (the default) is Hikari's rule: the only thing that can open a
+     * verification page is the user tapping the app's own WebView (globe)
+     * button. Some extensions ship their own Cloudflare WebView and open it in
+     * the middle of loading sources (Cinemacity does — see
+     * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof), so
+     * while this is off the app forces those extensions' own switches to `false`
+     * at launch, again whenever a plugin's settings sheet closes, and whenever
+     * this switch changes.
+     *
+     * ON stops the forcing and nothing else: every read answers whatever the
+     * extension stored, and the extension's own switch keeps its own value. It
+     * deliberately does NOT write `true` into those switches — that would turn
+     * the very page this setting exists to prevent ON, and leave it on. For the
+     * rare case where an extension only works through its own bypass screen.
+     */
+    fun extensionVerifyWebviewFlow(): Flow<Boolean> =
+        store.data.map { it[K.EXT_VERIFY_WEBVIEW] ?: false }
+
+    suspend fun extensionVerifyWebview(): Boolean = extensionVerifyWebviewFlow().first()
+
+    suspend fun setExtensionVerifyWebview(allowed: Boolean) {
+        store.edit { it[K.EXT_VERIFY_WEBVIEW] = allowed }
+        // Apply immediately (not just on the next launch) so the choice takes
+        // effect for the very next source search.
+        runCatching { ExtensionVerifyGuard.apply(ctx, allowed) }
+    }
+
     /** Hosts the user allowed redirects to (blocked-elsewhere hosts allowed
      *  through). */
     fun webviewRedirectAllowFlow(): Flow<List<String>> =
@@ -468,6 +971,21 @@ class AppStore(private val ctx: Context) {
             it[K.WEBVIEW_DEFAULT_UA] = useDefault
             it[K.WEBVIEW_CUSTOM_UA] = customUa
         }
+    }
+
+    // ---- App language ----
+
+    /** The app language as a BCP-47 tag ("" = follow the device). Applied to
+     *  the whole app — and therefore to the player's overlay words, which are
+     *  resource strings — via AppCompatDelegate.setApplicationLocales (see
+     *  com.hikari.app.ui.LanguageManager). */
+    fun languageFlow(): Flow<String> =
+        store.data.map { it[K.LANGUAGE] ?: "" }
+
+    suspend fun language(): String = languageFlow().first()
+
+    suspend fun setLanguage(tag: String) {
+        store.edit { it[K.LANGUAGE] = tag }
     }
 
     // ---- Universal extractor (yt-dlp fallback) ----
@@ -517,6 +1035,68 @@ class AppStore(private val ctx: Context) {
             (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } }
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    // ---- Library categories (encode/parse) ----
+
+    private fun encodeCategories(list: List<LibraryCategory>): String {
+        val arr = JSONArray()
+        for (c in list) {
+            arr.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("name", c.name)
+                    .put("built", c.builtIn)
+            )
+        }
+        return arr.toString()
+    }
+
+    /** A missing value means "never configured" and yields the four defaults;
+     *  an explicitly empty array means the user deleted them all. */
+    private fun parseCategories(s: String?): List<LibraryCategory> {
+        if (s == null) return LibraryCategory.DEFAULTS
+        if (s.isBlank()) return LibraryCategory.DEFAULTS
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                val name = o.optString("name")
+                if (id.isBlank() || name.isBlank()) null
+                else LibraryCategory(id, name, o.optBoolean("built", false))
+            }
+        } catch (e: Exception) {
+            LibraryCategory.DEFAULTS
+        }
+    }
+
+    private fun encodeCategoryMap(map: Map<String, Set<String>>): String {
+        val obj = JSONObject()
+        for ((k, v) in map) {
+            if (v.isEmpty()) continue
+            val arr = JSONArray()
+            for (c in v) arr.put(c)
+            obj.put(k, arr)
+        }
+        return obj.toString()
+    }
+
+    private fun parseCategoryMap(s: String?): Map<String, Set<String>> {
+        if (s.isNullOrBlank()) return emptyMap()
+        return try {
+            val obj = JSONObject(s)
+            val out = LinkedHashMap<String, Set<String>>()
+            obj.keys().forEach { k ->
+                val arr = obj.optJSONArray(k) ?: return@forEach
+                val set = HashSet<String>()
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { set.add(it) }
+                if (set.isNotEmpty()) out[k] = set
+            }
+            out
+        } catch (e: Exception) {
+            emptyMap()
         }
     }
 
@@ -593,16 +1173,89 @@ class AppStore(private val ctx: Context) {
     suspend fun repos(): List<Cs3Repo> = reposFlow().first()
 
     suspend fun addCs3Repo(r: Cs3Repo) {
-        saveRepos(repos().filter { it.url != r.url } + r)
+        val key = SourceUrls.canonical(r.url)
+        val existing = repos().firstOrNull { SourceUrls.canonical(it.url) == key }
+        // The same repo under a different spelling (refs/heads vs plain branch,
+        // the jsDelivr mirror, a trailing slash) is the SAME repo: keep the one
+        // entry already there instead of storing a second copy. A second copy
+        // used to show every extension of that repo as uninstalled again, while
+        // the originals kept working on Home. The stored URL is upgraded to the
+        // origin spelling when the existing entry is only a mirror.
+        val merged = if (existing == null || existing.url == r.url) r
+        else existing.copy(
+            name = r.name.ifBlank { existing.name },
+            description = r.description.ifBlank { existing.description },
+            url = if (SourceUrls.isMirror(existing.url)) r.url else existing.url,
+        )
+        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key } + merged)
     }
 
     suspend fun removeCs3Repo(url: String) {
-        saveRepos(repos().filter { it.url != url })
+        // Remove by identity, not by spelling: a repo stored twice under two
+        // URL spellings (from an older build) would otherwise reappear as soon
+        // as the list is read back.
+        val key = SourceUrls.canonical(url)
+        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key })
     }
 
     private suspend fun saveRepos(list: List<Cs3Repo>) {
-        store.edit { it[K.CS3_REPOS] = encodeRepos(list) }
+        store.edit { it[K.CS3_REPOS] = encodeRepos(dedupeRepos(list)) }
     }
+
+    /**
+     * One entry per repo whatever the spelling of its URL — the canonical
+     * form is the identity (see [SourceUrls]). The origin spelling wins over
+     * a jsDelivr mirror; otherwise the first entry seen is kept, so the repo
+     * list's order is stable.
+     */
+    private fun dedupeRepos(list: List<Cs3Repo>): List<Cs3Repo> {
+        val out = ArrayList<Cs3Repo>(list.size)
+        val index = HashMap<String, Int>()
+        for (r in list) {
+            if (r.url.isBlank()) continue
+            val key = SourceUrls.canonical(r.url)
+            val at = index[key]
+            if (at == null) {
+                index[key] = out.size
+                out.add(r)
+            } else if (SourceUrls.isMirror(out[at].url) && !SourceUrls.isMirror(r.url)) {
+                out[at] = r
+            }
+        }
+        return out
+    }
+
+    // ---- Collections (name → folders → catalog sources) ----
+
+    /** Every user-made collection, in creation order. */
+    fun collectionsFlow(): Flow<List<Collection>> =
+        store.data.map { parseCollections(it[K.COLLECTIONS]) }
+
+    suspend fun collections(): List<Collection> = collectionsFlow().first()
+
+    suspend fun collection(id: String): Collection? = collections().firstOrNull { it.id == id }
+
+    /** Replaces the whole list — the editor always hands back the full set, so
+     *  a create/rename/reorder is one atomic write. */
+    suspend fun saveCollections(list: List<Collection>) {
+        store.edit { it[K.COLLECTIONS] = encodeCollections(list) }
+    }
+
+    /** Adds [c] (or replaces the same-id entry) and returns the saved list. */
+    suspend fun upsertCollection(c: Collection): List<Collection> {
+        val next = collections().filter { it.id != c.id } + c
+        saveCollections(next)
+        return next
+    }
+
+    suspend fun removeCollection(id: String) {
+        saveCollections(collections().filter { it.id != id })
+    }
+
+    /** A stable, URL/JSON-safe id for a new collection or folder. */
+    fun newId(prefix: String): String =
+        prefix + "-" + System.currentTimeMillis().toString(36) +
+            "-" + (1000 + (Math.random() * 8999).toInt())
 
     // ---- First-run extension-repo seeding ----
 
@@ -627,7 +1280,13 @@ class AppStore(private val ctx: Context) {
     }
 
     suspend fun removeFavorite(id: String) {
-        store.edit { it[K.FAVORITES] = encodeMedia(favorites().filter { f -> f.uniqueId != id }) }
+        store.edit { prefs ->
+            prefs[K.FAVORITES] = encodeMedia(parseMedia(prefs[K.FAVORITES]).filter { f -> f.uniqueId != id })
+            // Unfiling the title is part of removing it: leaving the mapping
+            // behind would file the NEXT title saved under the same id.
+            val cats = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES]).toMutableMap()
+            if (cats.remove(id) != null) prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(cats)
+        }
     }
 
     fun sitesFlow(): Flow<List<Site>> =
@@ -668,6 +1327,71 @@ class AppStore(private val ctx: Context) {
 
     suspend fun clearAll() {
         store.edit { it.clear() }
+    }
+
+    // ---- Backup & restore (Settings → Backup & Restore) ----
+
+    /**
+     * Every stored preference as plain data, for the backup file.
+     *
+     * Deliberately a GENERIC dump rather than a hand-written list of the keys
+     * this class happens to declare today: the store is where the whole setup
+     * lives (installed sources and their configs, repos, history, favorites,
+     * per-provider settings, the lot), and a curated list silently drops every
+     * key added after it was written. [PrefRecord.type] keeps each value's exact
+     * type so a restore is byte-for-byte what was saved rather than a guess
+     * (a Long that comes back as a Double, or a String set that comes back as a
+     * list, is a subtly broken setting).
+     */
+    suspend fun snapshotPreferences(): List<PrefRecord> =
+        store.data.first().asMap().mapNotNull { (key, value) -> recordOf(key.name, value) }
+
+    /**
+     * Applies records from a backup file, overwriting the values for those keys
+     * and leaving every other key alone. One edit transaction, so the app can
+     * never observe a half-restored store.
+     */
+    suspend fun restorePreferences(records: List<PrefRecord>) {
+        if (records.isEmpty()) return
+        store.edit { prefs ->
+            for (r in records) applyRecord(prefs, r)
+        }
+    }
+
+    /** [value] in the backup file's own terms, or null for a type the file
+     *  format has no code for (nothing in this store uses one today). */
+    private fun recordOf(name: String, value: Any): PrefRecord? = when (value) {
+        is String -> PrefRecord(name, "s", value)
+        is Boolean -> PrefRecord(name, "b", value)
+        is Int -> PrefRecord(name, "i", value)
+        is Long -> PrefRecord(name, "l", value)
+        is Float -> PrefRecord(name, "f", value)
+        is Double -> PrefRecord(name, "d", value)
+        is Set<*> -> PrefRecord(name, "ss", value.filterIsInstance<String>())
+        is ByteArray -> PrefRecord(
+            name, "bin",
+            android.util.Base64.encodeToString(value, android.util.Base64.NO_WRAP),
+        )
+        else -> null
+    }
+
+    private fun applyRecord(prefs: MutablePreferences, r: PrefRecord) {
+        when (r.type) {
+            "s" -> (r.value as? String)?.let { prefs[stringPreferencesKey(r.key)] = it }
+            "b" -> (r.value as? Boolean)?.let { prefs[booleanPreferencesKey(r.key)] = it }
+            "i" -> (r.value as? Number)?.let { prefs[intPreferencesKey(r.key)] = it.toInt() }
+            "l" -> (r.value as? Number)?.let { prefs[longPreferencesKey(r.key)] = it.toLong() }
+            "f" -> (r.value as? Number)?.let { prefs[floatPreferencesKey(r.key)] = it.toFloat() }
+            "d" -> (r.value as? Number)?.let { prefs[doublePreferencesKey(r.key)] = it.toDouble() }
+            "ss" -> (r.value as? List<*>)?.let { list ->
+                prefs[stringSetPreferencesKey(r.key)] = list.filterIsInstance<String>().toSet()
+            }
+            "bin" -> (r.value as? String)?.let { b64 ->
+                runCatching { android.util.Base64.decode(b64, android.util.Base64.NO_WRAP) }
+                    .getOrNull()
+                    ?.let { prefs[byteArrayPreferencesKey(r.key)] = it }
+            }
+        }
     }
 
     // ---- Watch history ----
@@ -915,6 +1639,141 @@ class AppStore(private val ctx: Context) {
                         .getOrDefault(RepoKind.CS3),
                 )
             }.filter { it.url.isNotBlank() }
+                .let { dedupeRepos(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodeCollections(list: List<Collection>): String {
+        val arr = JSONArray()
+        for (c in list) {
+            val folders = JSONArray()
+            for (f in c.folders) {
+                val sources = JSONArray()
+                for (s in f.sources) {
+                    sources.put(
+                        JSONObject()
+                            .put("kind", s.kind.name)
+                            .put("title", s.title)
+                            .put("pid", s.providerId)
+                            .put("cid", s.catalogId)
+                            .put("type", s.type.name)
+                            .put("raw", s.rawType)
+                            .put("preset", s.tmdbPreset)
+                            .put("spec", s.tmdbSpec)
+                            .put("items", s.itemsJson)
+                            .put("uid", s.uid)
+                    )
+                }
+                folders.put(
+                    JSONObject()
+                        .put("id", f.id)
+                        .put("name", f.name)
+                        .put("coverKind", f.coverKind)
+                        .put("coverValue", f.coverValue)
+                        .put("tileShape", f.tileShape)
+                        .put("sources", sources)
+                )
+            }
+            arr.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("name", c.name)
+                    .put("coverKind", c.coverKind)
+                    .put("coverValue", c.coverValue)
+                    .put("tileShape", c.tileShape)
+                    .put("folders", folders)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun parseCollections(s: String?): List<Collection> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(s)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                val name = o.optString("name")
+                if (id.isBlank() || name.isBlank()) return@mapNotNull null
+                val foldersArr = o.optJSONArray("folders")
+                val folders = ArrayList<CollectionFolder>()
+                if (foldersArr != null) {
+                    for (j in 0 until foldersArr.length()) {
+                        val fo = foldersArr.optJSONObject(j) ?: continue
+                        val fid = fo.optString("id")
+                        val fname = fo.optString("name")
+                        if (fid.isBlank() || fname.isBlank()) continue
+                        val sourcesArr = fo.optJSONArray("sources")
+                        val sources = ArrayList<CatalogSource>()
+                        if (sourcesArr != null) {
+                            for (k in 0 until sourcesArr.length()) {
+                                val so = sourcesArr.optJSONObject(k) ?: continue
+                                val kind = runCatching {
+                                    CatalogSourceKind.valueOf(so.optString("kind", "TMDB"))
+                                }.getOrDefault(CatalogSourceKind.TMDB)
+                                val source = CatalogSource(
+                                    kind = kind,
+                                    title = so.optString("title"),
+                                    providerId = so.optString("pid"),
+                                    catalogId = so.optString("cid"),
+                                    type = runCatching { MediaType.valueOf(so.optString("type")) }
+                                        .getOrDefault(MediaType.UNKNOWN),
+                                    rawType = so.optString("raw"),
+                                    tmdbPreset = so.optString("preset"),
+                                    tmdbSpec = so.optString("spec"),
+                                    itemsJson = so.optString("items"),
+                                    uid = so.optString("uid"),
+                                )
+                                // A source that can't resolve to anything is a
+                                // row that would never load: drop it, but keep
+                                // the folder itself.
+                                val usable = when (kind) {
+                                    CatalogSourceKind.TMDB ->
+                                        TmdbPresets.byKey(source.tmdbPreset) != null ||
+                                            (source.spec?.type != null)
+                                    CatalogSourceKind.ITEMS -> source.itemCount > 0
+                                    CatalogSourceKind.PROVIDER ->
+                                        source.providerId.isNotBlank() &&
+                                            source.catalogId.isNotBlank()
+                                }
+                                if (usable) sources.add(source)
+                            }
+                        }
+                        folders.add(
+                            CollectionFolder(
+                                id = fid,
+                                name = fname,
+                                // Deduped on the way IN, not just on the way out:
+                                // a folder that already holds the same catalog
+                                // twice (written by an older build, or restored
+                                // from a backup) used to reach a lazy list with
+                                // two identical keys and crash the editor and the
+                                // collection view with
+                                //   IllegalArgumentException: Key "prov|cs3|…"
+                                //   was already used.
+                                // Two entries with the same key ARE the same
+                                // catalog (same extension, same catalog id), so
+                                // dropping the copy loses nothing.
+                                sources = sources.distinctBy { it.key },
+                                coverKind = CoverKinds.normalize(fo.optString("coverKind")),
+                                coverValue = fo.optString("coverValue"),
+                                tileShape = TileShapes.normalize(fo.optString("tileShape")),
+                            )
+                        )
+                    }
+                }
+                Collection(
+                    id = id,
+                    name = name,
+                    folders = folders,
+                    coverKind = CoverKinds.normalize(o.optString("coverKind")),
+                    coverValue = o.optString("coverValue"),
+                    tileShape = TileShapes.normalize(o.optString("tileShape")),
+                )
+            }
         } catch (e: Exception) {
             emptyList()
         }
@@ -932,6 +1791,7 @@ class AppStore(private val ctx: Context) {
                     .put("poster", m.posterUrl ?: "")
                     .put("year", m.year ?: 0)
                     .put("overview", m.overview ?: "")
+                    .put("rating", m.rating ?: 0.0)
             )
         }
         return arr.toString()
@@ -952,6 +1812,7 @@ class AppStore(private val ctx: Context) {
                     posterUrl = o.optString("poster").ifBlank { null },
                     year = o.optInt("year", 0).takeIf { it > 0 },
                     overview = o.optString("overview").ifBlank { null },
+                    rating = o.optDouble("rating", 0.0).takeIf { it > 0.0 },
                 )
             }
         } catch (e: Exception) {

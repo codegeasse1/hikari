@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.content.res.Resources
 import com.hikari.app.HikariApp
+import com.hikari.app.core.LoadGate
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
@@ -15,7 +16,6 @@ import com.lagradost.cloudstream3.utils.extractorApis
 import java.io.File
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
-
 /**
  * Loads compiled CloudStream `.cs3` plugin archives exactly the way the real
  * CloudStream app does (see CloudStream-3 `PluginManager.loadPlugin`):
@@ -57,12 +57,11 @@ object Cs3PluginManager {
     @Volatile
     var pendingSettingsReload: String? = null
 
-    // Files whose load() is currently running (re-entrancy guard). Loading
-    // itself is serialized under loadLock; the set just lets a re-entrant call
-    // from inside load() detect that it is mid-load.
+    // Files whose load() is currently running (re-entrancy guard). Loading of a
+    // given path is serialised under that path's LoadGate lock; this set only
+    // lets a re-entrant call from inside a plugin's own load() detect that it is
+    // mid-load and report "not loaded yet" instead of recursing.
     private val loading = ConcurrentHashMap.newKeySet<String>()
-
-    private val loadLock = java.util.concurrent.locks.ReentrantLock()
 
     // Paths whose load() just failed, with the failure timestamp. A failed
     // load is NOT retried hot — every attempt can block for up to
@@ -76,7 +75,16 @@ object Cs3PluginManager {
     var lastError: String? = null
         private set
 
-    private val errorDetails = StringBuilder()
+    /**
+     * Per-thread record of the CURRENT load's failures. This used to be one
+     * shared StringBuilder, which meant two plugins loading at once appended to
+     * the same buffer and [lastError] could report a completely different
+     * plugin's failure than the one that was just asked about. `loadFile` is
+     * synchronous on its calling thread, so a ThreadLocal is exactly the right
+     * scope: the details collected for one load are the details that load
+     * reports.
+     */
+    private val errorDetails = ThreadLocal.withInitial { StringBuilder() }
 
     // Plugins run real code in load() and some do network work there (a couple
     // of repos' plugins fetch repo lists on load). A hung load() must never
@@ -90,12 +98,51 @@ object Cs3PluginManager {
 
     private const val LOAD_TIMEOUT_S = 45L
 
+    /**
+     * Unwraps `ExecutionException`/`InvocationTargetException`-style wrappers so
+     * the message names the REAL failure. Plugin loads run inside a
+     * `Future.get()`, so a plugin that fails to link reported only
+     * "ExecutionException: java.lang.NoClassDefFoundError: ..." and the actual
+     * missing/duplicate class was hidden one level down. The report is worthless
+     * without it, so the whole cause chain is walked.
+     */
+    private fun rootCause(e: Throwable): Throwable {
+        var t = e
+        var guard = 0
+        while (guard++ < 8) {
+            val c = t.cause ?: break
+            if (c === t) break
+            t = c
+        }
+        return t
+    }
+
     private fun record(what: String, e: Throwable) {
-        val line = "$what: ${e.javaClass.simpleName}: ${e.message}"
-        if (errorDetails.length < 4000) {
-            errorDetails.append(line).append("\n")
+        val root = rootCause(e)
+        val line = buildString {
+            append("$what: ${e.javaClass.simpleName}: ${e.message}")
+            if (root !== e) {
+                append(" — caused by ${root.javaClass.name}: ${root.message}")
+                // A linking failure's own cause (e.g. the class that could not
+                // be resolved) is the actionable part; keep a couple of frames.
+                root.cause?.let { append(" (cause: ${it.javaClass.name}: ${it.message})") }
+            }
+            // Where it was thrown. A third-party settings screen that throws
+            // inside its own code is otherwise a dead end: the toast only has
+            // room for the exception's name, which names neither the plugin
+            // class nor the line that failed.
+            for (f in e.stackTrace.take(4)) append("\n    at $f")
+        }
+        if (errorDetails.get().length < 4000) {
+            errorDetails.get().append(line).append("\n")
         }
         android.util.Log.e("Cs3PluginManager", line, e)
+        // And into Hikari's own log file, with the full stack trace. A plugin's
+        // own settings screen (openSettings) is third-party code that can throw
+        // anything, and the one-line message the UI has room for ("… threw:
+        // IllegalStateException") names neither the class nor the line — the
+        // log trail is what makes it fixable.
+        runCatching { com.hikari.app.data.Logs.logError("Cs3PluginManager", line, e) }
     }
 
     /**
@@ -114,17 +161,38 @@ object Cs3PluginManager {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return emptyList()
         val failAt = lastFail[path]
         if (failAt != null && System.currentTimeMillis() - failAt < FAIL_RETRY_MS) return emptyList()
-        loadLock.lock()
+        // One lock PER PLUGIN, not one for the whole runtime: with a few hundred
+        // extensions installed, a single global lock made every load — Home
+        // warm-up, cross-extension search, an install — queue behind the longest
+        // one (a plugin that does network work in load() can hold it 45s).
+        val lock = LoadGate.lockFor(path)
+        if (!LoadGate.acquire(lock)) {
+            record("waiting for another load of ${file.name}", RuntimeException("lock wait timed out"))
+            return emptyList()
+        }
         try {
             cache[path]?.let { return it }
             if (path in loading) {
-                // Re-entrant call from inside a plugin load() — report "not
-                // loaded yet" rather than deadlock on our own lock.
+                // Re-entrant call from inside a plugin's own load() — report
+                // "not loaded yet" rather than deadlock on our own lock.
                 return emptyList()
             }
             loading.add(path)
             try {
-                val apis = loadFile(context, file)
+                // The dex commit itself is one of the process-wide slots, so a
+                // Home warm-up and an install can run side by side without
+                // loading two dozen archives into memory at once.
+                val apis = try {
+                    LoadGate.withSlot { loadFile(context, file) }
+                } catch (e: LoadGate.LoadQueueBusyException) {
+                    // The bounded slot wait expired — report it as THIS plugin's
+                    // failure so the caller simply moves on to the next one,
+                    // instead of throwing into the coroutine that drives Home
+                    // or a cross-extension search (which used to abort the
+                    // whole sweep, so nothing after it was ever searched).
+                    record("plugin loader busy for ${file.name}", e)
+                    emptyList()
+                }
                 if (apis.isNotEmpty()) {
                     cache[path] = apis
                     lastFail.remove(path)
@@ -136,18 +204,27 @@ object Cs3PluginManager {
                 loading.remove(path)
             }
         } finally {
-            loadLock.unlock()
+            lock.unlock()
         }
     }
 
     /** Re-loads after an install/uninstall. The installer runs on IO, so it
-     *  may wait for a previous load to finish. */
+     *  may wait for a previous load of the SAME plugin to finish. */
     fun reload(context: Context, file: File): List<MainAPI> {
         val path = file.absolutePath
-        loadLock.lock()
+        val lock = LoadGate.lockFor(path)
+        if (!LoadGate.acquire(lock)) {
+            record("waiting to reload ${file.name}", RuntimeException("lock wait timed out"))
+            return emptyList()
+        }
         try {
             loading.add(path)
-            val apis = loadFile(context, file)
+            val apis = try {
+                LoadGate.withSlot { loadFile(context, file) }
+            } catch (e: LoadGate.LoadQueueBusyException) {
+                record("plugin loader busy while reloading ${file.name}", e)
+                emptyList()
+            }
             if (apis.isNotEmpty()) {
                 cache[path] = apis
                 lastFail.remove(path)
@@ -158,12 +235,12 @@ object Cs3PluginManager {
             return apis
         } finally {
             loading.remove(path)
-            loadLock.unlock()
+            lock.unlock()
         }
     }
 
     private fun loadFile(context: Context, file: File): List<MainAPI> {
-        errorDetails.setLength(0)
+        errorDetails.get().setLength(0)
         lastError = null
         val path = file.absolutePath
 
@@ -315,7 +392,7 @@ object Cs3PluginManager {
             }
         }
         if (apis.isEmpty()) {
-            val details = errorDetails.toString().trim()
+            val details = errorDetails.get().toString().trim()
             lastError = if (details.isNotBlank()) {
                 details
             } else {
@@ -378,14 +455,12 @@ object Cs3PluginManager {
             lastError = "this plugin exposes no settings screen"
             return false
         }
-        val host = activity
-            ?: HikariApp.mainActivity
-            ?: runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
+        val host = liveHost(activity)
         if (host == null) {
             lastError = "no activity is available to show its settings screen"
             return false
         }
-        errorDetails.setLength(0)
+        errorDetails.get().setLength(0)
         lastError = null
         return try {
             callback.invoke(host)
@@ -393,9 +468,26 @@ object Cs3PluginManager {
             true
         } catch (e: Throwable) {
             record("openSettings threw", e)
-            lastError = errorDetails.toString().trim().ifBlank { e.message ?: "settings failed" }
+            lastError = errorDetails.get().toString().trim().ifBlank { e.message ?: "settings failed" }
             false
         }
+    }
+
+    /**
+     * The activity a plugin's settings screen should attach its dialogs and
+     * fragments to. A destruction check matters here: a plugin that shows a
+     * `DialogFragment` throws `IllegalStateException: FragmentManager has been
+     * destroyed` when it is handed an activity that has already gone (the gear
+     * is often tapped after a rotation/theme change), so a stale
+     * [HikariApp.mainActivity] must never win over a live one.
+     */
+    private fun liveHost(preferred: android.app.Activity?): android.app.Activity? {
+        fun ok(a: android.app.Activity?): Boolean = a != null && !a.isFinishing && !a.isDestroyed
+        if (ok(preferred)) return preferred
+        if (ok(HikariApp.mainActivity)) return HikariApp.mainActivity
+        val common = runCatching { com.lagradost.cloudstream3.CommonActivity.activity }.getOrNull()
+        if (ok(common)) return common
+        return null
     }
 
     private const val ACTIVITY_WAIT_MS = 12_000L
@@ -443,7 +535,7 @@ object Cs3PluginManager {
     }
 
     private fun fail(): List<MainAPI> {
-        val details = errorDetails.toString().trim()
+        val details = errorDetails.get().toString().trim()
         lastError = if (details.isNotBlank()) details else "Unknown error loading plugin"
         return emptyList()
     }

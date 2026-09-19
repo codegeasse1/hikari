@@ -28,18 +28,198 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:localeConfig="@xml/locales_config"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Hikari">
 
+        <!-- Play Services version metadata. NOT a Play Services dependency — the
+             app never talks to GMS — but the System WebView's own bundled
+             Play-Services shim READS this tag the moment a page touches the
+             Shape Detection APIs (BarcodeDetector/FaceDetector, which several
+             streaming/Cloudflare pages do). Without the tag its availability
+             check throws GooglePlayServicesMissingManifestValueException on
+             Chromium's in-proc GPU thread, rethrows through JNI, and kills the
+             whole process — the recurring crash on a realme 5i running
+             Android 16 (see crash reports: bindBarcodeDetectionProvider →
+             GooglePlayServicesMissingManifestValueException). With a value
+             present, that same check answers normally ("Play Services not
+             available") and WebView simply skips the feature instead of dying.
+             The number is the standard GMS version int; it only has to be a
+             plausible integer, nothing else reads it. -->
+        <meta-data
+            android:name="com.google.android.gms.version"
+            android:value="12451000" />
+
+        <!-- MainActivity has NO launcher intent-filter of its own: the launcher
+             entry is one of the activity-aliases below, each carrying a
+             different icon. Exactly one alias is enabled at a time, and
+             MainActivity itself is never disabled (so explicit
+             Intent(..., MainActivity::class.java) PendingIntents — the download
+             and update notifications — always resolve).
+
+             To add another icon: drop the icon resources in, add an alias here
+             with enabled="false", and add its entry to
+             com.hikari.app.ui.AppIconVariants. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|locale|layoutDirection|fontScale|density" />
+
+        <!-- The official Hikari icon: the only alias enabled in the manifest,
+             i.e. what a fresh install (and a factory-reset state) shows. -->
+        <activity-alias
+            android:name="com.hikari.app.icon.Classic"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.Cine"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v2"
+            android:roundIcon="@mipmap/ic_launcher_v2"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.OrbitPlay"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v3"
+            android:roundIcon="@mipmap/ic_launcher_v3"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.MoonStar"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v4"
+            android:roundIcon="@mipmap/ic_launcher_v4"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.RedPlay"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v5"
+            android:roundIcon="@mipmap/ic_launcher_v5"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.Sakura"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v6"
+            android:roundIcon="@mipmap/ic_launcher_v6"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.EnsoPlay"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v7"
+            android:roundIcon="@mipmap/ic_launcher_v7"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.SilverH"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v8"
+            android:roundIcon="@mipmap/ic_launcher_v8"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.VioletPlay"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v9"
+            android:roundIcon="@mipmap/ic_launcher_v9"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.Horizon"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v10"
+            android:roundIcon="@mipmap/ic_launcher_v10"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.hikari.app.icon.NekoMoon"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v11"
+            android:roundIcon="@mipmap/ic_launcher_v11"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
 android:name=".player.PlayerActivity"
@@ -56,6 +236,19 @@ android:name=".player.PlayerActivity"
             android:hardwareAccelerated="true"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:theme="@style/Theme.Hikari.App" />
+
+        <!-- CloudStream plugins name com.lagradost.cloudstream3.MainActivity when
+             they want to open "the app" (the CineStream plugin does it from its
+             own settings dialog). The class is shadowed in
+             java/com/lagradost/cloudstream3/MainActivity.kt; it must be declared
+             here too, or a real startActivity() against it would throw
+             ActivityNotFoundException — the same crash one step later. It is
+             transparent and finishes immediately, because all it does is hand
+             the user to Hikari's own main screen. -->
+        <activity
+            android:name="com.lagradost.cloudstream3.MainActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".download.DownloadService"

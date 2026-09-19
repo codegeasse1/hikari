@@ -1,6 +1,7 @@
 package com.hikari.app.ui
 
 import android.util.Base64
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -31,8 +32,9 @@ import java.util.concurrent.atomic.AtomicLong
  * 2. Nothing heavy happens on the main thread. Decoding a full-size poster is a
  *    multi-MB allocation; doing that for a hundred cells inside composition is
  *    what made whole rows flicker out under memory pressure. [model] hands back
- *    null (the cell shows its placeholder icon) and queues the work; [revision]
- *    then makes every cell that asked re-read [model].
+ *    null (the cell shows its placeholder icon) and queues the work; the
+ *    per-poster state in [pending] then recomposes exactly the cell that asked
+ *    for that poster.
  */
 object PosterLoader {
 
@@ -52,14 +54,17 @@ object PosterLoader {
     private const val DISK_BUDGET_BYTES = 400L * 1024 * 1024
 
     /**
-     * Bumped whenever a queued decode finishes, so any composable that asked
-     * [model] for a not-yet-ready poster recomposes and picks it up. Without it
-     * a cell whose bytes were still decoding at first composition stayed blank
-     * until something else happened to recompose it — the "I scroll down and
-     * the last rows never load" symptom.
+     * One observable counter per poster whose bytes are still being decoded, so
+     * a cell recomposes when *its* poster lands and not when any other one does.
+     * A single shared revision (the previous design) meant that every finished
+     * decode — and a home feed decodes hundreds — recomposed every cell on
+     * screen: a recomposition storm that ran exactly while the user scrolled.
      */
-    private val revision = mutableStateOf(0L)
-    private val revisionCounter = AtomicLong(0L)
+    private val pending = ConcurrentHashMap<String, MutableState<Long>>()
+
+    /** Upper bound on [pending] entries, so a catalog of undecodable payloads
+     *  can't grow the map without limit. */
+    private const val PENDING_MAX = 4096
 
     /** Bounded worker pool: decodes are heavy (multi-MB buffers) and running
      *  them two-at-a-time keeps the memory churn low and predictable instead of
@@ -99,21 +104,32 @@ object PosterLoader {
      * those itself), or an [ImageRequest] over the stored bytes for a poster we
      * had to decrypt ourselves. Null while those bytes are still being decoded —
      * the caller should render a placeholder and will be recomposed when they
-     * land (see [revision]).
+     * land (see [pending]).
      */
     fun model(url: String?): Any? {
-        // Registering a snapshot read here is deliberate: it is what makes a
-        // cell repaint itself the moment its poster's bytes materialise.
-        revision.value
         val u = normalize(url) ?: return null
         if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) return u
 
         val name = hashOf(u)
-        val file = existingFile(name)
-        if (file != null) return request(file, name)
+        existingFile(name)?.let { return request(it, name) }
 
-        if (u.startsWith(DATA_IMAGE)) schedulePrep(u, name)
+        if (u.startsWith(DATA_IMAGE)) {
+            // Deliberately read inside composition: this poster's own state is
+            // what repaints this cell the moment its bytes materialise. Reading
+            // a state shared by all posters here is what used to make one decode
+            // repaint the whole screen.
+            awaitingRevision(name)
+            schedulePrep(u, name)
+        }
         return null
+    }
+
+    /** This poster's revision counter, read during composition so the caller is
+     *  recomposed when its decode finishes (and not before). */
+    private fun awaitingRevision(name: String): Long {
+        pending[name]?.let { return it.value }
+        if (pending.size >= PENDING_MAX) return 0L
+        return pending.getOrPut(name) { mutableStateOf(0L) }.value
     }
 
     /** Poster for a grid/row cell: the item's own poster, or its backdrop when
@@ -198,7 +214,7 @@ object PosterLoader {
 
     /**
      * Decodes a [DATA_IMAGE] URI on a background thread and persists the bytes,
-     * then bumps [revision] so the cells that are waiting for it repaint. A
+     * then bumps its own counter so the cells that are waiting for it repaint. A
      * no-op while an identical decode is in flight, and rate-limited after a
      * failure so a broken payload can't spin the pool on every recomposition.
      */
@@ -215,7 +231,9 @@ object PosterLoader {
                     runCatching { file.writeBytes(bytes) }
                     if (file.length() > 0) {
                         writesSincePrune.incrementAndGet()
-                        revision.value = revisionCounter.incrementAndGet()
+                        // Repaint exactly the cells that were waiting on THIS
+                        // poster (see [pending]).
+                        pending.remove(name)?.let { st -> st.value = st.value + 1L }
                     }
                 }
             } finally {

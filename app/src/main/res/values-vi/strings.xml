@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Ngôn ngữ ứng dụng</string>
+    <string name="settings_language_subtitle">Thay đổi nội dung ứng dụng và điều khiển trình phát</string>
+    <string name="settings_language_system">Mặc định hệ thống</string>
+    <string name="player_options">Tùy chọn trình phát</string>
+    <string name="player_fit_video">Vừa khung hình</string>
+    <string name="player_fit_video_desc">Hiện toàn bộ khung</string>
+    <string name="player_crop_to_fill">Cắt để lấp đầy</string>
+    <string name="player_crop_to_fill_desc">Phóng cho đến khi lấp đầy khung</string>
+    <string name="player_rotate_screen">Xoay màn hình</string>
+    <string name="player_rotate_screen_desc">Xoay video 90° mỗi lần</string>
+    <string name="player_server_chooser">Chọn máy chủ</string>
+    <string name="player_server_on">Bật — chọn máy chủ mỗi lần</string>
+    <string name="player_server_off">Tắt — bắt đầu với máy chủ tốt nhất</string>
+    <string name="player_options_hint">Cách hiển thị video, xoay, và máy chủ tự khởi động.</string>
+    <string name="player_episodes">Tập phim</string>
+    <string name="player_source">Nguồn</string>
+    <string name="player_quality">Chất lượng</string>
+    <string name="player_audio">Âm thanh</string>
+    <string name="player_subtitles">Phụ đề</string>
+    <string name="player_rotate">Xoay</string>
+    <string name="player_skip_intro">Bỏ qua intro</string>
+    <string name="player_enhance">Tăng cường</string>
+    <string name="player_tap_to_play">Chạm để phát</string>
+    <string name="cd_back">Quay lại</string>
+    <string name="cd_add_to_library">Thêm vào thư viện</string>
+    <string name="cd_download">Tải xuống</string>
+    <string name="cd_pip">Hình trong hình</string>
+    <string name="cd_player_options">Tùy chọn trình phát</string>
+    <string name="cd_lock_controls">Khóa điều khiển</string>
+    <string name="cd_fit_or_crop">Vừa hoặc cắt video</string>
+</resources>

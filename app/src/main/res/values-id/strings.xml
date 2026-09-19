@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Bahasa aplikasi</string>
+    <string name="settings_language_subtitle">Mengubah teks aplikasi dan kontrol pemutar</string>
+    <string name="settings_language_system">Bawaan sistem</string>
+    <string name="player_options">Opsi pemutar</string>
+    <string name="player_fit_video">Sesuaikan video</string>
+    <string name="player_fit_video_desc">Tampilkan seluruh bingkai</string>
+    <string name="player_crop_to_fill">Potong agar penuh</string>
+    <string name="player_crop_to_fill_desc">Perbesar hingga bingkai penuh</string>
+    <string name="player_rotate_screen">Putar layar</string>
+    <string name="player_rotate_screen_desc">Putar video 90° sekali</string>
+    <string name="player_server_chooser">Pemilih server</string>
+    <string name="player_server_on">Aktif — pilih server setiap kali</string>
+    <string name="player_server_off">Nonaktif — mulai dari server terbaik</string>
+    <string name="player_options_hint">Penyetelan video, rotasi, dan apakah server mulai sendiri.</string>
+    <string name="player_episodes">Episode</string>
+    <string name="player_source">Sumber</string>
+    <string name="player_quality">Kualitas</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Subtitle</string>
+    <string name="player_rotate">Putar</string>
+    <string name="player_skip_intro">Lewati intro</string>
+    <string name="player_enhance">Tingkatkan</string>
+    <string name="player_tap_to_play">Ketuk untuk memutar</string>
+    <string name="cd_back">Kembali</string>
+    <string name="cd_add_to_library">Tambah ke pustaka</string>
+    <string name="cd_download">Unduh</string>
+    <string name="cd_pip">Gambar dalam gambar</string>
+    <string name="cd_player_options">Opsi pemutar</string>
+    <string name="cd_lock_controls">Kunci kontrol</string>
+    <string name="cd_fit_or_crop">Sesuaikan atau potong video</string>
+</resources>

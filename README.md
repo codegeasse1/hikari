@@ -17,6 +17,20 @@ Need help, found a bug, or want to request a feature? Join the **Hikari Telegram
 
 Everyone is welcome — post your questions, bug reports, and feature requests there and I'll help you out.
 
+### Reporting a bug — no screenshot needed
+
+Hikari records its own logs on the device, so a report can carry the real error
+text instead of a photo of the screen:
+
+1. Open **Settings → Logs & diagnostics**.
+2. Tap **Share all** (or Share on the one file you were asked for) and send it
+   along with your message.
+
+Two rolling app logs and one crash log are kept. A crash log holds the full stack
+trace plus the last 300 log lines before the crash, which is usually enough to
+identify the cause without reproducing it. Nothing is uploaded until you tap
+Share or Save, and there is a **Clear all logs** button on the same page.
+
 ## Screenshots
 
 | Home | Extensions | Extension repo |
@@ -248,7 +262,8 @@ The plugin's providers appear in Home/Search and play like any other source. One
 - **Stage 1 (done):** app core, Material 3 UI, Stremio addons, universal scrapers, Media3 player with headers + subtitles.
 - **Stage 2 (done):** CloudStream `.cs3` plugin loader (native cloudstream3 API compatibility layer: MainAPI, models, factories, nicehttp `app`, M3u8Helper, loadExtractor, WebViewResolver, CloudflareKiller).
 - **Stage 3 (in progress):** ✅ downloads (offline + export), ✅ favourites /
-  continue-watching, ✅ new UI everywhere. Still to come: SkyStream shims,
+  continue-watching, ✅ new UI everywhere, ✅ customisable player controls /
+  video-enhance presets / accent theming. Still to come: SkyStream shims,
   torrent engine (Stremio infoHash streams), Trakt.
 
 ## Changelog
@@ -259,7 +274,8 @@ Every release's notes live in [`CHANGELOG.md`](CHANGELOG.md) and on the
 ## Build
 
 ```bash
-# CI builds app-debug.apk on every push to main (see .github/workflows/build.yml)
+# CI builds the debug + signed release APKs on every push to main, and can be
+# run manually from the Actions tab for any branch (see .github/workflows/build.yml)
 # locally:
 gradle assembleDebug
 ```

@@ -42,12 +42,33 @@ import java.util.concurrent.TimeUnit
  * that needed a WAF clearance could never be reused by ExoPlayer's own
  * OkHttpDataSource anyway, so waiting on it would only add latency (and the
  * "Preparing stream…" stall on servers like 4KHDHub is not a Cloudflare issue).
+ * What it DOES do is cloudflare-AWARE skipping: a host already recorded by
+ * [CloudflareVerifier] as needing the user's own verification is never probed
+ * or warmed, and a challenge the probe meets itself is recorded there (instead
+ * of being cached as a dead URL) so the whole app stops waiting on that host —
+ * see [resolve], [warm] and [follow].
  */
 object StreamProbe {
 
     /** The resolved form of a stream URL: what to actually play, and the mime
      *  to force (HLS/DASH) or null to let ExoPlayer sniff a normal container. */
     data class Resolved(val url: String, val mime: String?)
+
+    /**
+     * URLs a probe reached and that answered a TERMINAL failure (an HTTP 5xx, a
+     * 404/410). The player consults this before handing a URL to ExoPlayer: a
+     * server the probe already proved dead would only cost a full prepare +
+     * error timeout again — which is exactly what made a playlist of dead
+     * MovieBlast rows crawl instead of failing over (see PlayerActivity's
+     * [deadHosts]).
+     *
+     * A 401/403 is deliberately NOT remembered: those are usually the header
+     * set, not the host, and the player walks it down to fix them.
+     */
+    private val badUrls = ConcurrentHashMap.newKeySet<String>()
+
+    /** True when a probe has already reached [url] and been told it is dead. */
+    fun knownBad(url: String): Boolean = url.isNotBlank() && url in badUrls
 
     private const val MAX_DEPTH = 3
     private const val HEAD_BYTES = 131_072
@@ -156,6 +177,13 @@ object StreamProbe {
     suspend fun resolve(url: String, headers: Map<String, String>): Resolved? =
         withContext(Dispatchers.IO) {
             if (url.isBlank()) return@withContext null
+            // A "needs a browser check" record is deliberately NOT used to
+            // refuse a probe any more. It is a guess made from an earlier
+            // response, and refusing on it meant a server that had already
+            // played could stop resolving minutes later for no visible reason
+            // (the caller just gets null → "Playback failed"). The walk below
+            // already detects a real challenge for itself and records it, so
+            // nothing is lost by trying.
             ensureLoaded()
             cache[url]?.let { return@withContext it }
             val mine = CompletableDeferred<Resolved?>()
@@ -241,12 +269,17 @@ object StreamProbe {
     /** Warms the cache for every source that needs resolution, a few at a time,
      *  so a server pick (or an auto-failover) is usually already cached. */
     suspend fun warm(sources: List<StreamSource>) {
-        val targets = sources.filter { it.url.isNotBlank() && needsResolve(it.url, it.isTorrent, it.isM3u8, it.isMpd) }
+        val targets = sources
+            .filter { it.url.isNotBlank() && needsResolve(it.url, it.isTorrent, it.isM3u8, it.isMpd) }
         if (targets.isEmpty()) return
         ensureLoaded()
         val pending = targets.filter { cache[it.url] == null }
         if (pending.isEmpty()) return
-        val sem = Semaphore(3)
+        // Six at a time (not three): most of a source list's probes finish in
+        // one round-trip, and warming them all before the user picks a server
+        // is what makes the pick instant. The probes share the playback
+        // connection pool, so the extra concurrency costs almost nothing.
+        val sem = Semaphore(6)
         coroutineScope {
             pending.map { s ->
                 async(Dispatchers.IO) {
@@ -277,7 +310,23 @@ object StreamProbe {
         if (System.currentTimeMillis() > deadline) return null
         val response = get(url, headers) ?: return null
         response.use { r ->
-            if (!r.isSuccessful) return null
+            if (!r.isSuccessful) {
+                // A Cloudflare answer (403/503 from CF, or a block page) is not
+                // a dead URL — it needs the user's own verification. Record the
+                // host so every later attempt on it (probe, WebView resolver,
+                // source search) is skipped instead of waiting out a timeout,
+                // and do NOT remember the URL as bad.
+                if (CloudflareVerifier.isCloudflareChallenge(r)) {
+                    CloudflareVerifier.markBlocked(url)
+                    return null
+                }
+                // Remember a terminal answer (server error, gone) so the player
+                // can skip this URL instead of paying its own prepare + error
+                // timeout to re-discover the same thing. 401/403 are excluded:
+                // they are usually fixed by walking the header set down.
+                if (r.code >= 500 || r.code == 404 || r.code == 410) badUrls.add(url)
+                return null
+            }
             val ct = r.headers["Content-Type"]?.lowercase() ?: ""
             val body = r.body ?: return null
             val head: String = try {
@@ -296,6 +345,14 @@ object StreamProbe {
                 return null
             }
             val trimmed = head.trimStart()
+            // A managed Cloudflare challenge is often served as a HTTP 200
+            // carrying the interstitial HTML — nothing on it is playable, and
+            // the host now needs the user's own verification. Record it and
+            // stop the walk here rather than mining the page for URLs.
+            if (CloudflareVerifier.isCloudflareChallenge(r, head.lowercase())) {
+                CloudflareVerifier.markBlocked(url)
+                return null
+            }
             if (trimmed.startsWith("#EXTM3U") || ct.contains("mpegurl") || ct.contains("m3u8")) {
                 return Resolved(url, MimeTypes.APPLICATION_M3U8)
             }

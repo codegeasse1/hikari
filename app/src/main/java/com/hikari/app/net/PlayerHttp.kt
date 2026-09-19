@@ -35,6 +35,7 @@ object PlayerHttp {
 
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dns(DohDns)
             // Give up on a dead host quickly: failover to the next server must
             // not be gated on a long TCP timeout.
             .connectTimeout(15, TimeUnit.SECONDS)

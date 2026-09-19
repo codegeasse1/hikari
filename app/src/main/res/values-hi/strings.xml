@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">ऐप की भाषा</string>
+    <string name="settings_language_subtitle">ऐप के शब्द और प्लेयर नियंत्रण बदलता है</string>
+    <string name="settings_language_system">सिस्टम डिफ़ॉल्ट</string>
+    <string name="player_options">प्लेयर विकल्प</string>
+    <string name="player_fit_video">वीडियो फ़िट करें</string>
+    <string name="player_fit_video_desc">पूरा फ़्रेम दिखाएँ</string>
+    <string name="player_crop_to_fill">भरने के लिए क्रॉप करें</string>
+    <string name="player_crop_to_fill_desc">फ़्रेम भरने तक ज़ूम करें</string>
+    <string name="player_rotate_screen">स्क्रीन घुमाएँ</string>
+    <string name="player_rotate_screen_desc">वीडियो को एक बार में 90° घुमाएँ</string>
+    <string name="player_server_chooser">सर्वर चुनें</string>
+    <string name="player_server_on">चालू — हर बार सर्वर चुनें</string>
+    <string name="player_server_off">बंद — सबसे अच्छे सर्वर से शुरू करें</string>
+    <string name="player_options_hint">वीडियो फ़िट, रोटेशन और सर्वर खुद शुरू हों या नहीं।</string>
+    <string name="player_episodes">एपिसोड</string>
+    <string name="player_source">स्रोत</string>
+    <string name="player_quality">गुणवत्ता</string>
+    <string name="player_audio">ऑडियो</string>
+    <string name="player_subtitles">सबटाइटल</string>
+    <string name="player_rotate">घुमाएँ</string>
+    <string name="player_skip_intro">इंट्रो छोड़ें</string>
+    <string name="player_enhance">बेहतर करें</string>
+    <string name="player_tap_to_play">चलाने के लिए टैप करें</string>
+    <string name="cd_back">वापस</string>
+    <string name="cd_add_to_library">लाइब्रेरी में जोड़ें</string>
+    <string name="cd_download">डाउनलोड</string>
+    <string name="cd_pip">पिक्चर-इन-पिक्चर</string>
+    <string name="cd_player_options">प्लेयर विकल्प</string>
+    <string name="cd_lock_controls">नियंत्रण लॉक करें</string>
+    <string name="cd_fit_or_crop">वीडियो फ़िट या क्रॉप करें</string>
+</resources>

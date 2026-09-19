@@ -1,7 +1,7 @@
 package com.hikari.app.data
 
 enum class ProviderType {
-    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO;
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI;
 
     /**
      * Which section of the player's server chooser a source from this engine
@@ -16,6 +16,8 @@ enum class ProviderType {
             STREMIO -> "Stremio"
             NUVIO -> "Nuvio"
             CS3 -> "CloudStream"
+            SKYSTREAM -> "SkyStream"
+            ANIYOMI -> "Aniyomi"
             HIKARI, UNIVERSAL -> "Hikari"
         }
 }
@@ -31,7 +33,7 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
-enum class RepoKind { CS3, HIKARI, NUVIO }
+enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI }
 
 /** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(
@@ -51,6 +53,22 @@ data class Cs3RepoPlugin(
     val version: Int = 1,
     val tvTypes: List<String> = emptyList(),
     val fileHash: String? = null,
+    /**
+     * Where to find this entry's icon when the repo listing itself declares
+     * none. SkyStream `.sky` entries carry an `addons` array of Stremio
+     * manifest URLs, and that manifest's `logo` is the extension's real icon
+     * (the `.sky`'s own plugin.json has no icon field at all) — the first
+     * addon URL is captured here so the row can resolve a logo lazily.
+     */
+    val iconManifest: String? = null,
+    /**
+     * The extension's own site host (`domains[0]`, else the `baseUrl` host),
+     * used as the LAST-resort icon via Google's favicon service — the same
+     * trick the plugin repos themselves use. Null when the listing only names
+     * a placeholder host (`stremio-hub.local` and friends), where a favicon
+     * lookup could never resolve.
+     */
+    val iconHost: String? = null,
 )
 
 /** Per-repo plugin-list loading state shown in the Extensions screen. */
@@ -89,8 +107,45 @@ data class MediaItem(
      *  protocol puts this literal string in /catalog /meta /stream URLs, and
      *  many addons refuse requests sent with a different type segment. */
     val rawType: String = "",
+    /** TMDB's `vote_average` (0–10) when the item came from TMDB — what the
+     *  poster's optional rating badge shows. Null for extension items, whose
+     *  catalogs never carry a score. */
+    val rating: Double? = null,
+    /**
+     * The title a PROVIDER knows this item by, when it differs from [title].
+     *
+     * [title] is what the USER reads, and with a TMDB content language set it is
+     * TMDB's localized name ("Vengadores: Endgame"). Every installed extension
+     * still indexes the ORIGINAL name ("Avengers: Endgame"), so searching them
+     * with the localized one found nothing — the reported "I changed the TMDB
+     * language and now there is no extension for this movie", and a large part
+     * of the "no playable sources" reports: the whole cross-extension pass was
+     * asking 250 repos a name none of them has.
+     *
+     * TMDB hands us `original_title` / `original_name` in the very same response
+     * it localizes the title from, so this is filled in for every TMDB-sourced
+     * item (rows, shelves, presets, a one-title source, and a page opened from
+     * one). Blank for an extension item, whose own [title] already IS the name
+     * its sites use.
+     */
+    val originalTitle: String = "",
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
+
+    /**
+     * The name to ASK PROVIDERS with: the original/English title when the item
+     * carries one, else the display title. Nothing user-facing should print
+     * this — it exists so a title localised for display never becomes the search
+     * key (see [originalTitle]).
+     */
+    val searchTitle: String get() = originalTitle.trim().ifBlank { title.trim() }
+
+    /** Every name this item is known by, display name first and the original
+     *  name last. Lookups that can afford to try more than one name walk this. */
+    val allTitles: List<String>
+        get() = listOf(title.trim(), originalTitle.trim())
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
 }
 
 data class Episode(
@@ -133,6 +188,9 @@ data class TitleDetails(
     val language: String? = null,
     val director: String? = null,
     val writers: List<String> = emptyList(),
+    /** TMDB's `external_ids.imdb_id` — the key the ratings lookup uses for
+     *  Wikidata and Letterboxd. Null when TMDB doesn't know one. */
+    val imdbId: String? = null,
 )
 
 /** Everything the detail page's extra sections need — the details block, the
@@ -141,6 +199,25 @@ data class TitleExtras(
     val details: TitleDetails? = null,
     val cast: List<CastMember> = emptyList(),
     val trailers: List<Trailer> = emptyList(),
+    /** True when [cast] holds the CHARACTERS of an anime (with the Japanese
+     *  voice actors as each one's second line) rather than TMDB's voice-actor
+     *  credits — the row is then titled "Characters" instead of "Cast". */
+    val castIsCharacters: Boolean = false,
+    /**
+     * TMDB's own LOCALIZED name for this title (the `title`/`name` field of the
+     * detail response, answered in the app's chosen TMDB language).
+     *
+     * The player's "artwork while loading" card prints the title it was handed by
+     * the screen that opened it, which for an item that came from an EXTENSION is
+     * the site's own (English) name — so with a non-English TMDB language set,
+     * the page was translated but the loading card was not. This is that same
+     * name in the chosen language, and the play intents pass it along.
+     */
+    val localizedTitle: String? = null,
+    /** TMDB's `original_title`/`original_name` — the name EXTENSIONS index the
+     *  title under, which is what a provider lookup has to search for (see
+     *  [MediaItem.originalTitle]). */
+    val originalTitle: String? = null,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */
@@ -222,6 +299,179 @@ data class CatalogRef(
     /** Addon's literal catalog type string — used verbatim in Stremio URLs. */
     val rawType: String = "",
 )
+
+/**
+ * Where one catalog source inside a folder comes from.
+ *
+ * [TMDB] sources ask TMDB's discovery API for a ready-made slice of its
+ * catalogue (a production company's films, a network's series) — no extension
+ * has to be installed for those to work. [PROVIDER] sources point at one
+ * catalog of an installed extension, so a folder is not limited to TMDB: any
+ * catalog an addon exposes can sit next to a preset. [ITEMS] sources are a list
+ * of titles the user imported (a Nuvio/Stremio export, a shared JSON file) and
+ * stored inside the collection — see [NuvioCatalogImport].
+ */
+enum class CatalogSourceKind { TMDB, PROVIDER, ITEMS }
+
+/** One catalog inside a folder: either a TMDB preset or an installed catalog. */
+data class CatalogSource(
+    val kind: CatalogSourceKind = CatalogSourceKind.TMDB,
+    /** Display name of the source ("HBO", "Trending Now"). */
+    val title: String = "",
+    /** [CatalogSourceKind.PROVIDER] only: the installed extension's id. */
+    val providerId: String = "",
+    /** [CatalogSourceKind.PROVIDER] only: the catalog's own id + type. */
+    val catalogId: String = "",
+    val type: MediaType = MediaType.UNKNOWN,
+    val rawType: String = "",
+    /** [CatalogSourceKind.TMDB] only: the key of a [com.hikari.app.data.TmdbPresets] entry. */
+    val tmdbPreset: String = "",
+    /**
+     * [CatalogSourceKind.TMDB] only: a hand-built TMDB source (a public list, a
+     * production company, a network, a collection, a person, a director, or a
+     * custom discover query) as JSON — see [TmdbSpec]. Blank for a preset, so
+     * collections saved before this existed keep working untouched.
+     */
+    val tmdbSpec: String = "",
+    /**
+     * [CatalogSourceKind.ITEMS] only: the imported titles, as the compact JSON
+     * array [NuvioCatalogImport] reads and writes. Kept INSIDE the collection
+     * because an imported list has no server (or extension) behind it — the
+     * collection is the whole of its existence.
+     */
+    val itemsJson: String = "",
+    /**
+     * [CatalogSourceKind.ITEMS] only: this source's own stable id.
+     *
+     * Unlike the other kinds an imported list has no natural identity — it has
+     * no provider, no catalog id, and the user may rename it or add titles to it
+     * at any time — so it is given one when it is created. The key must not be
+     * derived from its contents or its name: either would change the row's
+     * Compose key mid-edit and remount it under the user's finger.
+     */
+    val uid: String = "",
+) {
+    /** The hand-built source behind this entry, or null for a plain preset. */
+    val spec: TmdbSpec? get() = if (kind == CatalogSourceKind.TMDB) TmdbSpec.decode(tmdbSpec) else null
+
+    /** How many titles an [CatalogSourceKind.ITEMS] source holds. */
+    val itemCount: Int
+        get() = if (kind == CatalogSourceKind.ITEMS)
+            runCatching { org.json.JSONArray(itemsJson).length() }.getOrDefault(0)
+        else 0
+
+    val key: String
+        get() = when (kind) {
+            CatalogSourceKind.TMDB -> "tmdb|" + tmdbSpec.ifBlank { tmdbPreset }
+            CatalogSourceKind.ITEMS -> "items|" + uid.ifBlank { itemsJson.hashCode().toString(16) }
+            CatalogSourceKind.PROVIDER -> "prov|$providerId|$type|$catalogId"
+        }
+}
+
+/**
+ * One category a Library title is filed under (Movies, Series, Action, Romance,
+ * or any name the user invents).
+ *
+ * [id] is stable and never shown; renaming a category keeps every title filed
+ * under it. [builtIn] marks the four categories a fresh install starts with, so
+ * Settings can offer to restore them without resurrecting a deleted custom one.
+ */
+data class LibraryCategory(
+    val id: String,
+    val name: String,
+    val builtIn: Boolean = false,
+) {
+    companion object {
+        const val MOVIES = "cat-movies"
+        const val SERIES = "cat-series"
+        const val ACTION = "cat-action"
+        const val ROMANCE = "cat-romance"
+
+        /** What a brand-new install starts with. */
+        val DEFAULTS: List<LibraryCategory> = listOf(
+            LibraryCategory(MOVIES, "Movies", builtIn = true),
+            LibraryCategory(SERIES, "Series", builtIn = true),
+            LibraryCategory(ACTION, "Action", builtIn = true),
+            LibraryCategory(ROMANCE, "Romance", builtIn = true),
+        )
+    }
+}
+
+/**
+ * One folder inside a collection — a named group of catalog sources. The
+ * reference client's "folders" are what make a collection useful for a user
+ * who only watches one kind of thing: instead of one long mixed feed, each
+ * folder answers exactly one question ("Marvel films", "HBO series").
+ *
+ * A folder can also wear a cover of its own (an emoji, an image URL, or a GIF)
+ * and pick the shape of its tile on the collection page — see [TileShapes] and
+ * [CoverKinds]. Stored as plain strings so a save written before these existed
+ * simply parses back to "no cover, poster shape".
+ */
+data class CollectionFolder(
+    val id: String,
+    val name: String,
+    val sources: List<CatalogSource> = emptyList(),
+    val coverKind: String = CoverKinds.NONE,
+    val coverValue: String = "",
+    val tileShape: String = TileShapes.POSTER,
+)
+
+/** How a collection/folder tile is shaped. The cover is drawn into it. */
+object TileShapes {
+    /** 2:3 — a poster, the default (what a grid of posters looks like). */
+    const val POSTER = "poster"
+    /** 1:1 — a square tile. */
+    const val SQUARE = "square"
+    /** 16:9 — a wide/backdrop tile. */
+    const val WIDE = "wide"
+    val ALL = listOf(POSTER, SQUARE, WIDE)
+    fun normalize(key: String?): String = if (key in ALL) key as String else POSTER
+    /** width / height for [key]. */
+    fun aspect(key: String?): Float = when (normalize(key)) {
+        SQUARE -> 1f
+        WIDE -> 16f / 9f
+        else -> 2f / 3f
+    }
+}
+
+/** What a collection/folder tile shows behind its name. */
+object CoverKinds {
+    const val NONE = "none"
+    const val EMOJI = "emoji"
+    /** A still image: an https:// URL, or a file:// path to a copy the app
+     *  made from the user's gallery (see [com.hikari.app.ui.CollectionCovers]). */
+    const val URL = "url"
+    /** An animated GIF URL — the same field, played only while the tile has
+     *  focus (a wall of animating GIFs is a battery fire). */
+    const val GIF = "gif"
+    val ALL = listOf(NONE, EMOJI, URL, GIF)
+    fun normalize(kind: String?): String = if (kind in ALL) kind as String else NONE
+}
+
+/**
+ * A user-made collection: a name plus one or more folders of catalog sources.
+ *
+ * Selecting a collection in Home's extension picker replaces the feed with the
+ * collection's folders (one row per folder, each holding that folder's
+ * catalogs), so the user sees only what they asked for instead of every
+ * installed extension's home page. The collection itself is stored in
+ * [AppStore] and is what "abc" in the reference screenshots is.
+ */
+data class Collection(
+    val id: String,
+    val name: String,
+    val folders: List<CollectionFolder> = emptyList(),
+    val coverKind: String = CoverKinds.NONE,
+    val coverValue: String = "",
+    /** The shape of this collection's own tile in the collections grid. */
+    val tileShape: String = TileShapes.POSTER,
+) {
+    val isEmpty: Boolean get() = folders.isEmpty()
+    /** Every source of every folder, deduped — the collection's whole diet. */
+    val allSources: List<CatalogSource>
+        get() = folders.flatMap { it.sources }.distinctBy { it.key }
+}
 
 data class CatalogRow(
     val providerId: String = "",

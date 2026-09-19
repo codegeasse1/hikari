@@ -1,5 +1,6 @@
 package com.hikari.app.web
 
+import com.hikari.app.i18n.I18n
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -35,6 +36,7 @@ import androidx.lifecycle.lifecycleScope
 import com.hikari.app.HikariApp
 import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Http
+import com.hikari.app.net.PromoGuard
 import com.hikari.app.player.PlayerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -110,12 +112,17 @@ class WebViewActivity : ComponentActivity() {
     // hard block — i.e. it loaded as ordinary content and has nothing to
     // verify. After a few ticks the view closes itself instead of lingering.
     private var noChallengePolls = 0
-    // Set when the activity was auto-launched by CloudflareVerifier (a request
-    // hit a challenge) — the host lets the verifier wake its waiters when this
-    // view closes so the retry runs immediately.
+    // Set when this view was opened to pass a Cloudflare challenge for a host
+    // (intent extra "verifyHost"). CloudflareVerifier is NOT the launcher — it
+    // never opens a visible view (see its class doc); the host is passed so the
+    // verifier can wake its waiters the moment this view closes and retry
+    // immediately.
     private var verifyHost: String? = null
-    // Video-verification mode (set alongside verifyHost by CloudflareVerifier):
-    // this view is open solely to pass a CF challenge for a STREAMING site, and
+    // Renderer-crash recoveries already spent by this view (carried across the
+    // relaunch via the intent, see onRenderProcessGone).
+    private var renderRestarts = 0
+    // Video-verification mode (set alongside verifyHost): this view is open
+    // solely to pass a CF challenge for a STREAMING site, and
     // the site's redirect to the real video page is legitimate — so main-frame
     // redirects are NOT blocked here (the browsing view's redirect protection
     // cancels exactly those, which is what kept the movie page from opening).
@@ -138,7 +145,7 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var whitelistDomains: Set<String> = emptySet()
 
-    // WebView safety toggles (Settings → WebView safety). Default ON:
+    // WebView safety toggles (Settings → Privacy & Browsing → WebView safety). Default ON:
     //  - redirectProtection: the main frame can only navigate within the site
     //    it was opened for — ad-hijack redirects (ad.twinrdengine.com & co)
     //    are cancelled before they load.
@@ -149,7 +156,7 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var popupProtection = true
     @Volatile private var blockedToastShown = false
-    // Hosts the user explicitly allowed redirects to (Settings → WebView safety
+    // Hosts the user explicitly allowed redirects to (Settings → Privacy & Browsing → WebView safety
     // → Allowed redirect links). Navigations to these are never blocked.
     @Volatile
     private var allowedRedirectHosts: Set<String> = emptySet()
@@ -201,6 +208,7 @@ class WebViewActivity : ComponentActivity() {
         verifyHost = intent.getStringExtra("verifyHost")
         verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
         providerId = intent.getStringExtra("providerId")
+        renderRestarts = intent.getIntExtra("renderRestarts", 0)
         val forceTranslate = intent.getBooleanExtra("translate", false)
         // Record every open (and why) so a "the site opened by itself" report
         // can be traced in Settings › Logs & diagnostics.
@@ -210,12 +218,23 @@ class WebViewActivity : ComponentActivity() {
                 "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"})"
         )
 
+        // An extension's "support us" link is never opened: it is a funding
+        // pitch, not something to watch (see PromoGuard — the same rule the
+        // page itself is held to). Refused before the WebView is built, so the
+        // user gets a reason instead of a blank page.
+        if (PromoGuard.isDonationUrl(startUrl)) {
+            com.hikari.app.data.Logs.log("WebView", "refused donation page $startUrl")
+            Toast.makeText(this, "Blocked a donation page", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
         }
 
         videoChip = TextView(this).apply {
-            text = "\u25B6 Play video"
+            text = I18n.t("\u25B6 Play video")
             visibility = View.GONE
             setBackgroundColor(0xFF3D5AFE.toInt())
             setTextColor(Color.WHITE)
@@ -237,7 +256,7 @@ class WebViewActivity : ComponentActivity() {
         // control. Tapping it opens a small menu (Back/Forward/Reload/Player) so
         // the app never draws a header bar over the site's own header or search.
         val togglePill = TextView(this).apply {
-            text = "\u22EF"
+            text = I18n.t("\u22EF")
             textSize = 18f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -420,7 +439,7 @@ class WebViewActivity : ComponentActivity() {
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
         ws.offscreenPreRaster = true
-        // UA comes from Settings → WebView user agent: stock Android default
+        // UA comes from Settings → Privacy & Browsing → WebView user agent: stock Android default
         // (passes Cloudflare's JS challenge) unless the user overrides with a
         // custom one. See HikariApp.effectiveWebViewUa.
         ws.userAgentString = (application as HikariApp).effectiveWebViewUa()
@@ -440,6 +459,15 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest
             ): Boolean {
+                // A donation / "support the developer" page is never part of
+                // watching something (see PromoGuard) — these are exactly the
+                // links an extension hangs off its content, and once they load
+                // they are a funding pitch with a progress bar and a pay
+                // button. Refused here, before a single byte of them arrives.
+                if (PromoGuard.isDonationUrl(request.url.toString())) {
+                    showBlockedToast("Blocked a donation page")
+                    return true
+                }
                 // Video-verification mode (verifyAllowRedirects): the streaming
                 // site's redirect to the real video page is the whole point —
                 // skip ALL main-frame redirect blocking here. Ad hosts are
@@ -482,6 +510,22 @@ class WebViewActivity : ComponentActivity() {
             ): WebResourceResponse? {
                 val u = request.url.toString()
                 val host = request.url.host ?: ""
+                // Cloudflare's own challenge traffic is never ad traffic (see
+                // isCloudflareInfra): letting the challenge's scripts, iframes
+                // and /cdn-cgi/ endpoints load is what lets it COMPLETE. Block
+                // or rewrite them and the page simply reloads itself into the
+                // same challenge — the verify page looping instead of passing.
+                if (isCloudflareInfra(u)) return null
+                // Donation / funding pages are refused at the request level
+                // too: a main-frame navigation that reached the network any
+                // other way (a meta refresh, a script assignment, a redirect
+                // chain) still gets an empty body instead of a donate card.
+                if (request.isForMainFrame && PromoGuard.isDonationUrl(u)) {
+                    showBlockedToast("Blocked a donation page")
+                    return WebResourceResponse(
+                        "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                    )
+                }
                 if (host.isNotBlank()) {
                     // Whitelist wins first — a site the user unblocked keeps
                     // all its subdomains usable.
@@ -569,6 +613,7 @@ class WebViewActivity : ComponentActivity() {
                     }
                 }
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
+                view?.evaluateJavascript(PROMO_CLEAN_JS, null)
                 // The verification view exists only to pass a Cloudflare
                 // challenge — it must never offer to play or hand off video
                 // (the site page would just start its player + ads).
@@ -610,11 +655,31 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
             ): Boolean {
+                // A verification view is never relaunched: it exists only to
+                // pass a challenge, and a Cloudflare page that just killed the
+                // renderer will kill it again on the next load — relaunching
+                // turned that into a loop of verify views opening one after
+                // another. Close instead and leave the user in control.
+                if (autoCloseWhenCloudflarePassed) {
+                    verifyDone = true
+                    runCatching { finish() }
+                    return true
+                }
                 // The renderer crashed (often a heavyweight site) — relaunch the
-                // activity instead of showing a dead white screen.
+                // activity instead of showing a dead white screen. Bounded: a
+                // page that crashes the renderer once will do it every time, so
+                // one retry, then close rather than reopened-forever.
+                if (renderRestarts >= MAX_RENDER_RESTARTS) {
+                    runCatching { finish() }
+                    return true
+                }
+                renderRestarts++
                 runCatching {
                     finish()
-                    startActivity(intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                    startActivity(Intent(intent).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        putExtra("renderRestarts", renderRestarts)
+                    })
                 }
                 return true
             }
@@ -631,6 +696,16 @@ class WebViewActivity : ComponentActivity() {
                 // open to pass the challenge, and these streaming pages' players
                 // use window.open to pop ads the moment you click the video.
                 if (autoCloseWhenCloudflarePassed) return false
+                // Popup protection: a window.open that is NOT backed by a user
+                // gesture is an auto-popunder — site scripts fire these on page
+                // load and on the first stray tap, which is exactly the "popup
+                // ad appears after the site loads" report. Only a
+                // gesture-driven window.open (a real click, e.g. a player's
+                // "open in new window") is relayed.
+                if (popupProtection && !isUserGesture) {
+                    showBlockedToast("Blocked popup")
+                    return false
+                }
                 // While a video is actively playing, a window.open popup is an
                 // ad (players pop them on click) — relaying it into the main
                 // view would replace the playing video with the ad page.
@@ -656,6 +731,12 @@ class WebViewActivity : ComponentActivity() {
                         private fun relay(url: String?) {
                             if (relayed || url.isNullOrBlank()) return
                             relayed = true
+                            // A popup to a donation page is an ad-style popup
+                            // with a cause: never relayed into the main view.
+                            if (PromoGuard.isDonationUrl(url)) {
+                                showBlockedToast("Blocked a donation page")
+                                return
+                            }
                             // Popup protection: only relay popups that belong to
                             // the site (same host/subdomain or whitelisted).
                             // about:blank popunders and foreign ad popups are
@@ -823,7 +904,7 @@ class WebViewActivity : ComponentActivity() {
                             runCatching { com.hikari.app.data.Translator.enable(pid, false) }
                         }
                     }
-                    Toast.makeText(this, "Translation off", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, I18n.t("Translation off"), Toast.LENGTH_SHORT).show()
                 }
             }
             true
@@ -844,8 +925,8 @@ class WebViewActivity : ComponentActivity() {
             val active = res?.trim()?.trim('"') == "true"
             Toast.makeText(
                 this@WebViewActivity,
-                if (active) "Blocker ON — tap an element to select it, tap it again to block"
-                else "Element blocker OFF",
+                if (active) I18n.t("Blocker ON — tap an element to select it, tap it again to block")
+                else I18n.t("Element blocker OFF"),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -857,7 +938,7 @@ class WebViewActivity : ComponentActivity() {
                 .getOrNull()
             runOnUiThread {
                 if (sel == null) {
-                    Toast.makeText(this@WebViewActivity, "Nothing to undo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@WebViewActivity, I18n.t("Nothing to undo"), Toast.LENGTH_SHORT).show()
                 } else {
                     blockedSelectors.remove(sel)
                     (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
@@ -866,7 +947,7 @@ class WebViewActivity : ComponentActivity() {
                             jsString(sel) + "):null",
                         null
                     )
-                    Toast.makeText(this@WebViewActivity, "Last block reverted", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@WebViewActivity, I18n.t("Last block reverted"), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -882,7 +963,7 @@ class WebViewActivity : ComponentActivity() {
                     "window.__hikariRestoreAll?window.__hikariRestoreAll():null",
                     null
                 )
-                Toast.makeText(this@WebViewActivity, "All element blocks cleared", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@WebViewActivity, I18n.t("All element blocks cleared"), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -911,6 +992,14 @@ class WebViewActivity : ComponentActivity() {
 
     /** Injects the blocker script + the persisted selectors into the page. */
     private fun injectElementBlocker(view: WebView?) {
+        // Never touch a Cloudflare-verification page. The element blocker is
+        // built for ad iframes/overlays, and a challenge's widget lives in an
+        // iframe of its own — hiding the wrong node (or the wrapper the whole
+        // challenge renders into) leaves Cloudflare's script to re-render and
+        // re-request the challenge, which is exactly the "the verification page
+        // keeps opening in a loop" report. The verify view has no ads to block
+        // anyway: it is one page shown solely to pass the check.
+        if (autoCloseWhenCloudflarePassed) return
         view?.evaluateJavascript(ELEMENT_BLOCK_JS, null)
         val arr = JSONArray().apply { blockedSelectors.forEach { put(it) } }
         view?.evaluateJavascript(
@@ -928,6 +1017,21 @@ class WebViewActivity : ComponentActivity() {
     /** Same host or one being a subdomain of the other (registrable-domain-ish). */
     private fun isSameSite(host: String, current: String): Boolean =
         host == current || host.endsWith("." + current) || current.endsWith("." + host)
+
+    /** Cloudflare's own challenge infrastructure — the scripts, iframes and
+     *  /cdn-cgi/ endpoints that mint the cf_clearance cookie. These must NEVER
+     *  be treated as ad traffic: an ad host list that carries (or a user
+     *  blocklist that happens to carry) a Cloudflare challenge host turns the
+     *  challenge's own bootstrap into a blocked request, so the page reloads
+     *  itself and asks again — the challenge loops instead of completing. */
+    private fun isCloudflareInfra(url: String?): Boolean {
+        if (url == null) return false
+        if (url.contains("/cdn-cgi/")) return true
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com") ||
+            host == "cloudflare.com" || host.endsWith(".cloudflare.com") ||
+            host == "cloudflareinsights.com" || host.endsWith(".cloudflareinsights.com")
+    }
 
     /** In Cloudflare-verification mode ONLY the challenge may be shown: the
      *  site we started on plus Cloudflare's own challenge infra. Anything else
@@ -1125,7 +1229,7 @@ class WebViewActivity : ComponentActivity() {
             webView.evaluateJavascript(VIDEO_SCAN_JS) { res ->
                 val urls = extractUrls(res)
                 if (urls.isEmpty()) {
-                    Toast.makeText(this, "No video found on this page", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, I18n.t("No video found on this page"), Toast.LENGTH_SHORT).show()
                 } else {
                     launchPlayer(urls, ref)
                 }
@@ -1149,7 +1253,7 @@ class WebViewActivity : ComponentActivity() {
     private fun launchPlayer(urls: List<String>, referer: String?) {
         val unique = urls.distinct().filter { it.startsWith("http") }
         if (unique.isEmpty()) {
-            Toast.makeText(this, "No playable video found", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("No playable video found"), Toast.LENGTH_SHORT).show()
             return
         }
         val cookie = runCatching {
@@ -1235,7 +1339,7 @@ class WebViewActivity : ComponentActivity() {
                     safe("blockElement.ui") {
                         blockedSelectors.add(selector)
                         (applicationContext as HikariApp).elementBlocks = blockedSelectors.toList()
-                        Toast.makeText(this@WebViewActivity, "Element blocked", Toast.LENGTH_SHORT)
+                        Toast.makeText(this@WebViewActivity, I18n.t("Element blocked"), Toast.LENGTH_SHORT)
                             .show()
                         lifecycleScope.launch(Dispatchers.IO) {
                             runCatching {
@@ -1343,6 +1447,15 @@ class WebViewActivity : ComponentActivity() {
          *  should close itself instead of lingering (~14s). */
         private const val VERIFY_NO_CHALLENGE_POLLS = 12
 
+        /** How many times a crashed renderer may be recovered by relaunching
+         *  this activity inside one browsing session. A page that kills
+         *  Chromium's renderer does it again on the next load — before this
+         *  limit the activity relaunched itself from its own intent, so a
+         *  crash-on-load page (a Cloudflare challenge on a low-end device is the
+         *  classic one) reopened and crashed in a loop: "it keeps opening over
+         *  and over". After the limit the view just closes. */
+        private const val MAX_RENDER_RESTARTS = 1
+
         /** HLS/DASH/MP4 URLs ending the request path (optional query). */
         private val VIDEO_URL_RE =
             Regex("""\.(m3u8|mpd|mp4)(\?[^\s"']*)?$""", RegexOption.IGNORE_CASE)
@@ -1357,7 +1470,12 @@ class WebViewActivity : ComponentActivity() {
                 '[class*="ad-banner"]','[id*="ad-banner"]','div[data-ad]','[class*="sponsored"]','[class*="ad-placeholder"]',
                 'iframe[src*="doubleclick"]','iframe[src*="googlesyndication"]','iframe[src*="googleads"]',
                 'iframe[src*="advertising"]','iframe[src*="adserver"]','iframe[src*="2mdn"]',
-                '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]'
+                '[class^="ad_"]','[id^="ad_"]','[class*="ad-pop"]','[class*="popup"]','[class*="popunder"]','[id*="popunder"]',
+                '[id*="popup"]','[class*="interstitial"]','[class*="overlay-ad"]','[id*="overlay-ad"]',
+                '[class*="ad-overlay"]','[id*="ad-overlay"]','[class*="ad_container"]','[id*="ad_container"]',
+                '[class*="ad-slot"]','[id*="ad-slot"]','[class*="ads-container"]','[id*="ads-container"]',
+                'iframe[src*="popads"]','iframe[src*="popcash"]','iframe[src*="propellerads"]','iframe[src*="adnxs"]',
+                'iframe[src*="exoclick"]','iframe[src*="juicyads"]','iframe[src*="trafficjunky"]'
               ];
               function clean(){
                 for(var i=0;i<SEL.length;i++){
@@ -1376,6 +1494,86 @@ class WebViewActivity : ComponentActivity() {
               try{
                 new MutationObserver(clean).observe(document.documentElement,{childList:true,subtree:true});
               }catch(e){}
+            })();
+        """.trimIndent()
+
+        /**
+         * Hides the extensions' (and the pages') funding pitch — the "goal
+         * achieved / send extra love / watch an ad to support" card, the ko-fi
+         * and Patreon buttons, the donate strip. Hiding (not removing) keeps
+         * page scripts that query those nodes working, and a video is never
+         * touched. It looks for two things: the usual class/id/caption of a
+         * money box, and the ASK itself — a short element whose text is only a
+         * funding line and which contains a link or button — so a card with no
+         * telling class still goes, while a real page mentioning donations in a
+         * paragraph (a login page's terms, an article) stays.
+         */
+        private val PROMO_CLEAN_JS = """
+            (function(){
+              if(window.__hikariPromoClean)return;
+              window.__hikariPromoClean=true;
+              var SEL=[
+                '[class*="donate"]','[id*="donate"]','[class*="donation"]','[id*="donation"]',
+                '[class*="buymeacoffee"]','[id*="buymeacoffee"]','[class*="ko-fi"]','[id*="ko-fi"]',
+                '[class*="kofi"]','[id*="kofi"]','[class*="patreon"]','[id*="patreon"]',
+                '[class*="paypal"]','[id*="paypal"]','[class*="sponsor"]','[id*="sponsor"]',
+                '[class*="funding"]','[id*="funding"]','[class*="fundrais"]','[id*="fundrais"]',
+                '[class*="support-us"]','[class*="supportus"]','[class*="tip-jar"]','[class*="tipjar"]',
+                '[class*="support-banner"]','[id*="support-banner"]','[class*="promo-card"]',
+                'a[href*="ko-fi."]','a[href*="kofi."]','a[href*="buymeacoffee"]','a[href*="patreon."]',
+                'a[href*="paypal."]','a[href*="opencollective"]','a[href*="liberapay"]',
+                'a[href*="trakteer"]','a[href*="saweria."]','a[href*="sociabuzz"]','a[href*="donationalerts"]',
+                'a[href*="github.com/sponsors"]','a[href*="gofundme"]','a[href*="kickstarter"]'
+              ];
+              var PROMO=/buy me a coffee|ko-?fi[.]?com|buymeacoffee|become a patron|become a sponsor|support (us|me|this|our) (on|via|through)|watch an ad to support|send extra love|make a donation|donate (now|today|to us|to this)|goal (achieved|completed)|supporters made this happen|sponsor (this|our) (repo|project|channel|extension)|fund (this|our) (repo|project|extension)|not affiliated with the cloudstream app/i;
+              var MONEY=/ko-?fi[.]|buymeacoffee|patreon[.]com|paypal[.]|github[.]com\/sponsors|opencollective|liberapay|trakteer|saweria[.]|sociabuzz|donationalerts|gofundme|kickstarter|cash[.]app|venmo[.]com/i;
+              function hide(e){
+                try{
+                  if(!e||!e.parentNode)return;
+                  if(e.closest('video')||e.querySelector('video'))return;
+                  e.style.setProperty('display','none','important');
+                }catch(x){}
+              }
+              function clean(){
+                var i,j,els;
+                for(i=0;i<SEL.length;i++){
+                  try{
+                    els=document.querySelectorAll(SEL[i]);
+                    for(j=0;j<els.length;j++)hide(els[j]);
+                  }catch(x){}
+                }
+                try{
+                  els=document.querySelectorAll('a,button,[role="button"]');
+                  for(i=0;i<els.length;i++){
+                    var a=els[i];
+                    if(!a||!a.parentNode)continue;
+                    var href=a.getAttribute('href')||a.getAttribute('data-url')||'';
+                    if(!PROMO.test(a.textContent||'')&&!MONEY.test(href))continue;
+                    hide(a);
+                    var box=a.parentNode,up=0;
+                    while(box&&up<3){
+                      up++;
+                      var t=(box.textContent||'').replace(/\s+/g,' ').trim();
+                      if(t.length>0&&t.length<300&&PROMO.test(t)){hide(box);}
+                      box=box.parentNode;
+                    }
+                  }
+                }catch(x){}
+              }
+              clean();
+              // Throttled: an ad-heavy extension page mutates constantly, and
+              // walking every link on every mutation is work the page cannot
+              // afford — one pass every 400ms is invisible to the user and
+              // cheap enough to never fight the site's own scripts.
+              var pending=false;
+              function later(){
+                if(pending)return;
+                pending=true;
+                setTimeout(function(){pending=false;clean();},400);
+              }
+              try{
+                new MutationObserver(later).observe(document.documentElement,{childList:true,subtree:true});
+              }catch(x){}
             })();
         """.trimIndent()
 

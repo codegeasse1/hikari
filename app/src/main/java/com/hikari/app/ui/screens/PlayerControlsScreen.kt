@@ -1,6 +1,8 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,12 +25,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -43,7 +44,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,6 +56,9 @@ import com.hikari.app.player.PlayerControl
 import com.hikari.app.player.PlayerControlSlot
 import com.hikari.app.player.PlayerControlsConfig
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.GlassShape
+import com.hikari.app.ui.components.SettingsPageHeader
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
 
 /**
@@ -78,9 +84,10 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     var layout by remember { mutableStateOf(PlayerControlsConfig.defaults()) }
     var moveMenuFor by remember { mutableStateOf<PlayerControl?>(null) }
     // Preview style: the player shows buttons as ICONS (most of them have no
-    // text), so the schematic can be read either as the button names or — the
-    // truer picture — as the actual glyphs the user will see.
-    var iconsPreview by remember { mutableStateOf(false) }
+    // text), so the schematic opens as the truer picture — the actual glyphs
+    // the user will see — and can be switched to the button names to check one
+    // that reads oddly as a glyph.
+    var iconsPreview by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(json) { layout = PlayerControlsConfig.decode(json) }
@@ -101,39 +108,25 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        // Clear of the floating taskbar (0 when there is no bar): this page
+        // replaces the Settings list, so it has to keep the last control out
+        // from under the bar itself.
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
     ) {
         item {
-            Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
-                            .clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back to settings",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Player controls",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            "Move or hide the player buttons",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            // The same header as every settings folder page — one line, one
+            // title size (see SettingsPageHeader) — because this page is opened
+            // from one, and Reset has to share that line with the name.
+            SettingsPageHeader(
+                title = tr("Player controls"),
+                subtitle = tr("Move or hide the player buttons"),
+                onBack = onBack,
+                trailing = {
                     TextButton(
                         onClick = {
                             val next = PlayerControlsConfig.defaults()
@@ -146,20 +139,9 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                                 }
                             }
                         }
-                    ) { Text("Reset") }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "Pick where each button lives in the player. Buttons you never " +
-                        "use can be hidden completely — the layout below shows the " +
-                        "result. The back button, the play/pause circle and the " +
-                        "title are always shown.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-            }
+                    ) { Text(tr("Reset")) }
+                },
+            )
         }
 
         item {
@@ -167,7 +149,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                 Column(Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Preview",
+                            tr("Preview"),
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -206,7 +188,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                 item(key = "empty_${slot.key}") {
                     GlassCard(Modifier.fillMaxWidth()) {
                         Text(
-                            "Nothing here",
+                            tr("Nothing here"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(14.dp),
@@ -223,7 +205,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box(
                                 Modifier
                                     .size(32.dp)
-                                    .clip(RoundedCornerShape(11.dp))
+                                    .clip(GlassShape)
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -250,7 +232,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             Box {
                                 Column(
                                     Modifier
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(GlassShape)
                                         .background(
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                         )
@@ -259,7 +241,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
                                     Text(
-                                        "Move",
+                                        tr("Move"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -304,8 +286,7 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
 
         item(key = "footer") {
             Text(
-                "Changes apply the next time the player opens. Anything hidden " +
-                    "can be brought back here at any time.",
+                tr("Changes apply the next time the player opens."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 20.dp),
@@ -318,6 +299,15 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
  * A schematic of the player overlay: the fixed furniture (back arrow, title,
  * play circle) plus the buttons the user has placed, so the layout can be read
  * without leaving the settings page.
+ *
+ * [icons] draws each chip as the real glyph the player uses instead of its name
+ * — the default, because that is what the overlay actually looks like.
+ *
+ * The whole sketch sits on a stand-in video frame (a bundled still) rather than
+ * a flat black panel: the point of a preview is "this is the player", and a
+ * photo behind the chrome makes the placement of the bottom row, the play ring
+ * and the chips immediately obvious. A scrim over the still keeps every chip
+ * legible no matter how bright the frame behind it is.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -327,91 +317,111 @@ private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>, icons: 
     fun inSlot(slot: PlayerControlSlot): List<PlayerControl> =
         PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == slot }
 
-    Column(
+    Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF0B0E1A))
-            .padding(10.dp),
     ) {
-        // Top bar: back arrow, title, then the user's top-bar buttons.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SketchBox("←", accent, filled = false)
-            Spacer(Modifier.width(6.dp))
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(18.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(Color(0xFF2A3352))
-            )
-            Spacer(Modifier.width(6.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                inSlot(PlayerControlSlot.TOP_BAR).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        // Centre: the fixed play/pause circle.
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(15.dp))
-                    .background(accent.copy(alpha = 0.22f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        // Bottom row: progress bar, then left and right button groups.
+        Image(
+            painter = painterResource(R.drawable.player_preview_still),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize(),
+        )
         Box(
             Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(accent.copy(alpha = 0.35f))
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0x7A070A14), Color(0xE0070A14)),
+                    )
+                )
         )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 176.dp)
+                .padding(10.dp),
+        ) {
+            // Top bar: back arrow, title, then the user's top-bar buttons.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SketchBox("←", accent, filled = false)
+                Spacer(Modifier.width(6.dp))
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color(0xFF2A3352))
+                )
+                Spacer(Modifier.width(6.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    inSlot(PlayerControlSlot.TOP_BAR).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            // Centre: the fixed play/pause circle.
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(accent.copy(alpha = 0.34f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            // Bottom row: progress bar, then left and right button groups.
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accent.copy(alpha = 0.55f))
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        inSlot(PlayerControlSlot.BOTTOM_LEFT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    inSlot(PlayerControlSlot.BOTTOM_LEFT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
+                    inSlot(PlayerControlSlot.BOTTOM_RIGHT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
                 }
             }
-            Spacer(Modifier.width(6.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                inSlot(PlayerControlSlot.BOTTOM_RIGHT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
-            }
-        }
 
-        val hidden = inSlot(PlayerControlSlot.HIDDEN)
-        if (hidden.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Hidden: " + hidden.joinToString(", ") { it.label },
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF8A90A8),
-            )
+            val hidden = inSlot(PlayerControlSlot.HIDDEN)
+            if (hidden.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    tr("Hidden: ") + hidden.joinToString(", ") { it.label },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF8A90A8),
+                )
+            }
         }
     }
 }
@@ -421,7 +431,7 @@ private fun SketchChip(label: String, accent: Color, iconRes: Int? = null) {
     Box(
         Modifier
             .clip(RoundedCornerShape(5.dp))
-            .background(accent.copy(alpha = 0.18f))
+            .background(accent.copy(alpha = 0.34f))
             .padding(
                 horizontal = if (iconRes != null) 4.dp else 5.dp,
                 vertical = if (iconRes != null) 4.dp else 3.dp,
@@ -470,7 +480,7 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
 private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(GlassShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .padding(2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -479,7 +489,7 @@ private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
             val selected = icons == wantsIcons
             Box(
                 Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(GlassShape)
                     .background(
                         if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                         else Color.Transparent

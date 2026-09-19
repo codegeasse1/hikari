@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 95
-        versionName = "0.3.71"
+        versionCode = 150
+        versionName = "0.6.6"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -67,15 +67,31 @@ android {
 // every namespace it touches (androidx/activity/compose/R.class,
 // com.fleeksoft.charset.R, ...). Those collide with the real dependencies' R
 // classes during release dex merging ("Type ...R is defined multiple times").
-// Strip ALL R classes before the jar reaches the classpath — a bare jar has no
-// resource table, so its R classes are dead scaffolding; the real libraries
-// provide the R classes at runtime.
+// Strip those before the jar reaches the classpath — the real libraries provide
+// their R classes at runtime.
+//
+// EXCEPT com/lagradost/cloudstream3/R*: the CloudStream jar's OWN R classes.
+// Plugins are compiled against them (e.g. syncproviders/AccountManager
+// references com.lagradost.cloudstream3.R$string) and NOTHING else on the
+// classpath defines that namespace, so stripping them made every class that
+// touches them die with
+//   NoClassDefFoundError: ...AccountManager
+//   caused by ClassNotFoundException: com.lagradost.cloudstream3.R$string
+// which surfaced as "No CloudStream plugin loaded" for whole repos (the
+// Phisher repo's 85 plugins, StreamPlay, …). They must survive the clean.
 val cloudstreamRawJar = file("libs/cloudstream3.jar")
 val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("cloudstreamJarClean") {
     archiveFileName.set("cloudstream3-clean.jar")
     destinationDirectory.set(layout.buildDirectory.dir("intermediates/cloudstream-clean"))
     from(zipTree(cloudstreamRawJar)) {
-        exclude("**/R.class", "**/R$*.class")
+        exclude { element ->
+            val path = element.path
+            val name = path.substringAfterLast('/')
+            val isRClass = name == "R.class" || (name.startsWith("R$") && name.endsWith(".class"))
+            val isCloudStreamR = path == "com/lagradost/cloudstream3/R.class" ||
+                (path.startsWith("com/lagradost/cloudstream3/R$") && name.endsWith(".class"))
+            isRClass && !isCloudStreamR
+        }
         // The jar ships the JVM (desktop) artifact of CloudStream, whose
         // network/WebViewResolver is a no-op stub (`intercept` passes through,
         // resolveUsingWebView returns nothing). Plugins that resolve embeds
@@ -85,6 +101,20 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/network/ — so drop the
         // stub classes here to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/network/WebViewResolver*.class")
+        // The jar's CloudflareKiller is the Android build of CloudStream's
+        // auto Cloudflare solver: its init() WIPES the WebView cookie jar
+        // (`CookieManager.removeAllCookies`), and on a 403/503 it loads the
+        // challenged site in a WebView all by itself — no user tap. It also
+        // calls `WebViewResolver.Companion.getWebViewUserAgent1()`, which the
+        // jar's own WebViewResolver stub never declared, so it crashed the app
+        // with NoSuchMethodError any time an extension (Cinemacity's
+        // Cloudflare-bypass interceptor) wrapped a request with it. Shadow it
+        // with app/src/main/java/com/lagradost/cloudstream3/network/
+        // CloudflareKiller.kt (same public method table as the jar's class, so
+        // plugin bytecode still links) — a version that never opens a WebView,
+        // never clears cookies, and simply reuses the clearance the user
+        // earned with the app's own verify button.
+        exclude("com/lagradost/cloudstream3/network/CloudflareKiller*.class")
         // The jar's CloudStreamApp is compiled against Coil 3 (it implements
         // coil3.SingletonImageLoader.Factory), which this app does NOT bundle
         // (it ships Coil 2) — so any plugin that touches the class dies with
@@ -94,6 +124,32 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt and
         // drop the jar classes to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/CloudStreamApp*.class")
+        // The jar's MainActivity is CloudStream's own Android screen, and it
+        // does not load in this app: a plugin that merely NAMES it (CineStream
+        // builds an Intent to it from its settings dialog) dies with
+        // `NoClassDefFoundError: Failed resolution of:
+        // Lcom/lagradost/cloudstream3/MainActivity;` — on the MAIN thread, which
+        // takes the whole process down. Shadow it the same way CloudStreamApp is
+        // shadowed: app/src/main/java/com/lagradost/cloudstream3/MainActivity.kt
+        // provides a loadable class that hands the user to Hikari's own main
+        // screen, and the jar's copy is dropped so the two cannot collide
+        // ("Type ... is defined multiple times") during dex merging.
+        //
+        // MainActivityKt (the file facade — initCloudStream reads it for the
+        // app/insecure Requests) is deliberately NOT matched: these patterns
+        // require the '$' or the '.class' immediately after "MainActivity".
+        exclude("com/lagradost/cloudstream3/MainActivity.class")
+        exclude("com/lagradost/cloudstream3/MainActivity\$*.class")
+        // The jar's ToastBinding is a generated ViewBinding class that
+        // (a) cannot be linked without the androidx.viewbinding runtime and
+        // (b) inflates by a resource id baked into the jar's own R$layout,
+        // which Hikari's resource table does not share. Shadow it with
+        // app/src/main/java/com/lagradost/cloudstream3/databinding/ToastBinding.java
+        // (same class name + the three members CommonActivity.showToast uses),
+        // so plugin toasts render Hikari's own layout instead of dying with
+        // NoClassDefFoundError. CommonActivity is the only class in the jar
+        // that references it.
+        exclude("com/lagradost/cloudstream3/databinding/ToastBinding.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }
@@ -161,6 +217,14 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.jsoup)
     implementation(libs.coil.compose)
+    // SVG decoding for extension logos: plenty of plugin/addon icons are
+    // `.svg` (e.g. SkyStream's dramayo → dramayo.stream/static/dramayo.svg),
+    // and Coil 2 answers those with a decode failure — i.e. the monochrome
+    // glyph placeholder on every row. Registered in HikariApp's ImageLoader.
+    implementation(libs.coil.svg)
+    // Animated GIF decoding, for collection/folder covers ("Animated GIF URL"
+    // in the cover editor): without it Coil draws only the first frame.
+    implementation(libs.coil.gif)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlin.reflect)
     implementation(libs.jackson.databind)
@@ -175,6 +239,38 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.atomicfu)
     implementation(libs.newpipeextractor)
+    // Mihon/Aniyomi's dependency-injection container. Aniyomi extension APKs
+    // don't receive their dependencies as constructor arguments — the extension
+    // loader instantiates a source and the source immediately pulls what it
+    // needs (`Application`, `Json`, `NetworkHelper`, `JavaScriptEngine`, …) out
+    // of the global `Injekt` scope. Hikari has no DI container of its own, so
+    // the same container (mihonapp's fork, which rebuilds injekt for modern
+    // Kotlin and patches the registrar) is installed and primed in
+    // HikariApp.onCreate — see AniyomiExtensionManager.
+    implementation("com.github.mihonapp:injekt:91edab2317")
+    // RxJava 1 — Aniyomi's `AnimeHttpSource` still carries the deprecated Rx
+    // `fetch*` API that `AnimeCatalogueSource`'s default methods delegate to
+    // (extlib-14 extensions only implement the suspend methods, so the Rx bridge
+    // vendored in RxCoroutineBridge is what actually runs them).
+    implementation("io.reactivex:rxjava:1.3.8")
+    // Aniyomi's `HttpServer` (a NanoHTTPD local proxy some extensions use for
+    // streams that want same-origin requests). Hikari never starts one, but the
+    // class still has to LINK — `AnimeHttpSource.createHttpServer()` and the
+    // video-resolving paths name it.
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    // `HttpLoggingInterceptor` — NetworkHelper's OkHttp stack.
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // Required to LINK the CloudStream jar's generated ViewBinding classes
+    // (ToastBinding et al.) — they implement androidx.viewbinding.ViewBinding
+    // and call ViewBindings.findChildViewById. Without the viewbinding runtime
+    // ART fails the class link and surfaces it as
+    // NoClassDefFoundError: Lcom/lagradost/cloudstream3/databinding/ToastBinding;
+    // which killed the app whenever a plugin called CommonActivity.showToast.
+    implementation(libs.androidx.viewbinding)
+    // CardView is the declared type of ToastBinding.getRoot() (and the root of
+    // res/layout/hikari_toast.xml), so the class must be on the compile+runtime
+    // classpath too.
+    implementation(libs.androidx.cardview)
     implementation(libs.yt.dlp.android)
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)

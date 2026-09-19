@@ -33,6 +33,17 @@ interface ContentProvider {
     fun prepareSettings(): Boolean = settingsAvailable
 
     /**
+     * Throws away any cached plugin/provider instance so the NEXT
+     * [prepareSettings]/[openSettings] rebuilds it from scratch with the
+     * CURRENT activity. A plugin whose settings screen bailed out on a stale
+     * activity (a `FragmentManager has been destroyed` IllegalStateException —
+     * the plugin's callback had captured an activity that has since gone) only
+     * recovers with a real rebuild: retrying the same instance re-runs the same
+     * closure against the same dead activity. Blocking — call from IO.
+     */
+    fun rebuildSettings(context: android.content.Context): Boolean = prepareSettings()
+
+    /**
      * Opens the provider's own settings UI. [activity] is the host activity the
      * settings screen should attach its dialogs/fragments to (null = let the
      * provider resolve the current one). Returns false when unsupported or when

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Uygulama dili</string>
+    <string name="settings_language_subtitle">Uygulama metinlerini ve oynatıcı kontrollerini değiştirir</string>
+    <string name="settings_language_system">Sistem varsayılanı</string>
+    <string name="player_options">Oynatıcı seçenekleri</string>
+    <string name="player_fit_video">Videoyu sığdır</string>
+    <string name="player_fit_video_desc">Tüm kareyi göster</string>
+    <string name="player_crop_to_fill">Doldurmak için kırp</string>
+    <string name="player_crop_to_fill_desc">Çerçeve dolana kadar yakınlaştır</string>
+    <string name="player_rotate_screen">Ekranı döndür</string>
+    <string name="player_rotate_screen_desc">Videoyu her seferinde 90° döndür</string>
+    <string name="player_server_chooser">Sunucu seçici</string>
+    <string name="player_server_on">Açık — her seferinde sunucu seç</string>
+    <string name="player_server_off">Kapalı — en iyi sunucuyla başla</string>
+    <string name="player_options_hint">Video sığdırma, döndürme ve sunucuların kendi kendine başlaması.</string>
+    <string name="player_episodes">Bölümler</string>
+    <string name="player_source">Kaynak</string>
+    <string name="player_quality">Kalite</string>
+    <string name="player_audio">Ses</string>
+    <string name="player_subtitles">Altyazılar</string>
+    <string name="player_rotate">Döndür</string>
+    <string name="player_skip_intro">İntroyu atla</string>
+    <string name="player_enhance">İyileştir</string>
+    <string name="player_tap_to_play">Oynatmak için dokun</string>
+    <string name="cd_back">Geri</string>
+    <string name="cd_add_to_library">Kitaplığa ekle</string>
+    <string name="cd_download">İndir</string>
+    <string name="cd_pip">Resim içinde resim</string>
+    <string name="cd_player_options">Oynatıcı seçenekleri</string>
+    <string name="cd_lock_controls">Kontrolleri kilitle</string>
+    <string name="cd_fit_or_crop">Videoyu sığdır veya kırp</string>
+</resources>

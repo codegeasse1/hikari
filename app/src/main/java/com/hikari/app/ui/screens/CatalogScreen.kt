@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.i18n.tr
 
 import android.app.Application
 import androidx.compose.foundation.background
@@ -57,6 +58,9 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.RatingBadge
+import com.hikari.app.ui.rememberPosterScore
+import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -200,11 +204,11 @@ fun CatalogScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = { nav.popBackStack() }) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
-                Text(
-                    catalogName,
+            Text(
+                tr(catalogName),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -226,7 +230,7 @@ fun CatalogScreen(
         } else if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "Nothing here right now — the site may be blocking or down.",
+                    tr("Nothing here right now — the site may be blocking or down."),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -244,7 +248,11 @@ fun CatalogScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(items, key = { it.uniqueId }) { item ->
+                // Extension catalogs repeat themselves (a scraped page can list
+                // the same title twice): keying on the identity WITHOUT dropping
+                // repeats crashes the screen, because Compose throws on a
+                // duplicated key.
+                items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     CatalogCard(item) {
                         Routes.safeNavigate(
                             nav,
@@ -265,7 +273,7 @@ fun CatalogScreen(
                         if (loading) CircularProgressIndicator(Modifier.width(28.dp))
                         else if (done && items.isNotEmpty()) {
                             Text(
-                                "That's everything",
+                                tr("That's everything"),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -279,6 +287,12 @@ fun CatalogScreen(
 
 @Composable
 private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
+    val style = rememberPosterStyle()
+    // The score badge, when Settings → App Layout has it on: warm the ratings
+    // cache for this title and print whatever is known (see
+    // rememberPosterScore). Null when the switch is off, so an old device that
+    // never wanted badges pays nothing.
+    val badge = rememberPosterScore(item, style)
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -307,6 +321,14 @@ private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
+            if (badge != null) {
+                RatingBadge(
+                    text = badge,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
+            }
         }
         Text(
             item.title,

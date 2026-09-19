@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">App-taal</string>
+    <string name="settings_language_subtitle">Verandert de teksten van de app en de spelerbediening</string>
+    <string name="settings_language_system">Systeemstandaard</string>
+    <string name="player_options">Speleropties</string>
+    <string name="player_fit_video">Video passend maken</string>
+    <string name="player_fit_video_desc">Het hele beeld tonen</string>
+    <string name="player_crop_to_fill">Bijsnijden om te vullen</string>
+    <string name="player_crop_to_fill_desc">Inzoomen tot het kader gevuld is</string>
+    <string name="player_rotate_screen">Scherm draaien</string>
+    <string name="player_rotate_screen_desc">Video telkens 90° draaien</string>
+    <string name="player_server_chooser">Serverkeuze</string>
+    <string name="player_server_on">Aan — kies elke keer een server</string>
+    <string name="player_server_off">Uit — start op de beste server</string>
+    <string name="player_options_hint">Beeldaanpassing, rotatie en of servers zelf starten.</string>
+    <string name="player_episodes">Afleveringen</string>
+    <string name="player_source">Bron</string>
+    <string name="player_quality">Kwaliteit</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Ondertitels</string>
+    <string name="player_rotate">Draaien</string>
+    <string name="player_skip_intro">Intro overslaan</string>
+    <string name="player_enhance">Verbeteren</string>
+    <string name="player_tap_to_play">Tik om af te spelen</string>
+    <string name="cd_back">Terug</string>
+    <string name="cd_add_to_library">Toevoegen aan bibliotheek</string>
+    <string name="cd_download">Downloaden</string>
+    <string name="cd_pip">Beeld-in-beeld</string>
+    <string name="cd_player_options">Speleropties</string>
+    <string name="cd_lock_controls">Bediening vergrendelen</string>
+    <string name="cd_fit_or_crop">Video passend maken of bijsnijden</string>
+</resources>

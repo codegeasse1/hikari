@@ -5,7 +5,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 
 /**
- * The app's accent colours (Settings → Appearance → Accent color).
+ * The app's accent colours (Settings → Appearance & Theme → Accent colour).
  *
  * The app was built around a single amber/gold accent ([AMBER], the default)
  * and the player around the cyan→violet glow ([VIOLET], the default). Making
