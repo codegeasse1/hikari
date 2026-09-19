@@ -2555,6 +2555,10 @@ private fun CoverCropDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val aspect = TileShapes.aspect(shape)
+    // Resolved up here, not inside the coroutine that saves the crop: `tr` is a
+    // @Composable lookup and cannot be called from a coroutine body.
+    val croppedToast = tr("Cover cropped")
+    val croppedFailedToast = tr("Couldn't save the cropped cover.")
     var bitmap by remember(value) { mutableStateOf<Bitmap?>(null) }
     var failed by remember(value) { mutableStateOf(false) }
     var loading by remember(value) { mutableStateOf(true) }
@@ -2740,18 +2744,10 @@ private fun CoverCropDialog(
                                 }
                                 saving = false
                                 if (uri != null) {
-                                    Toast.makeText(
-                                        context,
-                                        tr("Cover cropped"),
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    Toast.makeText(context, croppedToast, Toast.LENGTH_SHORT).show()
                                     onDone(uri)
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        tr("Couldn't save the cropped cover."),
-                                        Toast.LENGTH_LONG,
-                                    ).show()
+                                    Toast.makeText(context, croppedFailedToast, Toast.LENGTH_LONG).show()
                                 }
                             }
                             }
