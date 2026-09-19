@@ -816,8 +816,8 @@ class PlayerActivity : ComponentActivity() {
         val subtitle = findViewById<TextView>(R.id.subtitle_text)
         subtitle.text = when {
             epSeason > 1 && epNumber > 0 ->
-                "S$epSeason E$epNumber" + if (epName.isNotBlank()) " · $epName" else ""
-            epNumber > 0 -> "Episode $epNumber" + if (epName.isNotBlank()) " · $epName" else ""
+                "S$epSeason E$epNumber" + episodeNameSuffix(epName)
+            epNumber > 0 -> "Episode $epNumber" + episodeNameSuffix(epName)
             else -> epName
         }
         subtitle.visibility = if (subtitle.text.isBlank()) View.GONE else View.VISIBLE
@@ -3150,10 +3150,11 @@ class PlayerActivity : ComponentActivity() {
                     ep.number > 0 -> "Episode ${ep.number}"
                     else -> ""
                 }
+                val named = episodeNameSuffix(ep.name).removePrefix(" · ")
                 GlassOption(
                     label = when {
-                        !ep.name.isNullOrBlank() && number.isNotBlank() -> "$number \u00B7 ${ep.name}"
-                        !ep.name.isNullOrBlank() -> ep.name
+                        named.isNotEmpty() && number.isNotBlank() -> "$number \u00B7 $named"
+                        named.isNotEmpty() -> named
                         number.isNotBlank() -> number
                         else -> "Episode"
                     },
@@ -3296,9 +3297,37 @@ class PlayerActivity : ComponentActivity() {
             return ""
         }
 
+    /**
+     * A server row's label, made UNIQUE when several entries share a name.
+     *
+     * Two different links from the same engine routinely arrive with the same
+     * label ("DahmerMovies 1080p"), because the label is built from the repo and
+     * the resolution and says nothing about which file it points at — so the
+     * chooser showed what looked like the same server listed twice (the reported
+     * duplicate; each row still played a different link). A repeated name gets
+     * its host appended, or — when even the hosts match — its position among the
+     * twins, so every row is distinguishable.
+     */
+    private fun serverLabel(source: PlayerSource): String {
+        val name = source.name
+        if (name.isBlank()) return name
+        val twins = sources.filter { it.name == name }
+        if (twins.size < 2) return name
+        val key = source.infoHash ?: source.url
+        val host = hostOf(source.url)
+        if (host != null && host.isNotBlank() &&
+            twins.count { hostOf(it.url) == host } == 1 &&
+            !name.contains(host, ignoreCase = true)
+        ) {
+            return "$name \u00B7 $host"
+        }
+        val ordinal = twins.indexOfFirst { (it.infoHash ?: it.url) == key } + 1
+        return "$name ($ordinal)"
+    }
+
     /** One server's row — the same capsule the flat picker used. */
     private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
-        label = source.name,
+        label = serverLabel(source),
         sub = when {
             source.local -> "Saved on this device"
             else -> hostOf(source.url)
@@ -6415,9 +6444,9 @@ class PlayerActivity : ComponentActivity() {
     private fun applyLiveEpisode(ep: Episode) {
         val label = when {
             ep.season > 1 && ep.number > 0 ->
-                "S${ep.season} E${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+                "S${ep.season} E${ep.number}" + episodeNameSuffix(ep.name)
             ep.number > 0 ->
-                "Episode ${ep.number}" + if (!ep.name.isNullOrBlank()) " · ${ep.name}" else ""
+                "Episode ${ep.number}" + episodeNameSuffix(ep.name)
             else -> ep.name.orEmpty()
         }
         findViewById<TextView>(R.id.subtitle_text)?.apply {
@@ -6643,6 +6672,23 @@ class PlayerActivity : ComponentActivity() {
         if (!downloadPickMode) return
         downloadPickMode = false
         window?.decorView?.postDelayed({ if (!isFinishing && !isDestroyed) finish() }, 1200L)
+    }
+
+    /**
+     * The " · name" tail of an episode label, or "" when the episode's own name
+     * adds nothing.
+     *
+     * Extensions routinely name a row after its number — literally "Episode
+     * 158", "Ep 158", "第158集" — and the label around it already says which
+     * episode this is, so the old unconditional " · ${ep.name}" produced the
+     * reported "Episode 158 · Episode 158" (and, on the loading card, the same
+     * string twice). A name that is only an episode tag is dropped; a real title
+     * ("Freedom Day") still shows.
+     */
+    private fun episodeNameSuffix(name: String?): String {
+        val n = name?.trim().orEmpty()
+        if (n.isEmpty() || com.hikari.app.nuvio.EpisodeTitles.isGeneric(n)) return ""
+        return " · $n"
     }
 
     /** The top bar's second line (e.g. "S1 E2 · Freedom Day") — the episode

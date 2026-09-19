@@ -307,6 +307,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _liveStreams = MutableStateFlow<List<StreamSource>>(emptyList())
     val liveStreams: StateFlow<List<StreamSource>> = _liveStreams.asStateFlow()
 
+    /**
+     * Straight-to-the-player hand-off for servers that arrive LATE, set by the
+     * play flow for the session it is playing.
+     *
+     * The screen's own live collector is cancelled the moment its pass ends, so
+     * it can never forward a server found afterwards — and servers ARE still
+     * being found afterwards: a pass that ran out of budget hands the
+     * extensions it never reached to a background sweep that keeps searching
+     * while the video plays (see
+     * [com.hikari.app.data.ContentRepository.startSweepIfNeeded]). The feed
+     * every provider response flows through calls this sink, so a late find
+     * reaches the player's "Select server" list exactly like one that arrived
+     * in time.
+     */
+    @Volatile
+    var liveSink: (suspend (List<StreamSource>) -> Unit)? = null
+
     /** How many addons were asked for sources on the last lookup. */
     private val _searchedProviders = MutableStateFlow(0)
     val searchedProviders: StateFlow<Int> = _searchedProviders.asStateFlow()
@@ -594,6 +611,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val feed: (suspend (List<StreamSource>) -> Unit) = { partial ->
                 _liveStreams.value = partial
                 onProgress?.invoke(partial)
+                // …and straight to the player when the play flow has a session
+                // up (see [liveSink]): this is the only route a BACKGROUND
+                // SWEEP's late finds have to a player that is already playing,
+                // because the screen's own collector is stopped as soon as its
+                // pass ends.
+                liveSink?.invoke(partial)
             }
             val lookup = withContext(Dispatchers.IO) {
                 repo.streamsForOutcome(item, ep, feed)
@@ -690,6 +713,19 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private fun cacheKey(item: MediaItem, ep: Episode?): String =
         item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
 
+    /** Is a BACKGROUND continuation sweep still asking the repos this video's
+     *  last source pass never reached? The pass hands every repo it ran out of
+     *  time for to a sweep that keeps searching on the application scope while
+     *  the video plays (see ContentRepository.startSweepIfNeeded), so while one
+     *  is alive the search is NOT over and the screen must never announce "no
+     *  playable server found after searching N extensions" — that verdict is
+     *  exactly what made a search that was still running look like it had
+     *  stopped at the 5th or 13th extension. */
+    fun backgroundSweepBusy(episode: Episode?): Boolean {
+        val m = _meta.value ?: return false
+        return ContentRepository.sweepBusyFor(m, episode)
+    }
+
     /** [getStreamsLookup]'s servers, for callers that only want the list. */
     suspend fun getStreams(
         episode: Episode?,
@@ -785,6 +821,12 @@ private const val STREAMS_FINAL_RETRIES = 3
 
 /** Breather between those retries, so a pass that keeps dying does not spin. */
 private const val SEARCH_RETRY_PAUSE_MS = 1_500L
+
+/** How long the play flow keeps a session open waiting for a BACKGROUND SWEEP
+ *  to finish before it declares the search over regardless. Mirrors
+ *  ContentRepository's own sweep ceiling (10 minutes) plus a minute of slack, so
+ *  the watcher never gives up on a sweep that is still legitimately working. */
+private const val SWEEP_WATCH_CAP_MS = 11 * 60 * 1000L
 
 /** How long the player holds playback at the start of a fresh search, waiting
  *  for a server from the extension the title was opened from, before it takes
@@ -1226,6 +1268,13 @@ fun DetailScreen(
                 // pushes archives to the back, so they are never server #1.
                 basic.sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
+        // Late-server hand-off to the player (see [liveSink]).
+        vm.liveSink = { partial ->
+            if (launched.get() || playerLaunched) {
+                val playable = playableEvery(partial)
+                if (playable.isNotEmpty()) StreamsLive.append(sid, playable)
+            }
+        }
         // NOTE: application scope, NOT the composition's. See [screenAlive].
         app.appScope.launch {
             try {
@@ -1495,7 +1544,19 @@ fun DetailScreen(
                 // empty result into a clear message within a second instead
                 // of a minute and a half of nothing.
                 val foundCount = playableEvery(found).size
-                if (foundCount == 0 && lookupComplete) {
+                // Is a background sweep still asking the repos this pass never
+                // reached? Then the search is NOT over: hundreds of extensions may
+                // still be answering, and every server the sweep finds is pushed
+                // into the live session the player is already listening on.
+                // Announcing a verdict here is exactly what made a search that was
+                // still working look like it had stopped at the 5th or 13th
+                // extension (and made the player quit early on "no playable
+                // sources" while the sweep was still finding them).
+                val sweepBusy = foundCount == 0 && vm.backgroundSweepBusy(epForSearch)
+                // The "nothing playable, and that is a real answer" note, built as
+                // a lambda so the sweep's own watcher below can use the very same
+                // wording if the sweep comes back empty a minute later.
+                val noResultNote = {
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
@@ -1521,7 +1582,10 @@ fun DetailScreen(
                         }
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
-                    StreamsLive.setStatus(sid, note)
+                    note
+                }
+                if (foundCount == 0 && lookupComplete && !sweepBusy) {
+                    StreamsLive.setStatus(sid, noResultNote())
                 } else if (foundCount > 0) {
                     // Servers WERE found — say that the search is over, so the
                     // cover/hint never keeps reading "still searching…" after the
@@ -1531,6 +1595,14 @@ fun DetailScreen(
                         sid,
                         "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
                             " — search finished.",
+                    )
+                } else if (sweepBusy) {
+                    // The pass ran out of time with repos it never reached, and
+                    // the background sweep has them. Say exactly that: the search
+                    // is still going, on purpose, while the video plays.
+                    StreamsLive.setStatus(
+                        sid,
+                        "Searching the remaining extensions in the background…",
                     )
                 } else if (problemNote != null) {
                     // Already reported in the catch above; repeated here because a
@@ -1553,7 +1625,32 @@ fun DetailScreen(
                 // play or a real answer: marking it done on an unfinished pass is
                 // what let the player quit seconds into a search that was still
                 // finding servers.
-                if (foundCount > 0 || lookupComplete) StreamsLive.markDone(sid)
+                if (foundCount > 0 || (lookupComplete && !sweepBusy)) {
+                    StreamsLive.markDone(sid)
+                } else if (sweepBusy) {
+                    // The pass is over but the sweep is not: wait for it and THEN
+                    // declare the search over (with the honest verdict when it came
+                    // back empty), so the player's cover leaves "still searching" at
+                    // the right moment instead of spinning to its safety timeout
+                    // after a sweep that found nothing.
+                    app.appScope.launch {
+                        val watchDeadline = System.currentTimeMillis() + SWEEP_WATCH_CAP_MS
+                        while (System.currentTimeMillis() < watchDeadline &&
+                            vm.backgroundSweepBusy(epForSearch)
+                        ) {
+                            delay(1_000)
+                        }
+                        if (StreamsLive.flow(sid).value.isNotEmpty()) {
+                            StreamsLive.setStatus(
+                                sid,
+                                "Search finished — every extension has answered.",
+                            )
+                        } else {
+                            StreamsLive.setStatus(sid, noResultNote())
+                        }
+                        StreamsLive.markDone(sid)
+                    }
+                }
             }
         }
     }

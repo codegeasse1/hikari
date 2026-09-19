@@ -37,6 +37,13 @@ import java.util.concurrent.ConcurrentHashMap
  * installed nine times. Suffixing only the colliding names (never a name that
  * is already unique) keeps every row honest and changes nothing for the
  * single-source extensions that make up most of the ecosystem.
+ *
+ * The suffix is the source's LANGUAGE whenever that tells the colliding sources
+ * apart ("AnimeWorld India · Hindi" / "· English"), because that is what those
+ * packs actually are — the same site published several times, once per audio
+ * track — and a bare number says nothing about which one the user wants. A
+ * language it already names in its own title is not repeated; when language does
+ * not separate them, the site's host is used instead, and only then ` (n)`.
  */
 private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): List<String> {
     val base = sources.map { s ->
@@ -44,18 +51,82 @@ private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): L
     }
     val collisions = base.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
     if (collisions.isEmpty()) return base
-    val seen = HashMap<String, Int>()
-    return base.map { n ->
-        if (n !in collisions) {
-            n
-        } else {
-            val n1 = (seen[n] ?: 0) + 1
-            seen[n] = n1
-            "$n ($n1)"
+    val out = base.toMutableList()
+    for (name in collisions) {
+        val idxs = base.indices.filter { base[it] == name }
+        // The first KIND of detail that is present on every row of this group
+        // and differs between them all is the one used for the whole group.
+        val kinds = listOf<(AnimeSource) -> String?>(
+            { languageLabel(it) },
+            { siteLabel(it) },
+        )
+        val picked = kinds.firstOrNull { kind ->
+            val details = idxs.map { kind(sources[it]) }
+            details.none { it.isNullOrBlank() } && details.distinct().size == details.size
         }
+        idxs.forEachIndexed { k, i ->
+            val detail = picked?.invoke(sources[i])
+            out[i] = when {
+                detail.isNullOrBlank() -> "$name (${k + 1})"
+                // Don't repeat what the name already says: "AnimeWorld India
+                // (Hindi) · Hindi" reads like a bug.
+                squashName(name).contains(squashName(detail)) -> name
+                else -> "$name · $detail"
+            }
+        }
+    }
+    return out
+}
+
+/** A readable name for a source's declared language, or null when it declares
+ *  none (or one we have no name for). Aniyomi's multi-audio packs publish the
+ *  same site once per language under one name — this is the detail that tells
+ *  those rows apart. */
+private fun languageLabel(s: AnimeSource): String? {
+    val code = runCatching { s.lang }.getOrNull()?.trim()?.lowercase().orEmpty()
+    return when (code) {
+        "en", "eng", "english" -> "English"
+        "hi", "hin", "hindi" -> "Hindi"
+        "ta", "tam", "tamil" -> "Tamil"
+        "te", "tel", "telugu" -> "Telugu"
+        "ml", "mal", "malayalam" -> "Malayalam"
+        "bn", "ben", "bengali" -> "Bengali"
+        "ur", "urd", "urdu" -> "Urdu"
+        "ja", "jp", "jpn", "japanese" -> "Japanese"
+        "ko", "kor", "korean" -> "Korean"
+        "zh", "chi", "chinese" -> "Chinese"
+        "es", "spa", "spanish" -> "Spanish"
+        "pt", "por", "portuguese" -> "Portuguese"
+        "fr", "fre", "french" -> "French"
+        "de", "ger", "german" -> "German"
+        "it", "ita", "italian" -> "Italian"
+        "ru", "rus", "russian" -> "Russian"
+        "ar", "ara", "arabic" -> "Arabic"
+        "id", "ind", "indonesian" -> "Indonesian"
+        "th", "tha", "thai" -> "Thai"
+        "vi", "vie", "vietnamese" -> "Vietnamese"
+        "fil", "tl", "tgl", "tagalog", "filipino" -> "Filipino"
+        // "all"/"multi" means the source itself carries several audio tracks, so
+        // it is a real answer but a poor tiebreaker — better to fall through to
+        // the site, and only then to a number.
+        else -> null
     }
 }
 
+/** The site a source points at, without the scheme or `www.` — the second
+ *  detail used to tell two same-named sources apart. */
+private fun siteLabel(s: AnimeSource): String? {
+    val raw = (s as? AnimeHttpSource)?.let { runCatching { it.baseUrl }.getOrNull() }
+        ?.trim().orEmpty()
+    if (raw.isBlank()) return null
+    val withScheme = if (raw.startsWith("http")) raw else "https://$raw"
+    return runCatching { java.net.URI(withScheme).host?.lowercase() }.getOrNull()
+        ?.removePrefix("www.")?.takeIf { it.isNotBlank() }
+}
+
+/** Name comparison for the "don't repeat the language twice" check. */
+private fun squashName(s: String): String =
+    s.lowercase().replace(Regex("[^a-z0-9]+"), "")
 /**
  * What makes two entries of one extension's source list the SAME source:
  * everything Aniyomi itself would use to tell them apart (its id, name, lang
@@ -234,22 +305,36 @@ object AniyomiExtensionManager {
 
             val site = siteOf(ext.sources.firstOrNull())
             val icon = iconUrl ?: faviconFor(site)
-            var added = 0
-            ext.sources.indices.forEach { index ->
-                HikariApp.instance.store.addProvider(
-                    ProviderConfig(
-                        id = "aniyomi|$pkgName|$index",
-                        name = ext.labels.getOrNull(index) ?: ext.name,
-                        type = ProviderType.ANIYOMI,
-                        url = target.absolutePath,
-                        iconUrl = icon,
-                        extra = sourceUrl ?: pkgName,
-                    )
+            val store = HikariApp.instance.store
+            val prefix = "aniyomi|$pkgName|"
+            val existing = store.providers()
+            val prevById = existing.associateBy { it.id }
+            val fresh = ext.sources.indices.map { index ->
+                val id = "$prefix$index"
+                ProviderConfig(
+                    id = id,
+                    name = ext.labels.getOrNull(index) ?: ext.name,
+                    type = ProviderType.ANIYOMI,
+                    url = target.absolutePath,
+                    iconUrl = icon,
+                    // The user's own on/off choice survives a reinstall: the row
+                    // is the same row (same id), it just got a fresh name.
+                    enabled = prevById[id]?.enabled ?: true,
+                    extra = sourceUrl ?: pkgName,
                 )
-                added++
             }
+            // ONE write that REPLACES every row this package already had. Adding
+            // the new rows one at a time used to leave the old rows behind when a
+            // version published fewer sources (or when the same extension was
+            // installed again), so the provider list grew a second copy of names
+            // the user had already installed — the reported "I installed Anime
+            // World again and now it lists six of the same provider".
+            store.saveProviders(
+                existing.filterNot { it.type == ProviderType.ANIYOMI && it.id.startsWith(prefix) } +
+                    fresh
+            )
             HikariApp.instance.providers.refresh()
-            Result.success(added)
+            Result.success(fresh.size)
         } finally {
             if (temp.exists()) runCatching { temp.delete() }
         }

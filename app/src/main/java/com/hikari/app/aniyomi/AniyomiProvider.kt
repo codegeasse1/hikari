@@ -68,6 +68,10 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
         private const val MAX_ITEMS_PER_ROW = 60
         private const val MAX_EPISODES = 2000
+        /** How long an EMPTY episode answer is remembered (see [episodesMissAt]).
+         *  Pure de-duplication of a burst of callers — never a verdict: an
+         *  episode list that failed is asked for again a few seconds later. */
+        private const val EPISODE_MISS_TTL_MS = 20_000L
         private const val MAX_HOSTERS = 8
         private const val MAX_VIDEOS_PER_HOSTER = 12
         private const val MAX_STREAMS = 60
@@ -128,6 +132,23 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     /** Episodes per [MediaItem.id]. */
     private val episodesByAnime = object : LinkedHashMap<String, List<Episode>>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Episode>>?) = size > 32
+    }
+
+    /**
+     * `MediaItem.id -> the time an episode fetch came back EMPTY`.
+     *
+     * An empty episode list is never cached as an answer ([episodesByAnime] only
+     * ever holds a non-empty list), because it is almost always a TRANSIENT
+     * failure: the site was slow, the extension's request hit a wall, or our
+     * budget ran out. Remembering it for the life of the process is how a series
+     * the extension plainly carries sat on "Episodes (0) — no episode list
+     * available" until the app was restarted, and (because the episode is what
+     * the server lookup maps onto) also produced NO servers from that extension.
+     * The short TTL only stops a burst of callers from re-asking in the same
+     * second.
+     */
+    private val episodesMissAt = object : LinkedHashMap<String, Long>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > 64
     }
 
     /** Enriched meta per [MediaItem.id]. */
@@ -291,6 +312,16 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
      * (the vendored `AnimeHttpSource` is what actually performs that fetch).
      * Returns an empty list (never throws) so a source that can't answer is a
      * blank episode list rather than a crashed detail page.
+     *
+     * Every shape of the API is tried before giving up, and an EMPTY answer is
+     * never kept ([episodesMissAt]): the three call shapes exist on every source
+     * (the vendored base class supplies defaults that throw) and only ONE of them
+     * is the one the extension actually implements, so a source whose
+     * `getEpisodeList` is a stub still answers through the combined call — and a
+     * source whose combined call is a stub still answers through
+     * `getEpisodeList`. A source that needs its DETAILS fetched before it can
+     * list episodes gets that too, because that is what Aniyomi's own
+     * `EpisodeLoader` does when a list comes back empty.
      */
     private suspend fun episodesLocked(
         src: AnimeSource,
@@ -298,11 +329,33 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         animeId: String,
     ): List<Episode> {
         lockedGet(episodesByAnime, animeId)?.let { return it }
-        val raw = runCatching {
-            src.getAnimeEpisodeUpdate(anime, emptyList(), false, true).episodes
-        }.getOrNull()
-            ?: runCatching { src.getEpisodeList(anime) }.getOrNull()
-            ?: emptyList()
+        val missAt = lockedGet(episodesMissAt, animeId)
+        if (missAt != null && System.currentTimeMillis() - missAt < EPISODE_MISS_TTL_MS) {
+            return emptyList()
+        }
+        var why: Throwable? = null
+        var raw = fetchEpisodeList(src, anime) { why = it }
+        if (raw.isEmpty()) {
+            // Some sources cannot list a title they have not DETAILED yet: their
+            // episode parse reads a field (an id, a slug, a "seasons" block) that
+            // only their details call fills in. Ask for the details and try again
+            // with the richer object — and keep it, since everything else about
+            // this title benefits from the fuller metadata too.
+            val detailed = runCatching { src.getAnimeDetails(anime) }.getOrNull()
+            if (detailed != null && detailed !== anime) {
+                lockedPut(animeCache, animeId, detailed)
+                raw = fetchEpisodeList(src, detailed) { why = it }
+            }
+        }
+        if (raw.isEmpty()) {
+            synchronized(episodesMissAt) { episodesMissAt[animeId] = System.currentTimeMillis() }
+            AniyomiExtensionManager.recordError(
+                "Could not list this title's episodes",
+                why,
+            )
+            return emptyList()
+        }
+        synchronized(episodesMissAt) { episodesMissAt.remove(animeId) }
         val out = ArrayList<Episode>(minOf(raw.size, MAX_EPISODES))
         raw.take(MAX_EPISODES).forEachIndexed { index, ep ->
             val id = runCatching { ep.url }.getOrDefault("")
@@ -319,6 +372,31 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         }
         lockedPut(episodesByAnime, animeId, out)
         return out
+    }
+
+    /**
+     * The episode list through every call shape the source API offers, in the
+     * order most likely to be implemented: the extensions-lib 17 combined call
+     * (episodes only), then the plain [AnimeSource.getEpisodeList] a 14/16 source
+     * implements, then the combined call with details. A shape the source does
+     * not implement throws `UnsupportedOperationException` (the vendored base
+     * class's default) and costs nothing; the first non-empty answer wins.
+     */
+    private suspend fun fetchEpisodeList(
+        src: AnimeSource,
+        anime: SAnime,
+        onFailure: (Throwable) -> Unit,
+    ): List<SEpisode> {
+        val attempts: List<suspend () -> List<SEpisode>> = listOf(
+            { src.getAnimeEpisodeUpdate(anime, emptyList(), false, true).episodes },
+            { src.getEpisodeList(anime) },
+            { src.getAnimeEpisodeUpdate(anime, emptyList(), true, true).episodes },
+        )
+        for (attempt in attempts) {
+            val got = runCatching { attempt() }.onFailure(onFailure).getOrDefault(emptyList())
+            if (got.isNotEmpty()) return got
+        }
+        return emptyList()
     }
 
     private fun episodeFor(episode: Episode): SEpisode {

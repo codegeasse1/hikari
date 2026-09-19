@@ -1,3 +1,50 @@
+## 0.5.25
+
+Test build — the search now finishes the job: it keeps asking every installed extension in the background while you watch, it only plays what you actually asked for, an Aniyomi extension's episodes and servers finally show up, and the player stops repeating itself.
+
+**The search no longer stops at "13 of 181"**
+
+A pass has a time budget, and a big install does not fit inside it — with 181 Hikari, 57 CloudStream and a dozen Aniyomi extensions against 96 search slots, one pass could only reach a handful of each before the clock ran out, and everything it never got to was cancelled and written off as "still searching when the pass ended". So the search looked like it had given up at 13 of 181 while 168 repos were never asked at all.
+
+Now, when a pass runs out of time, the extensions it never reached are handed to a sweep that keeps working **in the background**: after the pass returns, after the player opens, while the video plays. Every server it finds is pushed straight to the player's "Select server" list, exactly as if it had arrived in time — so the list keeps growing during playback instead of freezing at whatever answered first.
+
+- Repos that could not be *asked* in the pass — a search that timed out, a plugin whose load had to wait behind the loader's slots — are retried in the sweep. Their plugin is loaded and cached by now, so the retry is both cheap and likely to succeed. A repo that genuinely answered "no such title" is not re-asked.
+- The sweep is per title+episode: tapping Play again joins the sweep already running instead of starting a second one against the same 250 repos.
+- Its own ceiling is ten minutes, and it takes slots from the same concurrency caps as the pass, so it can never starve the pass still running for another title or hammer the phone.
+- **The player is never told the search is over while the sweep is still working.** The one verdict that must not be given early — "No playable server found after searching N extensions" — is now withheld for as long as a sweep is alive; the player's cover says the search is still running instead, and switches to the honest verdict the moment the sweep really finishes (with every server it found already in the list). This is the other half of "it stopped at 13 of 181": before, the app announced a verdict the search had not reached and the player quit on it.
+
+**Only the title you asked for plays**
+
+Asking for *Renegade Immortal* episode 148 sometimes started a completely different film from another repo. The old match accepted a repo entry when a similarity score cleared a threshold, and two unrelated shows that share one word — "Renegade **Immortal**" and "**Immortal** Samsara" — could clear it. The score is still used to *order* a repo's search page, but a repo's entry now has to pass a strict, structural test before it is trusted:
+
+- a **movie** entry can never be the answer for an **episode** of a series (a film has no episode 148), nor a series entry for a movie;
+- one title's significant words must **contain** the other's — so "renegade immortal" matches "Renegade Immortal (Xian Ni)" and "Renegade Immortal Season 1", but never "Immortal Samsara";
+- the **first** significant word must survive, so "One Piece" cannot match "Piece of Cake";
+- when both years are known and differ by more than one, only an exact match is accepted.
+
+Deliberately strict: wrongly rejecting a repo only costs one missing server, while wrongly accepting one plays the wrong video. This applies to the cross-extension pass only — the extension you opened the title from is never filtered.
+
+**An extension that names its episodes its own way is still found**
+
+Some extensions carry the exact episode but label the row by their own counter, or call it "Ep 148" while their episode number is something else. The episode matcher now reads the number out of the row's own name as a last resort — "Ep 148", "Episode 148", "E148", "第148集", or a row that ends in a bare number — so an extension that plainly has episode 148 is no longer reported as "has the title, but not S1E148".
+
+**Aniyomi: no episode list, no servers — both fixed**
+
+Two separate bugs. An Aniyomi source that needs its details fetched before it can list episodes returned an empty list, and an empty list means no server lookup is even attempted — so the extension contributed nothing. The episode list is now fetched through every call shape the source API offers (the combined call, the plain `getEpisodeList`, and the combined call with details), and a source whose list only works after its details are loaded gets that second chance too.
+
+The second bug was in the app's own fallback: when an item's own extension could not list episodes, the app borrowed the list from an installed extension — but only for TMDB/Nuvio items, never for an item opened from a site-scraper. That is why some Aniyomi titles showed "Episodes (0) — No episode list available" while a dozen installed extensions carried the show. **Every** series whose own list comes back empty now gets that fallback, and it is much better at it: candidates run in parallel, ordered by the origin's engine family and by extensions that have already produced servers this session; each gets the real per-provider budgets (an Aniyomi APK is allowed the same 75s the cross pass gives it) instead of a flat 12s a cold class load could never meet; and the match is the same strict title test, so an extension carrying a different show can never donate its episode list to this one.
+
+**One extension is one row — again**
+
+Installing an extension and seeing the same provider name six times is the same problem as before, one layer further in: several sources inside one extension report the same *language* as well as the same name, so the previous disambiguation had nothing left to tell them apart. A repeated name now falls back to the source's site host, and only then to a ` (n)` counter — and a suffix the name already contains is never added twice.
+
+Installing the same extension *again* was a second, separate cause: the new rows were added one at a time and the old ones were left behind, so a version that publishes fewer sources (or a plain second Install tap) grew the provider list instead of replacing it. An install now replaces every row that package owned in a single write, and it keeps your own on/off choice for each row it replaces.
+
+**The player stops repeating itself**
+
+- The episode line read "Episode 158 · Episode 158" whenever an extension names its rows after their number ("Episode 158", "Ep 158", "第158集"). A name that is only an episode tag is dropped from the label; a real title ("Freedom Day") still shows. The same fix covers the loading card and the episode picker.
+- Two different links from the same engine often arrive with the same label ("DahmerMovies 1080p"), so the server list looked like one server listed twice. A repeated name now gets its host appended — or, when even the hosts match, its position among them — so every row is distinguishable.
+
 ## 0.5.24
 
 Test build — Aniyomi fixes, a server list that no longer changes its mind, and drag-to-reorder in the Personal Catalog creator.
