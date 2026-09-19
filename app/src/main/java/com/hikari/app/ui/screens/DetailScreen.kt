@@ -83,6 +83,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -2795,31 +2796,40 @@ private fun rememberLoadingStyle(): String {
 }
 
 /**
- * The wash that replaces flat black when a title has NO artwork to show.
+ * The cover's own background for every loading style.
  *
- * The loading card used to be a pure-black rectangle until the poster/backdrop
- * finished decoding, and for a title whose provider simply never sends an
- * image there was nothing coming — so the whole search (which can run for
- * minutes across every installed extension) happened over a black screen that
- * is indistinguishable from a crashed app. Reported as "in some see the
- * loading screen showing black". The card still has the title, the episode
- * line and the status spinner on top; this just gives them something to sit
- * on: a deep vertical wash in the app's own surface tones with a soft bloom
- * behind where the title sits, so the screen reads as "Hikari is working".
+ * With artwork to show it is plain black, exactly as it always was — the art
+ * and its scrim cover it. With NO artwork it used to be black too, and that is
+ * the bug: for a title whose provider simply never sends an image there was
+ * nothing coming, so the whole search (which can run for minutes across every
+ * installed extension) happened over a black screen that is indistinguishable
+ * from a crashed app. Reported as "in some see the loading screen showing
+ * black". The card still has the title, the episode line and the status spinner
+ * on top; this just gives them something to sit on — a deep vertical wash in
+ * the app's own surface tones, so the screen reads as "Hikari is working".
  */
 @Composable
-private fun rememberLoadingFallbackBrush(): Brush {
+private fun rememberLoadingCoverBrush(hasArtwork: Boolean): Brush {
     val cs = MaterialTheme.colorScheme
     // Slightly lighter at the top (where the title block lives) than at the
     // very bottom, so the card has a direction instead of being a flat plate.
-    var top = cs.surfaceVariant
-    var mid = cs.surface
-    var bottom = cs.background
-    // A theme where all three collapse to the same near-black would give us
-    // the very flatness we are trying to avoid: lift the top stop then.
-    if (top == mid && mid == bottom) top = cs.surfaceVariant.copy(alpha = 0.85f)
-    return remember(cs.surfaceVariant, cs.surface, cs.background) {
-        Brush.verticalGradient(listOf(top, mid, bottom))
+    val surfaceVariant = cs.surfaceVariant
+    val surface = cs.surface
+    val background = cs.background
+    return remember(hasArtwork, surfaceVariant, surface, background) {
+        if (hasArtwork) {
+            SolidColor(Color.Black)
+        } else {
+            // A theme where all three stops collapse to the same near-black
+            // would give us the very flatness we are trying to avoid: lift the
+            // top one then.
+            val top = if (surfaceVariant == surface && surface == background) {
+                surfaceVariant.copy(alpha = 0.85f)
+            } else {
+                surfaceVariant
+            }
+            Brush.verticalGradient(listOf(top, surface, background))
+        }
     }
 }
 
@@ -2876,8 +2886,8 @@ private fun CinematicLoadingCard(
         )
     )
     val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
-    val fallback = rememberLoadingFallbackBrush()
-    Box(Modifier.fillMaxSize().background(if (model != null) Color.Black else fallback)) {
+    val cover = rememberLoadingCoverBrush(model != null)
+    Box(Modifier.fillMaxSize().background(cover)) {
         if (model != null) {
             AsyncImage(
                 model = model,
@@ -3053,8 +3063,8 @@ private fun PosterLoadingCard(
         )
     )
     val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
-    val fallback = rememberLoadingFallbackBrush()
-    Box(Modifier.fillMaxSize().background(if (model != null) Color.Black else fallback)) {
+    val cover = rememberLoadingCoverBrush(model != null)
+    Box(Modifier.fillMaxSize().background(cover)) {
         // The same art, blown up and dimmed, fills the frame so the card floats
         // on its own artwork instead of on flat black.
         if (model != null) {
