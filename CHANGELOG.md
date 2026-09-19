@@ -22,6 +22,8 @@ Test build — the search stops getting stuck, the player's panels learn the pla
 - A page that DOES load has its promo blocks hidden by an injected cleaner: the usual money classes and ids, and — so a card with no telltale class still goes — any plausible box whose text is only a funding ask and which contains a link or button. Real prose stays (a sentence that merely mentions support is not a donation card), and a video is never touched.
 - Extension-supplied text is cleaned before it is drawn: repo and plugin descriptions in the Extensions screen have markup and donation links stripped and go blank when that is all they were, and a promo-only header or info row an extension pushes into its own settings screen is dropped.
 
+**Kept smooth while doing it.** The promo cleaner runs at most once every 400ms (an ad-heavy page mutates constantly, and walking its links on every mutation is work the page cannot afford), a search probes at most eight network-backed catalog sources — imported lists cost nothing and are always all read — and a hung extension no longer spends the search slots of the ones that work, which is what made a sweep start fast and end up crawling.
+
 ## 0.6.0
 
 Test build — the app gets a wardrobe. The big surfaces are now yours to shape: the Featured banner on Home, the header a title page opens with, the decoration on every poster, and the player's own control shell. Plus one new way to fill a folder: **import a list of titles** from JSON.

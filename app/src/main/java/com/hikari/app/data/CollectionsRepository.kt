@@ -41,6 +41,10 @@ class CollectionsRepository(private val manager: ProviderManager) {
      *  must never hold the search up (see [searchTitles]). */
     private val searchTimeoutMs = 8_000L
 
+    /** How many network-backed collection sources one search will probe. The
+     *  local ones (imported lists) are always all read. */
+    private val maxRemoteProbes = 8
+
     /** One row per source of [folder], in the folder's own source order. */
     fun folderRows(collection: Collection, folder: CollectionFolder): Flow<List<CatalogRow>> =
         channelFlow flow@{
@@ -273,6 +277,12 @@ class CollectionsRepository(private val manager: ProviderManager) {
             }.getOrDefault(emptyList())
             val out = ArrayList<CollectionHit>()
             val seen = HashSet<String>()
+            // Only a bounded number of SOURCES THAT NEED THE NETWORK are probed
+            // per search. Imported lists are free (their titles live in the
+            // collection already), but a user with thirty hand-built TMDB
+            // sources would otherwise fire thirty page requests on every
+            // keystroke pause — a search is not allowed to become a stampede.
+            var remoteProbes = 0
             for (collection in collections) {
                 for (folder in collection.folders) {
                     for (source in folder.sources) {
@@ -283,19 +293,24 @@ class CollectionsRepository(private val manager: ProviderManager) {
                             }.getOrDefault(emptyList())
 
                             CatalogSourceKind.TMDB -> {
-                                val spec = source.spec
-                                    ?: TmdbPresets.byKey(source.tmdbPreset)?.let { p ->
-                                        TmdbSpec(
-                                            type = TmdbSourceType.PRESET,
-                                            preset = p.key,
-                                            media = if (p.isMovie) "movie" else "tv",
-                                        )
+                                if (remoteProbes >= maxRemoteProbes) {
+                                    emptyList()
+                                } else {
+                                    remoteProbes++
+                                    val spec = source.spec
+                                        ?: TmdbPresets.byKey(source.tmdbPreset)?.let { p ->
+                                            TmdbSpec(
+                                                type = TmdbSourceType.PRESET,
+                                                preset = p.key,
+                                                media = if (p.isMovie) "movie" else "tv",
+                                            )
+                                        }
+                                    if (spec == null) emptyList() else {
+                                        withTimeoutOrNull(searchTimeoutMs) {
+                                            runCatching { TmdbSources.page(spec, 1) }
+                                                .getOrDefault(emptyList())
+                                        }.orEmpty()
                                     }
-                                if (spec == null) emptyList() else {
-                                    withTimeoutOrNull(searchTimeoutMs) {
-                                        runCatching { TmdbSources.page(spec, 1) }
-                                            .getOrDefault(emptyList())
-                                    }.orEmpty()
                                 }
                             }
 

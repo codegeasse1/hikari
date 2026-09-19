@@ -1561,8 +1561,18 @@ class WebViewActivity : ComponentActivity() {
                 }catch(x){}
               }
               clean();
+              // Throttled: an ad-heavy extension page mutates constantly, and
+              // walking every link on every mutation is work the page cannot
+              // afford — one pass every 400ms is invisible to the user and
+              // cheap enough to never fight the site's own scripts.
+              var pending=false;
+              function later(){
+                if(pending)return;
+                pending=true;
+                setTimeout(function(){pending=false;clean();},400);
+              }
               try{
-                new MutationObserver(clean).observe(document.documentElement,{childList:true,subtree:true});
+                new MutationObserver(later).observe(document.documentElement,{childList:true,subtree:true});
               }catch(x){}
             })();
         """.trimIndent()
