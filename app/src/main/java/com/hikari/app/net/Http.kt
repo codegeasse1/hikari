@@ -112,6 +112,29 @@ object Http {
         null
     }
 
+    /**
+     * [postString] without [CloudflareVerifier]: for the background decorating
+     * lookups (anime characters from AniList, see [com.hikari.app.data.AnimeCast])
+     * whose host must never be able to raise the Home screen's "verification
+     * needed" banner — that banner is about the user's own extensions.
+     */
+    fun postStringQuiet(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): String? = try {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .post(body.toRequestBody(contentType.toMediaType()))
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        quietClient.newCall(builder.build()).execute()
+            .use { if (it.isSuccessful) it.body?.string() else null }
+    } catch (e: Exception) {
+        null
+    }
+
     fun getString(url: String, headers: Map<String, String> = emptyMap()): String? =
         try {
             get(url, headers).use { if (it.isSuccessful) it.body?.string() else null }

@@ -1996,9 +1996,17 @@ fun DetailScreen(
                 // background TMDB call, and each row is skipped entirely when
                 // that lookup found nothing.
                 extras?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
+                    // For an anime, `cast` holds the characters (with the
+                    // Japanese voice actors as their second line) — see
+                    // AnimeCast. The row says which one it is showing.
+                    val characters = extras.castIsCharacters
                     item {
-                        CastRow(cast) { member ->
-                            Routes.safeNavigate(nav, Routes.searchQuery(member.name))
+                        CastRow(cast, characters = characters) { member ->
+                            // A character cell searches their ACTOR (the
+                            // searchable name); a cast cell searches the actor
+                            // it already is.
+                            val query = if (characters) member.character ?: member.name else member.name
+                            Routes.safeNavigate(nav, Routes.searchQuery(query))
                         }
                     }
                 }
@@ -3271,12 +3279,20 @@ private fun openRatingPage(context: android.content.Context, url: String, title:
 
 /** Circular-headshot Cast row, matching the Nuvio/Stremio detail page. Tapping
  *  an actor runs a global search for their name — there is no person page in
- *  Hikari, and a search is the closest useful action. */
+ *  Hikari, and a search is the closest useful action.
+ *
+ *  [characters] switches the row to an anime's CHARACTER list (the faces the
+ *  viewer knows), each cell's second line being the actor who voices them —
+ *  see [com.hikari.app.data.AnimeCast]. */
 @Composable
-private fun CastRow(cast: List<CastMember>, onClick: (CastMember) -> Unit) {
+private fun CastRow(
+    cast: List<CastMember>,
+    characters: Boolean = false,
+    onClick: (CastMember) -> Unit,
+) {
     Column(Modifier.padding(top = 14.dp)) {
         Text(
-            tr("Cast"),
+            tr(if (characters) "Characters" else "Cast"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

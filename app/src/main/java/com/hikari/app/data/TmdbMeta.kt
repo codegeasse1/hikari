@@ -387,6 +387,28 @@ object TmdbMeta {
             )
         }
 
+        // Anime: the credits list voice actors, whose faces mean nothing to
+        // someone who knows the show — the characters do. AniList is asked for
+        // them (see [AnimeCast]), and only a confident title+year match is
+        // trusted; anything else keeps TMDB's list, so the row can be wrong in
+        // the direction of "still correct, just the actors".
+        var castIsCharacters = false
+        val displayCast = if (isAnimeTitle(d) && item.title.isNotBlank()) {
+            val characters = AnimeCast.characters(
+                item.title,
+                yearOf(d),
+                cacheKey = "tmdb:$seg:${resolved.tmdbId}",
+            )
+            if (characters.isNotEmpty()) {
+                castIsCharacters = true
+                characters
+            } else {
+                cast
+            }
+        } else {
+            cast
+        }
+
         // Trailers before teasers, official before unofficial — the order the
         // reference clients show them in. `videos` mixes everything together.
         val ranked = ArrayList<ScoredTrailer>(12)
@@ -419,7 +441,33 @@ object TmdbMeta {
         ranked.sortByDescending { it.score }
         val trailers = ranked.take(12).map { it.trailer }
 
-        return TitleExtras(details = details, cast = cast, trailers = trailers)
+        return TitleExtras(
+            details = details,
+            cast = displayCast,
+            trailers = trailers,
+            castIsCharacters = castIsCharacters,
+        )
+    }
+
+    /**
+     * True when TMDB's own detail response describes an ANIME title: an animated
+     * work whose original language is Japanese (or which is from Japan). The
+     * distinction matters because only for those does a character list exist
+     * somewhere that can be paired with the title (see [AnimeCast]); Western
+     * animation's "cast" is already its voice cast, which TMDB lists with the
+     * character each actor plays, so those rows need no substitution.
+     */
+    private fun isAnimeTitle(d: JSONObject): Boolean {
+        val animated = d.optJSONArray("genres")?.let { arr ->
+            (0 until arr.length()).any {
+                arr.optJSONObject(it)?.optString("name")?.equals("Animation", true) == true
+            }
+        } ?: false
+        if (!animated) return false
+        if (d.optString("original_language").trim().equals("ja", true)) return true
+        return d.optJSONArray("origin_country")?.let { arr ->
+            (0 until arr.length()).any { arr.optString(it).equals("JP", true) }
+        } ?: false
     }
 
     /** Names of the crew members whose `job` is in [jobs], in listing order. */

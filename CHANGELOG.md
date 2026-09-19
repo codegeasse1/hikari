@@ -1,3 +1,14 @@
+## 0.5.27
+
+Test build — an anime's detail page now shows its **characters** instead of its voice actors, which is the cast a viewer actually recognises.
+
+TMDB's credit list for an anime is the voice cast — a wall of faces and names that mean nothing unless you follow the Japanese dubbing industry. The cast row already knows the character each actor plays, but it leads with the actor. So for an animated title whose original language is Japanese (or which TMDB marks as from Japan), the characters are fetched from AniList instead: every character with its portrait on top and the Japanese actor who voices it underneath, sorted by relevance. The row's heading switches from "Cast" to **Characters** so it is obvious which list is on screen, and tapping a character searches their **actor** (or their name when no actor is listed), which is the thing that actually searches well.
+
+- **Only a confident match is used.** The title and the year both have to agree with the search hit (the year within two, since a season can start either side of its show). A hit that cannot be confirmed — including a title AniList simply spells differently — returns nothing, and the row quietly keeps TMDB's voice cast. A wrong show's characters would be worse than the right cast.
+- **Decoration only, like the rest of the background metadata:** it runs off the main thread, goes out on the quiet HTTP client so AniList can never raise the "verification needed" banner, and a failure contributes nothing.
+- **Cached** in memory and on disk — a hit for a month, a miss retried after six hours, the file bounded at 200 entries — so a show's characters are fetched once and then instant from any extension that opens it.
+- Western animation is left alone: TMDB already lists its voice cast with the character each actor plays, so those rows are correct as they are.
+
 ## 0.5.26
 
 Test build — full subtitle styling. The captions are no longer just a size and a nudge: text colour, outline or drop shadow with its own colour, a background you can remove entirely, bold/italic, and any font — including a .ttf/.otf from your own device. All of it is picked in a new **Subtitles → Caption style** panel, and every change lands on the video immediately.

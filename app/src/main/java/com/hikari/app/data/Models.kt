@@ -166,6 +166,10 @@ data class TitleExtras(
     val details: TitleDetails? = null,
     val cast: List<CastMember> = emptyList(),
     val trailers: List<Trailer> = emptyList(),
+    /** True when [cast] holds the CHARACTERS of an anime (with the Japanese
+     *  voice actors as each one's second line) rather than TMDB's voice-actor
+     *  credits — the row is then titled "Characters" instead of "Cast". */
+    val castIsCharacters: Boolean = false,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */
