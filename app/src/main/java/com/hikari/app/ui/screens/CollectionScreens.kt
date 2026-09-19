@@ -2697,6 +2697,17 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             title = collection.name,
             subtitle = folderSummary(collection),
             onBack = { nav.popBackStack() },
+            // Same magnifier as a folder page, for the collection itself — the
+            // "abc" header the user marked. Searching here spans every folder
+            // and every source of the collection.
+            actions = {
+                IconButton(onClick = { Routes.safeNavigate(nav, Routes.searchInCollection(collection.id)) }) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = tr("Search inside this catalog"),
+                    )
+                }
+            },
         )
         if (collection.folders.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2811,6 +2822,22 @@ private fun CollectionFolderContent(
             title = folder.name,
             subtitle = breadcrumb,
             onBack = { nav.popBackStack() },
+            // Search INSIDE this catalog: the magnifier opens the Search tab
+            // scoped to the collection this folder belongs to, so a title can be
+            // looked for across exactly the sources the user picked for it
+            // (Amazon, HBO, whatever each folder holds). Asked for in these
+            // words: "add the search icon above in side of header abc in catalog
+            // so I can search any movie or series there to watch from those
+            // selected categories". The results are normal Search results, so
+            // anything found opens and plays like any other title.
+            actions = {
+                IconButton(onClick = { Routes.safeNavigate(nav, Routes.searchInCollection(collection.id)) }) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = tr("Search inside this catalog"),
+                    )
+                }
+            },
         )
         val loaded = rows
         if (loaded == null) {
@@ -3186,6 +3213,16 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                 "$titleCount " + (if (titleCount == 1) "title" else "titles") + " · " +
                     "$catalogCount " + (if (catalogCount == 1) "catalog" else "catalogs"),
             onBack = { nav.popBackStack() },
+            actions = {
+                collection?.let { c ->
+                    IconButton(onClick = { Routes.safeNavigate(nav, Routes.searchInCollection(c.id)) }) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = tr("Search inside this catalog"),
+                        )
+                    }
+                }
+            },
         )
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

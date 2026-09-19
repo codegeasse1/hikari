@@ -129,8 +129,9 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
 
     // ---- Player UI skin (Settings -> Player -> Player UI) -------------------
     //
-    // The curved neon pane is the GLASS skin's signature, and it stays exactly
-    // as it was for that skin. The other three skins wear their OWN shape
+    // The curved neon pane is the DEFAULT skin's signature — it is what Hikari
+    // shipped with, and it stays exactly as it was. The other three skins wear
+    // their OWN flat shape
     // instead — a flat, quiet slab (Minimal), a solid deck with a hairline
     // (Cinema) or a floating rounded card with an accent edge (Neon) — because
     // a dialog that keeps the bowed glass while the control bar under it is
@@ -138,8 +139,8 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     // way: only its outline, fill and edge treatment change, so no dialog has
     // to know which skin is on.
 
-    /** True for every skin but GLASS: a plain rounded rectangle instead of the
-     *  bowed pane, with no neon along its sides. */
+    /** True for every skin but DEFAULT: a plain rounded rectangle instead of
+     *  the bowed pane, with no neon along its sides. */
     var flat: Boolean = false
 
     /** Corner radius of the [flat] silhouette, in px. */
@@ -158,6 +159,27 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      *  ("HIKARI · 5", "ANIME4I · 2") were being reported. */
     var rowGapPx: Float = 13f * resources.displayMetrics.density
 
+    /** Air a FLAT panel keeps between its own left/right edge and the content.
+     *
+     *  The curved pane has no use for this: its rows are bent to the silhouette
+     *  at their own height, so their envelope IS the shape. A flat panel has
+     *  straight sides, so its padding is the only inset there is — and with
+     *  none, a row (a pill, whose background reaches its own edges) sat flush
+     *  against the panel's rounded edge and the corner arc cut into it: the
+     *  reported "the server roundy ui is fully attached to the box" plus "the
+     *  All chip's box is cut by the main box's round corner". 8dp of air is
+     *  enough to read as a deliberate margin without wasting row width — see
+     *  [flatTopGapPx] for the extra the corner arc needs. */
+    var flatSideGapPx: Float = 8f * resources.displayMetrics.density
+
+    /** How far below its own top edge a FLAT panel starts its content. The
+     *  corner arc intrudes furthest exactly at the top, so the content's first
+     *  line must start below it by at least as much as the arc has come in at
+     *  that depth — [onSizeChanged] derives the horizontal inset from this
+     *  figure and the corner radius, so a chip strip at the top of the panel
+     *  can never be sliced by the corner. */
+    var flatTopGapPx: Float = 8f * resources.displayMetrics.density
+
     /** Accent the glow is tinted with, top to bottom. */
     var startColor: Int = Color.rgb(120, 220, 255)
     var midColor: Int = Color.rgb(150, 140, 255)
@@ -166,7 +188,7 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     /**
      * Wears the Player UI skin [key] (see [PlayerSkins]).
      *
-     * Glass keeps the curved pane and its neon edge — this view was built for
+     * Default keeps the curved pane and its neon edge — this view was built for
      * it and nothing here changes it. The other three skins get the flat
      * silhouette plus their own fill and hairline, sized to match the control
      * bar they appear over: Minimal is a barely-there slab with a small radius,
@@ -176,16 +198,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     fun applySkin(key: String) {
         val density = resources.displayMetrics.density
         when (PlayerSkins.normalize(key)) {
-            // Default: an ordinary card — a solid, opaque slab with a plain
-            // hairline and a middling corner. The plainest silhouette of the
-            // five, matching the stock control bar underneath it.
-            PlayerSkins.DEFAULT -> {
-                flat = true
-                flatCornerPx = 18f * density
-                flatFill = 0xF2111216.toInt()
-                flatBorder = 0x24FFFFFF
-                flatBorderPx = density
-            }
             PlayerSkins.MINIMAL -> {
                 // Barely there: a flat slab with NO edge line at all, so the
                 // rows read as if they were floating on the picture (which is
@@ -347,13 +359,34 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         rimPaint.color = 0x2E7B5CFF.toInt()
         // Content clears the bowed top/bottom; horizontally the rows bend to the
         // silhouette themselves (see bendRows), so no side padding is added here
-        // — padding on top of a bent row would double the inset. A flat panel
-        // has no bowed ends to clear, so its own padding is just a breath of air.
-        val padV = (haloPx + if (flat) 4f * density else rowGapPx).toInt()
+        // — padding on top of a bent row would double the inset.
+        //
+        // A FLAT panel is the opposite case: nothing bends, so its padding IS
+        // the inset, and it has to cover a rounded CORNER as well as a straight
+        // side. The corner arc reaches furthest in at the very top, so the
+        // horizontal inset is derived from how far the arc has intruded at the
+        // depth the first row starts at (flatTopGapPx): arc = r - sqrt(r^2 -
+        // (r - d)^2) for d below the top edge. At 8dp down, an 18dp corner has
+        // only come in ~3dp, but a 26dp one has come in ~6dp — so a single
+        // constant would look right for one skin and slice the "All" chip on
+        // another. Solving it from the actual radius is what makes every flat
+        // skin keep exactly flatSideGapPx of visible air around its content.
+        val padH: Int
+        val padV: Int
+        if (flat) {
+            val d = flatTopGapPx
+            val r = flatCornerPx
+            val arc = if (d < r) r - sqrt((r * r) - ((r - d) * (r - d))) else 0f
+            padH = (haloPx + flatSideGapPx + arc).toInt()
+            padV = (haloPx + d).toInt()
+        } else {
+            padH = 0
+            padV = (haloPx + rowGapPx).toInt()
+        }
         if (paddingTop != padV || paddingBottom != padV ||
-            paddingLeft != 0 || paddingRight != 0
+            paddingLeft != padH || paddingRight != padH
         ) {
-            setPadding(0, padV, 0, padV)
+            setPadding(padH, padV, padH, padV)
         }
     }
 

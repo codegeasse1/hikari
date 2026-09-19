@@ -390,6 +390,17 @@ class ContentRepository(private val manager: ProviderManager) {
             return sweep.job?.isActive == true
         }
 
+        /** Is ANY background sweep still asking repos a pass never reached?
+         *
+         *  [sweepBusyFor] answers this for one video, which is what the detail
+         *  page needs. The player's server picker has only the pass's tallies to
+         *  go on, and it has to distinguish "the pass is over" from "the search
+         *  is over" — the repos the pass could not fit in its budget are being
+         *  asked right now, on the application scope, and the user reads a line
+         *  that says "done" over a list missing their servers as a broken
+         *  search. Plain map read, safe from anywhere. */
+        fun anySweepBusy(): Boolean = sweeps.values.any { it.job?.isActive == true }
+
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
 
@@ -451,6 +462,30 @@ class ContentRepository(private val manager: ProviderManager) {
         }
 
         /**
+         * How a bucket reads ON SCREEN, in the user's words.
+         *
+         * The bucket names above are log keys — [SWEEP_RETRY_BUCKETS] and
+         * [CROSS_QUIET_BUCKETS] match on them exactly, and the end-of-pass log
+         * line is grepped by them — so they must not change. But "82 no answer in
+         * time" inside a server picker reads as an error report about something
+         * the user cannot act on, and it was reported as exactly that (the
+         * question was "what is this?"). This maps each key to a plain-English
+         * phrase; anything unknown is passed through unchanged, so a new bucket
+         * shows up rather than vanishing.
+         */
+        fun crossBucketLabel(bucket: String): String = when (bucket) {
+            "no answer in time" -> "didn't answer in time"
+            "no such title" -> "don't carry it"
+            "could not load" -> "couldn't load"
+            "no search (extractor)" -> "not searchable"
+            "title found, no links" -> "have it, no links"
+            "stuck, skipped" -> "stopped responding"
+            "search error" -> "search failed"
+            "cloudflare check" -> "blocked"
+            else -> bucket
+        }
+
+        /**
          * One short line summarising the last cross-extension pass, for the
          * "no playable server found" note: how many extensions were asked, how
          * many came back with servers, and the dominant reasons the rest were
@@ -478,7 +513,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 .filterNot { it.key in CROSS_QUIET_BUCKETS }
                 .sortedByDescending { it.value }
                 .take(limit)
-                .joinToString(" · ") { "${it.value} ${it.key}" }
+                .joinToString(" · ") { "${it.value} ${crossBucketLabel(it.key)}" }
             return buildString {
                 append("asked ${tally.asked.size}")
                 if (tally.found.isNotEmpty()) append(" · ${tally.found.size} with servers")

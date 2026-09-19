@@ -106,8 +106,12 @@ import kotlinx.coroutines.withContext
  * A Home pick is stored as one string in the `homeProvider` preference: either
  * an extension's id, or — with this prefix — the id of a saved collection. One
  * preference (and one picker) therefore carries both kinds of choice.
+ *
+ * Shared with the Search tab ([Routes.COLLECTION_PROVIDER_PREFIX]) so the same
+ * key means the same thing in a Home pick, in the Search tab's provider row, and
+ * in the scoped-search route.
  */
-private const val COLLECTION_PREFIX = "collection:"
+private const val COLLECTION_PREFIX = Routes.COLLECTION_PROVIDER_PREFIX
 
 class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val manager = (app as HikariApp).providers
     private val store = (app as HikariApp).store
@@ -447,8 +451,11 @@ fun HomeScreen(nav: NavHostController) {
     // extension's catalog is being browsed: globally across every provider, or
     // scoped to the extension you're looking at. With no extension selected
     // there's only one sensible answer, so it goes straight to global search.
+    // A COLLECTION counts as a scope too: browsing "abc" and tapping the
+    // magnifier must be able to search inside abc and not only everywhere.
     val openSearch: () -> Unit = {
-        if (headerSelection != null) showSearchDialog = true else openGlobalSearch()
+        if (headerSelection != null || selectedCollection != null) showSearchDialog = true
+        else openGlobalSearch()
     }
     val openVerify: () -> Unit = {
         scope.launch {
@@ -508,8 +515,30 @@ fun HomeScreen(nav: NavHostController) {
             // (see the GlassDialog after the Box) says what happened and points
             // at Settings → Logs, then stays out of the way.
             item {
-                if (featured.isNotEmpty()) {
-                    Box(Modifier.fillMaxWidth()) {
+                // The header is its OWN strip above the featured banner, never
+                // painted over it. It used to be an overlay inside the banner's
+                // Box (see the old `overlay = true` branch): the app name, the
+                // tagline and the search/translate/web-view buttons were drawn
+                // directly on the artwork, and with the short "Compact strip"
+                // banner — 148dp tall — the header covered most of it and the
+                // banner's own title/meta lines ended up jammed right under the
+                // tagline. That is the overlap the user reported ("it's
+                // overlapping the Hikari name and the app line and search icon,
+                // web-view and translate button — make the header down so it
+                // won't overlap"), and the fix is to stop layering them at all:
+                // the header keeps its own row of the feed, the banner starts
+                // below it, and no hero style can collide with it again.
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader(
+                        selected = headerSelection,
+                        onSearch = openSearch,
+                        onTranslate = { showTranslate = true },
+                        onVerify = openVerify,
+                        overlay = false,
+                        onSettings = openSettings,
+                    )
+                    if (featured.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
                         HeroBanner(
                             items = featured,
                             onClick = { item ->
@@ -523,25 +552,7 @@ fun HomeScreen(nav: NavHostController) {
                             },
                             config = heroConfig,
                         )
-                        HomeHeader(
-                            selected = headerSelection,
-                            onSearch = openSearch,
-                            onTranslate = { showTranslate = true },
-                            onVerify = openVerify,
-                            overlay = true,
-                            onSettings = openSettings,
-                            modifier = Modifier.align(Alignment.TopCenter),
-                        )
                     }
-                } else {
-                    HomeHeader(
-                        selected = headerSelection,
-                        onSearch = openSearch,
-                        onTranslate = { showTranslate = true },
-                        onVerify = openVerify,
-                        overlay = false,
-                        onSettings = openSettings,
-                    )
                 }
             }
             if (!hideContinue && continueEntries.isNotEmpty()) {
@@ -811,31 +822,45 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     // Search scope chooser: global (every provider, with the provider chips to
-    // narrow it) or scoped to the extension whose catalog is on screen.
-    val searchSel = selected
-    if (showSearchDialog && searchSel != null) {
-        val pname = selectedName ?: "this extension"
-        AlertDialog(
-            onDismissRequest = { showSearchDialog = false },
-            title = { Text(tr("Search")) },
-            text = { Text(tr("Search across every provider, or only inside %s?").replace("%s", pname)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showSearchDialog = false
-                    openGlobalSearch()
-                }) {
-                    Text(tr("Global search"))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showSearchDialog = false
-                    Routes.safeNavigate(nav, Routes.searchInProvider(searchSel))
-                }) {
-                    Text(tr("In %s").replace("%s", pname))
-                }
-            },
-        )
+    // narrow it) or scoped to what is on screen — the extension whose catalog is
+    // being browsed, or the PERSONAL CATALOG being browsed. A collection is a
+    // real scope: "In abc" searches only what abc holds (see
+    // [Routes.searchInCollection]), which is what the user asked for when they
+    // built the catalog and then wondered where its name was.
+    if (showSearchDialog) {
+        val coll = selectedCollection
+        // "collection:<id>" for a catalog, the extension id otherwise — the key
+        // the Search tab's provider row uses for the same thing.
+        val scopeKey = if (coll != null) Routes.COLLECTION_PROVIDER_PREFIX + coll.id else selected
+        val scopeName = if (coll != null) coll.name else selectedName
+        if (scopeKey != null && scopeName != null) {
+            AlertDialog(
+                onDismissRequest = { showSearchDialog = false },
+                title = { Text(tr("Search")) },
+                text = {
+                    Text(
+                        tr("Search across every provider, or only inside %s?")
+                            .replace("%s", scopeName)
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showSearchDialog = false
+                        openGlobalSearch()
+                    }) {
+                        Text(tr("Global search"))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showSearchDialog = false
+                        Routes.safeNavigate(nav, Routes.searchInProvider(scopeKey))
+                    }) {
+                        Text(tr("In %s").replace("%s", scopeName))
+                    }
+                },
+            )
+        }
     }
 }
 

@@ -278,6 +278,26 @@ class CollectionsRepository(private val manager: ProviderManager) {
          *  final list). */
         onPartial: ((List<CollectionHit>) -> Unit)? = null,
     ): List<CollectionHit> =
+        searchIn(query, emptySet(), limit, onPartial)
+
+    /**
+     * The same match, narrowed to a set of collections — what the Search tab
+     * asks for when the user has picked a personal catalog in its provider row
+     * ("search inside abc"), and what the magnifier on a catalog page opens.
+     *
+     * An EMPTY [collectionIds] means every collection, which is what the
+     * unscoped lookup ([searchTitles]) has always done; a non-empty set reads
+     * only what those collections hold. Imported lists still cost nothing, and
+     * the network-backed sources (a hand-built TMDB source, an extension
+     * catalog filed inside a personal catalog) still share the one probe budget,
+     * so picking a catalog can never turn a search into a stampede.
+     */
+    suspend fun searchIn(
+        query: String,
+        collectionIds: Set<String> = emptySet(),
+        limit: Int = 24,
+        onPartial: ((List<CollectionHit>) -> Unit)? = null,
+    ): List<CollectionHit> =
         withContext(Dispatchers.IO) {
             val q = query.trim()
             if (q.length < 2) return@withContext emptyList()
@@ -285,6 +305,7 @@ class CollectionsRepository(private val manager: ProviderManager) {
             val collections = runCatching {
                 com.hikari.app.HikariApp.instance.store.collections()
             }.getOrDefault(emptyList())
+                .filter { collectionIds.isEmpty() || it.id in collectionIds }
             val out = ArrayList<CollectionHit>()
             val seen = HashSet<String>()
             // Only a bounded number of SOURCES THAT NEED THE NETWORK are probed

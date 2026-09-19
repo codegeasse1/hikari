@@ -3,15 +3,15 @@ package com.hikari.app.player
 /**
  * Player interface skins (Settings → Player → Player UI).
  *
- * Five looks for the playback controls, so the overlay can match the taste of
+ * Four looks for the playback controls, so the overlay can match the taste of
  * whatever app the user came from:
  *
- *  - DEFAULT  — the stock/plain player: simple dark scrim bars, ordinary
- *               rounded buttons, no glass or glow anywhere. What almost every
- *               other player looks like, and the one to pick if you want the
- *               Hikari look switched off.
- *  - GLASS    — Hikari's default: frosted top bar, gradient bottom bar, round
- *               glass pills and the accent-ringed play button.
+ *  - DEFAULT  — Hikari's own look, and what the app shipped with before the
+ *               picker existed: frosted top bar, gradient bottom bar, round
+ *               glass pills, accent-ringed play button, and the CURVED glass
+ *               pane (the bent sheet with the neon running down its two bowed
+ *               sides) behind every dialog — the server list loads inside the
+ *               curving lines. This is the one the user means by "the old UI".
  *  - MINIMAL  — no bar backgrounds at all: the title and the controls read as
  *               text and icons floating directly on the picture, like VLC's
  *               compact overlay. Best for people who want the video, not the UI.
@@ -38,6 +38,9 @@ package com.hikari.app.player
 object PlayerSkins {
 
     const val DEFAULT = "default"
+    /** The key DEFAULT took before the picker existed — kept so an install that
+     *  has "glass" stored (and any preference or log line written under that
+     *  name) keeps resolving to the same look, which is now [DEFAULT]. */
     const val GLASS = "glass"
     const val MINIMAL = "minimal"
     const val CINEMA = "cinema"
@@ -45,33 +48,41 @@ object PlayerSkins {
 
     /**
      * Every skin, in the order the picker lists them. [DEFAULT] leads because it
-     * is the plain one — the shape people reach for when they want the app's
-     * styling out of the way. The stored fallback for an install that has never
-     * chosen stays [FALLBACK] (Glass), so adding this did not restyle anyone's
-     * player behind their back.
+     * IS Hikari's look — the curved glass everything was built around — and the
+     * others are deliberate departures from it. "Glass" is NOT a second entry
+     * any more: it and Default are the same thing, and listing one look twice
+     * made the picker read as broken (the user's report: "why did you in
+     * default also added that box one" — Default had grown a flat box while the
+     * curved pane they asked to be the default sat under the other name).
      */
-    val ALL = listOf(DEFAULT, GLASS, MINIMAL, CINEMA, NEON)
+    val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON)
 
     /** What an unset/unknown value resolves to — Hikari's own look. */
-    const val FALLBACK = GLASS
+    const val FALLBACK = DEFAULT
 
     fun normalize(key: String?): String =
         if (key != null && ALL.contains(key)) key else FALLBACK
 
+    /** True when this skin's dialogs are the FLAT slab rather than the curved
+     *  pane (see [CurvedGlassPanel.applySkin]). Default is the curve; the three
+     *  looks that name a corner style of their own are flat. Callers that have
+     *  to reserve room for the neon — or decide how much air to keep around a
+     *  panel — ask this instead of comparing against [GLASS], which is no longer
+     *  a value [normalize] can ever return. */
+    fun isFlat(key: String?): Boolean = normalize(key) != DEFAULT
+
     fun label(key: String?): String = when (normalize(key)) {
-        DEFAULT -> "Default"
         MINIMAL -> "Minimal"
         CINEMA -> "Cinema"
         NEON -> "Neon"
-        else -> "Glass"
+        else -> "Default"
     }
 
     fun description(key: String?): String = when (normalize(key)) {
-        DEFAULT -> "Plain dark bars and ordinary rounded buttons — the standard player"
         MINIMAL -> "No panels — just the controls floating on the video"
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
-        else -> "Frosted bars, round glass pills, accent-ringed play button"
+        else -> "Hikari's curved glass — frosted bars, neon-edged panels"
     }
 
     // ---- Synchronous mirror --------------------------------------------------
@@ -121,24 +132,6 @@ object PlayerSkins {
     enum class PlayTreatment { RING, PLAIN, SOLID, GLOW }
 
     fun spec(key: String?): SkinSpec = when (normalize(key)) {
-        // The stock look: plain scrim bars (no frosted glass, no deck panel),
-        // ordinary rounded buttons at a modest radius, a solid accent play
-        // button. Deliberately the least decorated skin in the list.
-        DEFAULT -> SkinSpec(
-            topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
-            bottomBarBackground = com.hikari.app.R.drawable.bottom_bar_bg,
-            pillBackground = com.hikari.app.R.drawable.pill_flat_ripple,
-            pillTextDp = 11f,
-            pillPadH = 9,
-            pillPadV = 4,
-            pillMargin = 2,
-            accentPillRadius = 6f,
-            playTreatment = PlayTreatment.SOLID,
-            playSizeDp = 50,
-            deckMarginDp = 0,
-            topBarPadBottom = 8,
-        )
-
         MINIMAL -> SkinSpec(
             topBarBackground = 0,
             bottomBarBackground = 0,
@@ -184,7 +177,10 @@ object PlayerSkins {
             topBarPadBottom = 6,
         )
 
-        // GLASS — the original look, kept exactly as it was.
+        // DEFAULT — Hikari's own look, kept exactly as it always was: the
+        // frosted bars, the round glass pills and the accent-ringed play
+        // button, with the curved glass pane (see [CurvedGlassPanel]) behind
+        // every dialog. This is the skin the app shipped with.
         else -> SkinSpec(
             topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
             bottomBarBackground = com.hikari.app.R.drawable.bottom_bar_bg,

@@ -2993,10 +2993,10 @@ class PlayerActivity : ComponentActivity() {
     ): TextView? {
         val density = resources.displayMetrics.density
         // The halo is where the curved pane's neon blooms. A flat panel (every
-        // skin but Glass — see [CurvedGlassPanel.applySkin]) has no glow to make
-        // room for, so it only keeps a small margin and the panel itself grows
-        // into the rest of the screen: more rows visible, less clipping.
-        val flatPanel = PlayerSkins.normalize(skin) != PlayerSkins.GLASS
+        // skin but Default — see [CurvedGlassPanel.applySkin]) has no glow to
+        // make room for, so it only keeps a small margin and the panel itself
+        // grows into the rest of the screen: more rows visible, less clipping.
+        val flatPanel = PlayerSkins.isFlat(skin)
         val halo = if (flatPanel) (10 * density).toInt() else glassHaloPx
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
@@ -3008,13 +3008,18 @@ class PlayerActivity : ComponentActivity() {
                     text = line
                     dpText(10f)
                     includeFontPadding = false
-                    // Three lines, not two: the cross-extension status line
+                    // Four lines, not three: the cross-extension status line
                     // ("Asked 254 other repos (Aniyomi 13, CloudStream 57,
-                    // Hikari 181, SkyStream 3) — done, 5 with servers") is
-                    // exactly three lines on a phone, and at two it was sliced
-                    // mid-fact ("… done, 17 with s…"). The hint is the only place
-                    // the search explains itself, so it gets the room.
-                    maxLines = 3
+                    // Hikari 181, SkyStream 3) — done, 5 with servers · 146
+                    // didn't answer in time, 88 don't carry it, 12 couldn't
+                    // load") is four lines on a phone — the tallies are shown
+                    // whether or not servers came back, because that line is how
+                    // the user verifies that every installed extension really
+                    // was asked — and at three it was sliced mid-fact
+                    // ("… done, 17 with s…"). The hint is the only place the
+                    // search explains itself, so it gets the room. A short hint
+                    // still takes the one line it needs: this is a cap.
+                    maxLines = 4
                     ellipsize = TextUtils.TruncateAt.END
                     setTextColor(0xFF9AA5B5.toInt())
                 }
@@ -3123,14 +3128,20 @@ class PlayerActivity : ComponentActivity() {
             // SkyStream") and the longer server names are all laid out inside
             // this width, and at 0.86 the glass pane was clipping the leading
             // edge of its own rows and pushing the last chip off the strip.
-            (win.x * if (flatPanel) 0.95f else 0.93f).toInt(),
+            // Raised again on the user's report that the server box wants to be
+            // LONGER so everything under it reads perfectly ("make it length
+            // longer"): a long engine name, its quality and its host all have to
+            // fit on one row, and the panel is the only place that width can
+            // come from. Still short of the window so the panel keeps floating
+            // with both its rounded sides visible.
+            (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
             // The height axis is only a "do not become a wall" guard, and in the
             // LANDSCAPE player it is the binding one (the window is three times
             // wider than it is tall), which is what kept the engine chips — five
             // of them — wider than the panel on a phone. Raised so the chips and
             // the longer server names fit on one line.
-            (win.y * if (flatPanel) 0.94f else 0.90f).toInt(),
-            (520 * density).toInt(),
+            (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
+            (560 * density).toInt(),
         ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         // The panel must FLOAT on the video with all four rounded corners (and
@@ -3192,7 +3203,19 @@ class PlayerActivity : ComponentActivity() {
         var appliedSil = -1
         fun fitToContent() {
             if (panelLp == null) return
-            val innerW = panel.width - 2 * halo
+            // The panel's own padding is what the content is laid out inside —
+            // not just the halo. A flat panel adds its side gap (and the corner
+            // clearance) on top of the halo (see CurvedGlassPanel.onSizeChanged),
+            // so measuring the content at `width - 2*halo` handed it a column
+            // ~16dp wider than it will actually get, under-counting the wrapped
+            // lines and closing the panel before its last row. The curved pane
+            // keeps the old, deliberately narrow measure: its rows are bent in
+            // from that width, so measuring wide there under-counts too.
+            val innerW = if (flatPanel) {
+                panel.width - panel.paddingLeft - panel.paddingRight
+            } else {
+                panel.width - 2 * halo
+            }
             if (innerW <= 0 || panel.height - 2 * halo <= 0) return
             content.measure(
                 View.MeasureSpec.makeMeasureSpec(innerW, View.MeasureSpec.EXACTLY),
@@ -3295,11 +3318,7 @@ class PlayerActivity : ComponentActivity() {
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         // Same skin-aware margin as [presentGlass]: a flat panel keeps a small
         // one, the curved pane keeps room for its neon.
-        val halo = if (PlayerSkins.normalize(skin) == PlayerSkins.GLASS) {
-            glassHaloPx
-        } else {
-            (10 * density).toInt()
-        }
+        val halo = if (PlayerSkins.isFlat(skin)) (10 * density).toInt() else glassHaloPx
         val panel = CurvedGlassPanel(this).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             haloPx = halo.toFloat()
@@ -4021,6 +4040,15 @@ class PlayerActivity : ComponentActivity() {
         if (asked.isEmpty()) return null
         val running = tally.running.size
         val found = tally.found.size
+        // NOTE: the line is shown even when the picker already HAS servers.
+        // Hiding it on a non-empty list was tried and rejected by the user: this
+        // line is how they can tell that the app really did ask every installed
+        // extension ("no, show the failure report — that's how people know if it
+        // is really searching all servers"). What needed fixing was the WORDING,
+        // not its presence: "82 no answer in time" read as a verdict about the
+        // title, so the buckets are now printed in plain English (see
+        // [ContentRepository.crossBucketLabel]) and the ones that are still
+        // being re-asked say so.
         val byEngine = asked.groupingBy { it }.eachCount().entries
             .sortedBy { it.key }
             .joinToString(", ") { e ->
@@ -4041,21 +4069,29 @@ class PlayerActivity : ComponentActivity() {
                 ContentRepository.crossReasonBucket(it.substringAfter(" — ", it)) in
                 ContentRepository.CROSS_QUIET_BUCKETS
         }
-        val state = if (running > 0) "$running still searching" else "done"
-        val servers = if (found > 0) ", $found with servers" else ", none with servers"
-        // When nothing came back, say WHAT the pass ran into, counted by kind —
-        // "200 no such title, 28 could not load" answers "was it even asked? did
-        // it break?" on screen, without needing a log. The single example then
-        // shows the real plugin text, preferring a repo that FAILED over one
-        // that simply did not carry the title (a failure is the actionable one).
-        val breakdown = if (found == 0 && verdicts.isNotEmpty()) {
+        // Bare "no server" rather than "none with servers": the line is about the
+        // OTHER extensions, and the picker's own list is the thing the user is
+        // looking at.
+        val servers = if (found > 0) ", $found with servers" else ", no server from them"
+        // Say WHAT the pass ran into, counted by kind — "200 don't carry it, 28
+        // couldn't load" answers "was it even asked? did it break?" on screen,
+        // without needing a log. Shown even when servers DID come back, because
+        // seeing the whole tally is how the user verifies that every installed
+        // extension really was searched (their words: "that's how people are able
+        // to know if it's really searching all servers"). The labels are the
+        // plain ones (see [ContentRepository.crossBucketLabel]); the log keeps the
+        // exact bucket keys. The single "e.g." example below is still reserved for
+        // the empty case, where the plugin's own text is the actionable detail.
+        val breakdown = if (verdicts.isNotEmpty()) {
             val buckets = LinkedHashMap<String, Int>()
             for (v in verdicts) {
                 val b = ContentRepository.crossReasonBucket(v.substringAfter(" — ", v))
                 buckets[b] = (buckets[b] ?: 0) + 1
             }
             buckets.entries.sortedByDescending { it.value }.take(3)
-                .joinToString(", ") { "${it.value} ${it.key}" }
+                .joinToString(", ") {
+                    "${it.value} ${ContentRepository.crossBucketLabel(it.key)}"
+                }
         } else ""
         val why = if (running == 0 && found == 0) {
             val actionable = verdicts.firstOrNull {
@@ -4064,6 +4100,18 @@ class PlayerActivity : ComponentActivity() {
             } ?: verdicts.firstOrNull()
             actionable?.let { " · e.g. " + oneLine(it).take(56) }.orEmpty()
         } else ""
+        // Repos the pass never got to (or that were still working when its budget
+        // ran out) are re-asked by the background sweep while the video plays, so
+        // "the pass ended" and "the search ended" are different things — and the
+        // user reads a line that says "done" over a list that is missing servers
+        // as a broken search (which is the point of this line: it is how they
+        // check the app really did ask everything). The sweep's own liveness is
+        // what makes the word honest.
+        val state = when {
+            running > 0 -> "$running still searching"
+            ContentRepository.anySweepBusy() -> "pass over, still searching"
+            else -> "done"
+        }
         return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
             (if (breakdown.isBlank()) "" else " · $breakdown") + why
     }

@@ -207,6 +207,33 @@ object Routes {
     fun searchInProvider(providerId: String, q: String = ""): String =
         "$SEARCH_QUERY_BASE?q=${Uri.encode(q)}&provider=${Uri.encode(providerId)}"
 
+    /**
+     * Marks a PERSONAL CATALOG (a saved collection) in a provider-scoped search
+     * — the same "collection:<id>" key Home stores its picks under, so one
+     * string carries either kind of scope through the Search route.
+     *
+     * The Search tab's provider row lists these beside the extensions (a
+     * collection is a place a title can be looked for, which is exactly what
+     * that row means), and both entry points use it: Home's header search while
+     * a collection is picked, and the magnifier on a catalog page.
+     */
+    const val COLLECTION_PROVIDER_PREFIX = "collection:"
+
+    /** True when [key] names a personal catalog rather than an extension. */
+    fun isCollectionScope(key: String): Boolean =
+        key.startsWith(COLLECTION_PROVIDER_PREFIX)
+
+    /** The collection id inside a [COLLECTION_PROVIDER_PREFIX] key. */
+    fun collectionIdOfScope(key: String): String =
+        key.removePrefix(COLLECTION_PROVIDER_PREFIX)
+
+    /** Opens the Search tab scoped to one personal catalog — "search inside
+     *  this catalog", the magnifier on a collection page and Home's "In abc"
+     *  option. The query box starts empty: the point is to search the catalog,
+     *  not to re-run the two words the user happened to have on Home. */
+    fun searchInCollection(collectionId: String, q: String = ""): String =
+        searchInProvider(COLLECTION_PROVIDER_PREFIX + collectionId, q)
+
     /** Maps a full Compose-Navigation route onto the bottom-bar tab it belongs
      *  to (strips the query string; folds the scoped search route back onto the
      *  Search tab). Returns null when the route isn't a tab. */

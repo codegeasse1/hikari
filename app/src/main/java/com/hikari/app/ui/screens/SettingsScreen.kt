@@ -1811,6 +1811,7 @@ private fun DetailHeaderCard(app: HikariApp) {
 
 /**
  * The Player UI skin (Settings → Player): four looks for the playback controls.
+ * Default is Hikari's own curved-glass look — the one the app shipped with.
  *
  * It applies to the NEXT playback session rather than the one already running —
  * the controller is built once when the player opens, and rebuilding it
@@ -1821,7 +1822,7 @@ private fun DetailHeaderCard(app: HikariApp) {
 private fun PlayerUiCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.playerSkinFlow() }
-    val skin by flow.collectAsState(initial = PlayerSkins.GLASS)
+    val skin by flow.collectAsState(initial = PlayerSkins.FALLBACK)
     var pickerOpen by remember { mutableStateOf(false) }
 
     Column(Modifier.padding(16.dp)) {
