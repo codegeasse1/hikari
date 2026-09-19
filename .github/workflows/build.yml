@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ main, Downloader ]
+    branches: [ main ]
     paths-ignore:
       - '**.md'
       - 'LICENSE'
