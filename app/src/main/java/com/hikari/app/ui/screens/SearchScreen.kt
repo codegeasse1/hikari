@@ -249,7 +249,9 @@ fun SearchScreen(
     val collectionHits by vm.collectionHits.collectAsState()
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
-    val collections by vm.userCollections.collectAsState()
+    // `initial` is required for a plain Flow (a StateFlow carries its own), and
+    // it doubles as "no catalogs yet" for the first frame.
+    val collections by vm.userCollections.collectAsState(initial = emptyList())
 
     // Search-bar translator state: the text the user typed before translating
     // (null while showing English), the current target language, the language
