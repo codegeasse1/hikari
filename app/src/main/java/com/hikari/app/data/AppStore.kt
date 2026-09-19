@@ -149,6 +149,9 @@ class AppStore(private val ctx: Context) {
         /** Which player control shell the player wears — see
          *  [com.hikari.app.player.PlayerSkins]. */
         val PLAYER_SKIN = stringPreferencesKey("playerSkin")
+        /** Look of the "finding your server" card — see
+         *  [com.hikari.app.ui.LoadingStyles]. */
+        val LOADING_STYLE = stringPreferencesKey("loadingStyle")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -402,6 +405,21 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayerSkin(key: String) {
         store.edit { it[K.PLAYER_SKIN] = com.hikari.app.player.PlayerSkins.normalize(key) }
+    }
+
+    // ---- The "finding your server" card (Settings → App Layout) ----
+
+    /** Which look the loading card wears — see
+     *  [com.hikari.app.ui.LoadingStyles]. One choice, two screens: the detail
+     *  page shows the card from the tap, and the player continues with the same
+     *  look until the video is on screen. */
+    fun loadingStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.LoadingStyles.normalize(it[K.LOADING_STYLE]) }
+
+    suspend fun loadingStyle(): String = loadingStyleFlow().first()
+
+    suspend fun setLoadingStyle(key: String) {
+        store.edit { it[K.LOADING_STYLE] = com.hikari.app.ui.LoadingStyles.normalize(key) }
     }
 
     // ---- Bottom navigation bar layout ----

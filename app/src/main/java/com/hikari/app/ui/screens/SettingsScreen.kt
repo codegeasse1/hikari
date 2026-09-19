@@ -143,6 +143,7 @@ import com.hikari.app.player.PlayerSkins
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
+import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterEffects
 import com.hikari.app.ui.components.ChoiceDialog
 import com.hikari.app.ui.components.ChoiceItem
@@ -2489,6 +2490,9 @@ private fun PlaybackStartCard(app: HikariApp) {
 private fun LoadingBannerCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(true) }
+    val styleFlow = remember { app.store.loadingStyleFlow() }
+    val style by styleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
+    var pickerOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         enabled = app.store.showLoadingBanner()
@@ -2505,6 +2509,40 @@ private fun LoadingBannerCard(app: HikariApp) {
                 enabled = it
                 scope.launch { runCatching { app.store.setShowLoadingBanner(it) } }
             },
+        )
+        if (enabled) {
+            Spacer(Modifier.height(10.dp))
+            // The look of the "finding your server" card — the page the user
+            // stares at from the tap until the first frame of video, on BOTH
+            // the detail screen and the player (one choice, two screens, so the
+            // hand-off between them never changes the design under them).
+            ChoiceRow(
+                value = tr(LoadingStyles.label(style)),
+                supporting = tr(LoadingStyles.description(style)),
+                leadingIcon = Icons.Filled.Slideshow,
+                onClick = { pickerOpen = true },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                tr("Applies to the next video you open."),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Loading screen"),
+            items = LoadingStyles.ALL.map {
+                ChoiceItem(it, tr(LoadingStyles.label(it)), tr(LoadingStyles.description(it)))
+            },
+            selectedKey = style,
+            onPick = { pick ->
+                pickerOpen = false
+                scope.launch { runCatching { app.store.setLoadingStyle(pick) } }
+            },
+            onDismiss = { pickerOpen = false },
         )
     }
 }

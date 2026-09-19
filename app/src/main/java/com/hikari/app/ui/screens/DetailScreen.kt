@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,6 +60,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -78,6 +80,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -120,6 +123,7 @@ import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.openYouTubeVideo
@@ -127,6 +131,7 @@ import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.CategoryPickerSheet
+import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
@@ -1096,6 +1101,11 @@ fun DetailScreen(
     val playMinServers by playMinFlow.collectAsState(initial = 2)
     val bannerFlow = remember { app.store.showLoadingBannerFlow() }
     val showLoadingCoverSetting by bannerFlow.collectAsState(initial = true)
+    // Look of the "finding your server" card — the same choice the player's own
+    // cover wears, handed over as an intent extra so the two screens cannot
+    // disagree (see [LoadingStyles] and PlayerActivity.showLoadingBanner).
+    val loadingStyleFlow = remember { app.store.loadingStyleFlow() }
+    val loadingStyleSetting by loadingStyleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1195,6 +1205,7 @@ fun DetailScreen(
                     PosterLoader.tokenize(((m?.backdropUrl ?: posterUrl)).orEmpty()).orEmpty()
                 )
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
+                putExtra("loadingStyle", loadingStyleSetting)
                 putExtra("startAfterServers", startAfterServers)
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
@@ -1293,18 +1304,32 @@ fun DetailScreen(
         val sid = UUID.randomUUID().toString()
         sessionId = sid
         vm.resetLiveStreams()
+        // Local once-only flag: playback launches exactly ONCE per tap (here —
+        // the immediate launch below — or later from the feed, the
+        // preferred-server grace period, or the final batch); afterwards new
+        // servers are appended to the player's live session, never re-launched.
+        // Atomic because this search runs on the app scope while the screen's
+        // own reads happen on the main thread.
+        //
+        // CRITICAL: the immediate launch below must ARM this flag. It did not,
+        // and that was a real, reported bug: [openStreams] opens the player
+        // before any server exists, so `launched` stayed false while the player
+        // was already up. The player's launcher callback (see [playerLauncher])
+        // clears `playerLaunched` the moment the user backs out of the player —
+        // so the FIRST server that arrived after that found BOTH flags false and
+        // launched the player again. Backing out therefore re-opened the same
+        // "finding your server" card (the detail screen's title card and the
+        // player's are deliberately identical, so it reads as the same page
+        // loading two or three times), every time, for every title.
+        val launched = java.util.concurrent.atomic.AtomicBoolean(false)
         // Launch the player NOW with an empty source list — it shows its own
         // title card and waits for the first servers on [sessionId]. If the
         // launch itself fails (the activity can't be resolved), the coroutine
         // below falls back to the old "resolve here, then open the player" path
         // and the source sheet.
-        launchPlayer(emptyList<StreamSource>(), ep, sid, startPos, wantsDownload)
-        // Local once-only flag: playback launches exactly ONCE per tap (either
-        // the feed, the preferred-server grace period, or the final batch) —
-        // afterwards new servers are appended to the player's live session,
-        // never re-launched. Atomic because this search now runs on the app
-        // scope while the screen's own reads happen on the main thread.
-        val launched = java.util.concurrent.atomic.AtomicBoolean(false)
+        if (launchPlayer(emptyList<StreamSource>(), ep, sid, startPos, wantsDownload)) {
+            launched.set(true)
+        }
         // The coroutine's own copy of everything found so far. Deliberately NOT
         // the Compose state: the search outlives this screen, so it keeps its
         // own list and only mirrors it into [streams] (for the source sheet)
@@ -1620,15 +1645,24 @@ fun DetailScreen(
                 // empty result into a clear message within a second instead
                 // of a minute and a half of nothing.
                 val foundCount = playableEvery(found).size
-                // Is a background sweep still asking the repos this pass never
-                // reached? Then the search is NOT over: hundreds of extensions may
-                // still be answering, and every server the sweep finds is pushed
-                // into the live session the player is already listening on.
+                // Is a background sweep still asking repos this lookup did not
+                // really finish — the ones the pass never reached, or the ones it
+                // answered out of the session's "no such title" record after
+                // coming back thin (see ContentRepository.CROSS_THIN_RESULT)?
+                // Then the search is NOT over, and every server the sweep finds is
+                // pushed into the live session the player is already listening on.
                 // Announcing a verdict here is exactly what made a search that was
                 // still working look like it had stopped at the 5th or 13th
                 // extension (and made the player quit early on "no playable
                 // sources" while the sweep was still finding them).
-                val sweepBusy = foundCount == 0 && vm.backgroundSweepBusy(searchedEpisode)
+                //
+                // This is deliberately NOT gated on "found nothing": the report
+                // that matters most is the one with servers already on the list —
+                // "it says 2 servers and search finished, then on the fourth tap
+                // it finds 36". Saying "search finished" while the sweep that
+                // exists precisely to find the other 34 is still running is what
+                // made the count look like it came out of nowhere.
+                val sweepBusy = vm.backgroundSweepBusy(searchedEpisode)
                 // The "nothing playable, and that is a real answer" note, built as
                 // a lambda so the sweep's own watcher below can use the very same
                 // wording if the sweep comes back empty a minute later.
@@ -1660,26 +1694,34 @@ fun DetailScreen(
                     }
                     note
                 }
-                if (foundCount == 0 && lookupComplete && !sweepBusy) {
-                    StreamsLive.setStatus(sid, noResultNote())
+                if (sweepBusy) {
+                    // The background sweep is still working, so the search is
+                    // still going — on purpose, while the video plays. Say the
+                    // count so far AND that more is coming, so the number on
+                    // screen is a running total rather than a result that later
+                    // "jumps" to 36.
+                    StreamsLive.setStatus(
+                        sid,
+                        if (foundCount > 0) {
+                            "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
+                                " — still searching the remaining extensions…"
+                        } else {
+                            "Searching the remaining extensions in the background…"
+                        },
+                    )
                 } else if (foundCount > 0) {
-                    // Servers WERE found — say that the search is over, so the
-                    // cover/hint never keeps reading "still searching…" after the
-                    // pass has actually finished (which looks exactly like a
-                    // stuck search even though a full server list is in hand).
+                    // Servers WERE found and nothing more is coming — say that
+                    // the search is over, so the cover/hint never keeps reading
+                    // "still searching…" after the search has actually finished
+                    // (which looks exactly like a stuck search even though a full
+                    // server list is in hand).
                     StreamsLive.setStatus(
                         sid,
                         "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
                             " — search finished.",
                     )
-                } else if (sweepBusy) {
-                    // The pass ran out of time with repos it never reached, and
-                    // the background sweep has them. Say exactly that: the search
-                    // is still going, on purpose, while the video plays.
-                    StreamsLive.setStatus(
-                        sid,
-                        "Searching the remaining extensions in the background…",
-                    )
+                } else if (lookupComplete) {
+                    StreamsLive.setStatus(sid, noResultNote())
                 } else if (problemNote != null) {
                     // Already reported in the catch above; repeated here because a
                     // collector that died later could have overwritten it.
@@ -1700,15 +1742,15 @@ fun DetailScreen(
                 // The search is only declared OVER when there is something to
                 // play or a real answer: marking it done on an unfinished pass is
                 // what let the player quit seconds into a search that was still
-                // finding servers.
-                if (foundCount > 0 || (lookupComplete && !sweepBusy)) {
-                    StreamsLive.markDone(sid)
-                } else if (sweepBusy) {
-                    // The pass is over but the sweep is not: wait for it and THEN
+                // finding servers — and, with a sweep still running, it is what
+                // made "search finished" appear over a list that was about to
+                // grow from 2 servers to 36.
+                if (sweepBusy) {
+                    // The background sweep is still working: wait for it and THEN
                     // declare the search over (with the honest verdict when it came
-                    // back empty), so the player's cover leaves "still searching" at
-                    // the right moment instead of spinning to its safety timeout
-                    // after a sweep that found nothing.
+                    // back empty), so the cover leaves "still searching" at the
+                    // right moment — and with the FINAL count, so the number the
+                    // user reads is the list they actually have.
                     app.appScope.launch {
                         val watchDeadline = System.currentTimeMillis() + SWEEP_WATCH_CAP_MS
                         while (System.currentTimeMillis() < watchDeadline &&
@@ -1716,16 +1758,20 @@ fun DetailScreen(
                         ) {
                             delay(1_000)
                         }
-                        if (StreamsLive.flow(sid).value.isNotEmpty()) {
+                        val total = StreamsLive.flow(sid).value.size
+                        if (total > 0) {
                             StreamsLive.setStatus(
                                 sid,
-                                "Search finished — every extension has answered.",
+                                "Found $total server" + (if (total == 1) "" else "s") +
+                                    " — search finished.",
                             )
                         } else {
                             StreamsLive.setStatus(sid, noResultNote())
                         }
                         StreamsLive.markDone(sid)
                     }
+                } else if (foundCount > 0 || lookupComplete) {
+                    StreamsLive.markDone(sid)
                 }
             }
         }
@@ -1864,7 +1910,14 @@ fun DetailScreen(
             else -> {
                 LazyColumn(Modifier.fillMaxSize()) {
                     item {
-                    Column(Modifier.padding(horizontal = 16.dp)) {
+                    // The first line of the page is spaced off the header art on
+                    // purpose. It used to start flush against the artwork's
+                    // bottom edge (the banner's gradient ends exactly where the
+                    // title begins, so the two read as one block and the title
+                    // looked like it had been pushed up into the header — the
+                    // user circled it on a screenshot). Styles that fade the art
+                    // into the background need the gap most.
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
                         Text(
                             m?.title ?: title,
                             style = MaterialTheme.typography.headlineMedium,
@@ -1879,8 +1932,13 @@ fun DetailScreen(
                             )
                         }
                         if (!m?.genres.isNullOrEmpty()) {
+                            // Scrollable, so four long genre names ("Ciencia
+                            // ficción", "Animación"…) can never run off the
+                            // right edge of the screen the way they did.
                             Row(
-                                Modifier.padding(top = 8.dp),
+                                Modifier
+                                    .padding(top = 8.dp)
+                                    .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 m!!.genres.take(4).forEach { g ->
@@ -2505,6 +2563,60 @@ private fun PlayLoadingBanner(
     detail: String?,
     image: String?,
 ) {
+    val style = rememberLoadingStyle()
+    when (LoadingStyles.normalize(style)) {
+        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail)
+        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image)
+        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image)
+        else -> CinematicLoadingCard(title, episodeLabel, detail, image)
+    }
+}
+
+/** The chosen "finding your server" look (Settings → App Layout). Read once per
+ *  composition, so the card is drawn in the right style from its first frame
+ *  instead of flashing the default one. */
+@Composable
+private fun rememberLoadingStyle(): String {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
+    val flow = remember(app) { app.store.loadingStyleFlow() }
+    return remember(flow) { flow }.collectAsState(initial = LoadingStyles.CINEMATIC).value
+}
+
+/** The status line every loading style shares: a spinner plus the live status
+ *  text the search keeps updating ("Found 4 servers — still searching the
+ *  remaining extensions…", "…isn't responding — looking for another server…").
+ *  Never removed by a style: a loading screen with no sign of life is
+ *  indistinguishable from a hung app. */
+@Composable
+private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true) {
+    Column(
+        horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
+        modifier = Modifier.padding(horizontal = 24.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(26.dp),
+            strokeWidth = 3.dp,
+            color = tint,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            tr("Finding the best server…"),
+            style = MaterialTheme.typography.labelMedium,
+            color = dim,
+            textAlign = if (centered) TextAlign.Center else TextAlign.Start,
+        )
+    }
+}
+
+/** CINEMATIC — the original look: the backdrop drifting slowly under a heavy
+ *  scrim, the title breathing in and out, the status line at the bottom. */
+@Composable
+private fun CinematicLoadingCard(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+    image: String?,
+) {
     val transition = rememberInfiniteTransition()
     val breath by transition.animateFloat(
         initialValue = 0.94f,
@@ -2558,49 +2670,243 @@ private fun PlayLoadingBanner(
                 },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                title.uppercase(),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                textAlign = TextAlign.Center
+            LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
+        }
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
+            LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
+        }
+    }
+}
+
+/** The title / episode / detail block, shared by every style (only the accent
+ *  colour of the episode line differs). */
+@Composable
+private fun LoadingTitleBlock(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+    accent: () -> Color,
+) {
+    Text(
+        title.uppercase(),
+        style = MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.Bold,
+        color = Color.White,
+        textAlign = TextAlign.Center
+    )
+    if (!episodeLabel.isNullOrBlank()) {
+        Text(
+            episodeLabel,
+            style = MaterialTheme.typography.titleMedium,
+            color = accent(),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+    }
+    if (!detail.isNullOrBlank()) {
+        Text(
+            detail,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xCCFFFFFF),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+    }
+}
+
+/** SPOTLIGHT — no artwork: the accent blooms behind the title and a light
+ *  sweeps across it, so the card is about the TITLE rather than the art. The
+ *  title breathes more slowly and further than Cinematic's. */
+@Composable
+private fun SpotlightLoadingCard(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+    image: String?,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val glowStart = MaterialTheme.colorScheme.tertiary
+    val transition = rememberInfiniteTransition()
+    val breath by transition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.10f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    // The pool of light behind the title grows and fades, in step with the
+    // title's own breathing so the two read as one object.
+    val pool by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = kotlin.math.min(size.width, size.height) * (0.34f + pool * 0.06f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accent.copy(alpha = 0.34f),
+                        glowStart.copy(alpha = 0.16f),
+                        Color.Transparent,
+                    ),
+                    center = Offset(size.width / 2f, size.height * 0.42f),
+                    radius = r,
+                ),
+                radius = r,
+                center = Offset(size.width / 2f, size.height * 0.42f),
             )
-            if (!episodeLabel.isNullOrBlank()) {
-                Text(
-                    episodeLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color(0xFFF5C569),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
-            if (!detail.isNullOrBlank()) {
-                Text(
-                    detail,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xCCFFFFFF),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
         }
         Column(
             Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 56.dp),
+                .align(Alignment.Center)
+                .padding(horizontal = 32.dp)
+                .graphicsLayer {
+                    scaleX = breath
+                    scaleY = breath
+                },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(28.dp),
-                strokeWidth = 3.dp,
-                color = Color(0xFFF5C569)
+            LoadingTitleBlock(title, episodeLabel, detail) { accent }
+        }
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
+            LoadingStatusLine(accent, Color(0xCCFFFFFF))
+        }
+    }
+}
+
+/** POSTER — the title's poster on a glass card, with a progress bar. The art
+ *  is shown at its own 2:3 shape, so nothing is cropped and a portrait poster
+ *  reads the way the user knows it. */
+@Composable
+private fun PosterLoadingCard(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+    image: String?,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val transition = rememberInfiniteTransition()
+    // A slow rise-and-settle, so the card is alive without being busy.
+    val lift by transition.animateFloat(
+        initialValue = -4f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // The same art, blown up and dimmed, fills the frame so the card floats
+        // on its own artwork instead of on flat black.
+        if (model != null) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = 1.35f
+                        scaleY = 1.35f
+                        alpha = 0.20f
+                    }
             )
-            Spacer(Modifier.height(12.dp))
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.55f))
+        )
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 40.dp)
+                .graphicsLayer { translationY = lift }
+                .clip(GlassShape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), GlassShape)
+                .padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (model != null) {
+                AsyncImage(
+                    model = model,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(width = 128.dp, height = 192.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                )
+                Spacer(Modifier.height(14.dp))
+            }
+            LoadingTitleBlock(title, episodeLabel, detail) { accent }
+            Spacer(Modifier.height(14.dp))
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = accent,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
             Text(
                 tr("Finding the best server…"),
-                style = MaterialTheme.typography.labelMedium,
-                color = Color(0xCCFFFFFF)
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/** MINIMAL — flat background, a small title, the status line. Nothing moves
+ *  except the spinner, which is the point: the quietest way to say "working". */
+@Composable
+private fun MinimalLoadingCard(
+    title: String,
+    episodeLabel: String?,
+    detail: String?,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                title.uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val sub = listOfNotNull(
+                episodeLabel?.takeIf { it.isNotBlank() },
+                detail?.takeIf { it.isNotBlank() },
+            ).joinToString("  ·  ")
+            if (sub.isNotBlank()) {
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            Spacer(Modifier.height(26.dp))
+            LoadingStatusLine(accent, MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

@@ -4,17 +4,23 @@ import com.hikari.app.i18n.I18n
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.keyframes
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -53,6 +59,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Extension
@@ -74,6 +81,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -83,6 +91,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -90,13 +99,19 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -106,7 +121,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -137,6 +155,7 @@ import com.hikari.app.data.TmdbSorts
 import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSources
 import com.hikari.app.data.TmdbSpec
+import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
@@ -159,6 +178,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayInputStream
 import kotlin.math.roundToInt
 
 /**
@@ -2335,6 +2355,96 @@ private object CollectionCovers {
             if (file.absolutePath.startsWith(dir(context).absolutePath)) file.delete()
         }
     }
+
+    /** Longest side a cover is decoded/cropped at. A cover is drawn at most a
+     *  few hundred dp wide, so a full 12 MP camera shot is decoded at a quarter
+     *  of its pixels: the crop editor stays smooth and the saved file stays
+     *  small, while the tile it ends up in cannot tell the difference. */
+    private const val MAX_SIDE = 2048
+
+    /**
+     * The image behind a cover value, ready to be cropped: our own `file:` copy
+     * read straight off disk, or an `https://` link fetched over the app's own
+     * HTTP client (the site a cover points at needs a real user agent, which a
+     * bare URL stream does not send).
+     *
+     * The EXIF orientation is applied too. A phone photo is usually stored
+     * sideways with a "rotate me" flag that Coil honours and [BitmapFactory]
+     * does not — without this step, cropping a gallery photo produced a cover
+     * lying on its side, which is exactly the kind of thing that looks like the
+     * app broke.
+     */
+    suspend fun loadBitmap(context: Context, value: String): Bitmap? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes: ByteArray = when {
+                    value.startsWith("file:") -> {
+                        val path = Uri.parse(value).path ?: return@runCatching null
+                        File(path).readBytes()
+                    }
+                    value.startsWith("http") -> Http.getBytes(value) ?: return@runCatching null
+                    else -> return@runCatching null
+                }
+                if (bytes.isEmpty()) return@runCatching null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+                var sample = 1
+                while (bounds.outWidth / (sample * 2) >= MAX_SIDE ||
+                    bounds.outHeight / (sample * 2) >= MAX_SIDE
+                ) {
+                    sample *= 2
+                }
+                val decoded = BitmapFactory.decodeByteArray(
+                    bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample },
+                ) ?: return@runCatching null
+                applyExifRotation(bytes, decoded)
+            }.getOrNull()
+        }
+
+    /** [bmp] turned the way the file's EXIF orientation says it should be. */
+    private fun applyExifRotation(bytes: ByteArray, bmp: Bitmap): Bitmap {
+        val orientation = runCatching {
+            android.media.ExifInterface(ByteArrayInputStream(bytes)).getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL,
+            )
+        }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
+        val matrix = Matrix()
+        when (orientation) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            android.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            else -> return bmp
+        }
+        return runCatching {
+            Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+        }.getOrDefault(bmp)
+    }
+
+    /**
+     * Writes a cropped cover into our own storage and returns its `file://` URI.
+     *
+     * The crop is a NEW file rather than a rewrite of the picked one: the
+     * original copy is deleted by the caller once the new value is in place, and
+     * keeping the write separate means a failure here cannot leave the cover
+     * pointing at a half-written file.
+     */
+    fun saveCropped(context: Context, bitmap: Bitmap): String? = runCatching {
+        val name = "cover-" + System.currentTimeMillis().toString(36) +
+            "-" + (1000 + (Math.random() * 8999).toInt())
+        val file = File(dir(context), name)
+        file.outputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        }
+        if (file.length() <= 0L) {
+            file.delete()
+            return null
+        }
+        Uri.fromFile(file).toString()
+    }.getOrNull()
 }
 
 /** The cover choices, in the reference design's order. */
@@ -2362,47 +2472,293 @@ private fun CoverArt(
     name: String = "",
     modifier: Modifier = Modifier,
     /** False when the caller has already fixed the size (a list-row thumb):
-     *  the tile then fills it instead of imposing its own aspect. */
+     *  the tile then fills it instead of imposing its own aspect. */ 
     shaped: Boolean = true,
     emojiSize: TextUnit = 34.sp,
 ) {
     val tokens = rememberGlassTokens()
     val k = CoverKinds.normalize(kind)
+    // The user's own poster styling — Settings → App Layout → Poster styling —
+    // applied to a personal-catalog cover exactly as it is to a TMDB poster:
+    // the corner rounding, the halo, and the chosen effect (aura ring, 3D tilt,
+    // sheen…). A cover the user picked is still a poster, and asking for the
+    // aura ring while browsing and then getting a plain rectangle inside their
+    // own catalog was the report. The effect is drawn by [PosterArt], the one
+    // place poster styling lives.
+    val posterStyle = rememberPosterStyle()
+    val sized = if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier
+    if ((k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank()) {
+        PosterArt(
+            model = value,
+            contentDescription = name.ifBlank { null },
+            style = posterStyle,
+            modifier = modifier.then(sized),
+            imageAlignment = Alignment.TopCenter,
+        )
+        return
+    }
     Box(
         modifier
-            .then(if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier)
+            .then(sized)
             .clip(GlassShape)
             .background(tokens.fillTop)
             .border(1.dp, tokens.border, GlassShape),
         contentAlignment = Alignment.Center,
     ) {
-        when {
-            (k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank() -> {
-                PosterImage(
-                    model = value,
-                    contentDescription = name.ifBlank { null },
-                    modifier = Modifier.matchParentSize(),
-                    contentScale = ContentScale.Crop,
-                    alignment = Alignment.TopCenter,
+        if (k == CoverKinds.EMOJI && value.isNotBlank()) {
+            Text(value, fontSize = emojiSize)
+        } else {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(GlassShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(21.dp),
                 )
             }
-            k == CoverKinds.EMOJI && value.isNotBlank() -> {
-                Text(value, fontSize = emojiSize)
-            }
-            else -> {
+        }
+    }
+}
+
+/**
+ * Crops the cover image the user is adding.
+ *
+ * A cover tile is a fixed shape — a 2:3 poster, a square, a 16:9 wide tile —
+ * and a photo straight out of the gallery almost never matches it: a portrait
+ * shot in a wide tile loses most of itself, and there was nothing the user could
+ * do about it (the report: "there is no crop button so if the image is long the
+ * user is unable to adjust it"). So the picked image opens here at the exact
+ * shape of the tile it is going into, and the user drags and pinches until the
+ * part they want fills that shape; what they see is exactly what the tile will
+ * show, because the crop is the viewport itself.
+ *
+ * The maths is deliberately exact rather than approximate: the preview draws the
+ * bitmap with one scale and one offset, and the saved crop is derived from the
+ * SAME scale and offset, so there is no way for the two to disagree about which
+ * pixels were kept. Zooming never lets the frame show empty space (the scale
+ * starts at "cover the frame" and only ever grows, and the drag is clamped to
+ * the image's edges).
+ */
+@Composable
+private fun CoverCropDialog(
+    value: String,
+    shape: String,
+    onDismiss: () -> Unit,
+    onDone: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val aspect = TileShapes.aspect(shape)
+    var bitmap by remember(value) { mutableStateOf<Bitmap?>(null) }
+    var failed by remember(value) { mutableStateOf(false) }
+    var loading by remember(value) { mutableStateOf(true) }
+    var saving by remember { mutableStateOf(false) }
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var offX by remember { mutableFloatStateOf(0f) }
+    var offY by remember { mutableFloatStateOf(0f) }
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    val image = remember(bitmap) { bitmap?.asImageBitmap() }
+
+    LaunchedEffect(value) {
+        loading = true
+        val bmp = CollectionCovers.loadBitmap(context, value)
+        bitmap = bmp
+        failed = bmp == null
+        loading = false
+    }
+
+    // The scale at which the image first exactly covers the frame. Everything
+    // else is expressed relative to it, so a rotation/zoom gesture only ever
+    // moves the zoom factor in [1, 6].
+    fun baseScale(vp: IntSize, bmp: Bitmap): Float {
+        if (vp.width == 0 || vp.height == 0) return 1f
+        return maxOf(
+            vp.width.toFloat() / bmp.width.toFloat(),
+            vp.height.toFloat() / bmp.height.toFloat(),
+        )
+    }
+
+    // How far the image may be dragged before an edge would come into view.
+    fun limits(vp: IntSize, bmp: Bitmap, z: Float): Pair<Float, Float> {
+        val s = baseScale(vp, bmp) * z
+        return maxOf(0f, (bmp.width * s - vp.width) / 2f) to
+            maxOf(0f, (bmp.height * s - vp.height) / 2f)
+    }
+
+    Dialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            shape = GlassShape,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.padding(18.dp),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    tr("Crop cover"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    tr("Drag to move, pinch or use the slider to zoom. The tile shows exactly this."),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+
                 Box(
                     Modifier
-                        .size(40.dp)
+                        .fillMaxWidth()
+                        .aspectRatio(aspect)
                         .clip(GlassShape)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                        .background(Color.Black)
+                        .onSizeChanged { viewport = it }
+                        .pointerInput(bitmap, viewport) {
+                            detectTransformGestures { _, pan, gestureZoom, _ ->
+                                val bmp = bitmap ?: return@detectTransformGestures
+                                if (viewport == IntSize.Zero) return@detectTransformGestures
+                                val next = (zoom * gestureZoom).coerceIn(1f, 6f)
+                                val (mx, my) = limits(viewport, bmp, next)
+                                offX = (offX + pan.x).coerceIn(-mx, mx)
+                                offY = (offY + pan.y).coerceIn(-my, my)
+                                zoom = next
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        Icons.Filled.FolderOpen,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(21.dp),
+                    val bmp = bitmap
+                    if (bmp != null) {
+                        Canvas(Modifier.fillMaxSize()) {
+                            val s = baseScale(viewport, bmp) * zoom
+                            val cx = viewport.width / 2f + offX
+                            val cy = viewport.height / 2f + offY
+                            withTransform({
+                                translate(
+                                    left = cx - bmp.width * s / 2f,
+                                    top = cy - bmp.height * s / 2f,
+                                )
+                                scale(scaleX = s, scaleY = s, pivot = Offset.Zero)
+                            }) {
+                                image?.let {
+                                    drawImage(it, filterQuality = FilterQuality.Medium)
+                                }
+                            }
+                        }
+                    }
+                    when {
+                        loading -> CircularProgressIndicator()
+                        failed -> Text(
+                            tr("That image couldn't be loaded."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        tr("Zoom"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Slider(
+                        value = zoom,
+                        onValueChange = { z ->
+                            val bmp = bitmap
+                            if (bmp != null) {
+                                val next = z.coerceIn(1f, 6f)
+                                val (mx, my) = limits(viewport, bmp, next)
+                                offX = offX.coerceIn(-mx, mx)
+                                offY = offY.coerceIn(-my, my)
+                                zoom = next
+                            }
+                        },
+                        valueRange = 1f..6f,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 10.dp),
+                    )
+                    TextButton(
+                        onClick = {
+                            zoom = 1f
+                            offX = 0f
+                            offY = 0f
+                        },
+                    ) {
+                        Text(tr("Reset"))
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(enabled = !saving, onClick = onDismiss) { Text(tr("Cancel")) }
+                    Spacer(Modifier.width(6.dp))
+                    TextButton(
+                        enabled = bitmap != null && !saving,
+                        onClick = {
+                            val bmp = bitmap
+                            if (bmp != null && viewport != IntSize.Zero) {
+                            saving = true
+                            scope.launch {
+                                val s = baseScale(viewport, bmp) * zoom
+                                val cx = viewport.width / 2f + offX
+                                val cy = viewport.height / 2f + offY
+                                // Viewport -> bitmap pixels (the inverse of the
+                                // preview's transform, see [Canvas] above).
+                                val left = ((0f - cx + bmp.width * s / 2f) / s)
+                                    .coerceIn(0f, (bmp.width - 1).toFloat())
+                                val top = ((0f - cy + bmp.height * s / 2f) / s)
+                                    .coerceIn(0f, (bmp.height - 1).toFloat())
+                                val right = ((viewport.width - cx + bmp.width * s / 2f) / s)
+                                    .coerceIn(left + 1f, bmp.width.toFloat())
+                                val bottom = ((viewport.height - cy + bmp.height * s / 2f) / s)
+                                    .coerceIn(top + 1f, bmp.height.toFloat())
+                                val w = (right - left).toInt().coerceAtLeast(1)
+                                val h = (bottom - top).toInt().coerceAtLeast(1)
+                                val cropped = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        Bitmap.createBitmap(bmp, left.toInt(), top.toInt(), w, h)
+                                    }.getOrNull()
+                                }
+                                val uri = cropped?.let {
+                                    withContext(Dispatchers.IO) {
+                                        CollectionCovers.saveCropped(context, it)
+                                    }
+                                }
+                                saving = false
+                                if (uri != null) {
+                                    Toast.makeText(
+                                        context,
+                                        tr("Cover cropped"),
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                    onDone(uri)
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        tr("Couldn't save the cropped cover."),
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            }
+                            }
+                        },
+                    ) {
+                        Text(tr("Crop & save"))
+                    }
                 }
             }
         }
@@ -2428,6 +2784,7 @@ private fun CoverSection(
 ) {
     val context = LocalContext.current
     val k = CoverKinds.normalize(kind)
+    var cropOpen by remember { mutableStateOf(false) }
 
     // "Choose from storage": the photo picker (no storage permission needed on
     // any supported Android version), copied into the app before it can go away.
@@ -2540,6 +2897,32 @@ private fun CoverSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (value.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        onClick = { cropOpen = true },
+                        shape = GlassShape,
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.Crop,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                tr("Crop & zoom"),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
             }
             else -> Unit
         }
@@ -2576,6 +2959,25 @@ private fun CoverSection(
             shape = shape,
             name = name,
             modifier = Modifier.width(128.dp),
+        )
+    }
+
+    if (cropOpen) {
+        CoverCropDialog(
+            value = value,
+            shape = shape,
+            onDismiss = { cropOpen = false },
+            onDone = { cropped ->
+                cropOpen = false
+                // The old copy (ours, if the cover came from the gallery) is
+                // dropped as the new crop takes its place, so cropping three
+                // times does not leave three files behind.
+                CollectionCovers.deleteCopy(context, value)
+                // Cropping a GIF keeps its picture, not its animation, so the
+                // kind follows the value: a GIF cover becomes a still one.
+                if (k == CoverKinds.GIF) onKind(CoverKinds.URL)
+                onValue(cropped)
+            },
         )
     }
 }

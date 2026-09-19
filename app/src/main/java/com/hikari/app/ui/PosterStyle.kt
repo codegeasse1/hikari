@@ -244,6 +244,10 @@ fun PosterArt(
      *  puts its own buttons in the top-right (Library's favourites) needs the
      *  badge somewhere else rather than on top of them. */
     ratingAlignment: Alignment = Alignment.TopEnd,
+    /** Where the artwork itself sits inside its frame. [Alignment.TopCenter] is
+     *  what the personal-catalog cover tiles ask for: a phone photo used as a
+     *  poster keeps its top rather than being cut in the middle. */
+    imageAlignment: Alignment = Alignment.Center,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val shape = style.shape()
@@ -357,6 +361,7 @@ fun PosterArt(
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
+                alignment = imageAlignment,
             )
             if (effect == PosterEffects.SPOTLIGHT) {
                 // Darkens the foot of the art, which is what makes the card look

@@ -521,11 +521,22 @@ class PlayerActivity : ComponentActivity() {
     private var loadingDetail: TextView? = null
     private var loadingStatus: TextView? = null
     private var loadingSpinnerStatus: TextView? = null
+    /** POSTER style's poster tile and SPOTLIGHT style's accent bloom — both
+     *  GONE unless the user picked that style in Settings (see
+     *  [com.hikari.app.ui.LoadingStyles] and [showLoadingBanner]). */
+    private var loadingCardPoster: ImageView? = null
+    private var loadingGlow: View? = null
     private var bannerAnimators: List<android.animation.Animator> = emptyList()
 
     /** True while playback should be covered by the loading banner until the
      *  first frame lands (set from the launch intent, default ON). */
     private var bannerMode = true
+
+    /** Which look the cover wears — the same choice the detail screen's
+     *  full-screen card uses, so the hand-off from the detail page into the
+     *  player never changes the design under the user. See
+     *  [com.hikari.app.ui.LoadingStyles]. */
+    private var loadingStyle = com.hikari.app.ui.LoadingStyles.CINEMATIC
 
     private var speedIndex = 2
 
@@ -859,7 +870,12 @@ class PlayerActivity : ComponentActivity() {
         loadingDetail = findViewById(R.id.loading_detail)
         loadingStatus = findViewById(R.id.loading_status)
         loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
+        loadingCardPoster = findViewById(R.id.loading_card_poster)
+        loadingGlow = findViewById(R.id.loading_glow)
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
+        loadingStyle = com.hikari.app.ui.LoadingStyles.normalize(
+            intent.getStringExtra("loadingStyle")
+        )
         // A Download tap from outside the player opens the server chooser first
         // and never plays anything (see [downloadPickMode]); the in-player
         // Download button needs no flag because playback is already running.
@@ -1471,6 +1487,11 @@ class PlayerActivity : ComponentActivity() {
                     lifecycleScope.launch(Dispatchers.IO) {
                         runCatching { StreamProbe.warm(fresh.map { it.toStreamSource() }) }
                     }
+                    // A stalled server (see [awaitReplacementForStalledServer])
+                    // is replaced by the first thing that lands here, so a
+                    // playback that opened on one slow server recovers by
+                    // itself as the search keeps finding servers.
+                    if (playReplacementIfWaiting()) return@collect
                     tryStart()
                 }
             }
@@ -1480,10 +1501,18 @@ class PlayerActivity : ComponentActivity() {
             // *why* nothing played) instead of one frozen sentence.
             liveStatusJob = lifecycleScope.launch {
                 StreamsLive.statusFlow(liveId).collect { s ->
-                    loadingStatusBase = s
-                    val line = s ?: DEFAULT_LOADING_STATUS
-                    loadingStatus?.text = line
-                    loadingSpinnerStatus?.text = line
+                    // A stalled server (see [awaitReplacementForStalledServer])
+                    // owns the cover's line while it waits: "X isn't responding
+                    // — looking for another server…" explains why THIS server
+                    // is not playing, and the running search count would only
+                    // bury that explanation (the cover's ticker re-draws from
+                    // [loadingStatusBase], so the base is left alone too).
+                    if (!awaitingReplacement) {
+                        loadingStatusBase = s
+                        val line = s ?: DEFAULT_LOADING_STATUS
+                        loadingStatus?.text = line
+                        loadingSpinnerStatus?.text = line
+                    }
                     // Belt-and-braces: the detail screen reports "found nothing"
                     // as a status line a beat before it signals completion. If
                     // that signal ever goes missing (its search coroutine is
@@ -5861,7 +5890,33 @@ class PlayerActivity : ComponentActivity() {
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
     private fun promptSlowServer(torrent: Boolean) {
+        // This server is a dud: nothing has played after its whole budget. Mark
+        // it — the URL as tried (so no failover hands it back) and its HOST as
+        // failed for the session (the same mirror serves every quality of the
+        // same file, and the start-index pick consults this). The user's report
+        // was exactly this: "if server not responding then skip it".
+        sources.getOrNull(currentIndex)?.let { src ->
+            if (!src.isTorrent && !src.local && src.url.isNotBlank()) {
+                triedUrls.add(src.url)
+                val h = mirrorHostOf(src.url)
+                if (h.isNotBlank()) deadHosts.add(h)
+            }
+        }
         if (currentIndex + 1 >= sources.size) {
+            // Nothing left to walk to — YET. A player that has just opened is
+            // routinely holding one server while the search is still working
+            // (the detail screen opens it on the first hit and the cross pass +
+            // sweep keep finding more for minutes), so declaring playback dead
+            // here stops the user on a server that is merely early, and the
+            // "Playback failed / Server is not responding (still buffering after
+            // 20s)" panel then sits over a search that is still delivering
+            // servers — the "why does it get stuck and stop all the other
+            // server searches" report. Wait for the search instead, and start
+            // the first replacement the moment it lands.
+            if (!torrent && liveSessionId != null && !liveSearchDone) {
+                awaitReplacementForStalledServer(sources.getOrNull(currentIndex))
+                return
+            }
             showError(
                 if (torrent) I18n.t("Torrent did not start streaming (no peers?)")
                 else I18n.t("Server is not responding (still buffering after 20s)."),
@@ -5935,6 +5990,119 @@ class PlayerActivity : ComponentActivity() {
         slowDialogTicker = null
         slowDialog?.let { runCatching { it.dismiss() } }
         slowDialog = null
+    }
+
+    /** How long [awaitReplacementForStalledServer] waits for the search to bring
+     *  ANY other server before it admits the playback cannot start. Long on
+     *  purpose: the alternative is the failure panel the user reported, shown
+     *  over a search that was still finding servers. */
+    private val stalledReplacementWaitMs: Long = 180_000L
+
+    /** True while the current server has stalled and playback is waiting for the
+     *  search to hand over a replacement (see
+     *  [awaitReplacementForStalledServer]). Also mirrored on the cover's status
+     *  line, so the wait is visible instead of looking frozen. */
+    @Volatile
+    private var awaitingReplacement = false
+
+    /** How many servers were known when the wait started — a wait that ends with
+     *  the search finished and no new server has nothing left to hope for. */
+    private var awaitingReplacementAtSize = 0
+
+    /**
+     * The current server never started and there is no other server to try yet.
+     *
+     * Instead of failing the playback, wait for the search — the cross pass and
+     * the background sweep keep finding servers for minutes after the first one
+     * lands, and every one of them is streamed into this player's own list. The
+     * first replacement starts automatically (the live collector calls
+     * [playReplacementIfWaiting]), so the user never has to tap "Retry all".
+     *
+     * The wait ends early the moment the search says it is finished AND nothing
+     * new arrived, and at worst after [stalledReplacementWaitMs] — either way
+     * the honest failure panel is shown, never a lie about the search.
+     */
+    private fun awaitReplacementForStalledServer(stalled: PlayerSource?) {
+        if (awaitingReplacement) return
+        awaitingReplacement = true
+        awaitingReplacementAtSize = sources.size
+        val name = stalled?.name?.substringBefore("|")?.trim().orEmpty()
+        val line = if (name.isBlank()) {
+            I18n.t("That server isn't responding — looking for another one…")
+        } else {
+            I18n.t("%s isn't responding — looking for another server…").replace("%s", name)
+        }
+        loadingStatusBase = line
+        loadingStatus?.text = line
+        loadingSpinnerStatus?.text = line
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) {
+            showLoadingCover()
+        }
+        Toast.makeText(this, line, Toast.LENGTH_LONG).show()
+        // Ask the detail screen for a fresh extraction straight away as well: the
+        // providers hand out different (live) links on a second ask, so this is a
+        // second source of replacements besides the search that is still running.
+        liveSessionId?.let { StreamsLive.requestRefresh(it) }
+        lifecycleScope.launch {
+            val deadline = System.currentTimeMillis() + stalledReplacementWaitMs
+            while (System.currentTimeMillis() < deadline) {
+                delay(400)
+                if (!awaitingReplacement) return@launch
+                val idx = replacementIndexOf(stalled)
+                if (idx >= 0) {
+                    playReplacement(idx)
+                    return@launch
+                }
+                if (liveSearchDone && sources.size == awaitingReplacementAtSize) break
+            }
+            if (!awaitingReplacement) return@launch
+            awaitingReplacement = false
+            hideLoadingBanner(immediate = true)
+            showError(I18n.t("Server is not responding (still buffering after 20s)."), false)
+        }
+    }
+
+    /** The first server that can be tried in place of the stalled one: not the
+     *  stalled server itself, not already tried, and not on a host this session
+     *  has already seen fail. -1 when there is nothing new to try. */
+    private fun replacementIndexOf(stalled: PlayerSource?): Int {
+        val stalledUrl = stalled?.url.orEmpty()
+        for (i in sources.indices) {
+            val s = sources[i]
+            if (i == currentIndex && sources.size > 1) continue
+            if (s.url.isBlank()) continue
+            if (s.url == stalledUrl) continue
+            if (s.url in triedUrls) continue
+            if (!s.isTorrent && mirrorHostOf(s.url) in deadHosts) continue
+            return i
+        }
+        return -1
+    }
+
+    /** Starts the replacement the search has just delivered, ending the wait for
+     *  a stalled server. Called by the live server collector. Returns true when
+     *  it took over (so the caller stops there). */
+    private fun playReplacementIfWaiting(): Boolean {
+        if (!awaitingReplacement) return false
+        val idx = replacementIndexOf(sources.getOrNull(currentIndex))
+        if (idx < 0) return false
+        playReplacement(idx)
+        return true
+    }
+
+    private fun playReplacement(idx: Int) {
+        awaitingReplacement = false
+        noSubsRetry = false
+        val name = sources.getOrNull(idx)?.name?.substringBefore("|")?.trim().orEmpty()
+        Toast.makeText(
+            this,
+            if (name.isBlank()) I18n.t("Trying another server")
+            else I18n.t("Trying another server — %s").replace("%s", name),
+            Toast.LENGTH_SHORT,
+        ).show()
+        playSource(idx)
     }
 
     /** The silent half of a failover: hand [nextIndex] to the player. */
@@ -6956,6 +7124,7 @@ class PlayerActivity : ComponentActivity() {
     private fun showLoadingBanner() {
         val banner = loadingBanner ?: return
         val box = loadingTitleBox ?: return
+        val style = com.hikari.app.ui.LoadingStyles.normalize(loadingStyle)
         loadingTitle?.text = intent.getStringExtra("title").orEmpty().ifBlank { "Loading" }.uppercase()
 
         // Episode line, mirroring the player's own two-line title block.
@@ -6973,14 +7142,85 @@ class PlayerActivity : ComponentActivity() {
 
         // Backdrop (or the poster as a fallback) — already tokenized by the
         // detail screen, so this never carries a multi-MB base64 string.
-        val model = PosterLoader.model(
+        val bannerModel = PosterLoader.model(
             intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() }
                 ?: intent.getStringExtra("histPoster")
         )
+        // The title's own POSTER, for the styles that show it as art in its own
+        // right (POSTER), falling back to the backdrop so a title whose addon
+        // gave no poster still shows something.
+        val posterModel = PosterLoader.model(
+            intent.getStringExtra("histPoster")?.takeIf { it.isNotBlank() }
+                ?: intent.getStringExtra("bannerBackdrop")
+        )
+
+        // Each loading style dresses the very same XML cover differently. The
+        // choice is made once, in Settings, and the detail screen's full-screen
+        // card uses the identical rules — so the hand-off from the detail page
+        // into the player never changes the design while the user is watching
+        // it (which would read as a flash/glitch).
+        var backdropAlpha = 1f
+        var backdropVisible = true
+        var breath = true
+        when (style) {
+            com.hikari.app.ui.LoadingStyles.MINIMAL -> {
+                // Flat and quiet: no artwork at all, a small title, the spinner.
+                backdropVisible = false
+                breath = false
+                loadingGlow?.visibility = View.GONE
+                loadingCardPoster?.apply {
+                    setImageDrawable(null)
+                    visibility = View.GONE
+                }
+                loadingTitle?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            }
+            com.hikari.app.ui.LoadingStyles.SPOTLIGHT -> {
+                // No artwork either — an accent bloom behind the title instead.
+                backdropVisible = false
+                loadingGlow?.visibility = View.VISIBLE
+                loadingCardPoster?.apply {
+                    setImageDrawable(null)
+                    visibility = View.GONE
+                }
+                loadingTitle?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+            }
+            com.hikari.app.ui.LoadingStyles.POSTER -> {
+                // The poster itself, on a glass card, over a dimmed blown-up
+                // copy of the same art so the card floats on its own poster.
+                loadingGlow?.visibility = View.GONE
+                backdropAlpha = 0.22f
+                if (posterModel != null) {
+                    loadingCardPoster?.apply {
+                        visibility = View.VISIBLE
+                        load(posterModel)
+                    }
+                } else {
+                    loadingCardPoster?.visibility = View.GONE
+                }
+                loadingTitle?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            }
+            else -> {
+                // CINEMATIC: the way it has always looked.
+                loadingGlow?.visibility = View.GONE
+                loadingCardPoster?.apply {
+                    setImageDrawable(null)
+                    visibility = View.GONE
+                }
+                loadingTitle?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32f)
+            }
+        }
+
         loadingBackdrop?.let { iv ->
-            if (model != null) {
+            if (backdropVisible && bannerModel != null) {
+                iv.alpha = backdropAlpha
                 iv.visibility = View.VISIBLE
-                iv.load(model)
+                iv.load(bannerModel)
+            } else if (backdropVisible && posterModel != null) {
+                // No wide art for this title: its poster is the only picture
+                // there is, so it fills the frame instead of nothing.
+                iv.alpha = backdropAlpha
+                iv.visibility = View.VISIBLE
+                iv.load(posterModel)
             } else {
                 iv.setImageDrawable(null)
                 iv.visibility = View.GONE
@@ -6989,7 +7229,8 @@ class PlayerActivity : ComponentActivity() {
 
         stopBannerAnimators()
         // The name breathes in and out, exactly like Nuvio/Stremio's title card.
-        val titleScale = ObjectAnimator.ofPropertyValuesHolder(
+        // MINIMAL (the quietest style) deliberately does not move at all.
+        val titleScale = if (breath) ObjectAnimator.ofPropertyValuesHolder(
             box,
             PropertyValuesHolder.ofFloat(View.SCALE_X, 0.94f, 1.06f, 0.94f),
             PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.94f, 1.06f, 0.94f)
@@ -6997,10 +7238,15 @@ class PlayerActivity : ComponentActivity() {
             duration = 2600L
             interpolator = android.view.animation.AccelerateDecelerateInterpolator()
             repeatCount = android.animation.ValueAnimator.INFINITE
+        } else {
+            box.scaleX = 1f
+            box.scaleY = 1f
+            null
         }
         // Slow Ken-Burns drift on the artwork (zooming in only, so a
-        // centre-cropped image never reveals its edges).
-        val backdropScale = loadingBackdrop?.let { iv ->
+        // centre-cropped image never reveals its edges). Only when a backdrop
+        // is actually being drawn.
+        val backdropScale = if (backdropVisible) loadingBackdrop?.let { iv ->
             ObjectAnimator.ofPropertyValuesHolder(
                 iv,
                 PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.12f, 1f),
@@ -7010,8 +7256,25 @@ class PlayerActivity : ComponentActivity() {
                 interpolator = android.view.animation.LinearInterpolator()
                 repeatCount = android.animation.ValueAnimator.INFINITE
             }
+        } else {
+            loadingBackdrop?.scaleX = 1f
+            loadingBackdrop?.scaleY = 1f
+            null
         }
-        bannerAnimators = listOfNotNull(titleScale, backdropScale)
+        // SPOTLIGHT's bloom swells with the title's own breathing, so the light
+        // and the name read as one object.
+        val glowPulse = loadingGlow?.takeIf { it.visibility == View.VISIBLE }?.let { g ->
+            ObjectAnimator.ofPropertyValuesHolder(
+                g,
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 0.92f, 1.06f, 0.92f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.92f, 1.06f, 0.92f)
+            ).apply {
+                duration = 3600L
+                interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                repeatCount = android.animation.ValueAnimator.INFINITE
+            }
+        }
+        bannerAnimators = listOfNotNull(titleScale, backdropScale, glowPulse)
         bannerAnimators.forEach { runCatching { it.start() } }
         banner.animate().cancel()
         banner.alpha = 1f
@@ -7198,12 +7461,26 @@ class PlayerActivity : ComponentActivity() {
                     return@launch
                 }
             }
-            // Nothing new arrived — report the failure we were already holding.
-            showError(
-                originalError
-                    ?: I18n.t("Servers expired and no fresh sources were found.\nTry again in a moment."),
-                false
-            )
+            // Nothing new arrived — but the detail screen's own search may still
+            // be running: the cross pass and its background sweep keep finding
+            // servers for MINUTES after the first one lands (see
+            // ContentRepository's sweep), and every one of them is streamed into
+            // this player. Declaring failure here is what stopped the user on a
+            // server that was merely early ("it says the server is not
+            // responding and gives up while other servers were still being
+            // searched"). So when the search is not finished, wait for it with
+            // [awaitReplacementForStalledServer] — which starts the first
+            // replacement automatically and only reports failure once the
+            // search has genuinely ended.
+            if (liveSessionId != null && !liveSearchDone) {
+                awaitReplacementForStalledServer(sources.getOrNull(currentIndex))
+            } else {
+                showError(
+                    originalError
+                        ?: I18n.t("Servers expired and no fresh sources were found.\nTry again in a moment."),
+                    false
+                )
+            }
         }
         return true
     }

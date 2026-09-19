@@ -329,6 +329,22 @@ class ContentRepository(private val manager: ProviderManager) {
          *  server that vanishes from the list makes the app look broken. */
         const val REMEMBERED_STREAMS_TTL_MS = 60 * 60 * 1000L
 
+        /**
+         * A whole pass that found fewer than this many servers, while repos were
+         * answered out of the session's "no such title" record, is treated as
+         * UNFINISHED rather than as an answer: those repos are asked for real in
+         * the background and their servers stream into the same list (see the
+         * end of [streamsForInner]).
+         *
+         * Six, not one: the report this comes from is "it said 2 servers and the
+         * search finished, then on the fourth tap it found 36" — a list that
+         * small across 250+ repos is a memory answer, not a catalogue. A title
+         * that genuinely has four servers still grows to at most the same set,
+         * so the cost of the extra background pass is one sweep of the handful
+         * of repos that answered from memory.
+         */
+        const val CROSS_THIN_RESULT = 6
+
         fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
             item.uniqueId + "|" + (episode?.id ?: "")
 
@@ -1959,37 +1975,48 @@ class ContentRepository(private val manager: ProviderManager) {
                     val cutoff = System.currentTimeMillis() - REMEMBERED_STREAMS_TTL_MS
                     streamsRemembered.entries.removeAll { it.value.at < cutoff }
                 }
-            } else {
-                // NOTHING AT ALL — not from this pass, not from the recent record.
-                //
-                // Before the app tells the user there is no server for this
-                // title, the repos it did NOT really ask are asked for real.
-                // Those are the ones this pass answered out of [crossEmpty],
-                // the session's own "no such title" record — by far the least
-                // trustworthy answer in the whole search, because ONE blank page
-                // (a site hiccup, a bot wall that said nothing about itself) is
-                // enough to create it, and it then hides that repo from every
-                // lookup for minutes. That is the "sometimes it finds nothing at
-                // all, and the next try finds plenty" report: the difference
-                // between the two attempts was which repos were written off from
-                // memory rather than asked.
-                val fromCache = cachedEmptyTargets(crossTargets, item.searchTitle)
-                if (fromCache.isNotEmpty()) {
-                    com.hikari.app.data.Logs.log(
-                        "Search",
-                        "\"${item.title}\" came back empty with ${fromCache.size} repo(s) " +
-                            "answered from the session's \"no such title\" record — " +
-                            "re-asking them for real in the background",
-                    )
-                    startSweepIfNeeded(
-                        item,
-                        episode,
-                        fromCache,
-                        emptyList(),
-                        onProgress,
-                        ignoreEmptyRecord = true,
-                    )
-                }
+            }
+            // The repos this pass answered OUT OF MEMORY are asked for real
+            // whenever it did not bring back a real list — nothing at all, OR
+            // just a couple of servers.
+            //
+            // Those are the repos answered out of [crossEmpty], the session's
+            // own "no such title" record — by far the least trustworthy answer
+            // in the whole search, because ONE blank page (a site hiccup, a bot
+            // wall that said nothing about itself) is enough to create it, and
+            // it then hides that repo from every lookup for minutes. That is the
+            // "sometimes it finds nothing at all, and the next try finds plenty"
+            // report: the difference between the two attempts was which repos
+            // were written off from memory rather than asked.
+            //
+            // Empty was the first half of that report and is handled above; the
+            // OTHER half is the one the user kept hitting — "it says 2 servers
+            // and the search is finished, then on the fourth tap it finds 36".
+            // A pass that answers from memory is fast and SMALL: the memory
+            // answers land instantly, so the pass's own budget never gets spent
+            // and it "finishes" in seconds with whatever the two or three repos
+            // that were really asked happened to return. Anything below
+            // [CROSS_THIN_RESULT] that leaned on that record is therefore
+            // finished in the background too, and every server the sweep finds
+            // streams into the same list the player is already showing.
+            val fromCache = cachedEmptyTargets(crossTargets, item.searchTitle)
+            if (fromCache.isNotEmpty() &&
+                (finalResult.isEmpty() || finalResult.size < CROSS_THIN_RESULT)
+            ) {
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "\"${item.title}\" came back with ${finalResult.size} server(s) and " +
+                        "${fromCache.size} repo(s) answered from the session's \"no such " +
+                        "title\" record — re-asking them for real in the background",
+                )
+                startSweepIfNeeded(
+                    item,
+                    episode,
+                    fromCache,
+                    finalResult,
+                    onProgress,
+                    ignoreEmptyRecord = true,
+                )
             }
             com.hikari.app.data.Logs.log(
                 "Search",
