@@ -186,6 +186,11 @@ object NuvioCatalogImport {
             backdropUrl = backdrop,
             rawType = if (type == MediaType.SERIES) "tv" else if (type == MediaType.MOVIE) "movie" else "",
             rating = ratingOf(o),
+            // An export often carries both a localized `name` and the
+            // `original_name` the sites index — keep the latter for lookups.
+            originalTitle = firstString(o, "original_name", "original_title")
+                .takeIf { it.isNotBlank() && it != title }
+                .orEmpty(),
         )
     }
 
@@ -312,6 +317,9 @@ object NuvioCatalogImport {
                     .put("o", m.overview ?: "")
                     .put("g", JSONArray(m.genres))
                     .put("r", m.rating ?: 0.0)
+                    // The name the extensions index the title under, when the
+                    // app's TMDB language renamed it (see MediaItem.originalTitle).
+                    .put("x", m.originalTitle)
             )
         }
         return arr.toString()
@@ -344,6 +352,7 @@ object NuvioCatalogImport {
                 backdropUrl = o.optString("b").takeIf { it.isNotBlank() },
                 rawType = rawType,
                 rating = rating,
+                originalTitle = o.optString("x").takeIf { it.isNotBlank() }.orEmpty(),
             )
         }
         return out.distinctBy { it.uniqueId }

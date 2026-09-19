@@ -103,7 +103,10 @@ object TmdbResolver {
         return when {
             id.isNotEmpty() && id.all { it.isDigit() } -> "id|$id|${typeHint(item)}"
             id.lowercase().startsWith("tt") -> "imdb|$id|${typeHint(item)}"
-            else -> "search|${item.title.trim().lowercase()}|${item.year ?: 0}|${typeHint(item)}"
+            // The ORIGINAL name is the one TMDB indexes; a display name
+            // localized by the app's TMDB language would search for the wrong
+            // thing (see [MediaItem.originalTitle]).
+            else -> "search|${item.searchTitle.lowercase()}|${item.year ?: 0}|${typeHint(item)}"
         }
     }
 
@@ -169,7 +172,9 @@ object TmdbResolver {
      * a different show.
      */
     private suspend fun searchByTitle(item: MediaItem): Resolved? {
-        val title = item.title.trim()
+        // The original name first: a title the app renamed for display (TMDB
+        // language) still has to be looked up by the name TMDB indexes it under.
+        val title = item.searchTitle
         if (title.isBlank()) return null
         val variants = TmdbMeta.queryVariants(title)
         if (variants.isEmpty()) return null

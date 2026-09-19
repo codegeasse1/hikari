@@ -654,6 +654,7 @@ private fun FolderEditorPage(
     var tmdbSheet by remember { mutableStateOf(false) }
     var providerSheet by remember { mutableStateOf(false) }
     var importSheet by remember { mutableStateOf(false) }
+    var titleSheet by remember { mutableStateOf(false) }
     var pickProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var catalogs by remember { mutableStateOf<List<CatalogRef>?>(null) }
     val app = LocalContext.current.applicationContext as HikariApp
@@ -696,6 +697,18 @@ private fun FolderEditorPage(
             title = tr("Folder"),
             subtitle = tr("What this folder shows."),
             onBack = onBack,
+            // The folder's search, up in the header where Home keeps its own:
+            // finding ONE film or show should not mean describing a whole
+            // catalog first (see TitleSearchSheet).
+            actions = {
+                IconButton(onClick = { titleSheet = true }) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = tr("Search movies and series"),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            },
         )
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -921,6 +934,14 @@ private fun FolderEditorPage(
                 tmdbSheet = false
             },
             onDismiss = { tmdbSheet = false },
+        )
+    }
+
+    if (titleSheet) {
+        TitleSearchSheet(
+            addedKeys = sources.mapTo(HashSet<String>()) { it.key },
+            onAdd = { source -> sources = sources.toggleSource(source) },
+            onDismiss = { titleSheet = false },
         )
     }
 
@@ -1610,6 +1631,202 @@ private fun TmdbSourceSheet(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * "Find a title and add it" — the search the folder editor's header carries.
+ *
+ * Building a personal catalog used to mean describing a CATALOG (a studio, a
+ * network, a list, a director) and only then hunting for the one film you
+ * actually wanted inside it: there was a search, but it lived three taps deep
+ * inside the TMDB source form, under a type chip. This is the same idea the Home
+ * tab's header already offers — a search button, up front — except that what it
+ * finds is a single title, and picking one adds exactly that title to the folder
+ * as a one-title source (see [TmdbSourceType.TITLE]).
+ *
+ * Several can be added in a row: the sheet stays open, a title already in the
+ * folder is ticked, and tapping it again takes it back out — the same rules the
+ * preset list follows.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TitleSearchSheet(
+    addedKeys: Set<String>,
+    onAdd: (CatalogSource) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var hits by remember { mutableStateOf<List<TmdbHit>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var searched by remember { mutableStateOf(false) }
+    var lastAsked by remember { mutableStateOf("") }
+
+    /** The one-title source a search hit becomes. [TmdbSpec.identity] ignores the
+     *  display title, so the key is stable and a title cannot be added twice. */
+    fun sourceFor(hit: TmdbHit): CatalogSource = CatalogSource(
+        kind = CatalogSourceKind.TMDB,
+        title = hit.name,
+        type = if (hit.media == "tv") MediaType.SERIES else MediaType.MOVIE,
+        tmdbSpec = TmdbSpec(
+            type = TmdbSourceType.TITLE,
+            id = hit.id,
+            media = hit.media.ifBlank { "movie" },
+        ).encode(),
+    )
+
+    // Typing searches: a title search is cheap (one TMDB request) and the whole
+    // point of the sheet is that the answer appears as you narrow the name. The
+    // delay keeps a burst of keystrokes to one request.
+    LaunchedEffect(query) {
+        val q = query.trim()
+        if (q.length < 2) {
+            hits = emptyList()
+            searched = false
+            lastAsked = ""
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(350)
+        searching = true
+        val found = withContext(Dispatchers.IO) {
+            runCatching { TmdbSources.search(TmdbSourceType.TITLE, q) }.getOrDefault(emptyList())
+        }
+        hits = found
+        lastAsked = q
+        searched = true
+        searching = false
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        ) {
+            Text(
+                tr("Add a movie or series"),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                tr("Search for a title and add just that one to this folder."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            OutlinedTextField(
+                shape = GlassShape,
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                label = { Text(tr("Film or show name")) },
+                placeholder = { Text(tr("Avengers: Endgame")) },
+                trailingIcon = {
+                    if (searching) {
+                        CircularProgressIndicator(Modifier.size(18.dp))
+                    } else {
+                        Icon(Icons.Filled.Search, contentDescription = tr("Search"))
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+            )
+            LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp),
+                contentPadding = PaddingValues(top = 10.dp, bottom = 28.dp),
+            ) {
+                if (hits.isEmpty()) {
+                    item {
+                        Text(
+                            when {
+                                searching -> tr("Searching TMDB…")
+                                searched && lastAsked.isNotBlank() ->
+                                    I18n.t("Nothing on TMDB matched \"$lastAsked\".")
+                                else -> tr("Type at least two letters to search.")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    }
+                }
+                items(hits, key = { it.id + "|" + it.media }) { hit ->
+                    val source = sourceFor(hit)
+                    val isAdded = addedKeys.contains(source.key)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onAdd(source) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .width(44.dp)
+                                .height(66.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (hit.posterUrl.isNotBlank()) {
+                                AsyncImage(
+                                    model = PosterLoader.model(hit.posterUrl),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                Icon(
+                                    if (hit.media == "tv") Icons.Filled.Tv else Icons.Filled.Movie,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .padding(start = 12.dp),
+                        ) {
+                            Text(
+                                hit.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                listOfNotNull(
+                                    hit.subtitle.takeIf { it.isNotBlank() },
+                                    if (isAdded) tr("In this folder") else null,
+                                ).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isAdded) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        Icon(
+                            if (isAdded) Icons.Filled.CheckCircle else Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = if (isAdded) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+                item { SheetDoneRow(onDismiss) }
             }
         }
     }
@@ -2677,7 +2894,15 @@ private fun MediaItem.tokenized(): MediaItem {
 
 /** A plain page header with a back button — the folder pages' own title bar. */
 @Composable
-private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
+private fun PageHeader(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    /** Optional trailing buttons (the folder editor's Search, the way Home's
+     *  header carries its own). Laid out after the titles, so the titles shrink
+     *  around them instead of being pushed off the row. */
+    actions: (@Composable () -> Unit)? = null,
+) {
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -2712,6 +2937,7 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
                     )
                 }
             }
+            actions?.invoke()
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
     }

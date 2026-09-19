@@ -111,8 +111,41 @@ data class MediaItem(
      *  poster's optional rating badge shows. Null for extension items, whose
      *  catalogs never carry a score. */
     val rating: Double? = null,
+    /**
+     * The title a PROVIDER knows this item by, when it differs from [title].
+     *
+     * [title] is what the USER reads, and with a TMDB content language set it is
+     * TMDB's localized name ("Vengadores: Endgame"). Every installed extension
+     * still indexes the ORIGINAL name ("Avengers: Endgame"), so searching them
+     * with the localized one found nothing — the reported "I changed the TMDB
+     * language and now there is no extension for this movie", and a large part
+     * of the "no playable sources" reports: the whole cross-extension pass was
+     * asking 250 repos a name none of them has.
+     *
+     * TMDB hands us `original_title` / `original_name` in the very same response
+     * it localizes the title from, so this is filled in for every TMDB-sourced
+     * item (rows, shelves, presets, a one-title source, and a page opened from
+     * one). Blank for an extension item, whose own [title] already IS the name
+     * its sites use.
+     */
+    val originalTitle: String = "",
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
+
+    /**
+     * The name to ASK PROVIDERS with: the original/English title when the item
+     * carries one, else the display title. Nothing user-facing should print
+     * this — it exists so a title localised for display never becomes the search
+     * key (see [originalTitle]).
+     */
+    val searchTitle: String get() = originalTitle.trim().ifBlank { title.trim() }
+
+    /** Every name this item is known by, display name first and the original
+     *  name last. Lookups that can afford to try more than one name walk this. */
+    val allTitles: List<String>
+        get() = listOf(title.trim(), originalTitle.trim())
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
 }
 
 data class Episode(
@@ -170,6 +203,21 @@ data class TitleExtras(
      *  voice actors as each one's second line) rather than TMDB's voice-actor
      *  credits — the row is then titled "Characters" instead of "Cast". */
     val castIsCharacters: Boolean = false,
+    /**
+     * TMDB's own LOCALIZED name for this title (the `title`/`name` field of the
+     * detail response, answered in the app's chosen TMDB language).
+     *
+     * The player's "artwork while loading" card prints the title it was handed by
+     * the screen that opened it, which for an item that came from an EXTENSION is
+     * the site's own (English) name — so with a non-English TMDB language set,
+     * the page was translated but the loading card was not. This is that same
+     * name in the chosen language, and the play intents pass it along.
+     */
+    val localizedTitle: String? = null,
+    /** TMDB's `original_title`/`original_name` — the name EXTENSIONS index the
+     *  title under, which is what a provider lookup has to search for (see
+     *  [MediaItem.originalTitle]). */
+    val originalTitle: String? = null,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */

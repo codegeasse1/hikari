@@ -186,7 +186,7 @@ class PlayerActivity : ComponentActivity() {
      *  → Player UI). Read once here from [PlayerSkins.current] — the mirror that
      *  HikariApp keeps up to date from AppStore — so the controller can be
      *  styled while it is being built, before any coroutine could have run. */
-    private var skin: String = PlayerSkins.DEFAULT
+    private var skin: String = PlayerSkins.FALLBACK
 
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
@@ -3008,7 +3008,13 @@ class PlayerActivity : ComponentActivity() {
                     text = line
                     dpText(10f)
                     includeFontPadding = false
-                    maxLines = 2
+                    // Three lines, not two: the cross-extension status line
+                    // ("Asked 254 other repos (Aniyomi 13, CloudStream 57,
+                    // Hikari 181, SkyStream 3) — done, 5 with servers") is
+                    // exactly three lines on a phone, and at two it was sliced
+                    // mid-fact ("… done, 17 with s…"). The hint is the only place
+                    // the search explains itself, so it gets the room.
+                    maxLines = 3
                     ellipsize = TextUtils.TruncateAt.END
                     setTextColor(0xFF9AA5B5.toInt())
                 }
@@ -3112,9 +3118,19 @@ class PlayerActivity : ComponentActivity() {
         // slab/deck/card is mostly a container for rows — and a wider one fits
         // the longer option labels without clipping them.
         val panelW = minOf(
-            (win.x * if (flatPanel) 0.92f else 0.86f).toInt(),
-            (win.y * 0.82f).toInt(),
-            (460 * density).toInt(),
+            // Wider than it used to be, for both the pane and the flat slabs:
+            // the rows, the engine chips ("All / CloudStream / Hikari / Nuvio /
+            // SkyStream") and the longer server names are all laid out inside
+            // this width, and at 0.86 the glass pane was clipping the leading
+            // edge of its own rows and pushing the last chip off the strip.
+            (win.x * if (flatPanel) 0.95f else 0.93f).toInt(),
+            // The height axis is only a "do not become a wall" guard, and in the
+            // LANDSCAPE player it is the binding one (the window is three times
+            // wider than it is tall), which is what kept the engine chips — five
+            // of them — wider than the panel on a phone. Raised so the chips and
+            // the longer server names fit on one line.
+            (win.y * if (flatPanel) 0.94f else 0.90f).toInt(),
+            (520 * density).toInt(),
         ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         // The panel must FLOAT on the video with all four rounded corners (and
@@ -3124,7 +3140,10 @@ class PlayerActivity : ComponentActivity() {
         // its bottom curve and hide the last rows. Anything longer scrolls.
         val chrome = (96 * density).toInt()
         val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
-        val maxFraction = (win.y * if (flatPanel) 0.70f else 0.58f).toInt()
+        // Taller too: a server list scrolled four rows at a time is the other
+        // half of "there isn't room" — the panel's own rounded bottom stays on
+        // screen, and anything longer still scrolls.
+        val maxFraction = (win.y * if (flatPanel) 0.76f else 0.66f).toInt()
         val minPanel = (110 * density).toInt()
         val panelH = (preferredHeightDp * density).toInt()
             .coerceAtMost(fitsScreen)

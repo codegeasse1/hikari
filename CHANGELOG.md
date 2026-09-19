@@ -1,8 +1,32 @@
+## 0.6.2
+
+Test build — the search asks the right name, the panels take the shape of the skin you chose, and a personal catalog gets a search of its own.
+
+**The localised title was breaking the search, everywhere.** Change the TMDB language and the app translates the names it shows — correctly. But that translated name was then used as the *search key*: the whole cross-extension pass (CloudStream, Hikari, Nuvio, SkyStream, Aniyomi — two hundred and fifty repos) asked every one of them for a title no site, no catalogue and no extension has ever heard of. What that looked like from the outside was "I switched the language to Spanish, the film is renamed, and now it says there is no extension for this movie", plus a large share of the "no playable sources" reports where the same title had played fine before.
+
+- A TMDB item now carries both names: the **display** title (what you read, in your language) and the **original** one (what the extensions index). Every provider lookup — the cross pass, the match-confidence check, the episode-list fallback, the yt-dlp last resort, the provider remap on a detail page, the shelf cell that searches the extension it was opened from — searches the original, and falls back to the display name when there is no original.
+- The name pair is resolved once, from TMDB, whatever route the title came in by: a preset row, a collection row, a hand-built one-title source, an imported list, the Search tab, the Library, or a detail page opened straight from a click. A detail page whose origin extension is gone now tries **both** names before it gives up, so it stops dead-ending on a title every other language finds.
+- The page keeps showing your language: the origin extension's own `/meta` answers with its own (English) title, which used to flip the page back out of the language you chose the moment it loaded — the row's name is kept, and the original name rides along on the item for the lookups.
+- One-title sources added through the collection editor carry it too, and a collection search matches either name, so "Avengers: Endgame" finds "Vengadores: Endgame".
+
+**A "Default" player UI.** The picker offered Glass, Minimal, Cinema and Neon — all of them a look of Hikari's. There is now a **Default**: plain scrim bars, ordinary rounded buttons, a solid play button, no glass and no glow. It sits first in the list, and the stored fallback for an install that has never chosen stays Glass, so nobody's player is restyled behind their back.
+
+**Each skin now shapes the dialogs its own way.** The Source / Quality / Audio / Subtitles / Speed sheets were already skin-aware, but three of the four skins were the same rounded slab with a different corner radius. They are now distinct shapes: **Default** an ordinary opaque card with a plain hairline; **Minimal** a flat slab with no edge line at all; **Cinema** a squarer deck with a harder edge; **Neon** a fully-rounded card edged in the accent; **Glass** unchanged.
+
+**The panels fit their contents.** The hint line above the panel is three lines instead of two — the cross-extension status ("Asked 254 other repos (Aniyomi 13, CloudStream 57, Hikari 181, SkyStream 3) — done, 5 with servers") is exactly three lines on a phone and was being cut mid-fact. The panel itself is wider (0.95 of the window for a flat skin, 0.93 for the glass pane, and no longer capped against the window's height on the short axis, which is what kept the five engine chips wider than the panel in landscape) and taller, so the engine chips and the longer server names fit on one line.
+
+**A personal catalog can be searched.** The folder editor's header now carries a search button — the same idea Home's header has — opening a search over TMDB's movies and series: type a name, see the posters, tap to add that one title to the folder (tap again to take it out), several in a row. Nothing else about the folder changes; each pick is an ordinary one-title source.
+
+**And your own catalogs show up in Search.** The Search tab's "From your collections" row matched imported lists and hand-built TMDB sources, but skipped the third kind of source a folder can hold — an **extension catalog** you filed into your own catalog — which is the usual way a personal catalog is built, and therefore the reason the row never appeared. Those are now probed through the very code path the folder's own rows use, under the same eight-source network budget and the same gate, so a title living in a personal catalog is findable in Search like anything else.
+
+**The search stops writing off repos it never really asked.** When a lookup comes back with nothing at all, the extensions it answered out of the session's own "no such title" record — the least trustworthy answer in the search, since one blank page creates one — are asked for real in the background instead of the app declaring there is nothing to play. The record's lifetime is also cut from five minutes to three, so a wrong one heals while you are still watching.
+
 ## 0.6.1
 
 Test build — the search stops getting stuck, the player's panels learn the player's skin, and a catalog can hold one title. Plus: no extension gets to sell you anything.
 
 **A search can no longer wedge itself.** The report was specific and infuriating: the same episode sometimes came back with a dozen servers, sometimes with two, sometimes only Nuvio's; sometimes the sweep froze at "87 of 159" and never loaded another source. The cause was one bad extension. A third-party plugin that blocks inside its own `synchronized` code can never be cancelled — nothing inside the call ever runs again — and until now such a call held its search slot for the rest of the session: a handful of them shrank the gates until the sweep had no room left to ask anyone, which is exactly "it found everything the first time and almost nothing the second". Now:
+
 
 - Every gated cross-extension call is registered as in-flight with the provider it belongs to, and a watchdog (every 15s) refunds the slot of any call older than 200 seconds and marks that provider as hung — for the rest of the session it is skipped before its slot is ever taken. A wedged extension can no longer spend the budget of the ones that work.
 - The sweep no longer silently drops repos it ran out of budget for: the leftovers are collected and asked in a **second round**, up to six rounds, skipping anything hung. The episodes that used to reach "146 other repos asked" and stop now finish the list.

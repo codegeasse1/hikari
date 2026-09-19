@@ -124,7 +124,16 @@ object TmdbPresets {
             backdropUrl = backdrop,
             rawType = "tmdb",
             rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+            // The original (untranslated) name, so a preset row renamed by the
+            // app's TMDB language is still searched for in the extensions under
+            // the name their sites use (see MediaItem.originalTitle).
+            originalTitle = originalOf(o),
         )
+    }
+
+    private fun originalOf(o: JSONObject): String {
+        val t = o.optString("original_title").ifBlank { o.optString("original_name") }.trim()
+        return if (t.isBlank() || t == "null") "" else t
     }
 
     private fun path(o: JSONObject, key: String): String? =

@@ -314,7 +314,29 @@ class CollectionsRepository(private val manager: ProviderManager) {
                                 }
                             }
 
-                            CatalogSourceKind.PROVIDER -> emptyList()
+                            // An extension catalog the user filed in their own
+                            // catalog: its first page is fetched through the very
+                            // same [sourceRow] the folder's rows use, so a title
+                            // that lives in a personal catalog is findable in
+                            // Search like everything else — it used to be the ONE
+                            // kind skipped here ("my personal catalog doesn't
+                            // show up in search at all"). Bounded by the same
+                            // remote probe budget as a TMDB source.
+                            CatalogSourceKind.PROVIDER -> {
+                                if (remoteProbes >= maxRemoteProbes) {
+                                    emptyList()
+                                } else {
+                                    remoteProbes++
+                                    runCatching {
+                                        gate.withPermit {
+                                            withTimeoutOrNull(searchTimeoutMs) {
+                                                sourceRow(collection, folder, source)?.items
+                                                    ?: emptyList()
+                                            }.orEmpty()
+                                        }
+                                    }.getOrDefault(emptyList())
+                                }
+                            }
                         }
                         val label = listOf(collection.name, folder.name)
                             .filter { it.isNotBlank() }
@@ -322,7 +344,13 @@ class CollectionsRepository(private val manager: ProviderManager) {
                             .joinToString(" · ")
                         for (item in items) {
                             if (out.size >= limit) break
-                            if (!item.title.lowercase().contains(needle)) continue
+                            // Both names count: the display title (what the user
+                            // reads, in the app's TMDB language) and the original
+                            // one (what the sites and the user's own memories of
+                            // the film call it) — otherwise a Spanish-language
+                            // install cannot find "Avengers: Endgame" at all.
+                            val names = item.allTitles.map { it.lowercase() }
+                            if (names.none { it.contains(needle) }) continue
                             if (!seen.add(item.uniqueId + "|" + collection.id)) continue
                             out += CollectionHit(item, label.ifBlank { collection.name })
                         }

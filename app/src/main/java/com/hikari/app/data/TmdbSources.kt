@@ -101,6 +101,10 @@ data class TmdbHit(
     /** "movie" or "tv" — only a TITLE search fills this in, where one query
      *  matches both shapes and each result has to say which one it is. */
     val media: String = "",
+    /** The hit's TMDB poster, when the endpoint that produced it carried one.
+     *  The title search shows its results as artwork, the way a search should
+     *  look; the entity searches (a studio, a person) leave it blank. */
+    val posterUrl: String = "",
 )
 
 /**
@@ -321,7 +325,15 @@ object TmdbSources {
                     val d = TmdbResolver.apiGet("/$m/$id", emptyMap()) ?: continue
                     val n = d.optString("title").ifBlank { d.optString("name") }
                     if (n.isBlank() || n == "null") continue
-                    hits.add(TmdbHit(id, n, if (m == "tv") "Series · ID $id" else "Movie · ID $id", m))
+                    hits.add(
+                        TmdbHit(
+                            id,
+                            n,
+                            if (m == "tv") "Series · ID $id" else "Movie · ID $id",
+                            m,
+                            posterUrl = path(d, "poster_path")?.let { IMG + it }.orEmpty(),
+                        )
+                    )
                 }
                 if (hits.isEmpty()) hits.add(TmdbHit(id, q, "ID $id"))
                 return hits
@@ -368,6 +380,7 @@ object TmdbSources {
                     name,
                     sub.takeIf { it.isNotBlank() && it != "null" }.orEmpty(),
                     media = if (type == TmdbSourceType.TITLE) mediaType else "",
+                    posterUrl = path(o, "poster_path")?.let { IMG + it }.orEmpty(),
                 )
             )
         }
@@ -519,7 +532,17 @@ object TmdbSources {
             backdropUrl = backdrop,
             rawType = "tmdb",
             rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+            // The name the extensions index this title under, when the app's
+            // TMDB language has renamed it (see MediaItem.originalTitle).
+            originalTitle = originalOf(o),
         )
+    }
+
+    /** TMDB's own `original_title` / `original_name` — present in every
+     *  response whatever language the title came back in. */
+    private fun originalOf(o: JSONObject): String {
+        val t = o.optString("original_title").ifBlank { o.optString("original_name") }.trim()
+        return if (t.isBlank() || t == "null") "" else t
     }
 
     private fun path(o: JSONObject, key: String): String? =

@@ -176,26 +176,42 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     fun applySkin(key: String) {
         val density = resources.displayMetrics.density
         when (PlayerSkins.normalize(key)) {
-            PlayerSkins.MINIMAL -> {
+            // Default: an ordinary card — a solid, opaque slab with a plain
+            // hairline and a middling corner. The plainest silhouette of the
+            // five, matching the stock control bar underneath it.
+            PlayerSkins.DEFAULT -> {
                 flat = true
-                flatCornerPx = 12f * density
-                flatFill = 0xE8090B12.toInt()
-                flatBorder = 0x1FFFFFFF
+                flatCornerPx = 18f * density
+                flatFill = 0xF2111216.toInt()
+                flatBorder = 0x24FFFFFF
                 flatBorderPx = density
+            }
+            PlayerSkins.MINIMAL -> {
+                // Barely there: a flat slab with NO edge line at all, so the
+                // rows read as if they were floating on the picture (which is
+                // what Minimal's control bar does too).
+                flat = true
+                flatCornerPx = 10f * density
+                flatFill = 0xEE0A0B10.toInt()
+                flatBorder = 0x00000000
+                flatBorderPx = 0f
             }
             PlayerSkins.CINEMA -> {
+                // A deck: squarer corners and a hard, slightly brighter edge —
+                // "equipment", like the plates it sits over.
                 flat = true
-                flatCornerPx = 14f * density
+                flatCornerPx = 6f * density
                 flatFill = 0xF20A0C12.toInt()
-                flatBorder = 0x26FFFFFF
-                flatBorderPx = density
+                flatBorder = 0x33FFFFFF
+                flatBorderPx = 1.4f * density
             }
             PlayerSkins.NEON -> {
+                // The late-night card: fully rounded, edged in the accent.
                 flat = true
-                flatCornerPx = 22f * density
+                flatCornerPx = 26f * density
                 flatFill = 0xD90A0D16.toInt()
-                flatBorder = withAlpha(midColor, 0.55f)
-                flatBorderPx = density
+                flatBorder = withAlpha(midColor, 0.75f)
+                flatBorderPx = 1.4f * density
             }
             else -> {
                 flat = false
@@ -347,9 +363,14 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // neon — the glow belongs to the Glass pane (see [applySkin]).
             fillPaint.color = flatFill
             canvas.drawPath(shapePath, fillPaint)
-            rimPaint.strokeWidth = flatBorderPx
-            rimPaint.color = flatBorder
-            canvas.drawPath(shapePath, rimPaint)
+            // Minimal asks for no edge at all (see applySkin): a stroked path
+            // with width 0 is a hairline in Skia, not "nothing", so it is
+            // skipped outright instead.
+            if (flatBorderPx > 0f) {
+                rimPaint.strokeWidth = flatBorderPx
+                rimPaint.color = flatBorder
+                canvas.drawPath(shapePath, rimPaint)
+            }
             return
         }
         // The bloom, the panel, then the hot line back on the very edge: drawn

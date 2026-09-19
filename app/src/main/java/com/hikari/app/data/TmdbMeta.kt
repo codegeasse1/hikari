@@ -303,6 +303,13 @@ object TmdbMeta {
                     backdropUrl = backdrop,
                     rawType = "tmdb",
                     rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                    // The name the extensions index this title under (a shelf is
+                    // built from TMDB, so a non-English language renames it).
+                    originalTitle = o.optString("original_title")
+                        .ifBlank { o.optString("original_name") }
+                        .trim()
+                        .takeIf { it.isNotBlank() && it != "null" }
+                        .orEmpty(),
                 )
             )
         }
@@ -446,7 +453,68 @@ object TmdbMeta {
             cast = displayCast,
             trailers = trailers,
             castIsCharacters = castIsCharacters,
+            // The same response that was localized for the page also carries the
+            // original name — so the two names a provider lookup needs arrive
+            // together, for free, in the call the page already makes.
+            localizedTitle = d.optString("title").ifBlank { d.optString("name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" },
+            originalTitle = d.optString("original_title").ifBlank { d.optString("original_name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" },
         )
+    }
+
+    /**
+     * The (localized, original) pair of names for an item, from TMDB alone.
+     *
+     * Used where the two matter and [extras] is not being fetched — the play
+     * intents (so the player's artwork card can print the title in the chosen
+     * language) and a detail page whose origin provider is gone (so a provider
+     * lookup has the original name to search with). One request, cached per
+     * title, and null whenever TMDB cannot resolve the item at all.
+     */
+    suspend fun titles(item: MediaItem): Pair<String, String>? {
+        val key = item.originalTitle + "\u0001" + item.title + "\u0001" + item.type.name
+        synchronized(titleCache) { titleCache[key] }?.let { return it }
+        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
+        val seg = segment(resolved.mediaType)
+        val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap()) ?: return null
+        val localized = d.optString("title").ifBlank { d.optString("name") }
+            .trim().takeIf { it.isNotBlank() && it != "null" }
+        val original = d.optString("original_title").ifBlank { d.optString("original_name") }
+            .trim().takeIf { it.isNotBlank() && it != "null" }
+        if (localized == null && original == null) return null
+        val out = (localized ?: original!!) to (original ?: localized!!)
+        synchronized(titleCache) { titleCache[key] = out }
+        return out
+    }
+
+    /** Bounded per-session memo for [titles] — a title is opened over and over. */
+    private val titleCache = HashMap<String, Pair<String, String>>()
+
+    /**
+     * The (localized, original) pair for a bare TMDB id — the case a detail page
+     * arrives in, where all it has is `providerId = "tmdb"` and a numeric id
+     * (the row's own localized name came through the route, and a stored item
+     * from an older build may carry no `originalTitle` at all). Probes both
+     * namespaces when [type] does not say which one it is.
+     */
+    suspend fun titlesForId(id: String, type: MediaType): Pair<String, String>? {
+        val numeric = id.trim()
+        if (numeric.isBlank() || !numeric.all { it.isDigit() }) return null
+        val segs = when (type) {
+            MediaType.MOVIE -> listOf("movie")
+            MediaType.SERIES -> listOf("tv")
+            else -> listOf("movie", "tv")
+        }
+        for (seg in segs) {
+            val d = TmdbResolver.apiGet("/$seg/$numeric", emptyMap()) ?: continue
+            val localized = d.optString("title").ifBlank { d.optString("name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
+            val original = d.optString("original_title").ifBlank { d.optString("original_name") }
+                .trim().takeIf { it.isNotBlank() && it != "null" }
+            return localized to (original ?: localized)
+        }
+        return null
     }
 
     /**

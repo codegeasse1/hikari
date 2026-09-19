@@ -93,7 +93,18 @@ class ContentRepository(private val manager: ProviderManager) {
          */
         val crossEmpty = ConcurrentHashMap<String, Long>()
 
-        const val CROSS_EMPTY_TTL_MS = 5 * 60 * 1000L
+        /**
+         * How long such an answer is trusted. Deliberately short: it exists to
+         * make the SECOND lookup of the same title within a minute or two cheap,
+         * not to be a lasting verdict on a repo's catalogue. A blank page that
+         * said nothing about itself was enough to create one of these, and every
+         * minute it lives is a minute a repo that DOES carry the title is
+         * silently missing from the server list — the reported "the same film
+         * finds a handful of servers one time and a dozen the next". A pass that
+         * comes back empty re-asks these repos regardless (see the empty-result
+         * block in [streamsForInner]).
+         */
+        const val CROSS_EMPTY_TTL_MS = 3 * 60 * 1000L
 
         /**
          * The POSITIVE counterpart of [crossEmpty]: `providerId|query` → the
@@ -349,6 +360,10 @@ class ContentRepository(private val manager: ProviderManager) {
              *  one, and this is what bounds that chain. */
             @Volatile
             var rounds: Int = 0
+            /** Ask for real, ignoring the session's "no such title" record
+             *  (see [startSweepIfNeeded]). */
+            @Volatile
+            var ignoreEmptyRecord: Boolean = false
         }
 
         /** The background sweeps currently running, keyed by
@@ -377,6 +392,25 @@ class ContentRepository(private val manager: ProviderManager) {
 
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
+
+        /**
+         * The repos of [targets] that a lookup is currently being answered for
+         * OUT OF MEMORY: this session recorded "no such title" for them, and the
+         * record is still fresh. They are the only repos a pass can come back
+         * empty from without having actually asked them, which makes them the
+         * ones worth re-asking when it does (see [streamsForInner]).
+         */
+        fun cachedEmptyTargets(
+            targets: List<ContentProvider>,
+            query: String,
+        ): List<ContentProvider> {
+            if (query.isBlank()) return emptyList()
+            val now = System.currentTimeMillis()
+            return targets.filter { p ->
+                val at = crossEmpty[crossEmptyKey(p.config.id, query)] ?: return@filter false
+                now - at < CROSS_EMPTY_TTL_MS
+            }
+        }
 
         @Volatile
         var crossStatusVersion: Long = 0L
@@ -1890,6 +1924,37 @@ class ContentRepository(private val manager: ProviderManager) {
                     val cutoff = System.currentTimeMillis() - REMEMBERED_STREAMS_TTL_MS
                     streamsRemembered.entries.removeAll { it.value.at < cutoff }
                 }
+            } else {
+                // NOTHING AT ALL — not from this pass, not from the recent record.
+                //
+                // Before the app tells the user there is no server for this
+                // title, the repos it did NOT really ask are asked for real.
+                // Those are the ones this pass answered out of [crossEmpty],
+                // the session's own "no such title" record — by far the least
+                // trustworthy answer in the whole search, because ONE blank page
+                // (a site hiccup, a bot wall that said nothing about itself) is
+                // enough to create it, and it then hides that repo from every
+                // lookup for minutes. That is the "sometimes it finds nothing at
+                // all, and the next try finds plenty" report: the difference
+                // between the two attempts was which repos were written off from
+                // memory rather than asked.
+                val fromCache = cachedEmptyTargets(crossTargets, item.searchTitle)
+                if (fromCache.isNotEmpty()) {
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "\"${item.title}\" came back empty with ${fromCache.size} repo(s) " +
+                            "answered from the session's \"no such title\" record — " +
+                            "re-asking them for real in the background",
+                    )
+                    startSweepIfNeeded(
+                        item,
+                        episode,
+                        fromCache,
+                        emptyList(),
+                        onProgress,
+                        ignoreEmptyRecord = true,
+                    )
+                }
             }
             com.hikari.app.data.Logs.log(
                 "Search",
@@ -1942,6 +2007,10 @@ class ContentRepository(private val manager: ProviderManager) {
         targets: List<ContentProvider>,
         snapshot: List<StreamSource>,
         sink: (suspend (List<StreamSource>) -> Unit)?,
+        /** Ask these repos for REAL, ignoring the session's "no such title"
+         *  record. Set when the record is the only reason they were not asked
+         *  (see the empty-result block in [streamsForInner]). */
+        ignoreEmptyRecord: Boolean = false,
     ) {
         if (sink == null || targets.isEmpty()) return
         val key = streamsRememberedKey(item, episode)
@@ -1958,6 +2027,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 return
             }
             val sweep = Sweep()
+            sweep.ignoreEmptyRecord = ignoreEmptyRecord
             sweep.sinks += sink
             targets.forEach { sweepOwned.add(it.config.id) }
             val job = HikariApp.instance.appScope.launch {
@@ -2059,7 +2129,15 @@ class ContentRepository(private val manager: ProviderManager) {
                     // show up on whichever tally the chooser is reading.
                     val tally = crossTally
                     val outcome =
-                        cancellableCatching { crossExtensionSearch(p, item, episode, tally) }
+                        cancellableCatching {
+                            crossExtensionSearch(
+                                p,
+                                item,
+                                episode,
+                                tally,
+                                ignoreEmptyRecord = sweep.ignoreEmptyRecord,
+                            )
+                        }
                             .getOrElse {
                                 null to ("search threw ${it.javaClass.simpleName}: " +
                                     (it.message ?: "no message"))
@@ -2331,12 +2409,16 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         episode: Episode?,
         tally: CrossTally,
+        /** Ask for real even if this session recorded "no such title" for the
+         *  query (set by a sweep the empty result started — see
+         *  [streamsForInner]). */
+        ignoreEmptyRecord: Boolean = false,
     ): Pair<CrossHit?, String?> {
         val repo = p.config.name.ifBlank { p.config.id }
         // Already known to need a verification wall this session: skipped
         // silently — no search slot, no "still searching" entry, no verdict.
         if (isCfSkipped(p.config.id)) return null to CROSS_VERDICT_SKIPPED
-        val title = item.title.trim()
+        val title = item.searchTitle.trim()
         if (title.isBlank()) return null to "no title to search for"
         // What this extension had to say BEFORE we asked it anything: if its own
         // words change while we search (a plugin that failed to load, a search
@@ -2362,13 +2444,21 @@ class ContentRepository(private val manager: ProviderManager) {
             episode = episode,
             onStart = { markCrossSearchStarted(p, repo, title, tally) },
             onCached = { markCrossSearchStarted(p, repo, title, tally, fromCache = true) },
+            ignoreEmpty = ignoreEmptyRecord,
         )
         // A search that THREW or TIMED OUT says nothing about the repo's
         // catalog — a cold plugin load ("the first call has to spin up its
         // runtime") is the usual cause, and the old code wrote that off as "no
         // matching title". Ask once more before giving up on this repo.
         if (attempt.best == null && attempt.why != null) {
-            attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH, episode = episode)
+            attempt = searchBestMatch(
+                p,
+                title,
+                item,
+                CROSS_EXT_MIN_MATCH,
+                episode = episode,
+                ignoreEmpty = ignoreEmptyRecord,
+            )
         }
         var best = attempt.best
         if (best == null && attempt.why == null && !attempt.cachedEmpty) {
@@ -2385,6 +2475,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     item,
                     CROSS_EXT_MATCH_VARIANT,
                     episode = episode,
+                    ignoreEmpty = ignoreEmptyRecord,
                 )
                 best = second.best
                 // Keep whichever attempt has something to say: a failure from
@@ -2644,12 +2735,15 @@ class ContentRepository(private val manager: ProviderManager) {
         episode: Episode? = null,
         onStart: (() -> Unit)? = null,
         onCached: (() -> Unit)? = null,
+        /** Ignore the session's "no such title" record for this query and ask
+         *  the extension for real (see [cachedEmptyTargets]). */
+        ignoreEmpty: Boolean = false,
     ): SearchAttempt = gated(CROSS_EXT_SEARCH_GATE, p.config.id) {
         // Already answered "no such title" for this exact query a moment ago
         // (see [crossEmpty]): don't spend a slot — or a cold plugin load — on
         // the same question again.
         val cacheKey = crossEmptyKey(p.config.id, query)
-        val cachedAt = crossEmpty[cacheKey]
+        val cachedAt = if (ignoreEmpty) null else crossEmpty[cacheKey]
         if (cachedAt != null) {
             if (System.currentTimeMillis() - cachedAt < CROSS_EMPTY_TTL_MS) {
                 // Answered out of this session's own record — still CONSULTED,
@@ -2710,7 +2804,7 @@ class ContentRepository(private val manager: ProviderManager) {
         } else {
             // Scored against the REAL title, never against the shortened query,
             // so a variant can only ever confirm a genuine match.
-            val scored = results.map { it to titleScore(item.title, item.year, it) }
+            val scored = results.map { it to titleScore(item.searchTitle, item.year, it) }
             // A score alone is NOT enough to decide that a repo's entry is the
             // title the user asked to play: see [confidentTitleMatch].
             val best = scored
@@ -2780,7 +2874,11 @@ class ContentRepository(private val manager: ProviderManager) {
         ) {
             return false
         }
-        val a = normalizeTitle(wanted.title)
+        // The ORIGINAL name is what the extensions index: a title the app renamed
+        // for display (TMDB language) must still be searched for by the name
+        // their sites use, or every repo answers "no matching title" and the
+        // pass comes back with nothing (see [MediaItem.searchTitle]).
+        val a = normalizeTitle(wanted.searchTitle)
         val b = normalizeTitle(candidate.title)
         if (a.isEmpty() || b.isEmpty()) return false
         if (a == b) return true
@@ -3154,11 +3252,11 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
     ): List<Episode>? {
         val hits = withTimeoutOrNull(searchTimeoutMs(p)) {
-            cancellableCatching { p.search(item.title, 1) }.getOrDefault(emptyList())
+            cancellableCatching { p.search(item.searchTitle, 1) }.getOrDefault(emptyList())
         } ?: return null
         val match = hits
             .filter { confidentTitleMatch(item, it, null) }
-            .maxByOrNull { titleScore(item.title, item.year, it) }
+            .maxByOrNull { titleScore(item.searchTitle, item.year, it) }
             ?: return null
         val eps = withTimeoutOrNull(episodesTimeoutMs(p)) {
             cancellableCatching { p.getEpisodes(match) }.getOrNull()
@@ -3188,9 +3286,13 @@ class ContentRepository(private val manager: ProviderManager) {
         if (eps.size < 3) return eps
         val numbers = eps.map { it.number }
         if (numbers.size != numbers.toSet().size) return eps
-        if (eps.none { EpisodeTitles.needsEnglish(it.name, item.title) }) return eps
+        // The episode-name lookup keys off the show's ORIGINAL name (a display
+        // title localized by the app's TMDB language is not what the wiki knows
+        // it as).
+        val showName = item.searchTitle
+        if (eps.none { EpisodeTitles.needsEnglish(it.name, showName) }) return eps
         val names = withTimeoutOrNull(12_000) {
-            EpisodeTitles.lookup(item.title, item.year, numbers.toSet())
+            EpisodeTitles.lookup(showName, item.year, numbers.toSet())
         } ?: return eps
         if (names.isEmpty()) return eps
         var changed = false
@@ -3199,7 +3301,7 @@ class ContentRepository(private val manager: ProviderManager) {
             val replacement = when {
                 names.english[e.number] != null -> names.english[e.number]
                 raw.isNullOrBlank() -> names.generic[e.number]
-                EpisodeTitles.looksMechanical(raw, item.title) -> names.generic[e.number]
+                EpisodeTitles.looksMechanical(raw, showName) -> names.generic[e.number]
                 else -> null
             }
             if (replacement != null && replacement != raw) {

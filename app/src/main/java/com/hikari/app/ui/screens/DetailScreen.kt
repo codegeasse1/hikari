@@ -182,23 +182,31 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     val activeProviderId: StateFlow<String> = _activeProviderId.asStateFlow()
 
     /**
-     * Finds an installed provider that carries [title], for a page whose origin
-     * provider id no longer exists. Local History is checked first (instant, no
-     * network), then the installed providers of the same engine (a renamed
-     * plugin usually re-registers the same sources), then the rest — bounded to
-     * a handful of searches so this can never become a long stall. Returns null
-     * when nothing matches, which keeps the old "Provider not found" state.
+     * Finds an installed provider that carries one of [titles], for a page whose
+     * origin provider id no longer exists. Local History is checked first
+     * (instant, no network), then the installed providers of the same engine (a
+     * renamed plugin usually re-registers the same sources), then the rest —
+     * bounded to a handful of searches so this can never become a long stall.
+     * Returns null when nothing matches, which keeps the old "Provider not
+     * found" state.
+     *
+     * A LIST of names, because a TMDB row is displayed under a name its
+     * extensions do not know (the app's TMDB language renamed it): every name
+     * the item is known by is tried, and any of them counts as a match. Trying
+     * only the display name is exactly what dead-ended a Spanish-language
+     * install on a title every other language finds.
      */
-    private suspend fun remapMissingProvider(missingId: String, title: String): String? {
-        if (title.isBlank()) return null
+    private suspend fun remapMissingProvider(missingId: String, titles: List<String>): String? {
+        val names = titles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (names.isEmpty()) return null
         return withContext(Dispatchers.IO) {
             // 1) Watch history / library: the same title may still be recorded
             //    against a provider that exists (the user opened it there once).
             runCatching {
-                val wanted = title.lowercase().trim()
+                val wanted = names.map { it.lowercase() }.toSet()
                 HikariApp.instance.store.historyFlow().first()
                     .firstOrNull {
-                        it.title.lowercase().trim() == wanted &&
+                        it.title.lowercase().trim() in wanted &&
                             manager.byId(it.providerId) != null
                     }?.providerId
             }.getOrNull()?.let { return@withContext it }
@@ -211,14 +219,17 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 .take(6)
             var best: Pair<String, Int>? = null
             for (p in candidates) {
-                val hits = runCatching {
-                    withTimeoutOrNull(5_000) { p.search(title, 1) }.orEmpty()
-                }.getOrDefault(emptyList())
-                for (hit in hits) {
-                    val score = titleScoreFor(title, hit.title)
-                    if (score >= 55 && (best == null || score > best!!.second)) {
-                        best = p.config.id to score
+                for (name in names) {
+                    val hits = runCatching {
+                        withTimeoutOrNull(5_000) { p.search(name, 1) }.orEmpty()
+                    }.getOrDefault(emptyList())
+                    for (hit in hits) {
+                        val score = titleScoreFor(name, hit.title)
+                        if (score >= 55 && (best == null || score > best!!.second)) {
+                            best = p.config.id to score
+                        }
                     }
+                    if (best?.first == p.config.id) break
                 }
                 if ((best?.second ?: 0) >= 100) break
             }
@@ -226,12 +237,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             if (found != null) {
                 com.hikari.app.data.Logs.log(
                     "Detail",
-                    "provider $missingId no longer exists — remapped \"$title\" to $found",
+                    "provider $missingId no longer exists — remapped " +
+                        "\"${names.first()}\" to $found",
                 )
             } else {
                 com.hikari.app.data.Logs.log(
                     "Detail",
-                    "provider $missingId no longer exists and \"$title\" was not found elsewhere",
+                    "provider $missingId no longer exists and " +
+                        "\"${names.first()}\" was not found elsewhere" +
+                        (if (names.size > 1) " (tried ${names.size} names)" else ""),
                 )
             }
             found
@@ -415,10 +429,32 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // History, Library and share links. Dead-ending the page on
             // "Provider not found" punished the user for that, so find the same
             // title in the installed providers and carry on from there.
+            // A TMDB-sourced row arrives carrying only its DISPLAY name, which
+            // the app's TMDB language may have localized ("Vengadores:
+            // Endgame"). No extension indexes that name — they all index the
+            // original one — so both names are resolved from TMDB up front: the
+            // page keeps showing the localized one, and every provider lookup
+            // (the remap below, and the whole source search the page is about to
+            // start) searches the ORIGINAL one. This is the fix for "I switched
+            // the TMDB language and now there is no extension for this movie",
+            // which was the search asking 250 repos for a name none of them has.
+            // ONLY for a genuine TMDB row. A dead extension id is remapped by
+            // name alone — probing TMDB with an extension's own numeric id would
+            // invent an unrelated "original title" and then search 250 repos for
+            // it, which is far worse than the problem being fixed.
+            val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
+            val tmdbNames = if (isTmdbRow) {
+                withTimeoutOrNull(6_000) {
+                    runCatching { TmdbMeta.titlesForId(mediaId, type) }.getOrNull()
+                }
+            } else null
+            val originalName = tmdbNames?.second?.takeIf { it.isNotBlank() }
+            val lookupNames = listOfNotNull(title.takeIf { it.isNotBlank() }, originalName)
+                .distinctBy { it.lowercase() }
             val activeProvider = if (manager.byId(providerId) != null) {
                 providerId
             } else {
-                remapMissingProvider(providerId, title) ?: providerId
+                remapMissingProvider(providerId, lookupNames) ?: providerId
             }
             _activeProviderId.value = activeProvider
             if (manager.byId(activeProvider) == null) {
@@ -441,6 +477,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 activeProvider, mediaId, title, type,
                 posterUrl = posterUrl,
                 rawType = rawType,
+                // Carried so the source search asks the extensions for the name
+                // THEY know the title by (see the lookupNames block above).
+                originalTitle = originalName.orEmpty(),
             )
             _meta.value = base
             _loading.value = false
@@ -461,7 +500,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // single origin fetch) — fetching against the raw base would
                 // leave the episode grid empty for every mis-typed item.
                 val meta = runCatching { repo.metaFor(base) }.getOrDefault(base)
-                _meta.value = meta
+                // The origin's /meta answers with ITS OWN title, which for a
+                // TMDB row remapped onto an extension is the English one — the
+                // page would flip back out of the language the user chose, and
+                // the player's artwork card (which prints the item's title)
+                // would follow it. Keep the display name the row was opened
+                // with; the original name stays on the item for lookups.
+                _meta.value = if (base.originalTitle.isNotBlank() && base.title.isNotBlank()) {
+                    meta.copy(title = base.title, originalTitle = base.originalTitle)
+                } else meta
                 _episodesLoading.value = true
                 try {
                     _episodes.value = runCatching { repo.episodesFor(meta) }.getOrNull()
@@ -892,6 +939,21 @@ fun DetailScreen(
     val activeProviderId by vm.activeProviderId.collectAsState()
     val livePid = activeProviderId.ifBlank { providerId }
 
+    /**
+     * The name the PLAYER's artwork card prints (and the detail page's own
+     * full-screen cover).
+     *
+     * It is the item's own title — which, for a title that came from an
+     * EXTENSION, is the site's (usually English) name and therefore the one
+     * place the app's TMDB language never reached: the page was translated, the
+     * loading card was not. TMDB's localized name for the same title is used
+     * whenever it differs, so the card follows the chosen language like
+     * everything else.
+     */
+    val artTitle = extras?.localizedTitle
+        ?.takeIf { it.isNotBlank() && it != (m?.title ?: title) }
+        ?: (m?.title ?: title)
+
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     // The score strip (IMDb / RT / …) on the details block is drawn unless the
@@ -972,7 +1034,7 @@ fun DetailScreen(
         scope.launch {
             val hit = withContext(Dispatchers.IO) {
                 runCatching {
-                    val hits = withTimeoutOrNull(15_000) { origin.search(item.title, 1) }.orEmpty()
+                    val hits = withTimeoutOrNull(15_000) { origin.search(item.searchTitle, 1) }.orEmpty()
                     hits.firstOrNull { it.type == item.type } ?: hits.firstOrNull()
                 }.getOrNull()
             }
@@ -1108,7 +1170,9 @@ fun DetailScreen(
         // and remember which server this video was last played with (so a
         // replay continues on that server and starts instantly).
         val intent = Intent(context, PlayerActivity::class.java).apply {
-                putExtra("title", m?.title ?: title)
+                // The artwork card prints this, so it follows the TMDB language
+                // (see artTitle); History keeps recording the item's own title.
+                putExtra("title", artTitle)
                 putExtra("sources", payload)
                 // Live server feed: playback starts with the first server found
                 // while the detail screen keeps searching every installed
@@ -2191,7 +2255,7 @@ fun DetailScreen(
 
     if (showLoadingBanner) {
         PlayLoadingBanner(
-            title = m?.title ?: title,
+            title = artTitle,
             episodeLabel = selectedEp?.let {
                 if (it.season > 1) "S${it.season} E${it.number}"
                 else tr("Episode %s").replace("%s", it.number.toString())

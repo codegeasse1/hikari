@@ -3,9 +3,13 @@ package com.hikari.app.player
 /**
  * Player interface skins (Settings → Player → Player UI).
  *
- * Four looks for the playback controls, so the overlay can match the taste of
+ * Five looks for the playback controls, so the overlay can match the taste of
  * whatever app the user came from:
  *
+ *  - DEFAULT  — the stock/plain player: simple dark scrim bars, ordinary
+ *               rounded buttons, no glass or glow anywhere. What almost every
+ *               other player looks like, and the one to pick if you want the
+ *               Hikari look switched off.
  *  - GLASS    — Hikari's default: frosted top bar, gradient bottom bar, round
  *               glass pills and the accent-ringed play button.
  *  - MINIMAL  — no bar backgrounds at all: the title and the controls read as
@@ -33,19 +37,29 @@ package com.hikari.app.player
  */
 object PlayerSkins {
 
+    const val DEFAULT = "default"
     const val GLASS = "glass"
     const val MINIMAL = "minimal"
     const val CINEMA = "cinema"
     const val NEON = "neon"
 
-    val ALL = listOf(GLASS, MINIMAL, CINEMA, NEON)
+    /**
+     * Every skin, in the order the picker lists them. [DEFAULT] leads because it
+     * is the plain one — the shape people reach for when they want the app's
+     * styling out of the way. The stored fallback for an install that has never
+     * chosen stays [FALLBACK] (Glass), so adding this did not restyle anyone's
+     * player behind their back.
+     */
+    val ALL = listOf(DEFAULT, GLASS, MINIMAL, CINEMA, NEON)
 
-    const val DEFAULT = GLASS
+    /** What an unset/unknown value resolves to — Hikari's own look. */
+    const val FALLBACK = GLASS
 
     fun normalize(key: String?): String =
-        if (key != null && ALL.contains(key)) key else DEFAULT
+        if (key != null && ALL.contains(key)) key else FALLBACK
 
     fun label(key: String?): String = when (normalize(key)) {
+        DEFAULT -> "Default"
         MINIMAL -> "Minimal"
         CINEMA -> "Cinema"
         NEON -> "Neon"
@@ -53,6 +67,7 @@ object PlayerSkins {
     }
 
     fun description(key: String?): String = when (normalize(key)) {
+        DEFAULT -> "Plain dark bars and ordinary rounded buttons — the standard player"
         MINIMAL -> "No panels — just the controls floating on the video"
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
@@ -62,7 +77,7 @@ object PlayerSkins {
     // ---- Synchronous mirror --------------------------------------------------
 
     @Volatile
-    private var currentKey: String = DEFAULT
+    private var currentKey: String = FALLBACK
 
     fun setCurrent(key: String?) {
         currentKey = normalize(key)
@@ -106,6 +121,24 @@ object PlayerSkins {
     enum class PlayTreatment { RING, PLAIN, SOLID, GLOW }
 
     fun spec(key: String?): SkinSpec = when (normalize(key)) {
+        // The stock look: plain scrim bars (no frosted glass, no deck panel),
+        // ordinary rounded buttons at a modest radius, a solid accent play
+        // button. Deliberately the least decorated skin in the list.
+        DEFAULT -> SkinSpec(
+            topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
+            bottomBarBackground = com.hikari.app.R.drawable.bottom_bar_bg,
+            pillBackground = com.hikari.app.R.drawable.pill_flat_ripple,
+            pillTextDp = 11f,
+            pillPadH = 9,
+            pillPadV = 4,
+            pillMargin = 2,
+            accentPillRadius = 6f,
+            playTreatment = PlayTreatment.SOLID,
+            playSizeDp = 50,
+            deckMarginDp = 0,
+            topBarPadBottom = 8,
+        )
+
         MINIMAL -> SkinSpec(
             topBarBackground = 0,
             bottomBarBackground = 0,
