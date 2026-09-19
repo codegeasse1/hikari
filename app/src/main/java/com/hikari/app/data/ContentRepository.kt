@@ -154,6 +154,136 @@ class ContentRepository(private val manager: ProviderManager) {
          *  about it anywhere". Never shown, never counted. */
         const val CROSS_VERDICT_SKIPPED = "\u0000skipped"
 
+        /**
+         * Extensions whose plugin has STOPPED COMING BACK this session:
+         * `provider id -> the time we noticed`.
+         *
+         * A .cs3/.hiki/SkyStream/Aniyomi plugin is arbitrary third-party code,
+         * and one of them occasionally wedges — a deadlock in its own
+         * `synchronized` block, a JS engine that never returns, a socket that
+         * ignores every timeout. The call's coroutine can then never be
+         * cancelled, because cancellation is only observed at a suspension
+         * point and it is parked inside a synchronous call.
+         *
+         * That is survivable on its own (it costs one coroutine), but it used to
+         * be fatal for the whole search: the wedged call also held a slot in one
+         * of the provider [RefundableGate]s, and slots are what the pass, the
+         * sweep and every later lookup share. Each hang permanently consumed
+         * one, so a session's server list got smaller and smaller — "sometimes
+         * it only finds nuvio", "it stopped at 87 of 159", "it just sits there
+         * with no sources".
+         *
+         * Two things are done about it now, both of them here:
+         *  (1) the gate slot is REFUNDED the moment a hang is detected (see
+         *      [RefundableGate.hang]), so the rest of the queue keeps moving;
+         *  (2) the extension is dropped from every later pass and sweep this
+         *      session (it is not asked, not counted as "no such title", and
+         *      reported as skipped once).
+         */
+        val crossHung = ConcurrentHashMap<String, Long>()
+
+        /** How long a provider call may be in flight before we call it wedged.
+         *  Comfortably past the widest provider timeout there is (an Aniyomi
+         *  extraction is allowed 150s), so a merely slow extension is never
+         *  mistaken for a dead one. */
+        const val HANG_AFTER_MS = 200_000L
+
+        /** True while [providerId] should be left out of the search entirely. */
+        fun isHung(providerId: String): Boolean = crossHung.containsKey(providerId)
+
+        /**
+         * A counting gate for one class of provider work (search / detail /
+         * extract) that can have a slot REFUNDED when its holder is wedged.
+         *
+         * A plain [Semaphore] is the wrong tool here: `acquire()` hands out a
+         * permit that is released in a `finally`, and a `finally` cannot run
+         * while the thread is parked inside a plugin that will never return — so
+         * one wedged extension permanently shrank the gate for the rest of the
+         * session. [hang] adds a permit back for that case. The refund is capped
+         * at [limit] so a pathological run can never turn the gate into an
+         * unbounded stampede.
+         */
+        class RefundableGate(val limit: Int) {
+            private val sem = Semaphore(limit)
+            private val held = java.util.concurrent.atomic.AtomicInteger(0)
+            private val refunded = java.util.concurrent.atomic.AtomicInteger(0)
+
+            suspend fun acquire() {
+                sem.acquire()
+                held.incrementAndGet()
+            }
+
+            fun release() {
+                held.decrementAndGet()
+                sem.release()
+            }
+
+            /** Give the gate back a slot whose holder will never release it. */
+            fun hang() {
+                if (refunded.incrementAndGet() > limit) {
+                    refunded.decrementAndGet()
+                    return
+                }
+                sem.release()
+            }
+
+            /** Slots handed out but not yet returned (hung ones included) —
+             *  for the diagnostic log line. */
+            fun heldCount(): Int = held.get()
+        }
+
+        /**
+         * One provider call in flight, for the hang watchdog:
+         * `provider id -> (the gate it holds, when it started)`.
+         *
+         * Deliberately keyed by PROVIDER, not by call: a repo is asked for its
+         * search, then its meta/episodes, then its streams, one at a time, and
+         * if any of those never comes back the repo is wedged as a whole.
+         */
+        class InFlight(val gate: RefundableGate, val at: Long) {
+            /** Set by the watchdog when it gives this call's slot back, so the
+             *  call's own `finally` does not refund it a second time if it ever
+             *  does come back. */
+            val refunded = java.util.concurrent.atomic.AtomicBoolean(false)
+        }
+
+        val inFlight = ConcurrentHashMap<String, InFlight>()
+
+        @Volatile
+        private var hangWatchdog: kotlinx.coroutines.Job? = null
+
+        /**
+         * Starts the (single) hang watchdog. It is the only thing that can
+         * notice a wedged plugin, because nothing inside such a call ever runs
+         * again: every [HANG_AFTER_MS] it looks at [inFlight] and refunds the
+         * slot of anything older than that.
+         */
+        fun ensureHangWatchdog() {
+            if (hangWatchdog?.isActive == true) return
+            hangWatchdog = HikariApp.instance.appScope.launch {
+                while (true) {
+                    kotlinx.coroutines.delay(15_000L)
+                    val now = System.currentTimeMillis()
+                    for ((id, call) in inFlight) {
+                        if (now - call.at < HANG_AFTER_MS) continue
+                        // Take the entry first: this is what makes the refund
+                        // happen exactly once per wedged call.
+                        if (call.refunded.compareAndSet(false, true)) {
+                            call.gate.hang()
+                            if (crossHung.putIfAbsent(id, now) == null) {
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "extension '" + id + "' has not answered in " +
+                                        (HANG_AFTER_MS / 1000) + "s — its slot has been " +
+                                        "given back and it is skipped for this session",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         /** Buckets that are never surfaced in a summary the user reads: a
          *  verification wall is not something to put in a server list, and a
          *  skipped extension has nothing to say at all. How far the pass itself
@@ -180,7 +310,13 @@ class ContentRepository(private val manager: ProviderManager) {
 
         val streamsRemembered = ConcurrentHashMap<String, RememberedStreams>()
 
-        const val REMEMBERED_STREAMS_TTL_MS = 15 * 60 * 1000L
+        /** How long a video's known servers stay on the ledger. Deliberately
+         *  long: within a watching session the user replays, picks another
+         *  server, jumps episodes and comes back, and every one of those
+         *  lookups must find at least the servers the first one did. A signed
+         *  URL that has gone stale only costs one failed failover, while a
+         *  server that vanishes from the list makes the app look broken. */
+        const val REMEMBERED_STREAMS_TTL_MS = 60 * 60 * 1000L
 
         fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
             item.uniqueId + "|" + (episode?.id ?: "")
@@ -208,6 +344,11 @@ class ContentRepository(private val manager: ProviderManager) {
             var current: List<StreamSource> = emptyList()
             @Volatile
             var job: kotlinx.coroutines.Job? = null
+            /** How many budget-rounds this sweep has run (see [runSweep]): a
+             *  round that ran out of time hands its unasked repos to the next
+             *  one, and this is what bounds that chain. */
+            @Volatile
+            var rounds: Int = 0
         }
 
         /** The background sweeps currently running, keyed by
@@ -267,6 +408,11 @@ class ContentRepository(private val manager: ProviderManager) {
             verdict.contains("no matching title") ||
                 verdict.contains("search result(s)") -> "no such title"
             verdict.contains("has the title") -> "title found, no links"
+            // A plugin that stopped answering (see [crossHung]): counted apart
+            // from "no such title", because it says nothing about the repo's
+            // catalogue — and it is the one bucket the user can do something
+            // about (a reinstall / an update).
+            verdict.contains("stopped responding") -> "stuck, skipped"
             else -> "other"
         }
 
@@ -415,6 +561,13 @@ class ContentRepository(private val manager: ProviderManager) {
      *  ceiling, and the per-repo semaphores bound how hard it hits the phone. */
     private val SWEEP_BUDGET_MS get() = minOf(NetTuning.timeout(10 * 60 * 1000L), 10 * 60 * 1000L)
 
+    /** How many budget-rounds one background sweep may run. A round hands the
+     *  repos it never reached to the next one (see [runSweep]), so this is what
+     *  stops a big install from keeping a sweep — and its "still searching" line
+     *  — alive indefinitely while the per-round semaphores keep the phone
+     *  comfortable. */
+    private val SWEEP_MAX_ROUNDS = 6
+
     /** Ceiling for PHASE 1 of the pass — asking every installed extension for
      *  the title. The phase ends the moment the last extension has answered, so
      *  this only binds when a long tail of repos is slow or dead. Everything
@@ -532,9 +685,13 @@ class ContentRepository(private val manager: ProviderManager) {
      *  list must never take a slot that another repo still needs just to be
      *  SEARCHED (that sharing is what starved the tail of the queue). */
     private val CROSS_EXT_DETAIL_CONCURRENCY = 32
-    private val CROSS_EXT_SEARCH_SEMAPHORE = Semaphore(CROSS_EXT_SEARCH_CONCURRENCY)
-    private val CROSS_EXT_EXTRACT_SEMAPHORE = Semaphore(CROSS_EXT_EXTRACT_CONCURRENCY)
-    private val CROSS_EXT_DETAIL_SEMAPHORE = Semaphore(CROSS_EXT_DETAIL_CONCURRENCY)
+    // Refundable gates rather than plain semaphores: a plugin that never comes
+    // back holds its slot for good, and a plain semaphore would then hand out
+    // fewer slots on every lookup for the rest of the session (see
+    // [RefundableGate] and [crossHung]).
+    private val CROSS_EXT_SEARCH_GATE = RefundableGate(CROSS_EXT_SEARCH_CONCURRENCY)
+    private val CROSS_EXT_EXTRACT_GATE = RefundableGate(CROSS_EXT_EXTRACT_CONCURRENCY)
+    private val CROSS_EXT_DETAIL_GATE = RefundableGate(CROSS_EXT_DETAIL_CONCURRENCY)
 
     /** Effectively "every installed extension": the whole point of the pass is
      *  to find the repo that CAN play the title, so nothing is skipped up
@@ -571,6 +728,38 @@ class ContentRepository(private val manager: ProviderManager) {
         } catch (t: Throwable) {
             Result.failure(t)
         }
+
+    /**
+     * Runs one provider call inside [gate], registering it with the hang
+     * watchdog for as long as it is in flight (see [RefundableGate]).
+     *
+     * Every provider API call the cross pass, the sweep and the origin path make
+     * goes through here, so a plugin that never returns costs its own coroutine
+     * and nothing else: the watchdog refunds the slot after [HANG_AFTER_MS] and
+     * the queue keeps moving, instead of the gate shrinking for the rest of the
+     * session (which is what made a big install's server list decay — "sometimes
+     * only nuvio", "stuck at 87 of 159").
+     */
+    private suspend fun <T> gated(
+        gate: RefundableGate,
+        providerId: String,
+        block: suspend () -> T,
+    ): T {
+        ensureHangWatchdog()
+        gate.acquire()
+        val call = InFlight(gate, System.currentTimeMillis())
+        inFlight[providerId] = call
+        try {
+            return block()
+        } finally {
+            inFlight.remove(providerId, call)
+            // The slot is always given back here — it was taken above — UNLESS
+            // the watchdog has already refunded it (which it does only for a
+            // call that had stopped coming back). Releasing twice for one
+            // acquisition would quietly widen the gate, so the flag decides.
+            if (!call.refunded.get()) gate.release()
+        }
+    }
 
     /** One provider's stream lookup, with the slow-connection retry: while
      *  [NetTuning] slow mode is on, a provider that times out or throws is
@@ -1025,6 +1214,9 @@ class ContentRepository(private val manager: ProviderManager) {
         val work = com.hikari.app.work.BackgroundWork.begin(
             "Finding servers for \"${item.title.take(60)}\""
         )
+        // The only thing that can notice a plugin which has stopped coming back,
+        // and give its concurrency slot to the rest of the queue (see [crossHung]).
+        ensureHangWatchdog()
         try {
             return StreamLookup(streamsForInner(item, episode, onProgress), complete = true)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1198,6 +1390,15 @@ class ContentRepository(private val manager: ProviderManager) {
             all.groupingBy { it.config.type.groupLabel }
                 .eachCount()
                 .forEach { (label, n) -> crossInstalled[label] = n }
+            // Extensions dropped because their plugin stopped coming back
+            // earlier in this session: written into the tally BEFORE anything is
+            // queued, so the chooser's summary says "3 stopped responding" out
+            // loud instead of quietly asking three fewer repos than the user has
+            // installed (see [crossHung]).
+            all.filter { isHung(it.config.id) }.forEach { p ->
+                crossVerdict[p.config.id] =
+                    (p.config.name.ifBlank { p.config.id }) + " — stopped responding earlier"
+            }
             bumpCrossStatus()
             com.hikari.app.nuvio.NuvioScraper.lastOutcome.clear()
             com.hikari.app.nuvio.NuvioRuntime.resetFetchLog()
@@ -1818,6 +2019,14 @@ class ContentRepository(private val manager: ProviderManager) {
         var lastEmitted = acc.size
         val budget = SWEEP_BUDGET_MS
         val started = System.currentTimeMillis()
+        sweep.rounds++
+        // Repos whose turn never came before the round's budget ran out. They are
+        // carried into another round below rather than dropped, because a repo
+        // that is never asked is exactly what "it stopped at 87 of 159 and just
+        // sat there" was: the search had not failed, it had simply stopped
+        // asking. Rounds are capped so a pathological install cannot keep the
+        // sweep (and its status line) alive forever.
+        val unasked = java.util.concurrent.CopyOnWriteArrayList<ContentProvider>()
 
         suspend fun publish() {
             val list = synchronized(acc) { acc.values.toList() }
@@ -1832,8 +2041,17 @@ class ContentRepository(private val manager: ProviderManager) {
             for (p in targets) {
                 launch {
                     // Past the ceiling: stop starting new work. Whatever is
-                    // already in flight still lands (and is published).
-                    if (System.currentTimeMillis() - started >= budget) return@launch
+                    // already in flight still lands (and is published), and the
+                    // repos that lost their turn are handed to the NEXT round
+                    // (see [unasked]).
+                    if (System.currentTimeMillis() - started >= budget) {
+                        unasked.add(p)
+                        return@launch
+                    }
+                    // Wedged earlier this session: skip it (its slot was already
+                    // refunded — see [crossHung]) and say so, instead of holding
+                    // a launch that can never finish.
+                    if (isHung(p.config.id)) return@launch
                     val id = p.config.id
                     val repo = p.config.name.ifBlank { id }
                     // The live tally (not a captured one): a later pass for this
@@ -1905,6 +2123,26 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
         publish()
+        // Repos that lost their turn to the round's budget get another round —
+        // up to [SWEEP_MAX_ROUNDS] of them — so the sweep asks every installed
+        // extension instead of stopping at whichever one the clock reached.
+        // Recursion is bounded by the round counter, and a wedged repo is never
+        // carried forward (it would just block a round again).
+        val left = unasked.filterNot { isHung(it.config.id) }
+        if (left.isNotEmpty() && sweep.rounds < SWEEP_MAX_ROUNDS) {
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "sweep \"${item.title}\" → round ${sweep.rounds}: ${left.size} repo(s) left " +
+                    "unasked — asking them now (${sweep.current.size} server(s) so far)",
+            )
+            runSweep(item, episode, left, sweep, sweep.current)
+        } else if (left.isNotEmpty()) {
+            com.hikari.app.data.Logs.log(
+                "Search",
+                "sweep \"${item.title}\" ended after ${sweep.rounds} rounds with " +
+                    "${left.size} repo(s) unasked",
+            )
+        }
     }
 
     /** The other installed extensions worth asking by title: .cs3 / .hiki /
@@ -1946,6 +2184,12 @@ class ContentRepository(private val manager: ProviderManager) {
                 // the block) is the point: it is not worth searching, and its
                 // block is not something to read in the server list.
                 if (isCfSkipped(p.config.id)) return@filter false
+                // An extension whose plugin STOPPED COMING BACK earlier in this
+                // session is dropped the same way (see [crossHung]): asking it
+                // again only spends a slot and a cold load on a call that will
+                // never answer. Reported once, honestly, rather than left to
+                // look like a repo that has no such title.
+                if (isHung(p.config.id)) return@filter false
                 // SkyStream extensions declare their site in their manifest, so
                 // a host already known to answer with a challenge can be ruled
                 // out BEFORE the extension is queued — its search would go to
@@ -2204,7 +2448,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val best = hit.candidate
         // The provider's own load() also rewrites the id to its canonical form,
         // which is what its loadLinks() expects.
-        val meta = CROSS_EXT_DETAIL_SEMAPHORE.withPermit {
+        val meta = gated(CROSS_EXT_DETAIL_GATE, p.config.id) {
             withTimeoutOrNull(metaTimeoutMs(p)) {
                 cancellableCatching { p.getMeta(best) }.getOrDefault(best)
             } ?: best
@@ -2217,7 +2461,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // carry both and could not be asked. Say which one it was.
             var epFailure: String? = null
             var epTimedOut = false
-            val eps: List<Episode> = CROSS_EXT_DETAIL_SEMAPHORE.withPermit {
+            val eps: List<Episode> = gated(CROSS_EXT_DETAIL_GATE, p.config.id) {
                 withTimeoutOrNull(episodesTimeoutMs(p)) {
                     cancellableCatching { p.getEpisodes(best) }
                         .onFailure { e ->
@@ -2248,7 +2492,7 @@ class ContentRepository(private val manager: ProviderManager) {
         var gotFailure: String? = null
         var gotTimedOut = false
         val streamsBudget = streamsTimeoutMs(p)
-        val got: List<StreamSource> = CROSS_EXT_EXTRACT_SEMAPHORE.withPermit {
+        val got: List<StreamSource> = gated(CROSS_EXT_EXTRACT_GATE, p.config.id) {
             withTimeoutOrNull(streamsBudget) {
                 cancellableCatching { p.getStreams(meta, ep) }
                     .onFailure { e ->
@@ -2400,7 +2644,7 @@ class ContentRepository(private val manager: ProviderManager) {
         episode: Episode? = null,
         onStart: (() -> Unit)? = null,
         onCached: (() -> Unit)? = null,
-    ): SearchAttempt = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
+    ): SearchAttempt = gated(CROSS_EXT_SEARCH_GATE, p.config.id) {
         // Already answered "no such title" for this exact query a moment ago
         // (see [crossEmpty]): don't spend a slot — or a cold plugin load — on
         // the same question again.
@@ -2413,7 +2657,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 // resolved ten of eleven repos from cache read as "asked 1 of
                 // 11 … done", which looks exactly like the search gave up).
                 onCached?.invoke()
-                return@withPermit SearchAttempt(null, null, cachedEmpty = true)
+                return@gated SearchAttempt(null, null, cachedEmpty = true)
             }
             crossEmpty.remove(cacheKey)
         }
@@ -2425,7 +2669,7 @@ class ContentRepository(private val manager: ProviderManager) {
         crossMatch[cacheKey]?.let { hit ->
             if (System.currentTimeMillis() - hit.at < CROSS_MATCH_TTL_MS) {
                 onCached?.invoke()
-                return@withPermit SearchAttempt(hit.item, null)
+                return@gated SearchAttempt(hit.item, null)
             }
             crossMatch.remove(cacheKey)
         }

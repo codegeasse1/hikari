@@ -2992,7 +2992,12 @@ class PlayerActivity : ComponentActivity() {
         rowHosts: List<ViewGroup> = emptyList(),
     ): TextView? {
         val density = resources.displayMetrics.density
-        val halo = glassHaloPx
+        // The halo is where the curved pane's neon blooms. A flat panel (every
+        // skin but Glass — see [CurvedGlassPanel.applySkin]) has no glow to make
+        // room for, so it only keeps a small margin and the panel itself grows
+        // into the rest of the screen: more rows visible, less clipping.
+        val flatPanel = PlayerSkins.normalize(skin) != PlayerSkins.GLASS
+        val halo = if (flatPanel) (10 * density).toInt() else glassHaloPx
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         // A dialog with no hint of its own still gets a line up here: the title
@@ -3072,6 +3077,11 @@ class PlayerActivity : ComponentActivity() {
             startColor = accentStartColor
             midColor = accentMidColor
             endColor = accentEndColor
+            // The panel wears the Player UI skin, so the sheet that opens on
+            // Source / Subtitles / Audio / Speed matches the control bar the
+            // user picked (Settings -> Player -> Player UI): the bowed neon
+            // glass for Glass, and a flat slab/deck/card for the other three.
+            applySkin(skin)
             // The rows bend to the panel's curve (see CurvedGlassPanel). The
             // caller hands over the containers that actually hold them — when
             // the whole list fits that is the row container itself, and the row
@@ -3097,10 +3107,14 @@ class PlayerActivity : ComponentActivity() {
         val win = windowSize()
         // Width of the PANEL's own silhouette (the halo is added around it), so
         // the glass and the glow along it are sized against a known width.
+        // A flat panel can afford to be wider: the curved pane has to stay
+        // narrow for its bow to read as a pane rather than a wall, while a
+        // slab/deck/card is mostly a container for rows — and a wider one fits
+        // the longer option labels without clipping them.
         val panelW = minOf(
-            (win.x * 0.86f).toInt(),
-            (win.y * 0.74f).toInt(),
-            (400 * density).toInt(),
+            (win.x * if (flatPanel) 0.92f else 0.86f).toInt(),
+            (win.y * 0.82f).toInt(),
+            (460 * density).toInt(),
         ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         // The panel must FLOAT on the video with all four rounded corners (and
@@ -3110,7 +3124,7 @@ class PlayerActivity : ComponentActivity() {
         // its bottom curve and hide the last rows. Anything longer scrolls.
         val chrome = (96 * density).toInt()
         val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
-        val maxFraction = (win.y * 0.58f).toInt()
+        val maxFraction = (win.y * if (flatPanel) 0.70f else 0.58f).toInt()
         val minPanel = (110 * density).toInt()
         val panelH = (preferredHeightDp * density).toInt()
             .coerceAtMost(fitsScreen)
@@ -3260,13 +3274,20 @@ class PlayerActivity : ComponentActivity() {
     ): Dialog {
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
-        val halo = glassHaloPx
+        // Same skin-aware margin as [presentGlass]: a flat panel keeps a small
+        // one, the curved pane keeps room for its neon.
+        val halo = if (PlayerSkins.normalize(skin) == PlayerSkins.GLASS) {
+            glassHaloPx
+        } else {
+            (10 * density).toInt()
+        }
         val panel = CurvedGlassPanel(this).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             haloPx = halo.toFloat()
             startColor = accentStartColor
             midColor = accentMidColor
             endColor = accentEndColor
+            applySkin(skin)
         }
         panel.addView(ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(accentMidColor)
@@ -4250,6 +4271,11 @@ class PlayerActivity : ComponentActivity() {
             this.text = text
             dpText(12f)
             setTextColor(0xFFE6EAF3.toInt())
+            // The label keeps a fixed slice of the row so the controls' scroll
+            // area is the same on every row (and always the wider part).
+            maxWidth = (104 * density).toInt()
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
             this.text = text
@@ -4538,8 +4564,39 @@ class PlayerActivity : ComponentActivity() {
             maxWidth = (108 * density).toInt()
         }
 
-        fun controlRow(label: String, vararg controls: View): LinearLayout =
-            LinearLayout(this).apply {
+        /**
+         * One labelled row of controls.
+         *
+         * The pills scroll HORIZONTALLY inside the row when they do not all fit.
+         * They used to be laid out at their natural width with nothing to scroll
+         * them: on a phone in landscape the row is a few hundred dp wide, so a
+         * row with four options ("Classic / Cinema / Boxed / Mono", or "None /
+         * Outline / Shadow" plus its read-out) ran past the panel's edge, where
+         * the panel's own clip cut the last pill in half — the reported "the
+         * Custom button is going out of the curve, and the ones below it too,
+         * and it won't scroll so I can't pick them". A row that scrolls can
+         * always be reached, whatever the skin's width or the system font size.
+         */
+        fun controlRow(label: String, vararg controls: View): LinearLayout {
+            val pills = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutDirection = LinearLayout.LAYOUT_DIRECTION_LTR
+            }
+            controls.forEachIndexed { i, control ->
+                // The control's OWN params are kept (a colour swatch is a fixed
+                // 32x22dp box, not a wrap-content pill); only the gap between
+                // them is added.
+                val lp = (control.layoutParams as? LinearLayout.LayoutParams)
+                    ?: LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                if (i > 0) lp.marginStart = (5 * density).toInt()
+                control.layoutParams = lp
+                pills.addView(control)
+            }
+            return LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
@@ -4553,11 +4610,21 @@ class PlayerActivity : ComponentActivity() {
                     setColor(0x14FFFFFF.toInt())
                 }
                 addView(rowLabel(label))
-                addView(View(this@PlayerActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-                })
-                controls.forEach { addView(it) }
+                addView(
+                    android.widget.HorizontalScrollView(this@PlayerActivity).apply {
+                        isHorizontalScrollBarEnabled = false
+                        overScrollMode = View.OVER_SCROLL_NEVER
+                        clipToPadding = false
+                        addView(pills, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ))
+                    },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        .apply { marginStart = (6 * density).toInt() }
+                )
             }
+        }
 
         fun addRow(row: View) {
             panel.addView(row, LinearLayout.LayoutParams(

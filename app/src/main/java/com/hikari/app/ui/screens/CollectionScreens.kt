@@ -1311,6 +1311,9 @@ private fun TmdbSourceSheet(
         media = when {
             t.forcesTv -> "tv"
             t == TmdbSourceType.COLLECTION -> "movie"
+            // A one-title source takes its shape from the title the user
+            // picks, not from a chip.
+            t == TmdbSourceType.TITLE -> "all"
             t.isPerson || t == TmdbSourceType.LIST -> "all"
             else -> "movie"
         }
@@ -1335,10 +1338,17 @@ private fun TmdbSourceSheet(
 
     fun add() {
         if (saving) return
+        val choice = picked
         val spec = TmdbSpec(
             type = type,
-            id = picked?.id ?: typedId.orEmpty(),
-            media = media,
+            id = choice?.id ?: typedId.orEmpty(),
+            // The picked title knows whether it is a film or a show — that is
+            // what the media chip cannot say for a one-title source.
+            media = if (type == TmdbSourceType.TITLE && !choice?.media.isNullOrBlank()) {
+                choice.media
+            } else {
+                media
+            },
             sort = if (type == TmdbSourceType.DISCOVER || type == TmdbSourceType.COMPANY ||
                 type == TmdbSourceType.NETWORK
             ) sort else "popularity.desc",
@@ -1347,7 +1357,7 @@ private fun TmdbSourceSheet(
             title = displayTitle.trim(),
         )
         val given = displayTitle.trim()
-        val known = picked?.name?.takeIf { it.isNotBlank() }
+        val known = choice?.name?.takeIf { it.isNotBlank() }
         val name = given.ifBlank { known.orEmpty() }
         if (name.isNotBlank()) {
             onAdd(sourcesFor(name, spec))
@@ -1363,6 +1373,7 @@ private fun TmdbSourceSheet(
     }
 
     val hint = when (type) {
+        TmdbSourceType.TITLE -> tr("A film or show name, or a TMDB id.")
         TmdbSourceType.LIST -> tr("A list id, or a themoviedb.org/list link.")
         TmdbSourceType.COMPANY -> tr("Marvel Studios, 420, or a company link.")
         TmdbSourceType.NETWORK -> tr("213 for Netflix, 49 for HBO, 2739 for Disney+.")
@@ -1373,6 +1384,7 @@ private fun TmdbSourceSheet(
         TmdbSourceType.PRESET -> ""
     }
     val fieldLabel = when (type) {
+        TmdbSourceType.TITLE -> tr("Film or show name")
         TmdbSourceType.LIST -> tr("List id or link")
         TmdbSourceType.COMPANY -> tr("Studio name or id")
         TmdbSourceType.NETWORK -> tr("Network name or id")
@@ -1384,6 +1396,9 @@ private fun TmdbSourceSheet(
     val mediaOptions: List<Pair<String, String>> = when {
         type.forcesTv -> listOf("tv" to tr("Series"))
         type == TmdbSourceType.COLLECTION -> listOf("movie" to tr("Movies"))
+        // A one-title source is filtered by the title itself, so there is
+        // nothing to choose here — the search result decides.
+        type == TmdbSourceType.TITLE -> emptyList()
         type.isPerson || type == TmdbSourceType.LIST ->
             listOf("all" to tr("Both"), "movie" to tr("Movies"), "tv" to tr("Series"))
         else -> listOf("movie" to tr("Movies"), "tv" to tr("Series"))
@@ -1485,23 +1500,25 @@ private fun TmdbSourceSheet(
                         )
                     }
                 }
-                items(hits.distinctBy { it.id }, key = { it.id }) { hit ->
+                items(hits.distinctBy { it.id + "|" + it.media }, key = { it.id + "|" + it.media }) { hit ->
                     PickerLine(
                         label = hit.name,
                         supporting = hit.subtitle.ifBlank { "ID ${hit.id}" },
-                        selected = picked?.id == hit.id,
+                        selected = picked?.id == hit.id && picked?.media == hit.media,
                     ) { picked = hit }
                 }
 
-                item {
-                    SheetHeading(
-                        if (mediaOptions.size == 1) tr("Media") else tr("Movies or series?")
-                    )
-                }
-                item {
-                    ChipRow {
-                        mediaOptions.forEach { (key, label) ->
-                            ChoiceChip(label = label, selected = media == key) { media = key }
+                if (mediaOptions.isNotEmpty()) {
+                    item {
+                        SheetHeading(
+                            if (mediaOptions.size == 1) tr("Media") else tr("Movies or series?")
+                        )
+                    }
+                    item {
+                        ChipRow {
+                            mediaOptions.forEach { (key, label) ->
+                                ChoiceChip(label = label, selected = media == key) { media = key }
+                            }
                         }
                     }
                 }

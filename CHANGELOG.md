@@ -1,3 +1,27 @@
+## 0.6.1
+
+Test build — the search stops getting stuck, the player's panels learn the player's skin, and a catalog can hold one title. Plus: no extension gets to sell you anything.
+
+**A search can no longer wedge itself.** The report was specific and infuriating: the same episode sometimes came back with a dozen servers, sometimes with two, sometimes only Nuvio's; sometimes the sweep froze at "87 of 159" and never loaded another source. The cause was one bad extension. A third-party plugin that blocks inside its own `synchronized` code can never be cancelled — nothing inside the call ever runs again — and until now such a call held its search slot for the rest of the session: a handful of them shrank the gates until the sweep had no room left to ask anyone, which is exactly "it found everything the first time and almost nothing the second". Now:
+
+- Every gated cross-extension call is registered as in-flight with the provider it belongs to, and a watchdog (every 15s) refunds the slot of any call older than 200 seconds and marks that provider as hung — for the rest of the session it is skipped before its slot is ever taken. A wedged extension can no longer spend the budget of the ones that work.
+- The sweep no longer silently drops repos it ran out of budget for: the leftovers are collected and asked in a **second round**, up to six rounds, skipping anything hung. The episodes that used to reach "146 other repos asked" and stop now finish the list.
+- A hung provider is named on the player's report line ("stopped responding earlier") instead of just quietly missing from the results, and the stream ledger that remembers what a server once returned now lasts the whole session (an hour) rather than 15 minutes, so a server found once stops flickering in and out of the list.
+
+**The player's panels follow the player's skin.** Source, Quality, Audio, Subtitles, the subtitle-style editor and the loading card were always the curved neon glass pane, whatever skin was chosen — a minimal player that opened a neon bubble the moment you tapped anything. Each skin now has its own panel: **Minimal** gets a flat, quiet, hairline-bordered sheet; **Cinema** a flat, near-black deck; **Neon** the accent-tinted glass; only **Glass** keeps the curved pane with its glow. The halo, the width and the row bending follow the same decision.
+
+**The subtitle-style editor fits and scrolls.** Its rows (presets, text colour, weight, outline, shadow) were laid out in a fixed row, so "Custom" pushed the swatches off past the rounded edge — invisible and unreachable, since the panel could not scroll sideways. Each row's controls now live in a horizontally scrollable strip with the label kept to one ellipsized line, so every option is reachable at any text size.
+
+**Personal catalogs can hold a single title.** The TMDB source picker could build a studio, a network, a list, a person, a director or a custom query — but not simply "this one film" or "this one show", which is the most obvious thing a personal catalog is for. There is now a **Movie or series** source: type a name (or paste a TMDB id or link), pick the title from the results, and the row is that title. One query matches both shapes, so each result says which it is, and the source remembers it.
+
+**Search finds your own catalogs, and says which one.** A title you imported or built into a personal catalog was invisible to Search — Search only ever asked extensions. Results now open with a **"From your collections"** row: the titles your own collections carry, matched by name, each labelled with the collection (and folder) it came from, in front of the provider grid. Imported lists are matched with no network at all; a hand-built TMDB source answers from its first page under a short timeout, so the local half of a search can never hold the network half up.
+
+**Extensions no longer get to sell you anything.** A repo or an extension that hangs a "goal achieved — send extra love — watch an ad to support" card, a ko-fi or Patreon button, or a donation link off its content had it rendered inside Hikari. Not any more:
+
+- A navigation to a donation host (ko-fi, Buy Me a Coffee, Patreon, PayPal, GitHub Sponsors, Open Collective, Liberapay, Traketeer, Saweria, Sociabuzz, GoFundMe, Kickstarter and the rest) or to a donate/sponsor path on any host is **refused before it loads**, in the in-app browser and in every link that opens one — with "Blocked a donation page" instead of the pitch.
+- A page that DOES load has its promo blocks hidden by an injected cleaner: the usual money classes and ids, and — so a card with no telltale class still goes — any plausible box whose text is only a funding ask and which contains a link or button. Real prose stays (a sentence that merely mentions support is not a donation card), and a video is never touched.
+- Extension-supplied text is cleaned before it is drawn: repo and plugin descriptions in the Extensions screen have markup and donation links stripped and go blank when that is all they were, and a promo-only header or info row an extension pushes into its own settings screen is dropped.
+
 ## 0.6.0
 
 Test build — the app gets a wardrobe. The big surfaces are now yours to shape: the Featured banner on Home, the header a title page opens with, the decoration on every poster, and the player's own control shell. Plus one new way to fill a folder: **import a list of titles** from JSON.

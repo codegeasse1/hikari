@@ -36,6 +36,7 @@ import androidx.lifecycle.lifecycleScope
 import com.hikari.app.HikariApp
 import com.hikari.app.net.AdBlocker
 import com.hikari.app.net.Http
+import com.hikari.app.net.PromoGuard
 import com.hikari.app.player.PlayerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -216,6 +217,17 @@ class WebViewActivity : ComponentActivity() {
             "open \"$startUrl\" (title=\"$pageTitle\", verifyHost=${verifyHost ?: "-"}, " +
                 "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"})"
         )
+
+        // An extension's "support us" link is never opened: it is a funding
+        // pitch, not something to watch (see PromoGuard — the same rule the
+        // page itself is held to). Refused before the WebView is built, so the
+        // user gets a reason instead of a blank page.
+        if (PromoGuard.isDonationUrl(startUrl)) {
+            com.hikari.app.data.Logs.log("WebView", "refused donation page $startUrl")
+            Toast.makeText(this, "Blocked a donation page", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -447,6 +459,15 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest
             ): Boolean {
+                // A donation / "support the developer" page is never part of
+                // watching something (see PromoGuard) — these are exactly the
+                // links an extension hangs off its content, and once they load
+                // they are a funding pitch with a progress bar and a pay
+                // button. Refused here, before a single byte of them arrives.
+                if (PromoGuard.isDonationUrl(request.url.toString())) {
+                    showBlockedToast("Blocked a donation page")
+                    return true
+                }
                 // Video-verification mode (verifyAllowRedirects): the streaming
                 // site's redirect to the real video page is the whole point —
                 // skip ALL main-frame redirect blocking here. Ad hosts are
@@ -495,6 +516,16 @@ class WebViewActivity : ComponentActivity() {
                 // or rewrite them and the page simply reloads itself into the
                 // same challenge — the verify page looping instead of passing.
                 if (isCloudflareInfra(u)) return null
+                // Donation / funding pages are refused at the request level
+                // too: a main-frame navigation that reached the network any
+                // other way (a meta refresh, a script assignment, a redirect
+                // chain) still gets an empty body instead of a donate card.
+                if (request.isForMainFrame && PromoGuard.isDonationUrl(u)) {
+                    showBlockedToast("Blocked a donation page")
+                    return WebResourceResponse(
+                        "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
+                    )
+                }
                 if (host.isNotBlank()) {
                     // Whitelist wins first — a site the user unblocked keeps
                     // all its subdomains usable.
@@ -582,6 +613,7 @@ class WebViewActivity : ComponentActivity() {
                     }
                 }
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
+                view?.evaluateJavascript(PROMO_CLEAN_JS, null)
                 // The verification view exists only to pass a Cloudflare
                 // challenge — it must never offer to play or hand off video
                 // (the site page would just start its player + ads).
@@ -699,6 +731,12 @@ class WebViewActivity : ComponentActivity() {
                         private fun relay(url: String?) {
                             if (relayed || url.isNullOrBlank()) return
                             relayed = true
+                            // A popup to a donation page is an ad-style popup
+                            // with a cause: never relayed into the main view.
+                            if (PromoGuard.isDonationUrl(url)) {
+                                showBlockedToast("Blocked a donation page")
+                                return
+                            }
                             // Popup protection: only relay popups that belong to
                             // the site (same host/subdomain or whitelisted).
                             // about:blank popunders and foreign ad popups are
@@ -1456,6 +1494,76 @@ class WebViewActivity : ComponentActivity() {
               try{
                 new MutationObserver(clean).observe(document.documentElement,{childList:true,subtree:true});
               }catch(e){}
+            })();
+        """.trimIndent()
+
+        /**
+         * Hides the extensions' (and the pages') funding pitch — the "goal
+         * achieved / send extra love / watch an ad to support" card, the ko-fi
+         * and Patreon buttons, the donate strip. Hiding (not removing) keeps
+         * page scripts that query those nodes working, and a video is never
+         * touched. It looks for two things: the usual class/id/caption of a
+         * money box, and the ASK itself — a short element whose text is only a
+         * funding line and which contains a link or button — so a card with no
+         * telling class still goes, while a real page mentioning donations in a
+         * paragraph (a login page's terms, an article) stays.
+         */
+        private val PROMO_CLEAN_JS = """
+            (function(){
+              if(window.__hikariPromoClean)return;
+              window.__hikariPromoClean=true;
+              var SEL=[
+                '[class*="donate"]','[id*="donate"]','[class*="donation"]','[id*="donation"]',
+                '[class*="buymeacoffee"]','[id*="buymeacoffee"]','[class*="ko-fi"]','[id*="ko-fi"]',
+                '[class*="kofi"]','[id*="kofi"]','[class*="patreon"]','[id*="patreon"]',
+                '[class*="paypal"]','[id*="paypal"]','[class*="sponsor"]','[id*="sponsor"]',
+                '[class*="funding"]','[id*="funding"]','[class*="fundrais"]','[id*="fundrais"]',
+                '[class*="support-us"]','[class*="supportus"]','[class*="tip-jar"]','[class*="tipjar"]',
+                '[class*="support-banner"]','[id*="support-banner"]','[class*="promo-card"]',
+                'a[href*="ko-fi."]','a[href*="kofi."]','a[href*="buymeacoffee"]','a[href*="patreon."]',
+                'a[href*="paypal."]','a[href*="opencollective"]','a[href*="liberapay"]',
+                'a[href*="trakteer"]','a[href*="saweria."]','a[href*="sociabuzz"]','a[href*="donationalerts"]',
+                'a[href*="github.com/sponsors"]','a[href*="gofundme"]','a[href*="kickstarter"]'
+              ];
+              var PROMO=/buy me a coffee|ko-?fi[.]?com|buymeacoffee|become a patron|become a sponsor|support (us|me|this|our) (on|via|through)|watch an ad to support|send extra love|make a donation|donate (now|today|to us|to this)|goal (achieved|completed)|supporters made this happen|sponsor (this|our) (repo|project|channel|extension)|fund (this|our) (repo|project|extension)|not affiliated with the cloudstream app/i;
+              var MONEY=/ko-?fi[.]|buymeacoffee|patreon[.]com|paypal[.]|github[.]com\/sponsors|opencollective|liberapay|trakteer|saweria[.]|sociabuzz|donationalerts|gofundme|kickstarter|cash[.]app|venmo[.]com/i;
+              function hide(e){
+                try{
+                  if(!e||!e.parentNode)return;
+                  if(e.closest('video')||e.querySelector('video'))return;
+                  e.style.setProperty('display','none','important');
+                }catch(x){}
+              }
+              function clean(){
+                var i,j,els;
+                for(i=0;i<SEL.length;i++){
+                  try{
+                    els=document.querySelectorAll(SEL[i]);
+                    for(j=0;j<els.length;j++)hide(els[j]);
+                  }catch(x){}
+                }
+                try{
+                  els=document.querySelectorAll('a,button,[role="button"]');
+                  for(i=0;i<els.length;i++){
+                    var a=els[i];
+                    if(!a||!a.parentNode)continue;
+                    var href=a.getAttribute('href')||a.getAttribute('data-url')||'';
+                    if(!PROMO.test(a.textContent||'')&&!MONEY.test(href))continue;
+                    hide(a);
+                    var box=a.parentNode,up=0;
+                    while(box&&up<3){
+                      up++;
+                      var t=(box.textContent||'').replace(/\s+/g,' ').trim();
+                      if(t.length>0&&t.length<300&&PROMO.test(t)){hide(box);}
+                      box=box.parentNode;
+                    }
+                  }
+                }catch(x){}
+              }
+              clean();
+              try{
+                new MutationObserver(clean).observe(document.documentElement,{childList:true,subtree:true});
+              }catch(x){}
             })();
         """.trimIndent()
 

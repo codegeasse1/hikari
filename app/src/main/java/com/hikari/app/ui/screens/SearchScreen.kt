@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -87,6 +88,9 @@ class SearchViewModel(
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
 
+    /** The user's own collections — the local half of a search. */
+    private val collections = com.hikari.app.data.CollectionsRepository(manager)
+
     // Query + selection live in SavedStateHandle so they survive the activity
     // being recreated while the video player runs. Without this, watching a
     // stream from the search results and coming back found an empty screen (the
@@ -113,15 +117,35 @@ class SearchViewModel(
     val results: StateFlow<List<MediaItem>> = SearchSession.results
     val searching: StateFlow<Boolean> = SearchSession.searching
 
+    /**
+     * Titles matched inside the user's OWN collections ("From your
+     * collections"): an imported list or a hand-built TMDB source is theirs,
+     * not an extension's, so nothing else would ever surface it in Search.
+     */
+    private val _collectionHits =
+        MutableStateFlow<List<com.hikari.app.data.CollectionsRepository.CollectionHit>>(emptyList())
+    val collectionHits: StateFlow<List<com.hikari.app.data.CollectionsRepository.CollectionHit>> =
+        _collectionHits.asStateFlow()
+
     init {
         viewModelScope.launch {
             combine(_query.debounce(400).distinctUntilChanged(), _selectedProviders) { q, _ -> q }
                 .collectLatest { q ->
                     if (q.isBlank()) {
+                        _collectionHits.value = emptyList()
                         SearchSession.clear()
                         return@collectLatest
                     }
-                    SearchSession.search(repo, q, _selectedProviders.value)
+                    // Both halves run together, and a newer query cancels both:
+                    // the extension sweep and the local catalog lookup can't
+                    // disagree about which query they are answering.
+                    kotlinx.coroutines.coroutineScope {
+                        launch {
+                            _collectionHits.value = runCatching { collections.searchTitles(q) }
+                                .getOrDefault(emptyList())
+                        }
+                        launch { SearchSession.search(repo, q, _selectedProviders.value) }
+                    }
                 }
         }
     }
@@ -167,6 +191,7 @@ fun SearchScreen(
     val query by vm.query.collectAsState()
     val results by vm.results.collectAsState()
     val searching by vm.searching.collectAsState()
+    val collectionHits by vm.collectionHits.collectAsState()
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
 
@@ -330,14 +355,14 @@ fun SearchScreen(
         if (searching) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
-        if (query.isBlank() && results.isEmpty()) {
+        if (query.isBlank() && results.isEmpty() && collectionHits.isEmpty()) {
             EmptyState(
                 title = tr("Search"),
                 subtitle = tr("Type something to search across every provider."),
                 actionLabel = null,
                 action = null
             )
-        } else if (!searching && results.isEmpty()) {
+        } else if (!searching && results.isEmpty() && collectionHits.isEmpty()) {
             EmptyState(
                 title = tr("No results"),
                 subtitle = I18n.t("Nothing matched \"$query\". Try a different title, or deselect providers in the row above."),
@@ -346,9 +371,30 @@ fun SearchScreen(
             )
         } else {
             val namesById = providers.associateBy({ it.config.id }, { it.config.name })
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(4),
-                modifier = Modifier.fillMaxSize(),
+            Column(Modifier.fillMaxSize()) {
+                // The user's own collections first: an imported list or a
+                // hand-built TMDB source belongs to them, and no extension
+                // would ever hand it back.
+                if (collectionHits.isNotEmpty()) {
+                    CollectionHitsRow(collectionHits) { hit ->
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.detail(
+                                hit.item.providerId,
+                                hit.item.type,
+                                hit.item.id,
+                                hit.item.title,
+                                hit.item.posterUrl,
+                                hit.item.rawType,
+                            )
+                        )
+                    }
+                }
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
                 contentPadding = PaddingValues(
                     start = 10.dp,
                     end = 10.dp,
@@ -416,6 +462,70 @@ fun SearchScreen(
                             )
                         }
                     }
+                }
+            }
+            }
+        }
+    }
+}
+
+/**
+ * "From your collections": the titles a search matched inside the user's own
+ * catalogs, each labelled with the collection it came from. A row of its own
+ * above the provider grid, because these hits answer a different question —
+ * "is this already in something I built?" — and no extension will ever return
+ * them.
+ */
+@Composable
+private fun CollectionHitsRow(
+    hits: List<com.hikari.app.data.CollectionsRepository.CollectionHit>,
+    onOpen: (com.hikari.app.data.CollectionsRepository.CollectionHit) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            tr("From your collections"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 6.dp),
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(hits, key = { it.item.uniqueId + "|" + it.label }) { hit ->
+                Column(
+                    Modifier
+                        .width(104.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onOpen(hit) }
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(2f / 3f)
+                            .clip(RoundedCornerShape(10.dp))
+                    ) {
+                        AsyncImage(
+                            model = Artwork.model(hit.item),
+                            contentDescription = hit.item.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                    Text(
+                        hit.item.title,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        hit.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

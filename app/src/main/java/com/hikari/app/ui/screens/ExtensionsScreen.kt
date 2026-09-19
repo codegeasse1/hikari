@@ -105,6 +105,7 @@ import com.hikari.app.data.RepoLoadState
 import com.hikari.app.data.Site
 import com.hikari.app.data.SourceUrls
 import com.hikari.app.net.Http
+import com.hikari.app.net.PromoGuard
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.ui.components.EmptyState
@@ -1132,7 +1133,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
                     name = niceRepoName(url, obj.optString("name")),
-                    description = obj.optString("description"),
+                    description = PromoGuard.cleanText(obj.optString("description")),
                     kind = kind,
                 )
                 // Adding a repo that is already in the list (same repo — the
@@ -1250,7 +1251,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val name = niceRepoName(repo.url, root.optString("name"))
-            val description = root.optString("description")
+            val description = PromoGuard.cleanText(root.optString("description"))
             val meta = if (name != repo.name || description != repo.description)
                 repo.copy(name = name, description = description)
             else null
@@ -1303,7 +1304,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val name = niceRepoName(repo.url, root.optString("name"))
-            val description = root.optString("description")
+            val description = PromoGuard.cleanText(root.optString("description"))
             val meta = if (name != repo.name || description != repo.description)
                 repo.copy(name = name, description = description)
             else null
@@ -1330,7 +1331,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             return emptyList<Cs3RepoPlugin>() to null
         }
         val name = niceRepoName(repo.url, root.optString("name"))
-        val description = root.optString("description")
+        val description = PromoGuard.cleanText(root.optString("description"))
         val meta = if (name != repo.name || description != repo.description)
             repo.copy(name = name, description = description)
         else null
@@ -1467,7 +1468,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 ?: emptyList()
         return Cs3RepoPlugin(
             name = name,
-            description = o.optString("description"),
+            description = PromoGuard.cleanText(o.optString("description")),
             url = url,
             // Repos spell this field three ways depending on who wrote them
             // (CloudStream → iconUrl, SkyStream/Nuvio → logo, others → icon).
@@ -3805,8 +3806,16 @@ private fun SettingsElementRow(
     onToggle: (String, Boolean) -> Unit,
 ) {
     val type = el.optString("type")
-    val label = el.optString("label")
-    val description = el.optString("description").ifBlank { null }
+    val rawLabel = el.optString("label")
+    val rawDescription = el.optString("description").ifBlank { null }
+    // Extensions write this screen's rows themselves, and a "header"/"info"
+    // row is a favourite place for a funding ask ("Support us on Patreon", a
+    // ko-fi link). Nothing about MONEY belongs in an extension's settings, so
+    // a promo-only row is dropped outright and every other string is cleaned
+    // (markup and donation links stripped) before it is drawn.
+    if ((type == "header" || type == "info") && PromoGuard.isPromoText(rawLabel)) return
+    val label = PromoGuard.cleanText(rawLabel).ifBlank { rawLabel }
+    val description = rawDescription?.let { PromoGuard.cleanText(it).ifBlank { null } }
     when (type) {
         "header" -> Column(Modifier.padding(top = 12.dp, bottom = 4.dp)) {
             Text(

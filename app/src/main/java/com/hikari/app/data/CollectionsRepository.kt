@@ -37,6 +37,10 @@ class CollectionsRepository(private val manager: ProviderManager) {
     private val gate = Semaphore(6)
     private val perCatalogTimeoutMs = 15_000L
 
+    /** A collection-title probe a search runs: one page from one source, and it
+     *  must never hold the search up (see [searchTitles]). */
+    private val searchTimeoutMs = 8_000L
+
     /** One row per source of [folder], in the folder's own source order. */
     fun folderRows(collection: Collection, folder: CollectionFolder): Flow<List<CatalogRow>> =
         channelFlow flow@{
@@ -237,6 +241,81 @@ class CollectionsRepository(private val manager: ProviderManager) {
             rawType = source.rawType,
         )
     }
+
+    /** One title found in the user's own collections. */
+    data class CollectionHit(
+        val item: MediaItem,
+        /** "Collection · Folder" — what the Search tab prints under the poster,
+         *  so a hit says which catalog it came from. */
+        val label: String,
+    )
+
+    /**
+     * The LOCAL half of Search: the titles the user's own collections carry,
+     * matched by name and labelled with the collection they came from.
+     *
+     * Imported lists ([CatalogSourceKind.ITEMS]) are already [MediaItem]s inside
+     * the collection, so they are matched with no network at all — and that is
+     * the case that matters most, because a personal catalog is usually exactly
+     * that: a list someone imported. A hand-built TMDB source has no local copy
+     * of its titles, so its first page is fetched (under the same small gate
+     * and a tight timeout the rows use). PROVIDER sources are skipped on
+     * purpose: their extension is what the search itself searches, and asking
+     * it here as well would double every result.
+     */
+    suspend fun searchTitles(query: String, limit: Int = 24): List<CollectionHit> =
+        withContext(Dispatchers.IO) {
+            val q = query.trim()
+            if (q.length < 2) return@withContext emptyList()
+            val needle = q.lowercase()
+            val collections = runCatching {
+                com.hikari.app.HikariApp.instance.store.collections()
+            }.getOrDefault(emptyList())
+            val out = ArrayList<CollectionHit>()
+            val seen = HashSet<String>()
+            for (collection in collections) {
+                for (folder in collection.folders) {
+                    for (source in folder.sources) {
+                        if (out.size >= limit) break
+                        val items: List<MediaItem> = when (source.kind) {
+                            CatalogSourceKind.ITEMS -> runCatching {
+                                NuvioCatalogImport.decode(source.itemsJson)
+                            }.getOrDefault(emptyList())
+
+                            CatalogSourceKind.TMDB -> {
+                                val spec = source.spec
+                                    ?: TmdbPresets.byKey(source.tmdbPreset)?.let { p ->
+                                        TmdbSpec(
+                                            type = TmdbSourceType.PRESET,
+                                            preset = p.key,
+                                            media = if (p.isMovie) "movie" else "tv",
+                                        )
+                                    }
+                                if (spec == null) emptyList() else {
+                                    withTimeoutOrNull(searchTimeoutMs) {
+                                        runCatching { TmdbSources.page(spec, 1) }
+                                            .getOrDefault(emptyList())
+                                    }.orEmpty()
+                                }
+                            }
+
+                            CatalogSourceKind.PROVIDER -> emptyList()
+                        }
+                        val label = listOf(collection.name, folder.name)
+                            .filter { it.isNotBlank() }
+                            .distinct()
+                            .joinToString(" · ")
+                        for (item in items) {
+                            if (out.size >= limit) break
+                            if (!item.title.lowercase().contains(needle)) continue
+                            if (!seen.add(item.uniqueId + "|" + collection.id)) continue
+                            out += CollectionHit(item, label.ifBlank { collection.name })
+                        }
+                    }
+                }
+            }
+            out
+        }
 
     /** A merged row for one folder: its sources' items, deduped, source order. */
     private suspend fun folderRow(collection: Collection, folder: CollectionFolder): CatalogRow? {

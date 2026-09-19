@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 enum class TmdbSourceType(val key: String, val label: String) {
     PRESET("preset", "Presets"),
+    TITLE("title", "Movie or series"),
     LIST("list", "Public list"),
     COMPANY("company", "Production"),
     NETWORK("network", "Network"),
@@ -93,7 +94,14 @@ object TmdbGenres {
 }
 
 /** One hit of the editor's Search button (a company, network, person, list…). */
-data class TmdbHit(val id: String, val name: String, val subtitle: String = "")
+data class TmdbHit(
+    val id: String,
+    val name: String,
+    val subtitle: String = "",
+    /** "movie" or "tv" — only a TITLE search fills this in, where one query
+     *  matches both shapes and each result has to say which one it is. */
+    val media: String = "",
+)
 
 /**
  * A saved TMDB source, stored as JSON in [CatalogSource.tmdbSpec].
@@ -197,7 +205,17 @@ object TmdbSources {
         if (spec.type == TmdbSourceType.PRESET) return TmdbPresets.nameOf(spec.preset)
         val id = numericId(spec.id)
         if (id != null) {
-            endpointFor(spec.type, id)?.let { ep ->
+            // A TITLE source is one movie OR one show and the spec's media
+            // decides which — but a source saved before its shape was known
+            // (media "" / "all") is asked as both and answers with whichever
+            // one exists.
+            val endpoints = when (spec.type) {
+                TmdbSourceType.TITLE -> if (spec.isTv) listOf("/tv/$id")
+                    else if (spec.isMovie) listOf("/movie/$id")
+                    else listOf("/movie/$id", "/tv/$id")
+                else -> listOfNotNull(endpointFor(spec.type, id))
+            }
+            for (ep in endpoints) {
                 names[ep]?.let { return it }
                 val d = TmdbResolver.apiGet(ep, emptyMap())
                 val n = d?.optString("name").orEmpty().ifBlank { d?.optString("title").orEmpty() }
@@ -220,6 +238,7 @@ object TmdbSources {
     /** A readable stand-in when TMDB has not (yet) answered with a name. */
     fun fallbackName(spec: TmdbSpec): String = when (spec.type) {
         TmdbSourceType.PRESET -> TmdbPresets.nameOf(spec.preset)
+        TmdbSourceType.TITLE -> "Title"
         TmdbSourceType.LIST -> "TMDB list"
         TmdbSourceType.COLLECTION -> "TMDB collection"
         TmdbSourceType.COMPANY -> "Studio"
@@ -235,8 +254,18 @@ object TmdbSources {
         if (spec.type == TmdbSourceType.PRESET) {
             return TmdbPresets.byKey(spec.preset)?.detail ?: "Production · Movies · Popular"
         }
+        // A one-title row has no "kind" worth printing twice — "Movie" or
+        // "Series" is already the whole caption.
+        if (spec.type == TmdbSourceType.TITLE) {
+            return when {
+                spec.isTv -> "Series"
+                spec.isMovie -> "Movie"
+                else -> "Movie or series"
+            }
+        }
         val kind = when (spec.type) {
             TmdbSourceType.PRESET -> "Preset"
+            TmdbSourceType.TITLE -> "Title"
             TmdbSourceType.LIST -> "Public list"
             TmdbSourceType.COMPANY -> "Production"
             TmdbSourceType.NETWORK -> "Network"
@@ -272,6 +301,7 @@ object TmdbSources {
             TmdbSourceType.COLLECTION -> "collection"
             TmdbSourceType.PERSON, TmdbSourceType.DIRECTOR -> "person"
             TmdbSourceType.LIST -> "list"
+            TmdbSourceType.TITLE -> if (spec.isTv) "tv" else "movie"
             else -> return null
         }
         return "https://www.themoviedb.org/$path/$id"
@@ -282,6 +312,20 @@ object TmdbSources {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         numericId(q)?.let { id ->
+            // A one-title source: the typed id IS the title, and TMDB is asked
+            // for both shapes so the hit can say which one it is (an id is
+            // only unique per shape — 550 is Fight Club, 1399 is a show).
+            if (type == TmdbSourceType.TITLE) {
+                val hits = ArrayList<TmdbHit>()
+                for (m in listOf("movie", "tv")) {
+                    val d = TmdbResolver.apiGet("/$m/$id", emptyMap()) ?: continue
+                    val n = d.optString("title").ifBlank { d.optString("name") }
+                    if (n.isBlank() || n == "null") continue
+                    hits.add(TmdbHit(id, n, if (m == "tv") "Series · ID $id" else "Movie · ID $id", m))
+                }
+                if (hits.isEmpty()) hits.add(TmdbHit(id, q, "ID $id"))
+                return hits
+            }
             val ep = endpointFor(type, id)
             val n = if (ep != null) {
                 val d = TmdbResolver.apiGet(ep, emptyMap())
@@ -294,6 +338,10 @@ object TmdbSources {
             TmdbSourceType.COLLECTION -> "/search/collection"
             TmdbSourceType.PERSON, TmdbSourceType.DIRECTOR -> "/search/person"
             TmdbSourceType.LIST -> "/search/list"
+            // One query, both shapes: /search/multi answers with movies and
+            // shows at once, which is exactly the "which one do you mean?"
+            // question a one-title source is asking.
+            TmdbSourceType.TITLE -> "/search/multi"
             else -> return emptyList()
         }
         val data = TmdbResolver.apiGet(path, mapOf("query" to q)) ?: return emptyList()
@@ -306,8 +354,22 @@ object TmdbSources {
             if (id.isBlank() || id == "null") continue
             val name = o.optString("name").ifBlank { o.optString("title") }.trim()
             if (name.isBlank() || name == "null") continue
-            val sub = if (multi) o.optString("known_for_department") else o.optString("origin_country")
-            out.add(TmdbHit(id, name, sub.takeIf { it.isNotBlank() && it != "null" }.orEmpty()))
+            val mediaType = o.optString("media_type")
+            if (type == TmdbSourceType.TITLE && mediaType != "movie" && mediaType != "tv") continue
+            val sub = when {
+                type == TmdbSourceType.TITLE ->
+                    if (mediaType == "tv") "Series" else "Movie"
+                multi -> o.optString("known_for_department")
+                else -> o.optString("origin_country")
+            }
+            out.add(
+                TmdbHit(
+                    id,
+                    name,
+                    sub.takeIf { it.isNotBlank() && it != "null" }.orEmpty(),
+                    media = if (type == TmdbSourceType.TITLE) mediaType else "",
+                )
+            )
         }
         return out
     }
@@ -319,6 +381,7 @@ object TmdbSources {
         return when (spec.type) {
             TmdbSourceType.PRESET ->
                 TmdbPresets.byKey(spec.preset)?.let { TmdbPresets.page(it, p) }.orEmpty()
+            TmdbSourceType.TITLE -> title(spec)
             TmdbSourceType.LIST -> list(spec, p)
             TmdbSourceType.COLLECTION -> collection(spec)
             TmdbSourceType.PERSON -> person(spec, director = false)
@@ -327,6 +390,27 @@ object TmdbSources {
             TmdbSourceType.NETWORK -> discover(spec, p, "tv", "with_networks")
             TmdbSourceType.DISCOVER -> discover(spec, p, spec.media.ifBlank { "movie" }, null)
         }
+    }
+
+    /**
+     * A one-title source: the user picked THIS movie or THIS show, so the row
+     * is that title and nothing else. The spec's media says which shape to ask
+     * for; a spec with no shape yet is asked as a movie first and then as a
+     * series, so an old or hand-written source still resolves.
+     */
+    private suspend fun title(spec: TmdbSpec): List<MediaItem> {
+        val id = numericId(spec.id) ?: return emptyList()
+        val order = when {
+            spec.isTv -> listOf("tv")
+            spec.isMovie -> listOf("movie")
+            else -> listOf("movie", "tv")
+        }
+        for (m in order) {
+            val data = TmdbResolver.apiGet("/$m/$id", emptyMap()) ?: continue
+            val kind = if (m == "tv") MediaType.SERIES else MediaType.MOVIE
+            item(data, kind)?.let { return listOf(it) }
+        }
+        return emptyList()
     }
 
     private suspend fun list(spec: TmdbSpec, page: Int): List<MediaItem> {

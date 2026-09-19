@@ -127,6 +127,30 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     /** Room inside this view's bounds for the glow to fade into, in px. */
     var haloPx: Float = 0f
 
+    // ---- Player UI skin (Settings -> Player -> Player UI) -------------------
+    //
+    // The curved neon pane is the GLASS skin's signature, and it stays exactly
+    // as it was for that skin. The other three skins wear their OWN shape
+    // instead — a flat, quiet slab (Minimal), a solid deck with a hairline
+    // (Cinema) or a floating rounded card with an accent edge (Neon) — because
+    // a dialog that keeps the bowed glass while the control bar under it is
+    // square reads as two different apps. The panel is the same view either
+    // way: only its outline, fill and edge treatment change, so no dialog has
+    // to know which skin is on.
+
+    /** True for every skin but GLASS: a plain rounded rectangle instead of the
+     *  bowed pane, with no neon along its sides. */
+    var flat: Boolean = false
+
+    /** Corner radius of the [flat] silhouette, in px. */
+    var flatCornerPx: Float = 16f * resources.displayMetrics.density
+
+    /** Fill and hairline colours of the [flat] silhouette. The border is drawn
+     *  in [flatBorder] at [flatBorderPx]; both are set by [applySkin]. */
+    var flatFill: Int = 0xF20A0C12.toInt()
+    var flatBorder: Int = 0x26FFFFFF
+    var flatBorderPx: Float = resources.displayMetrics.density
+
     /** Air kept between a row and the silhouette's edge, at the widest point.
      *  13dp rather than a hairline: the panel's edge carries a bright rim and
      *  core line, and text sitting a couple of dp off it reads as sliced by the
@@ -138,6 +162,48 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     var startColor: Int = Color.rgb(120, 220, 255)
     var midColor: Int = Color.rgb(150, 140, 255)
     var endColor: Int = Color.rgb(240, 160, 255)
+
+    /**
+     * Wears the Player UI skin [key] (see [PlayerSkins]).
+     *
+     * Glass keeps the curved pane and its neon edge — this view was built for
+     * it and nothing here changes it. The other three skins get the flat
+     * silhouette plus their own fill and hairline, sized to match the control
+     * bar they appear over: Minimal is a barely-there slab with a small radius,
+     * Cinema a solid deck with a squarer corner and a plain hairline, Neon a
+     * fully rounded floating card edged in the accent colour.
+     */
+    fun applySkin(key: String) {
+        val density = resources.displayMetrics.density
+        when (PlayerSkins.normalize(key)) {
+            PlayerSkins.MINIMAL -> {
+                flat = true
+                flatCornerPx = 12f * density
+                flatFill = 0xE8090B12.toInt()
+                flatBorder = 0x1FFFFFFF
+                flatBorderPx = density
+            }
+            PlayerSkins.CINEMA -> {
+                flat = true
+                flatCornerPx = 14f * density
+                flatFill = 0xF20A0C12.toInt()
+                flatBorder = 0x26FFFFFF
+                flatBorderPx = density
+            }
+            PlayerSkins.NEON -> {
+                flat = true
+                flatCornerPx = 22f * density
+                flatFill = 0xD90A0D16.toInt()
+                flatBorder = withAlpha(midColor, 0.55f)
+                flatBorderPx = density
+            }
+            else -> {
+                flat = false
+            }
+        }
+        requestLayout()
+        invalidate()
+    }
 
     private val shapePath = Path()
     private val sidesPath = Path()
@@ -205,15 +271,23 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         val top = shapeTop()
         val right = shapeRight()
         val bottom = shapeBottom()
-        GlassShape.build(shapePath, left, top, right, bottom, bulgeX, concaveX)
-        GlassShape.buildSides(sidesPath, left, top, right, bottom, bulgeX, concaveX)
+        if (flat) {
+            // A plain rounded rectangle: the same box the curved pane occupies,
+            // with the skin's own corner radius. sidesPath is left empty so the
+            // glow loops in onDraw have nothing to stroke (see [applySkin]).
+            val radius = flatCornerPx.coerceAtMost((bottom - top) / 2f)
+                .coerceAtMost((right - left) / 2f)
+            shapePath.reset()
+            shapePath.addRoundRect(left, top, right, bottom, radius, radius, Path.Direction.CW)
+            sidesPath.reset()
+        } else {
+            GlassShape.build(shapePath, left, top, right, bottom, bulgeX, concaveX)
+            GlassShape.buildSides(sidesPath, left, top, right, bottom, bulgeX, concaveX)
+        }
         val density = resources.displayMetrics.density
-        // Same dark glass the old dialog_panel drawable used, so the panel still
-        // sits under the cyan -> violet accent wash the rest of the player uses.
-        // The alpha falls off at the very top and bottom so the panel's flat
-        // edges dissolve instead of drawing a border — in the reference the
-        // silhouette simply fades out where the curves end.
-        fillPaint.shader = LinearGradient(
+        // A flat panel is a solid slab in the skin's own colour (see
+        // [applySkin]); the curved pane keeps the glass gradient it always had.
+        fillPaint.shader = if (flat) null else LinearGradient(
             0f, top, 0f, bottom,
             intArrayOf(
                 0x00161D2E,
@@ -257,8 +331,9 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         rimPaint.color = 0x2E7B5CFF.toInt()
         // Content clears the bowed top/bottom; horizontally the rows bend to the
         // silhouette themselves (see bendRows), so no side padding is added here
-        // — padding on top of a bent row would double the inset.
-        val padV = (haloPx + rowGapPx).toInt()
+        // — padding on top of a bent row would double the inset. A flat panel
+        // has no bowed ends to clear, so its own padding is just a breath of air.
+        val padV = (haloPx + if (flat) 4f * density else rowGapPx).toInt()
         if (paddingTop != padV || paddingBottom != padV ||
             paddingLeft != 0 || paddingRight != 0
         ) {
@@ -267,6 +342,16 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (flat) {
+            // The flat skins' slab: a solid fill with a hairline edge, and no
+            // neon — the glow belongs to the Glass pane (see [applySkin]).
+            fillPaint.color = flatFill
+            canvas.drawPath(shapePath, fillPaint)
+            rimPaint.strokeWidth = flatBorderPx
+            rimPaint.color = flatBorder
+            canvas.drawPath(shapePath, rimPaint)
+            return
+        }
         // The bloom, the panel, then the hot line back on the very edge: drawn
         // in this order the fill hides the inner half of each glow stroke, so
         // the light reads as coming OFF the panel rather than ringed around it.
@@ -327,6 +412,11 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      * scrolling list) are simply left alone.
      */
     private fun bendRows() {
+        // A flat panel (every skin but Glass) has straight sides, so there is no
+        // curve for a row to follow: rows keep the margins they were built with
+        // and the panel's own padding is the only inset. Bending them here would
+        // add the row gap on top of that for nothing.
+        if (flat) return
         var shifted = false
         if (hosts.isEmpty()) {
             shifted = bendHostChildren(this)
