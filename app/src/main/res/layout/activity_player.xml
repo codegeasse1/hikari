@@ -26,7 +26,7 @@
         android:id="@+id/loading_banner"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#000000"
+        android:background="@drawable/player_banner_fallback"
         android:clickable="true"
         android:focusable="true"
         android:visibility="gone">
@@ -38,6 +38,7 @@
             android:scaleType="centerCrop" />
 
         <View
+            android:id="@+id/loading_scrim"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="@drawable/player_banner_scrim" />
@@ -149,7 +150,7 @@
         android:id="@+id/loading_spinner"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#000000"
+        android:background="@drawable/player_banner_fallback"
         android:clickable="true"
         android:focusable="true"
         android:visibility="gone">

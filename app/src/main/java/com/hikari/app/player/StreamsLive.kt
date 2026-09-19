@@ -67,6 +67,30 @@ object StreamsLive {
         flow.value = flow.value + 1
     }
 
+    private val originSettled = ConcurrentHashMap<String, MutableStateFlow<Boolean>>()
+
+    /**
+     * True once the provider the title was opened FROM has answered for this
+     * session — whether it produced servers or came back with nothing.
+     *
+     * The player holds its auto-start while that provider is still working (a
+     * title opened inside an extension should play THAT extension's link, not
+     * whichever other extension answered first). A fixed timeout cannot serve
+     * that: a .hiki plugin's first stream call has to spin up its runtime and
+     * its site session, so it can legitimately take tens of seconds — long
+     * after the pass's own HTTP timeouts have fired — while waiting for a
+     * genuinely dead provider would be just as bad. This flag is the honest
+     * signal: the hold ends the moment the origin has actually given its
+     * answer, and the fixed grace on the intent is only the backstop for a
+     * search that died before it could report one.
+     */
+    fun originSettledFlow(id: String): MutableStateFlow<Boolean> =
+        originSettled.computeIfAbsent(id) { MutableStateFlow(false) }
+
+    fun settleOrigin(id: String) {
+        originSettledFlow(id).value = true
+    }
+
     private val statuses = ConcurrentHashMap<String, MutableStateFlow<String?>>()
 
     /** One human-readable line describing what the search is doing right now,
@@ -88,5 +112,6 @@ object StreamsLive {
         dones.remove(id)
         refreshes.remove(id)
         statuses.remove(id)
+        originSettled.remove(id)
     }
 }

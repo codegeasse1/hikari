@@ -526,6 +526,10 @@ class PlayerActivity : ComponentActivity() {
      *  [com.hikari.app.ui.LoadingStyles] and [showLoadingBanner]). */
     private var loadingCardPoster: ImageView? = null
     private var loadingGlow: View? = null
+    /** The darkening layer over the backdrop. Kept weak when there is no
+     *  artwork underneath (see [showLoadingBanner]) so it does not re-blacken
+     *  the fallback wash and put us back to the flat black screen. */
+    private var loadingScrim: View? = null
     private var bannerAnimators: List<android.animation.Animator> = emptyList()
 
     /** True while playback should be covered by the loading banner until the
@@ -872,6 +876,8 @@ class PlayerActivity : ComponentActivity() {
         loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
         loadingCardPoster = findViewById(R.id.loading_card_poster)
         loadingGlow = findViewById(R.id.loading_glow)
+        loadingScrim = findViewById(R.id.loading_scrim)
+
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
         loadingStyle = com.hikari.app.ui.LoadingStyles.normalize(
             intent.getStringExtra("loadingStyle")
@@ -1379,10 +1385,21 @@ class PlayerActivity : ComponentActivity() {
                     originProviderId.isNotBlank() &&
                         sources.any { it.providerId == originProviderId }
                 }
+                // The pass reports the moment the origin has ANSWERED — with
+                // servers or with nothing (see StreamsLive.settleOrigin). That,
+                // not the clock, is what ends the hold in practice: a repo that
+                // plainly has no links for this episode must not cost the user
+                // the whole backstop, and a .hiki plugin that needs twenty
+                // seconds to answer must not be cut off at two.
+                var originSettled = false
+                if (!liveId.isNullOrBlank()) launch {
+                    StreamsLive.originSettledFlow(liveId).collect { originSettled = it }
+                }
                 /** True once there is no reason left to hold for the origin. */
                 val originReady = {
                     originGraceMs <= 0 || originProviderId.isBlank() || originFound() ||
-                        searchDone || System.currentTimeMillis() >= originHoldUntil
+                        originSettled || searchDone ||
+                        System.currentTimeMillis() >= originHoldUntil
                 }
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
@@ -1429,6 +1446,23 @@ class PlayerActivity : ComponentActivity() {
                 // once the servers stop arriving.
                 if (awaitLive && originGraceMs > 0) launch {
                     delay((originHoldUntil - System.currentTimeMillis()).coerceAtLeast(0L) + 60L)
+                    // The origin was given its grace window and the window has
+                    // now run out with nothing from it (originSettled would
+                    // have ended the hold early, and an origin server landing
+                    // would have started playback — see originReady). Say so,
+                    // because the very next thing that happens is the user
+                    // being shown a server from a DIFFERENT extension, and
+                    // that looks like the wrong link being played for no
+                    // reason unless the log explains the origin never
+                    // answered (which is what happened in the "it played a
+                    // XFree/AFree source instead of the MRDS one" report).
+                    if (!originFound() && !originSettled) {
+                        com.hikari.app.data.Logs.log(
+                            "Player",
+                            "origin \"$originProviderName\" ($originProviderId) never answered in the " +
+                                "${originGraceMs}ms grace window — starting on the first server from anywhere",
+                        )
+                    }
                     tryStart()
                 }
                 // The detail screen signals when its whole search is finished;
@@ -7162,6 +7196,9 @@ class PlayerActivity : ComponentActivity() {
         var backdropAlpha = 1f
         var backdropVisible = true
         var breath = true
+        // Set below once we know whether any artwork actually reaches the
+        // screen; drives how strong the scrim is drawn (see below).
+        var artShown = false
         when (style) {
             com.hikari.app.ui.LoadingStyles.MINIMAL -> {
                 // Flat and quiet: no artwork at all, a small title, the spinner.
@@ -7212,12 +7249,14 @@ class PlayerActivity : ComponentActivity() {
 
         loadingBackdrop?.let { iv ->
             if (backdropVisible && bannerModel != null) {
+                artShown = true
                 iv.alpha = backdropAlpha
                 iv.visibility = View.VISIBLE
                 iv.load(bannerModel)
             } else if (backdropVisible && posterModel != null) {
                 // No wide art for this title: its poster is the only picture
                 // there is, so it fills the frame instead of nothing.
+                artShown = true
                 iv.alpha = backdropAlpha
                 iv.visibility = View.VISIBLE
                 iv.load(posterModel)
@@ -7226,6 +7265,14 @@ class PlayerActivity : ComponentActivity() {
                 iv.visibility = View.GONE
             }
         }
+
+        // The scrim's job is to keep the white title legible over artwork. With
+        // NO artwork under it, at full strength it would darken the fallback
+        // wash straight back to flat black — exactly the screen the user
+        // reported ("in some see the loading screen showing black"). Thinned
+        // rather than removed, so the top/bottom of the cover still have a
+        // little weight behind the title and the status line.
+        loadingScrim?.alpha = if (artShown) 1f else 0.35f
 
         stopBannerAnimators()
         // The name breathes in and out, exactly like Nuvio/Stremio's title card.

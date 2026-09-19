@@ -213,6 +213,33 @@ class ContentRepository(private val manager: ProviderManager) {
          *  mistaken for a dead one. */
         const val HANG_AFTER_MS = 200_000L
 
+        /** The same idea for a SEARCH, where the call's own budget is ~20s: a
+         *  search still in flight after this is not slow, it is stuck, and it
+         *  must not sit in the "N still searching" line forever (see
+         *  [InFlight.hangAfterMs]). */
+        const val SEARCH_HANG_AFTER_MS = 90_000L
+
+        /** …and for a meta/episode fetch, whose own budget is 20-40s. */
+        const val DETAIL_HANG_AFTER_MS = 120_000L
+
+        /** Videos whose ORIGIN is being re-asked in the background right now
+         *  (keys are [streamsRememberedKey] plus a marker). One retry per video
+         *  at a time: the retry is launched from the pass's teardown, and a user
+         *  tapping Play twice must not queue two of them. */
+        val originRetries = ConcurrentHashMap.newKeySet<String>()
+
+        /** Why the provider the user opened the title FROM had nothing to say,
+         *  recorded by [fetchStreams]: `"no servers"` when it answered and its
+         *  answer was an empty list, a timeout or a failure otherwise, absent
+         *  when it never got the chance to answer.
+         *
+         *  "The repo has nothing" and "the call never came back" read
+         *  identically in every server list and every summary, and the
+         *  difference decides whether the origin is worth asking AGAIN in the
+         *  background (a cold plugin that timed out is; a repo that plainly has
+         *  no links for this episode is not). */
+        val originOutcome = ConcurrentHashMap<String, String>()
+
         /** True while [providerId] should be left out of the search entirely. */
         fun isHung(providerId: String): Boolean = crossHung.containsKey(providerId)
 
@@ -265,7 +292,19 @@ class ContentRepository(private val manager: ProviderManager) {
          * search, then its meta/episodes, then its streams, one at a time, and
          * if any of those never comes back the repo is wedged as a whole.
          */
-        class InFlight(val gate: RefundableGate, val at: Long) {
+        class InFlight(
+            val gate: RefundableGate,
+            val at: Long,
+            /** How long this KIND of call may be in flight before it is called
+             *  wedged. A search is given minutes less than an extraction: a
+             *  search's own budget is ~20s, so a search still in flight after
+             *  [SEARCH_HANG_AFTER_MS] is not slow, it is stuck — and it holds a
+             *  slot AND a line in the chooser's "N still searching" count for as
+             *  long as nobody says so (the reported "it stuck on 16 still
+             *  searching and never went further"). An Aniyomi EXTRACTION, on the
+             *  other hand, may legitimately take 150s. */
+            val hangAfterMs: Long,
+        ) {
             /** Set by the watchdog when it gives this call's slot back, so the
              *  call's own `finally` does not refund it a second time if it ever
              *  does come back. */
@@ -290,17 +329,31 @@ class ContentRepository(private val manager: ProviderManager) {
                     kotlinx.coroutines.delay(15_000L)
                     val now = System.currentTimeMillis()
                     for ((id, call) in inFlight) {
-                        if (now - call.at < HANG_AFTER_MS) continue
+                        if (now - call.at < call.hangAfterMs) continue
                         // Take the entry first: this is what makes the refund
                         // happen exactly once per wedged call.
                         if (call.refunded.compareAndSet(false, true)) {
                             call.gate.hang()
+                            // Out of the LIVE progress line as well as out of
+                            // the queue. A wedged call used to keep its place in
+                            // the pass's running map until the pass itself ended,
+                            // so the chooser read "16 still searching" and could
+                            // not move — the count was waiting on a plugin that
+                            // was never coming back. The repo is reported as
+                            // skipped instead (see [crossHung]).
+                            val tally = crossTally
+                            if (tally.running.remove(id) != null) {
+                                tally.verdict[id] = (tally.verdict[id]?.substringBefore(" — ")
+                                    ?: id) + " — stopped responding"
+                                bumpCrossStatus()
+                            }
                             if (crossHung.putIfAbsent(id, now) == null) {
                                 com.hikari.app.data.Logs.log(
                                     "Search",
                                     "extension '" + id + "' has not answered in " +
-                                        (HANG_AFTER_MS / 1000) + "s — its slot has been " +
-                                        "given back and it is skipped for this session",
+                                        (call.hangAfterMs / 1000) + "s — its slot has been " +
+                                        "given back, it is off the progress line, and it is " +
+                                        "skipped for this session",
                                 )
                             }
                         }
@@ -634,6 +687,19 @@ class ContentRepository(private val manager: ProviderManager) {
      *  cap — releases the rest. */
     private val ORIGIN_SETTLE_MAX_MS = 8_000L
 
+    /** How long the FIRST stream call to an .hiki/.cs3 origin is given before it
+     *  is retried with the full budget. Short on purpose: the first call is the
+     *  one that pays the plugin's cold start (its runtime, its session), and a
+     *  probe that comes back empty-handed costs almost nothing — the retry then
+     *  runs against a plugin that is already loaded. See [fetchStreams]. */
+    private val ORIGIN_PROBE_MS = 12_000L
+
+    /** How long the background re-ask of the origin waits before it runs: just
+     *  enough for the pass's own cancelled call to let go of the plugin, so the
+     *  retry meets a warm runtime instead of a queue. See the hand-off in the
+     *  pass's teardown. */
+    private val ORIGIN_RETRY_DELAY_MS = 2_500L
+
     /** Total wall-clock budget for the whole cross-extension pass, measured
      *  from when it starts. Comfortably under the player's live-wait timeout so
      *  servers found here still reach a player that is already open and
@@ -867,11 +933,14 @@ class ContentRepository(private val manager: ProviderManager) {
     private suspend fun <T> gated(
         gate: RefundableGate,
         providerId: String,
+        /** How long this call may be in flight before the watchdog calls it
+         *  wedged and gives its slot back (see [InFlight.hangAfterMs]). */
+        hangAfterMs: Long = HANG_AFTER_MS,
         block: suspend () -> T,
     ): T {
         ensureHangWatchdog()
         gate.acquire()
-        val call = InFlight(gate, System.currentTimeMillis())
+        val call = InFlight(gate, System.currentTimeMillis(), hangAfterMs)
         inFlight[providerId] = call
         try {
             return block()
@@ -895,18 +964,71 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         episode: Episode?,
     ): List<StreamSource> {
+        // Is this the provider the user OPENED the title from? Its answer is the
+        // one the player waits for before it starts on anybody else's server
+        // (see StreamsLive.settleOrigin and the pass's onOriginSettled), so its
+        // fetch is treated differently from the other providers': a deliberately
+        // SHORT first probe, then a real retry.
+        val isOrigin = p.config.id == item.providerId
         // Aniyomi extensions pay a cold APK class load before their first
         // answer (see the Aniyomi budgets above) — 45s cut them off.
-        val timeoutMs =
+        val fullTimeoutMs =
             if (isAniyomi(p)) minOf(NetTuning.timeout(90_000L), 120_000L)
             else NetTuning.timeout(45_000L)
-        val maxAttempts = NetTuning.attempts()
+        // A .hiki/.cs3 plugin's FIRST call has to spin up its runtime and open
+        // the site's session before it can answer anything. Inside one 45s
+        // budget that cold start is not always over, the call times out having
+        // proved NOTHING — and the user's own extension then looked like it had
+        // nothing for the title it plainly has, while another extension's
+        // server got played instead ("it selected XFree and played the wrong
+        // video … on the second attempt it showed the MRDS server"). So the
+        // origin gets a short PROBE first — a cold path answers or fails fast —
+        // and then the full budget, which by then runs against a warm plugin.
+        // Nothing is given up on either way: the long attempt always follows.
+        val probeMs = minOf(fullTimeoutMs, ORIGIN_PROBE_MS)
+        val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 2) else NetTuning.attempts()
         var attempt = 0
+        var lastWhy: String? = null
         while (true) {
+            val budget = if (isOrigin && attempt == 0) probeMs else fullTimeoutMs
+            var timedOut = false
+            val at = System.currentTimeMillis()
             val got = cancellableCatching {
-                withTimeoutOrNull(timeoutMs) { p.getStreams(item, episode) }.orEmpty()
-            }.getOrDefault(emptyList())
-            if (got.isNotEmpty() || ++attempt >= maxAttempts) return got
+                val r = withTimeoutOrNull(budget) { p.getStreams(item, episode) }
+                if (r == null) timedOut = true
+                r.orEmpty()
+            }.getOrElse { t ->
+                lastWhy = t.javaClass.simpleName + (t.message?.let { ": ${it.take(80)}" } ?: "")
+                emptyList()
+            }
+            if (got.isNotEmpty()) {
+                originOutcome.remove(p.config.id)
+                return got
+            }
+            attempt++
+            val took = (System.currentTimeMillis() - at) / 1000
+            if (timedOut) lastWhy = "no answer in ${took}s"
+            if (attempt >= maxAttempts) {
+                // Say WHY, on the provider's own log line. "This repo has no
+                // servers for this episode" and "this repo never answered" look
+                // identical in every server list and every summary line, and
+                // that difference is the whole question whenever a title plays
+                // from the wrong repo.
+                val why = lastWhy ?: "no servers for this episode"
+                if (isOrigin) originOutcome[p.config.id] = why
+                com.hikari.app.data.Logs.log(
+                    "Provider",
+                    p.config.name.ifBlank { p.config.id } +
+                        " [${p.config.type.groupLabel}]" +
+                        (if (isOrigin) " (this title's own extension)" else "") +
+                        ": " + when {
+                            timedOut -> "✗ $why"
+                            lastWhy != null -> "✗ $lastWhy"
+                            else -> "no servers"
+                        },
+                )
+                return got
+            }
         }
     }
 
@@ -1332,6 +1454,10 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
+        /** Passed straight through to [streamsForInner] — fires when the title's
+         *  OWN provider has answered, or without ever firing when the caller
+         *  does not care (the sweep, the prefetch, a background re-ask). */
+        onOriginSettled: (() -> Unit)? = null,
     ): StreamLookup {
         // A source scan across many providers can take a minute; keep it alive
         // if the user leaves the app (see [com.hikari.app.work.BackgroundWork]).
@@ -1342,7 +1468,10 @@ class ContentRepository(private val manager: ProviderManager) {
         // and give its concurrency slot to the rest of the queue (see [crossHung]).
         ensureHangWatchdog()
         try {
-            return StreamLookup(streamsForInner(item, episode, onProgress), complete = true)
+            return StreamLookup(
+                streamsForInner(item, episode, onProgress, onOriginSettled),
+                complete = true,
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             // OUR job being cancelled means the caller went away — propagate it.
             // A cancellation from INSIDE the pass is a different story: the pass
@@ -1426,6 +1555,11 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)?,
+        /** Called once, when the provider the title came FROM has answered (see
+         *  the origin job in the pass below). The player holds its auto-start
+         *  until it fires, so this is what ends that hold — early, the moment
+         *  the origin has really spoken. */
+        onOriginSettled: (() -> Unit)? = null,
     ): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
@@ -1638,6 +1772,24 @@ class ContentRepository(private val manager: ProviderManager) {
                 // is still working (see [awaitOriginHeadStart]).
                 val originJob = targets.indexOfFirst { it.config.id == item.providerId }
                     .takeIf { it >= 0 }?.let { jobs[it] }
+                // Tell the player the moment that provider has ANSWERED — with
+                // servers or without. It holds its auto-start until then, so a
+                // title opened inside an extension plays that extension's link
+                // rather than whichever other extension answered first; and the
+                // hold must end as soon as the origin has really spoken, or the
+                // wait becomes the wait it was meant to avoid. Completion is the
+                // right signal (not "found servers"): a repo that plainly has
+                // nothing for this episode is an answer too, and waiting longer
+                // for it would only delay playback. Fires on cancellation as
+                // well, which is what keeps a pass that died from leaving the
+                // player holding a session nobody is working on.
+                if (originJob != null) {
+                    originJob.invokeOnCompletion { onOriginSettled?.invoke() }
+                } else {
+                    // Nothing to wait for: the origin is not installed, not
+                    // enabled, or this title did not come from one at all.
+                    onOriginSettled?.invoke()
+                }
                 // Ceiling for the whole lookup. It only binds when providers are
                 // slow/failing — normally they finish → allDone well before it.
                 // 55s lets the trusted nuvio providers (priority order) pass
@@ -2051,6 +2203,81 @@ class ContentRepository(private val manager: ProviderManager) {
                         onProgress,
                         ignoreEmptyRecord = reAsk.isNotEmpty(),
                     )
+                }
+                // ---- The title's OWN extension gets one more chance ----
+                //
+                // Everything else in this teardown is about the OTHER repos. The
+                // provider the user opened the title from is the only one whose
+                // server is unambiguously right, and it was asked with the very
+                // first call of the pass — which is also the call that pays the
+                // plugin's cold start (its runtime, its site session). If that
+                // call timed out, threw, or was cancelled mid-flight (the common
+                // end of a pass: the screen was re-created, so the pass's scope
+                // died with it), the origin has produced NOTHING for a title that
+                // lives on it — and the user then watches another extension's
+                // server (or a same-named video from a different site) while
+                // "the real server only shows up on the second attempt". So
+                // unless the origin plainly ANSWERED that it has nothing for this
+                // episode, it is asked once more here, on the application scope,
+                // with the plugin warm by now — and whatever it finds is pushed
+                // through the same sink as everything else, so it lands in the
+                // live feed and the player's list exactly like a server that had
+                // arrived in time.
+                val originProvider = origin
+                if (originProvider != null &&
+                    passFound.none { it.providerId == originProvider.config.id }
+                ) {
+                    val originKey = streamsRememberedKey(item, episode) + "|origin"
+                    val why = originOutcome[originProvider.config.id]
+                    // "no servers" is an ANSWER: the extension was asked and it
+                    // has nothing for this episode, so asking again would only
+                    // spend its time. Anything else — a timeout, a failure, or no
+                    // outcome recorded at all — means the call never really
+                    // finished, and that is exactly what a warm retry fixes.
+                    if (why != "no servers" && originRetries.add(originKey)) {
+                        com.hikari.app.data.Logs.log(
+                            "Search",
+                            "origin \"" + originProvider.config.name.ifBlank { originProvider.config.id } +
+                                "\" gave nothing for \"${item.title}\" (" +
+                                (why ?: "never got to answer") +
+                                ") — asking it once more in the background",
+                        )
+                        HikariApp.instance.appScope.launch {
+                            try {
+                                kotlinx.coroutines.delay(ORIGIN_RETRY_DELAY_MS)
+                                val got = cancellableCatching {
+                                    fetchStreams(originProvider, item, episode)
+                                }.getOrDefault(emptyList())
+                                if (got.isEmpty()) return@launch
+                                val tagged = tagGroup(got, originProvider)
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "origin \"" +
+                                        originProvider.config.name.ifBlank { originProvider.config.id } +
+                                        "\" answered on the second try: ${tagged.size} server(s)",
+                                )
+                                // Remember them (never a downgrade: the union of
+                                // what the pass had and what just arrived), so a
+                                // repeat lookup of this video starts with them.
+                                val key = streamsRememberedKey(item, episode)
+                                val prev = streamsRemembered[key]
+                                    ?.takeIf {
+                                        System.currentTimeMillis() - it.at < REMEMBERED_STREAMS_TTL_MS
+                                    }
+                                    ?.list
+                                    .orEmpty()
+                                val list = passFound + tagged
+                                val have = list.mapTo(HashSet()) { it.infoHash ?: it.url }
+                                streamsRemembered[key] = RememberedStreams(
+                                    list + prev.filterNot { (it.infoHash ?: it.url) in have },
+                                    System.currentTimeMillis(),
+                                )
+                                cancellableCatching { onProgress?.invoke(list) }
+                            } finally {
+                                originRetries.remove(originKey)
+                            }
+                        }
+                    }
                 }
                 // Teardown that must happen even when the pass above threw or
                 // was cancelled before its own reporting block ran: the chooser
@@ -2824,7 +3051,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val best = hit.candidate
         // The provider's own load() also rewrites the id to its canonical form,
         // which is what its loadLinks() expects.
-        val meta = gated(CROSS_EXT_DETAIL_GATE, p.config.id) {
+        val meta = gated(CROSS_EXT_DETAIL_GATE, p.config.id, DETAIL_HANG_AFTER_MS) {
             withTimeoutOrNull(metaTimeoutMs(p)) {
                 cancellableCatching { p.getMeta(best) }.getOrDefault(best)
             } ?: best
@@ -2837,7 +3064,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // carry both and could not be asked. Say which one it was.
             var epFailure: String? = null
             var epTimedOut = false
-            val eps: List<Episode> = gated(CROSS_EXT_DETAIL_GATE, p.config.id) {
+            val eps: List<Episode> = gated(CROSS_EXT_DETAIL_GATE, p.config.id, DETAIL_HANG_AFTER_MS) {
                 withTimeoutOrNull(episodesTimeoutMs(p)) {
                     cancellableCatching { p.getEpisodes(best) }
                         .onFailure { e ->
@@ -3023,7 +3250,7 @@ class ContentRepository(private val manager: ProviderManager) {
         /** Ignore the session's "no such title" record for this query and ask
          *  the extension for real (see [cachedEmptyTargets]). */
         ignoreEmpty: Boolean = false,
-    ): SearchAttempt = gated(CROSS_EXT_SEARCH_GATE, p.config.id) {
+    ): SearchAttempt = gated(CROSS_EXT_SEARCH_GATE, p.config.id, SEARCH_HANG_AFTER_MS) {
         // Already answered "no such title" for this exact query a moment ago
         // (see [crossEmpty]): don't spend a slot — or a cold plugin load — on
         // the same question again.
@@ -3147,6 +3374,15 @@ class ContentRepository(private val manager: ProviderManager) {
         candidate: MediaItem,
         episode: Episode?,
     ): Boolean {
+        // A "title" that is really a URL — or that has our OWN search string
+        // pasted into it after a query parameter — is a scraper's echo of the
+        // request, not a catalogue entry. An adult tube repo returns page titles
+        // like "… Nothing Beats a Car Wash&query=vengadores: endgame": every
+        // significant word of the query is in there, so it sailed through the
+        // containment rule below, scored above the threshold, and the player
+        // started an unrelated video from it. Nothing that looks like an address
+        // can be the user's title, so it is rejected before any scoring.
+        if (looksLikeUrlEcho(candidate.title)) return false
         if (wanted.type != MediaType.UNKNOWN && candidate.type != MediaType.UNKNOWN &&
             wanted.type != candidate.type
         ) {
@@ -3185,6 +3421,29 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         return true
     }
+
+    /**
+     * True for a "title" that is really an address, or that carries a query
+     * parameter — the shape a scraper's page title takes when the site echoes
+     * the request back into it.
+     *
+     * This is not a cosmetic check: such a title CONTAINS the words the user
+     * searched for (that is what the echo is), so it passes every
+     * word-containment rule the matcher has and can score as the best match on
+     * the page. Rejecting it is the difference between playing the right video
+     * and playing whatever the repo's page happened to be titled.
+     */
+    private fun looksLikeUrlEcho(title: String): Boolean {
+        val t = title.lowercase()
+        if (t.contains("http://") || t.contains("https://") || t.contains("www.")) return true
+        // `&query=`, `?q=`, `&amp;search=` …: an '=' inside a video title is not
+        // punctuation, it is an address. The `&amp;` form is what a scraper
+        // hands over when it escaped the URL for HTML.
+        return QUERY_ECHO.containsMatchIn(t)
+    }
+
+    private val QUERY_ECHO =
+        Regex("[?&](?:amp;)?(?:query|q|s|search|keyword|term|kw|text|name)=")
 
     /** The episode number a row's own NAME carries ("Ep 148", "Episode 148",
      *  "E148", "第148集"), or null when the name says nothing about numbering.

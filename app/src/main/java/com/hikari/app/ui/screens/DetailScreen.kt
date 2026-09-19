@@ -579,6 +579,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         /** Ignore the prefetch cache and run the providers again. Set by the
          *  player when every server it was given turned out to be dead. */
         force: Boolean = false,
+        /** Fires when the title's OWN provider has answered (see
+         *  ContentRepository.streamsForInner) — the player is holding its
+         *  auto-start until then, so this is what releases it early instead of
+         *  making the user watch the whole grace window. */
+        onOriginSettled: (() -> Unit)? = null,
     ): StreamLookup {
         val key = cacheKey(item, ep)
         val cached = StreamCache.get(key)
@@ -706,7 +711,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
         try {
             val lookup = withContext(Dispatchers.IO) {
-                repo.streamsForOutcome(item, ep, feed)
+                repo.streamsForOutcome(item, ep, feed, onOriginSettled)
             }
             val result = lookup.servers
             if (result.isEmpty() && !lookup.complete) {
@@ -833,6 +838,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
         force: Boolean = false,
+        /** Passed through to [resolveStreams]: fires when the title's own
+         *  provider has answered, which is what releases the player's hold. */
+        onOriginSettled: (() -> Unit)? = null,
     ): StreamLookup {
         // No metadata yet means we could not search at all: not a verdict.
         val m = _meta.value ?: return StreamLookup(emptyList(), complete = false)
@@ -842,7 +850,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             "Finding servers for \"${m.title.take(60)}\""
         )
         try {
-            return resolveStreams(m, episode, onProgress, force)
+            return resolveStreams(m, episode, onProgress, force, onOriginSettled)
         } finally {
             com.hikari.app.work.BackgroundWork.end(work)
         }
@@ -931,18 +939,27 @@ private const val SWEEP_WATCH_CAP_MS = 11 * 60 * 1000L
  *  tail does not leave the player waiting out its own safety timeout. */
 private const val STREAMS_QUIET_MS = 12_000L
 
-/** How long the player holds playback at the start of a fresh search, waiting
- *  for a server from the extension the title was opened from, before it takes
- *  whichever other extension answered first. Keep this SHORT: the promise is
- *  "your own extension goes first", not "wait for it", and the search already
- *  gives the origin a real head start on the repo side (ORIGIN_HEAD_START_MS).
- *  With default settings the user's rule is "start playing the instant ANY
- *  server is found", so this is a nudge, not a hold — long values here were
- *  what made a tap sit on "Checking your own extension first…" while a working
- *  server was already in hand. Passed to the player as the `originGraceMs`
- *  extra, and set to 0 when the origin is disabled or gone, so a dead extension
- *  can never cost a wait. See PlayerActivity's live collector. */
-private const val ORIGIN_PLAY_GRACE_MS = 1_200L
+/** The longest the player will hold playback waiting for the extension the
+ *  title was opened FROM, before it takes whichever other extension answered
+ *  first. Passed to the player as the `originGraceMs` extra, and set to 0 when
+ *  the origin is disabled or gone, so a dead extension can never cost a wait.
+ *
+ *  This used to be a 1.2s nudge, on the theory that the user's rule is "start
+ *  playing the instant ANY server is found". It is a real hold now, because
+ *  that theory produced the wrong video: a title opened inside a Chinese .hiki
+ *  repo had its own link still cold-loading, an adult tube repo that echoes the
+ *  search text back into its page titles answered in a second, and playback
+ *  started on THAT — "it selected XFree and played the wrong video instead of
+ *  the MRDS server, and the MRDS server never even showed up". Waiting for the
+ *  provider the user actually tapped is worth seconds; a wrong video is worth
+ *  nothing.
+ *
+ *  What makes this bearable is that the number is only the BACKSTOP: the pass
+ *  signals the moment the origin has answered — with servers or with nothing —
+ *  and the player releases the hold right then (StreamsLive.settleOrigin). So a
+ *  warm origin costs ~0s, a cold one costs its cold start, and only a provider
+ *  that never comes back at all costs the full 45s. */
+private const val ORIGIN_PLAY_GRACE_MS = 45_000L
 
 /** How long a prefetched source list may be reused before it must be resolved
  *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
@@ -1519,12 +1536,37 @@ fun DetailScreen(
                             (prefName.isNotBlank() && s.name.equals(prefName, ignoreCase = true))
                     }
                 }
-                // Remembered server first, everything else in arrival order, so the
-                // player's own preferredStartIndex() (which matches against the list
-                // it was handed) lands on it too.
+                // The order of the list the player is handed decides what it
+                // PLAYS, not just what it shows: the player starts on the row its
+                // own start-index rule picks and walks the list top-down when a
+                // server dies. Two rules, in this order:
+                //
+                //  1. the ORIGIN's own servers first — the extension the user
+                //     opened this title from is the one whose link they asked
+                //     for. This used to be pure arrival order, so whichever
+                //     extension answered fastest won the top row: for a title on
+                //     a Chinese .hiki repo, an adult tube repo that echoes the
+                //     query back into its page titles arrived in a second, sat
+                //     above the origin's own link, and got played (the reported
+                //     "it selected XFree and played the wrong video instead of
+                //     the MRDS server");
+                //  2. then the remembered server (a replay continues on the one
+                //     that worked — see [preferredIndex]), then everything else
+                //     in arrival order.
                 val ordered = { list: List<StreamSource> ->
-                    val i = preferredIndex(list)
-                    if (i <= 0) list else listOf(list[i]) + list.filterIndexed { idx, _ -> idx != i }
+                    val originPid = m?.providerId ?: providerId
+                    val pref = preferredIndex(list)
+                    val placed = HashSet<Int>()
+                    val out = ArrayList<StreamSource>(list.size)
+                    list.forEachIndexed { i, s ->
+                        if (s.providerId == originPid) {
+                            out += s
+                            placed += i
+                        }
+                    }
+                    if (pref >= 0 && placed.add(pref)) out += list[pref]
+                    list.forEachIndexed { i, s -> if (placed.add(i)) out += s }
+                    out
                 }
                 // Live re-extraction. A play session can have all of its servers
                 // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
@@ -1649,8 +1691,12 @@ fun DetailScreen(
                 while (attempts <= STREAMS_FINAL_RETRIES) {
                     val left = finalDeadline - System.currentTimeMillis()
                     if (left <= 0L) break
-                    val lookup = withTimeoutOrNull(left) { vm.getStreamsLookup(epForSearch) }
-                        ?: break
+                    val lookup = withTimeoutOrNull(left) {
+                        vm.getStreamsLookup(
+                            episode = epForSearch,
+                            onOriginSettled = { StreamsLive.settleOrigin(sid) },
+                        )
+                    } ?: break
                     attempts++
                     final = lookup.servers
                     lookupComplete = lookup.complete
@@ -2748,6 +2794,35 @@ private fun rememberLoadingStyle(): String {
     return remember(flow) { flow }.collectAsState(initial = LoadingStyles.CINEMATIC).value
 }
 
+/**
+ * The wash that replaces flat black when a title has NO artwork to show.
+ *
+ * The loading card used to be a pure-black rectangle until the poster/backdrop
+ * finished decoding, and for a title whose provider simply never sends an
+ * image there was nothing coming — so the whole search (which can run for
+ * minutes across every installed extension) happened over a black screen that
+ * is indistinguishable from a crashed app. Reported as "in some see the
+ * loading screen showing black". The card still has the title, the episode
+ * line and the status spinner on top; this just gives them something to sit
+ * on: a deep vertical wash in the app's own surface tones with a soft bloom
+ * behind where the title sits, so the screen reads as "Hikari is working".
+ */
+@Composable
+private fun rememberLoadingFallbackBrush(): Brush {
+    val cs = MaterialTheme.colorScheme
+    // Slightly lighter at the top (where the title block lives) than at the
+    // very bottom, so the card has a direction instead of being a flat plate.
+    var top = cs.surfaceVariant
+    var mid = cs.surface
+    var bottom = cs.background
+    // A theme where all three collapse to the same near-black would give us
+    // the very flatness we are trying to avoid: lift the top stop then.
+    if (top == mid && mid == bottom) top = cs.surfaceVariant.copy(alpha = 0.85f)
+    return remember(cs.surfaceVariant, cs.surface, cs.background) {
+        Brush.verticalGradient(listOf(top, mid, bottom))
+    }
+}
+
 /** The status line every loading style shares: a spinner plus the live status
  *  text the search keeps updating ("Found 4 servers — still searching the
  *  remaining extensions…", "…isn't responding — looking for another server…").
@@ -2800,8 +2875,9 @@ private fun CinematicLoadingCard(
             repeatMode = RepeatMode.Reverse
         )
     )
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
+    val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
+    val fallback = rememberLoadingFallbackBrush()
+    Box(Modifier.fillMaxSize().background(if (model != null) Color.Black else fallback)) {
         if (model != null) {
             AsyncImage(
                 model = model,
@@ -2821,9 +2897,18 @@ private fun CinematicLoadingCard(
             Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.verticalGradient(
-                        listOf(Color(0xE6000000), Color(0x40000000), Color(0xE6000000))
-                    )
+                    // Over artwork the scrim keeps the title legible; over the
+                    // no-artwork wash it would only re-blacken the screen we
+                    // just lifted, so it is kept very light in that case.
+                    if (model != null) {
+                        Brush.verticalGradient(
+                            listOf(Color(0xE6000000), Color(0x40000000), Color(0xE6000000))
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            listOf(Color(0x33000000), Color(0x00000000), Color(0x59000000))
+                        )
+                    }
                 )
         )
         Column(
@@ -2968,7 +3053,8 @@ private fun PosterLoadingCard(
         )
     )
     val model = PosterLoader.model(image?.takeIf { it.isNotBlank() })
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    val fallback = rememberLoadingFallbackBrush()
+    Box(Modifier.fillMaxSize().background(if (model != null) Color.Black else fallback)) {
         // The same art, blown up and dimmed, fills the frame so the card floats
         // on its own artwork instead of on flat black.
         if (model != null) {
@@ -2988,7 +3074,10 @@ private fun PosterLoadingCard(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.55f))
+                .background(
+                    MaterialTheme.colorScheme.background
+                        .copy(alpha = if (model != null) 0.55f else 0f)
+                )
         )
         Column(
             Modifier
