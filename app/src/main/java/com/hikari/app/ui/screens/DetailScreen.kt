@@ -1276,6 +1276,11 @@ fun DetailScreen(
             }
         }
         // NOTE: application scope, NOT the composition's. See [screenAlive].
+        // The episode the search actually runs for, hoisted OUT of the `try`
+        // below because a local declared inside it is not visible from the
+        // `finally` block — and that block is where the end-of-search verdict is
+        // written (and where a background sweep has to be recognised).
+        var searchedEpisode: Episode? = ep
         app.appScope.launch {
             try {
                 // Live progress for the player's loading cover. The player
@@ -1292,6 +1297,7 @@ fun DetailScreen(
                 // already open on its title card during this wait, so it opens and
                 // starts playing the instant episode 1 resolves.
                 val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
+                searchedEpisode = epForSearch
                 if (ep == null && epForSearch != null) {
                     onUi { selectedEp = epForSearch }
                     // Hand the already-open player the episode it ended up on, so
@@ -1552,7 +1558,7 @@ fun DetailScreen(
                 // still working look like it had stopped at the 5th or 13th
                 // extension (and made the player quit early on "no playable
                 // sources" while the sweep was still finding them).
-                val sweepBusy = foundCount == 0 && vm.backgroundSweepBusy(epForSearch)
+                val sweepBusy = foundCount == 0 && vm.backgroundSweepBusy(searchedEpisode)
                 // The "nothing playable, and that is a real answer" note, built as
                 // a lambda so the sweep's own watcher below can use the very same
                 // wording if the sweep comes back empty a minute later.
@@ -1636,7 +1642,7 @@ fun DetailScreen(
                     app.appScope.launch {
                         val watchDeadline = System.currentTimeMillis() + SWEEP_WATCH_CAP_MS
                         while (System.currentTimeMillis() < watchDeadline &&
-                            vm.backgroundSweepBusy(epForSearch)
+                            vm.backgroundSweepBusy(searchedEpisode)
                         ) {
                             delay(1_000)
                         }
