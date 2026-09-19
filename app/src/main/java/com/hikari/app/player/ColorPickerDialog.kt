@@ -87,7 +87,7 @@ class ColorPickerDialog(
                 textSize = 13f
                 includeFontPadding = false
                 setTextColor(0xFFE9EEF7.toInt())
-                setTypeface(typeface = Typeface.DEFAULT_BOLD)
+                setTypeface(Typeface.DEFAULT_BOLD)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(TextView(host).apply {
                 text = "\u2715"
