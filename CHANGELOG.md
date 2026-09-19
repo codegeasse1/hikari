@@ -1,4 +1,20 @@
-## 0.6.7
+## 0.6.8
+
+The search no longer stops working when an extension freezes, servers start resolving while the search is still going, and everything you read — title, description, episode names — stays in the language you chose.
+
+### Fixed
+
+- **A search that stopped and never recovered.** An extension's request is a plain blocking call, so when one froze while starting up (a cold plugin, an Aniyomi APK, a locked-up runtime) nothing could interrupt it: its slot was given back but the call stayed parked, no server ever arrived, and the search sat on the same count — "30 still searching" — for as long as you looked at it. Backing out of the player and pressing Play again was the only way out, because that asks the same extensions again with fresh calls. The app now watches for that: if nothing at all answers for 25 seconds it ends the stuck attempt, asks every extension it got no answer from again in the background, and the search carries on by itself. Frozen extensions are also no longer blacklisted for the whole session — they are left out for two minutes and then asked again, which is what makes the automatic retry work.
+- **"Still searching" that never went to "done".** The background search that keeps asking the extensions a pass did not reach was allowed to run 10 minutes per round for up to 6 rounds, so the Sources panel could honestly read "still searching" for the better part of an hour while the film played. It is now two rounds of two minutes, an extension that takes more than 45 seconds no longer holds a round open, and a search whose progress has not moved for a minute is reported as finished instead of frozen.
+- **Description and episode names turning English with a language chosen.** With a TMDB language selected, the page's title was translated but its description came from the extension (English), and the player's episode line showed the extension's English episode name — so the page read French and the player read "Episode 2 · First Dance". TMDB localizes the title, the description and the episode names in the same response, all three are now shown in your chosen language, and an extension's own text only fills a gap instead of replacing it.
+- **A page renaming itself after it opened.** An extension's own metadata was allowed to overwrite the page's title, so a page opened in your chosen language could flip back to the site's English name once the extension answered. The page now keeps the name you opened it with; every extension search still goes out with the original name in the background, which is what finds it on sites that only index it in English.
+
+### Changed
+
+- **Servers start resolving while the search is still running.** A repo that matched the show used to wait for every other extension to finish searching before its links were resolved — up to 45 seconds of doing nothing on a cold start, which is why the first play of a title sat on the finding-server card for a minute and the second play (with the extensions already warm) was instant. Extraction now starts the moment a repo matches, in the order you would want it: the extension you opened the title in first, then extensions that have already given you servers, then the rest.
+- **Extensions are asked in waves instead of all at once.** Every installed extension still gets asked, but no longer at the same instant: a phone cannot cold-start a hundred plugin runtimes at once without them locking up, which is what caused the freeze above. The first wave is a few repos, and the waves widen only while answers are still coming back.
+- **A server from a repository is only accepted for the right show and the right episode.** A repo entry that names only a word from the title you asked for ("Renegade" for *Renegade Immortal*) is rejected now — that was how an unrelated video's server could appear — while a repo that names the show more fully, or numbers its rows its own way ("Ep 148", "148", "第148集"), still matches. An entry whose own name states a different episode number than the one you are playing is rejected too, so a repo cannot hand you another episode's video.
+
 
 Smaller downloads: Hikari is now built for each phone processor type, and the emulator-only builds are gone.
 

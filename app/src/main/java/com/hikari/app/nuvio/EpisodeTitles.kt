@@ -7,24 +7,27 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Real episode titles by absolute episode number, from TMDB — English only.
+ * Real episode titles by absolute episode number, from TMDB.
  *
  * A site-scraping extension labels its rows after whatever its page shows:
  * mechanically ("Swallowed Star Episode 33 English Sub"), or with the show's
  * own native titles, which read as Chinese in an English UI. Both are replaced
- * ONLY when TMDB has an English title for that episode — the whole point here
- * is to upgrade a row to English, never to swap one foreign title for another
- * (Bangumi, whose titles are Chinese, is deliberately not consulted at all).
+ * ONLY when TMDB has a title for that episode.
  *
- * When TMDB has no English title, the row keeps exactly what its source gave
- * it: the site's own name for an extension item, and TMDB's own name for a
- * Nuvio item — which has no site behind it, so there is nothing better to
- * prefer. TMDB does supply one extra fallback, its generic "Episode 33", but
- * that is used ONLY to shorten a source label that is pure noise (the site's
- * "Show Name Episode 33 English Sub"); it never overwrites a real title.
+ * The language is a parameter ([lookup]): the app asks in the user's chosen
+ * TMDB language when one is set, so the episode rows — and the player's top bar,
+ * which prints the same name — read in that language, and English otherwise.
+ * (It used to be English-only, which is why a page could be translated while its
+ * episode list and the player's episode line stayed English.) When TMDB has no
+ * title at all, the row keeps exactly what its source gave it: the site's own
+ * name for an extension item, and TMDB's own name for a Nuvio item — which has
+ * no site behind it, so there is nothing better to prefer. TMDB does supply one
+ * extra fallback, its generic "Episode 33", but that is used ONLY to shorten a
+ * source label that is pure noise (the site's "Show Name Episode 33 English
+ * Sub"); it never overwrites a real title.
  *
- * Lookups are cached per title, empty results included (briefly, so a
- * transient failure is not re-queried on every detail-page open).
+ * Lookups are cached per title (and per language), empty results included
+ * (briefly, so a transient failure is not re-queried on every detail-page open).
  */
 object EpisodeTitles {
 
@@ -102,13 +105,27 @@ object EpisodeTitles {
      *  compare two Chinese titles as well as two Latin ones. */
     private fun squash(s: String): String = s.lowercase().replace(NON_ALNUM, "")
 
-    /** English names for the subset of [numbers] TMDB can title. */
-    suspend fun lookup(title: String, year: Int?, numbers: Set<Int>): Names =
+    /** Titles for the subset of [numbers] TMDB can name.
+     *
+     *  [language] is the TMDB code to ask in ("fr-FR" …); null/blank means
+     *  English, which is what this used to be hard-coded to. The app's chosen
+     *  TMDB language is passed in so an episode row — and the player's top bar,
+     *  which prints the same name — reads in the language the user picked
+     *  instead of in English. */
+    suspend fun lookup(
+        title: String,
+        year: Int?,
+        numbers: Set<Int>,
+        language: String? = null,
+    ): Names =
         withContext(Dispatchers.IO) {
             if (title.isBlank() || numbers.isEmpty()) return@withContext EMPTY
+            val lang = language?.trim().orEmpty().ifBlank { LANGUAGE }
             // The raw title, not [TmdbMeta.normalizeTitle]'s form: that drops
             // CJK entirely, so every Chinese title would share one cache entry.
-            val key = title.trim().lowercase() + "|" + (year ?: 0)
+            // The language is part of the key: the same show has different
+            // episode names in each one.
+            val key = title.trim().lowercase() + "|" + (year ?: 0) + "|" + lang
             cache[key]?.let {
                 if (it.names.english.isNotEmpty() || it.names.generic.isNotEmpty() ||
                     System.currentTimeMillis() - it.at < NEGATIVE_TTL_MS
@@ -120,7 +137,7 @@ object EpisodeTitles {
             // numbering starting at 1, so the database has to be read the same
             // way instead of being concatenated into a continuous run.
             val season = TmdbMeta.seasonHint(title)
-            val found = show(title, year, numbers, season) ?: EMPTY
+            val found = show(title, year, numbers, season, lang) ?: EMPTY
             cache[key] = Entry(System.currentTimeMillis(), found)
             found
         }
@@ -135,13 +152,19 @@ object EpisodeTitles {
      * Heavens" is "Fights Break Sphere") is deliberately left unresolved rather
      * than having another entry's episode titles mapped onto its list.
      */
-    private suspend fun show(title: String, year: Int?, numbers: Set<Int>, season: Int?): Names? {
+    private suspend fun show(
+        title: String,
+        year: Int?,
+        numbers: Set<Int>,
+        season: Int?,
+        language: String,
+    ): Names? {
         val variants = TmdbMeta.queryVariants(title)
         if (variants.isEmpty()) return null
         var hit: JSONObject? = null
         var bestScore = 0
         for (v in variants) {
-            val results = TmdbResolver.apiGet("/search/tv", mapOf("query" to v, "language" to LANGUAGE))
+            val results = TmdbResolver.apiGet("/search/tv", mapOf("query" to v, "language" to language))
                 ?.optJSONArray("results") ?: continue
             for (i in 0 until results.length()) {
                 val o = results.optJSONObject(i) ?: continue
@@ -175,8 +198,8 @@ object EpisodeTitles {
         val chosen = hit ?: return null
         val id = chosen.optInt("id")
         if (id <= 0) return null
-        val details = TmdbResolver.apiGet("/tv/$id", mapOf("language" to LANGUAGE))
-        return names(id, details ?: chosen, numbers, season)
+        val details = TmdbResolver.apiGet("/tv/$id", mapOf("language" to language))
+        return names(id, details ?: chosen, numbers, season, language)
     }
 
     /**
@@ -191,7 +214,13 @@ object EpisodeTitles {
      * and so is TMDB's season 2. A season that TMDB doesn't have (or hasn't
      * filled yet) yields nothing rather than the wrong season's titles.
      */
-    private suspend fun names(id: Int, obj: JSONObject, want: Set<Int>, season: Int?): Names {
+    private suspend fun names(
+        id: Int,
+        obj: JSONObject,
+        want: Set<Int>,
+        season: Int?,
+        language: String,
+    ): Names {
         val seasons = obj.optJSONArray("seasons") ?: return EMPTY
         val rows = (0 until seasons.length()).mapNotNull { i ->
             val s = seasons.optJSONObject(i) ?: return@mapNotNull null
@@ -204,7 +233,7 @@ object EpisodeTitles {
         val generic = HashMap<Int, String>()
         var running = 0
         for (sn in picked) {
-            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", mapOf("language" to LANGUAGE)) ?: continue
+            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", mapOf("language" to language)) ?: continue
             val eps = sd.optJSONArray("episodes") ?: continue
             val list = ArrayList<Pair<Int, String>>()
             for (i in 0 until eps.length()) {
@@ -218,13 +247,19 @@ object EpisodeTitles {
             if (list.isEmpty()) continue
             val first = list.first().first
             val start = if (season != null) first else maxOf(first, running + 1)
+            // When a NON-English language was asked for, a name written in CJK is
+            // TMDB's own translation for that language (or its fallback to the
+            // show's original one) — and the user asked to read the page in that
+            // language, so it is used. The old rule that rejected it existed only
+            // because this lookup always asked for English, where a Chinese title
+            // was no improvement on the row's own label.
+            val englishOnly = language.equals(LANGUAGE, ignoreCase = true)
             for ((en, nm) in list) {
                 val abs = start + (en - first)
                 if (abs !in 1..4000) continue
                 when {
                     isGeneric(nm) -> if (!generic.containsKey(abs)) generic[abs] = nm
-                    // A title TMDB fell back to the original language for: not
-                    // English, so it is no improvement on the row's own name.
+                    !englishOnly -> english[abs] = nm
                     CJK.containsMatchIn(nm) -> Unit
                     else -> english[abs] = nm
                 }

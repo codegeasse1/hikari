@@ -218,6 +218,21 @@ data class TitleExtras(
      *  title under, which is what a provider lookup has to search for (see
      *  [MediaItem.originalTitle]). */
     val originalTitle: String? = null,
+    /**
+     * TMDB's LOCALIZED plot summary — the `overview` field of the same detail
+     * response [localizedTitle] comes from, answered in the app's chosen TMDB
+     * language.
+     *
+     * This is the fix for "the description turns English when it finds no
+     * server". For an item whose page was opened from an EXTENSION (or a TMDB
+     * row the app remapped onto one), the only text the page ever had for its
+     * description came from the provider's own meta — the site's English blurb —
+     * and with a non-English TMDB language set that is a page whose title is
+     * translated and whose description is not. TMDB localizes both in one
+     * response, so this is used in preference whenever it exists, and the
+     * provider's text only ever fills a blank.
+     */
+    val overview: String? = null,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */

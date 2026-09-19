@@ -506,15 +506,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // single origin fetch) — fetching against the raw base would
                 // leave the episode grid empty for every mis-typed item.
                 val meta = runCatching { repo.metaFor(base) }.getOrDefault(base)
-                // The origin's /meta answers with ITS OWN title, which for a
-                // TMDB row remapped onto an extension is the English one — the
-                // page would flip back out of the language the user chose, and
-                // the player's artwork card (which prints the item's title)
-                // would follow it. Keep the display name the row was opened
-                // with; the original name stays on the item for lookups.
-                _meta.value = if (base.originalTitle.isNotBlank() && base.title.isNotBlank()) {
-                    meta.copy(title = base.title, originalTitle = base.originalTitle)
-                } else meta
+                // THE PAGE NEVER RENAMES ITSELF.
+                //
+                // The origin's /meta answers with ITS OWN title — the site's
+                // (English) name for a site-scraping extension, and the English
+                // one for a TMDB row the app remapped onto an extension. So a
+                // page opened in the user's chosen language used to flip back out
+                // of it the moment the origin's meta landed, and the player's
+                // artwork card followed it. The name the page was OPENED with is
+                // the one the user tapped (for a TMDB row it is TMDB's localized
+                // name), so that is the name it keeps; the provider's meta only
+                // fills what the row did not carry. The ORIGINAL name stays on the
+                // item either way, because every provider lookup searches with it
+                // (see [MediaItem.searchTitle]).
+                _meta.value = meta.copy(
+                    title = base.title.ifBlank { meta.title },
+                    originalTitle = base.originalTitle.ifBlank { meta.originalTitle },
+                )
                 _episodesLoading.value = true
                 try {
                     _episodes.value = runCatching { repo.episodesFor(meta) }.getOrNull()
@@ -920,9 +928,13 @@ private const val SEARCH_RETRY_PAUSE_MS = 1_500L
 
 /** How long the play flow keeps a session open waiting for a BACKGROUND SWEEP
  *  to finish before it declares the search over regardless. Mirrors
- *  ContentRepository's own sweep ceiling (10 minutes) plus a minute of slack, so
- *  the watcher never gives up on a sweep that is still legitimately working. */
-private const val SWEEP_WATCH_CAP_MS = 11 * 60 * 1000L
+ *  ContentRepository's own sweep ceiling (two 2-minute rounds) plus a minute of
+ *  slack, so the watcher never gives up on a sweep that is still legitimately
+ *  working — and, just as important, never keeps "still searching" on screen
+ *  after the whole background re-ask has run out of time. The old 11 minutes
+ *  meant the Sources panel could honestly read "still searching" for the better
+ *  part of an hour while the film played, which reads as a stuck search. */
+private const val SWEEP_WATCH_CAP_MS = 5 * 60 * 1000L
 
 /** How long the list of servers has to stay UNCHANGED before a lookup that never
  *  reached a verdict is declared over.
@@ -1062,6 +1074,19 @@ fun DetailScreen(
     val artTitle = extras?.localizedTitle
         ?.takeIf { it.isNotBlank() && it != (m?.title ?: title) }
         ?: (m?.title ?: title)
+
+    /**
+     * The description the page shows.
+     *
+     * TMDB's own summary — asked for in the app's chosen TMDB language, in the
+     * same response as the localized title — wins whenever it exists; an
+     * extension's own blurb only ever fills a blank. Before this, a page whose
+     * title was translated kept the provider's English description underneath it
+     * (the reported "the description turns English even though the language is
+     * French"), because for anything that did not come from TMDB the only
+     * description the app had WAS the provider's English one.
+     */
+    val displayOverview = extras?.overview?.takeIf { it.isNotBlank() } ?: m?.overview
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -2218,10 +2243,10 @@ fun DetailScreen(
                                 }
                             }
                         }
-                        if (!m?.overview.isNullOrBlank()) {
+                        if (!displayOverview.isNullOrBlank()) {
                             var expanded by remember { mutableStateOf(false) }
                             Text(
-                                m!!.overview!!,
+                                displayOverview,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = if (expanded) Int.MAX_VALUE else 4,

@@ -460,6 +460,10 @@ object TmdbMeta {
                 .trim().takeIf { it.isNotBlank() && it != "null" },
             originalTitle = d.optString("original_title").ifBlank { d.optString("original_name") }
                 .trim().takeIf { it.isNotBlank() && it != "null" },
+            // The plot summary, in the very same response and therefore in the
+            // very same language as [localizedTitle] — see [TitleExtras.overview].
+            overview = d.optString("overview").trim()
+                .takeIf { it.isNotBlank() && it != "null" },
         )
     }
 

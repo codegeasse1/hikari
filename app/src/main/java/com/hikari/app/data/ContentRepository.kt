@@ -67,6 +67,10 @@ class ContentRepository(private val manager: ProviderManager) {
             val asked = ConcurrentHashMap<String, String>()
             val found = ConcurrentHashMap<String, String>()
             val installed = ConcurrentHashMap<String, Int>()
+            /** When this tally last changed at all — see
+             *  [crossStatusQuietForMs]. */
+            @Volatile
+            var changedAt: Long = System.currentTimeMillis()
         }
 
         /** The tally of the newest pass — the one a summary should describe. */
@@ -219,6 +223,16 @@ class ContentRepository(private val manager: ProviderManager) {
          *  [InFlight.hangAfterMs]). */
         const val SEARCH_HANG_AFTER_MS = 90_000L
 
+        /** How long an extension that stopped answering is left out of the
+         *  search. It used to be "for the whole session", which is why the ONE
+         *  thing that reliably recovered a wedged search — asking the same repos
+         *  again (the user's own workaround: back out, press Play) — could not
+         *  happen by itself: the repos the pass had given up on were blacklisted
+         *  before the retry could reach them. A wedge is a transient state of a
+         *  plugin runtime, and the user's own log shows the same repos answering
+         *  perfectly minutes later, so the blacklist now expires. */
+        const val HUNG_TTL_MS = 120_000L
+
         /** …and for a meta/episode fetch, whose own budget is 20-40s. */
         const val DETAIL_HANG_AFTER_MS = 120_000L
 
@@ -240,8 +254,15 @@ class ContentRepository(private val manager: ProviderManager) {
          *  no links for this episode is not). */
         val originOutcome = ConcurrentHashMap<String, String>()
 
-        /** True while [providerId] should be left out of the search entirely. */
-        fun isHung(providerId: String): Boolean = crossHung.containsKey(providerId)
+        /** True while [providerId] should be left out of the search entirely —
+         *  i.e. until its wedge expires (see [HUNG_TTL_MS]). After that it is
+         *  asked again like any other extension. */
+        fun isHung(providerId: String): Boolean {
+            val at = crossHung[providerId] ?: return false
+            if (System.currentTimeMillis() - at < HUNG_TTL_MS) return true
+            crossHung.remove(providerId, at)
+            return false
+        }
 
         /**
          * A counting gate for one class of provider work (search / detail /
@@ -286,13 +307,22 @@ class ContentRepository(private val manager: ProviderManager) {
 
         /**
          * One provider call in flight, for the hang watchdog:
-         * `provider id -> (the gate it holds, when it started)`.
+         * `per-call token -> (the repo it belongs to, the gate it holds, when it
+         * started)`.
          *
-         * Deliberately keyed by PROVIDER, not by call: a repo is asked for its
-         * search, then its meta/episodes, then its streams, one at a time, and
-         * if any of those never comes back the repo is wedged as a whole.
+         * The KEY is a unique token per CALL, not the provider id. Keying by
+         * provider — as this did — meant a repo asked again (a fresh pass, the
+         * sweep, a re-extraction) left its wedged call's entry OVERWRITTEN and
+         * therefore un-refundable: the gate lost that slot permanently, and
+         * after enough wedges it lost so many that searches stopped starting at
+         * all. The repo is still carried inside the entry, so the progress line
+         * and the "stopped responding" note are unchanged.
          */
         class InFlight(
+            /** The repo this call belongs to, for the progress line and the
+             *  "stopped responding" note. The MAP is keyed by a per-call token
+             *  instead (see [gated]). */
+            val providerId: String,
             val gate: RefundableGate,
             val at: Long,
             /** How long this KIND of call may be in flight before it is called
@@ -313,6 +343,9 @@ class ContentRepository(private val manager: ProviderManager) {
 
         val inFlight = ConcurrentHashMap<String, InFlight>()
 
+        /** Hands every provider call its own in-flight token (see [gated]). */
+        private val callSeq = java.util.concurrent.atomic.AtomicLong()
+
         @Volatile
         private var hangWatchdog: kotlinx.coroutines.Job? = null
 
@@ -328,12 +361,14 @@ class ContentRepository(private val manager: ProviderManager) {
                 while (true) {
                     kotlinx.coroutines.delay(15_000L)
                     val now = System.currentTimeMillis()
-                    for ((id, call) in inFlight) {
+                    for ((token, call) in inFlight) {
                         if (now - call.at < call.hangAfterMs) continue
                         // Take the entry first: this is what makes the refund
                         // happen exactly once per wedged call.
                         if (call.refunded.compareAndSet(false, true)) {
                             call.gate.hang()
+                            inFlight.remove(token, call)
+                            val id = call.providerId
                             // Out of the LIVE progress line as well as out of
                             // the queue. A wedged call used to keep its place in
                             // the pass's running map until the pass itself ended,
@@ -353,7 +388,8 @@ class ContentRepository(private val manager: ProviderManager) {
                                     "extension '" + id + "' has not answered in " +
                                         (call.hangAfterMs / 1000) + "s — its slot has been " +
                                         "given back, it is off the progress line, and it is " +
-                                        "skipped for this session",
+                                        "left out of the search for a while " +
+                                        "(see HUNG_TTL_MS)",
                                 )
                             }
                         }
@@ -447,6 +483,15 @@ class ContentRepository(private val manager: ProviderManager) {
              *  (see [startSweepIfNeeded]). */
             @Volatile
             var ignoreEmptyRecord: Boolean = false
+            /** When this sweep last actually got somewhere — a repo answered, a
+             *  server landed, a round started. The status line and the player's
+             *  "still searching" state are derived from a sweep that is
+             *  genuinely working, not merely from a job that still exists, so a
+             *  sweep that has gone quiet (its repos all parked in calls that
+             *  cannot come back) can no longer hold "still searching" on screen
+             *  forever. See [SWEEP_STALE_MS]. */
+            @Volatile
+            var lastProgressAt: Long = System.currentTimeMillis()
         }
 
         /** The background sweeps currently running, keyed by
@@ -470,8 +515,21 @@ class ContentRepository(private val manager: ProviderManager) {
          *  Safe to call from anywhere: it is a plain map read. */
         fun sweepBusyFor(item: MediaItem, episode: Episode?): Boolean {
             val sweep = sweeps[streamsRememberedKey(item, episode)] ?: return false
-            return sweep.job?.isActive == true
+            return sweep.job?.isActive == true && sweepIsFresh(sweep)
         }
+
+        /** How long a sweep may report NOTHING before it is treated as no longer
+         *  searching. It has its own budget ([SWEEP_BUDGET_MS] a round, and its
+         *  per-repo waits are bounded), so a sweep that has produced nothing at
+         *  all for this long is not "still working" in any sense the user cares
+         *  about — it is a set of parked plugin calls, and holding "still
+         *  searching" on screen for them is the stuck line being reported. It is
+         *  still left running (the calls may yet come back), it just stops being
+         *  counted as an active search. */
+        const val SWEEP_STALE_MS = 90_000L
+
+        private fun sweepIsFresh(sweep: Sweep): Boolean =
+            System.currentTimeMillis() - sweep.lastProgressAt < SWEEP_STALE_MS
 
         /** Is ANY background sweep still asking repos a pass never reached?
          *
@@ -482,7 +540,7 @@ class ContentRepository(private val manager: ProviderManager) {
          *  asked right now, on the application scope, and the user reads a line
          *  that says "done" over a list missing their servers as a broken
          *  search. Plain map read, safe from anywhere. */
-        fun anySweepBusy(): Boolean = sweeps.values.any { it.job?.isActive == true }
+        fun anySweepBusy(): Boolean = sweeps.values.any { it.job?.isActive == true && sweepIsFresh(it) }
 
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
@@ -512,7 +570,21 @@ class ContentRepository(private val manager: ProviderManager) {
 
         fun bumpCrossStatus() {
             crossStatusVersion++
+            crossTally.changedAt = System.currentTimeMillis()
         }
+
+        /** How long the LIVE progress tally has been completely unchanged — no
+         *  repo starting, no repo finishing, no server landing.
+         *
+         *  The player's Sources panel used to derive "N still searching" purely
+         *  from the number of entries in the running map, which is honest while
+         *  work is happening and a permanent lie once it has stopped: a wedged
+         *  run of plugins left the same count on screen indefinitely, and the
+         *  only way out was to leave the player (the user's own workaround). A
+         *  count that has not moved for this long is reported as what it is —
+         *  the search is over — instead of being frozen on screen. */
+        fun crossStatusQuietForMs(): Long =
+            System.currentTimeMillis() - crossTally.changedAt
 
         /** Classifies one repo's verdict into a short bucket name, so the
          *  chooser's hint and the end-of-pass log line can say what happened
@@ -749,14 +821,40 @@ class ContentRepository(private val manager: ProviderManager) {
      *  extension while the video plays" half of the pass, and everything it
      *  produces is only ever ADDED to a list the user is not blocked on. Still a
      *  ceiling, and the per-repo semaphores bound how hard it hits the phone. */
-    private val SWEEP_BUDGET_MS get() = minOf(NetTuning.timeout(10 * 60 * 1000L), 10 * 60 * 1000L)
+    private val SWEEP_BUDGET_MS get() = minOf(NetTuning.timeout(120_000L), 120_000L)
 
     /** How many budget-rounds one background sweep may run. A round hands the
      *  repos it never reached to the next one (see [runSweep]), so this is what
      *  stops a big install from keeping a sweep — and its "still searching" line
      *  — alive indefinitely while the per-round semaphores keep the phone
-     *  comfortable. */
-    private val SWEEP_MAX_ROUNDS = 6
+     *  comfortable.
+     *
+     *  Deliberately short now. The old six rounds of ten minutes meant the
+     *  Sources panel could honestly read "still searching" for the better part
+     *  of an hour while the film played, which the user reads — correctly — as
+     *  a stuck search. Two rounds of two minutes is the whole background
+     *  re-ask: every extension still gets its turn, and the line can only ever
+     *  stay alive for a bounded few minutes. */
+    private val SWEEP_MAX_ROUNDS = 2
+
+    /** How long ONE repo may take inside a sweep before its work is abandoned
+     *  and the repo is left for a later attempt.
+     *
+     *  [SWEEP_BUDGET_MS] bounds a round, but a provider call is a plain blocking
+     *  call: no timeout can interrupt it. A plugin whose runtime locked up
+     *  while cold-starting therefore used to hold its round — and every round
+     *  after it, because a round cannot end while a child of it is parked —
+     *  open forever, which is the "stuck on 30 still searching and it never
+     *  moved" report. The work is run DETACHED (see [detached]) and only waited
+     *  for this long; a call that outlives it keeps running on its own without
+     *  holding the search up, and the repo is re-asked on the next attempt. */
+    private val SWEEP_REPO_BUDGET_MS get() = minOf(NetTuning.timeout(45_000L), 50_000L)
+
+    /** How many repos a sweep works on at once. Small on purpose: this is the
+     *  background half of the search, running while the phone is already
+     *  decoding video, and cold-loading thirty plugin runtimes at once is what
+     *  wedges them. */
+    private val SWEEP_WORKERS = 8
 
     /** Ceiling for PHASE 1 of the pass — asking every installed extension for
      *  the title. The phase ends the moment the last extension has answered, so
@@ -775,6 +873,38 @@ class ContentRepository(private val manager: ProviderManager) {
      *  only this many are left the first servers may start landing while the
      *  last few searches finish. */
     private val CROSS_EXT_SEARCH_TAIL = 12
+
+    /** ---- Wave fan-out -------------------------------------------------
+     *  Every installed extension is asked (that is the whole point of the
+     *  pass), but NOT all at once. A cold .hiki/.cs3/Aniyomi plugin pays a
+     *  whole runtime or class load on its very first call, and firing ~96 of
+     *  those simultaneously is what wedges plugin runtimes on a phone: the pass
+     *  then sits on the same "N still searching" with nothing ever completing
+     *  (the user's report, whose own workaround — back out and press Play again
+     *  — asks the same repos with fresh calls and works). So the queue is
+     *  walked in waves: a few repos first (the origin's own family, which is
+     *  also the likeliest home of the next server), then wider waves while
+     *  answers are actually coming back. [crossExtensionTargets] already orders
+     *  the queue by trust (origin's family, proven repos, then the rest), so
+     *  the waves never cost a repo its turn — they only stagger its start. */
+    private val CROSS_EXT_WAVE_START = 5
+    private val CROSS_EXT_WAVE_MAX = 96
+    private val CROSS_EXT_WAVE_GAP_MS = 1_200L
+    private val CROSS_EXT_WAVE_SLOW_MS = 2_000L
+
+    /** How long the pass may go with NOTHING completing before it is called
+     *  wedged and ends early, handing every repo it has no answer from to the
+     *  background re-ask (see [streamsForInner] and [startSweepIfNeeded]).
+     *
+     *  This is the fix for the genuinely-stuck search. A provider call is a
+     *  plain blocking call, so a plugin that locked up while cold-starting
+     *  parks its coroutine forever: the watchdog refunds the slot, but nothing
+     *  inside that call ever runs again, so no job completes, no server
+     *  arrives, and the pass waits out its whole budget on work that is not
+     *  coming back. There is no way to interrupt such a call — the only honest
+     *  response is to stop WAITING on it, re-ask those repos with new calls,
+     *  and let the count and the status line resolve. */
+    private val CROSS_EXT_STALL_MS = 25_000L
 
     // 20s for search/episodes: a CloudStream/native plugin's first call has to
     // spin up its QuickJS runtime (and, for a .hiki, load a whole dex archive —
@@ -940,17 +1070,64 @@ class ContentRepository(private val manager: ProviderManager) {
     ): T {
         ensureHangWatchdog()
         gate.acquire()
-        val call = InFlight(gate, System.currentTimeMillis(), hangAfterMs)
-        inFlight[providerId] = call
+        // A UNIQUE token per call, deliberately not the provider id. A repo is
+        // asked again and again over a session (a fresh pass, the background
+        // sweep, a re-extraction), and keying by provider meant a WEDGED call's
+        // entry was overwritten by the next call for the same repo — so the
+        // watchdog could never refund it, and every wedge quietly shrank the
+        // gate for the rest of the session until searches stopped starting at
+        // all. That is one half of the "stuck at 30 still searching, nothing
+        // new ever arrives" report; with a token the wedged call keeps its own
+        // entry, is refunded on time, and the repo can be asked again.
+        val call = InFlight(providerId, gate, System.currentTimeMillis(), hangAfterMs)
+        val token = "call:" + callSeq.incrementAndGet() + ":" + providerId
+        inFlight[token] = call
         try {
             return block()
         } finally {
-            inFlight.remove(providerId, call)
+            inFlight.remove(token, call)
             // The slot is always given back here — it was taken above — UNLESS
             // the watchdog has already refunded it (which it does only for a
             // call that had stopped coming back). Releasing twice for one
             // acquisition would quietly widen the gate, so the flag decides.
             if (!call.refunded.get()) gate.release()
+        }
+    }
+
+    /**
+     * Runs [block] DETACHED from the caller, and only waits for it up to
+     * [budgetMs]. Returns null when the work outlived its budget.
+     *
+     * This exists because a provider call cannot be interrupted. Every plugin
+     * call here is a plain blocking call running inside a coroutine, so
+     * `withTimeoutOrNull` gives up logically while the thread stays parked
+     * forever — and anything that WAITS on that coroutine (a parent scope, a
+     * `coroutineScope`, a sweep round) waits forever too. That is the mechanism
+     * behind the genuinely-stuck search: not a wrong count, but work nobody can
+     * cancel holding the search open indefinitely.
+     *
+     * Running the work on the application scope breaks that chain: the caller
+     * is not its parent, so when the budget runs out the caller simply moves on
+     * (the call is left to finish on its own; the watchdog refunds its slot, and
+     * the repo is re-asked later). Nothing that waits on [detached] can be
+     * hung, which is what makes "never stuck" a property of the design rather
+     * than a hope.
+     */
+    private suspend fun <T : Any> detached(budgetMs: Long, block: suspend () -> T): T? {
+        val scope = HikariApp.instance.appScope
+        val job = scope.async<T?> {
+            try {
+                block()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                null
+            }
+        }
+        return try {
+            withTimeoutOrNull(budgetMs) { job.await() }
+        } catch (t: Throwable) {
+            null
         }
     }
 
@@ -1723,6 +1900,12 @@ class ContentRepository(private val manager: ProviderManager) {
              *  below — so a teardown that runs without it knows the pass was
              *  cut off (cancelled or thrown) rather than finished. */
             var passCompleted = false
+            /** Set when the pass ended EARLY because nothing at all was
+             *  completing — a plugin whose runtime locked up while cold-starting
+             *  (see [CROSS_EXT_STALL_MS]). The repos it never got an answer from
+             *  are re-asked in the background like any other unfinished tail,
+             *  and the log says this is why. */
+            var passStalled = false
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
@@ -1821,6 +2004,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
                 var lastEmitted = -1
+                // When the pass last made ANY progress (a search or an extraction
+                // completing, a hit landing). The wedge watchdog reads it — see
+                // [CROSS_EXT_STALL_MS].
+                var lastProgressAt = started
+                var mergedCount = 0
                 // ---- PHASE 1: SEARCH every installed extension (nothing else) --
                 // Each search job RETURNS the entry it matched; the wait loop
                 // below drains finished jobs (whether they finished before or
@@ -1872,16 +2060,74 @@ class ContentRepository(private val manager: ProviderManager) {
                         hit
                     }
                 }
-                // Same-engine repos start with the main pass (see `sameEngine`).
-                sameEngine.forEach { launchSearch(it, waitForOrigin = true) }
+                // ---- WAVE FAN-OUT (see [CROSS_EXT_WAVE_START]) --------------
+                // The queue is the trust-ordered target list: the origin's own
+                // engine family, then the repos that have already produced
+                // servers this session, then everyone else. Waves only stagger
+                // WHEN each repo is asked, never whether — a phone must not
+                // cold-load ~96 plugin runtimes at the same instant, which is
+                // what wedges them.
+                val sameEngineIds = sameEngine.map { it.config.id }.toHashSet()
+                val searchQueue = java.util.ArrayDeque<ContentProvider>()
+                sameEngine.forEach { searchQueue.add(it) }
+                lateTargets.forEach { searchQueue.add(it) }
+                var waveSize = CROSS_EXT_WAVE_START
+                var lastWaveAt = started
+                var waveDone = 0
+                var searchDone = 0
+                var nextWaveAt = started + (if (targets.isEmpty()) 0L else crossGrace)
                 var lateStartedAt = 0L
-                var searchPhaseClosed = false
+                fun launchWave(now: Long) {
+                    if (searchQueue.isEmpty() || now < nextWaveAt) return
+                    var launched = 0
+                    while (launched < waveSize && searchQueue.isNotEmpty()) {
+                        val p = searchQueue.poll() ?: break
+                        if (lateStartedAt == 0L && !sameEngineIds.contains(p.config.id)) {
+                            lateStartedAt = now
+                        }
+                        launchSearch(p, waitForOrigin = sameEngineIds.contains(p.config.id))
+                        launched++
+                    }
+                    // Widen only when the previous wave is producing answers: a
+                    // wave of cold plugins that has not come back yet must not be
+                    // followed by four more just like it.
+                    val progressed = searchDone > waveDone ||
+                        now - lastWaveAt >= CROSS_EXT_WAVE_SLOW_MS
+                    if (progressed) waveSize = minOf(CROSS_EXT_WAVE_MAX, waveSize * 2)
+                    waveDone = searchDone
+                    lastWaveAt = now
+                    nextWaveAt = now + CROSS_EXT_WAVE_GAP_MS
+                }
                 val hits = ArrayList<CrossHit>()
                 val extractJobs = ArrayList<kotlinx.coroutines.Deferred<List<StreamSource>>>()
-                var extractionCursor = 0
+                val extractQueued = HashSet<Int>()
                 fun launchPendingExtractions() {
-                    while (extractionCursor < hits.size) {
-                        val hit = hits[extractionCursor++]
+                    while (true) {
+                        // Pick the highest-priority repo that has MATCHED and has
+                        // not been launched yet: the ORIGIN's own entry first,
+                        // then a repo this session has already got servers from,
+                        // then the origin's engine family, then the rest. This
+                        // is what makes "the extension you opened it in plays
+                        // it" hold even when another repo answered first — the
+                        // extraction queue is ordered by trust, not by arrival.
+                        var pick = -1
+                        var pickScore = Int.MAX_VALUE
+                        hits.forEachIndexed { i, h ->
+                            if (i in extractQueued) return@forEachIndexed
+                            val score = when {
+                                h.provider.config.id == item.providerId -> 0
+                                crossProven.contains(h.provider.config.id) -> 1
+                                sameEngineIds.contains(h.provider.config.id) -> 2
+                                else -> 3
+                            }
+                            if (score < pickScore) {
+                                pickScore = score
+                                pick = i
+                            }
+                        }
+                        if (pick < 0) return
+                        extractQueued += pick
+                        val hit = hits[pick]
                         extractJobs += scope.async {
                             val out: Pair<List<StreamSource>, String?> =
                                 cancellableCatching {
@@ -1952,66 +2198,83 @@ class ContentRepository(private val manager: ProviderManager) {
                         onProgress(merged.values.toList())
                     }
                     val now = System.currentTimeMillis()
-                    // The origin has had its head start — and if it is still
-                    // working, the other repos wait a little longer for it
-                    // (bounded by ORIGIN_SETTLE_MAX_MS). Ask EVERY other
-                    // installed extension for the same title (phase 1) and merge
-                    // what they find into this same list (the progressive
-                    // emission above hands each new server to the UI/player as
-                    // it lands). This is what makes "play from any server from
-                    // any repo" true for extensions, not just Stremio/Nuvio —
-                    // and it runs even when the origin DID return servers,
-                    // because those may all be dead while another repo's are not.
-                    val lateGrace = if (originJob == null || originJob.isCompleted) crossGrace
-                    else ORIGIN_SETTLE_MAX_MS
-                    if (lateStartedAt == 0L && lateTargets.isNotEmpty() &&
-                        now - started >= lateGrace
-                    ) {
-                        lateStartedAt = now
-                        lateTargets.forEach { launchSearch(it, waitForOrigin = false) }
+                    // New servers landing IS progress: a pass that is producing
+                    // servers (however slowly) must never be called wedged.
+                    if (merged.size != mergedCount) {
+                        mergedCount = merged.size
+                        lastProgressAt = now
                     }
+                    // One wave of the trust-ordered queue (see [launchWave]): the
+                    // origin's own repo family gets asked first, everything else
+                    // follows in widening waves — never all 258 cold plugins at
+                    // once, which is what wedges them.
+                    launchWave(now)
                     // Pick up everything the searches matched so far — from every
-                    // job that has completed, so a hit that arrives after phase 2
-                    // opened still gets its servers.
+                    // job that has completed, so a hit that lands late still gets
+                    // its servers.
                     val jobIt = searchJobs.iterator()
                     while (jobIt.hasNext()) {
                         val j = jobIt.next()
                         if (j.isCompleted) {
                             runCatching { j.getCompleted() }.getOrNull()?.let { hits.add(it) }
                             jobIt.remove()
+                            searchDone++
+                            lastProgressAt = now
                         }
                     }
-                    // ---- PHASE 2: extract what phase 1 matched ----
-                    // Phase 2 opens once EVERY extension has answered (or the
-                    // search ceiling is reached), and never before the late pass
-                    // has started. Extraction is the slow half (a site-specific
-                    // parse per repo) and is deliberately not allowed to compete
-                    // with the searches: a matched repo used to keep holding a
-                    // search slot while it fetched its episode list, which is
-                    // what starved the tail of the 180-repo .hiki family — those
-                    // searches never ran, and the pass still announced
-                    // "all done, none with servers".
-                    if (!searchPhaseClosed) {
-                        val lateLaunched = lateTargets.isEmpty() || lateStartedAt != 0L
-                        val phaseFrom = if (lateStartedAt != 0L) lateStartedAt else started
-                        val allSearched = searchJobs.isEmpty()
-                        // Also open once only a small TAIL of searches is left:
-                        // searching is far cheaper than extracting, so letting the
-                        // last few searches run while extraction has already begun
-                        // puts the first servers on screen sooner — without
-                        // re-creating the starvation the gate exists to prevent.
-                        // (A small install is all "tail", so it behaves exactly as
-                        // it always did: extract as soon as something matched.)
-                        val smallTail = searchJobs.size <= CROSS_EXT_SEARCH_TAIL
-                        if (lateLaunched &&
-                            (allSearched || smallTail ||
-                                now - phaseFrom >= CROSS_EXT_SEARCH_PHASE_MS)
-                        ) {
-                            searchPhaseClosed = true
+                    // ---- PHASE 2: extract what matched ------------------------
+                    // Runs CONTINUOUSLY, over the hits that have arrived so far,
+                    // in trust order (the origin's entry first — see
+                    // [launchPendingExtractions]). It used to be gated behind
+                    // "every extension has answered, or 45s have passed", which
+                    // is why a cold first play sat on the finding-server card for
+                    // a minute: nothing could start resolving links until the
+                    // whole 250-repo search phase was over. Extraction is still
+                    // bounded by its own gate ([CROSS_EXT_EXTRACT_CONCURRENCY]),
+                    // so it cannot starve the searches that are still queued.
+                    launchPendingExtractions()
+                    // Count the extractions that land, and for the wedge watchdog:
+                    // anything completing anywhere is progress.
+                    val exIt = extractJobs.iterator()
+                    while (exIt.hasNext()) {
+                        val j = exIt.next()
+                        if (j.isCompleted) {
+                            // Merge BEFORE dropping it: an extraction that
+                            // finished between the merge pass at the top of this
+                            // iteration and here must still hand over its servers.
+                            merge(j)
+                            exIt.remove()
+                            lastProgressAt = now
                         }
                     }
-                    if (searchPhaseClosed) launchPendingExtractions()
-                    val allDone = jobs.all { it.isCompleted } && searchPhaseClosed &&
+                    // ---- WEDGE WATCHDOG --------------------------------------
+                    // A pass can stop making progress and never say so: every
+                    // provider call is a plain blocking call, so a plugin whose
+                    // runtime locked up while cold-starting leaves coroutines
+                    // parked forever — no timeout interrupts them, no job ever
+                    // completes, and the pass sits on the same "N still
+                    // searching" for as long as the user stares at it. That is
+                    // the genuinely-stuck search, and the user's own workaround
+                    // was to back out and press Play again, which asks the same
+                    // repos with FRESH calls and works. So: if nothing at all has
+                    // completed for [CROSS_EXT_STALL_MS] while work is still
+                    // outstanding, the pass is called wedged. It ends here, and
+                    // the teardown hands every repo it has no answer from to the
+                    // background re-ask — the same retry the user performs by
+                    // hand, done automatically, while the video plays.
+                    val outstanding = searchQueue.size + searchJobs.size + extractJobs.size
+                    if (outstanding > 0 && now - lastProgressAt >= CROSS_EXT_STALL_MS) {
+                        passStalled = true
+                        com.hikari.app.data.Logs.log(
+                            "Search",
+                            "pass over \"${item.title}\": nothing has answered in " +
+                                "${CROSS_EXT_STALL_MS / 1000}s with $outstanding repo(s) " +
+                                "still outstanding — abandoning the wedged work and " +
+                                "re-asking them in the background",
+                        )
+                        break
+                    }
+                    val allDone = jobs.all { it.isCompleted } && searchQueue.isEmpty() &&
                         searchJobs.isEmpty() && extractJobs.all { it.isCompleted }
                     if (allDone) break
                     // Wait for EVERY provider (like Stremio aggregating every
@@ -2153,7 +2416,14 @@ class ContentRepository(private val manager: ProviderManager) {
                 // crawl.
                 val tail = sweepableTail(crossTargets, crossFound, crossVerdict)
                 val servable = passFound.size
-                val ranOutOfTime = System.currentTimeMillis() >=
+                // A pass that ended because it was WEDGED (nothing completing for
+                // [CROSS_EXT_STALL_MS]) always hands its unanswered repos over:
+                // re-asking them with fresh calls is the only thing that gets an
+                // answer out of a plugin whose runtime locked up, and it is
+                // exactly what the user's own "back out and press Play again"
+                // does — except the user does not have to do it.
+                val ranOutOfTime = passStalled ||
+                    System.currentTimeMillis() >=
                     maxOf(passDeadlineAt, passStartedAt + CROSS_EXT_BUDGET_MS)
                 // …and the repos this pass answered OUT OF MEMORY. They are not
                 // in the tail (each has a verdict, it just came from the
@@ -2191,6 +2461,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         "${tail.size} repo(s) unfinished" +
                         (if (reAsk.isEmpty()) "" else " + ${reAsk.size} answered from memory") +
                         (if (passCompleted) "" else " (pass was CUT OFF early)") +
+                        (if (passStalled) " (pass STALLED — nothing was answering)" else "") +
                         " (time=$ranOutOfTime) → " +
                         (if (worthSweeping) "sweeping them in the background" else "not sweeping"),
                 )
@@ -2543,6 +2814,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val budget = SWEEP_BUDGET_MS
         val started = System.currentTimeMillis()
         sweep.rounds++
+        sweep.lastProgressAt = started
         // Repos whose turn never came before the round's budget ran out. They are
         // carried into another round below rather than dropped, because a repo
         // that is never asked is exactly what "it stopped at 87 of 159 and just
@@ -2556,33 +2828,51 @@ class ContentRepository(private val manager: ProviderManager) {
             if (list.isEmpty() || list.size == lastEmitted) return
             lastEmitted = list.size
             sweep.current = list
+            sweep.lastProgressAt = System.currentTimeMillis()
             streamsRemembered[key] = RememberedStreams(list, System.currentTimeMillis())
             for (s in sweep.sinks) cancellableCatching { s(list) }
         }
 
+        // WORKER POOL, and a bounded wait on every repo: the sweep has to be
+        // able to FINISH even when a plugin never answers.
+        //
+        // The old shape launched one child per repo inside a single
+        // `coroutineScope`, which waits for all of them — so ONE parked plugin
+        // call kept the round open forever, and with it the sweep, its "still
+        // searching" line and every round after it. That is the reported "stuck
+        // on 30 still searching and it never moved": the work was not slow, it
+        // was un-finishable. Now only [SWEEP_WORKERS] repos are worked on at
+        // once, and each repo's two provider phases run DETACHED with a budget
+        // ([SWEEP_REPO_BUDGET_MS]) — a call that outlives its budget is left to
+        // finish on its own, and the repo is asked again later instead of
+        // holding the search open.
+        val queue = java.util.concurrent.ConcurrentLinkedQueue<ContentProvider>(targets)
+        val workers = minOf(SWEEP_WORKERS, targets.size).coerceAtLeast(1)
         kotlinx.coroutines.coroutineScope {
-            for (p in targets) {
+            repeat(workers) {
                 launch {
-                    // Past the ceiling: stop starting new work. Whatever is
-                    // already in flight still lands (and is published), and the
-                    // repos that lost their turn are handed to the NEXT round
-                    // (see [unasked]).
-                    if (System.currentTimeMillis() - started >= budget) {
-                        unasked.add(p)
-                        return@launch
-                    }
-                    // Wedged earlier this session: skip it (its slot was already
-                    // refunded — see [crossHung]) and say so, instead of holding
-                    // a launch that can never finish.
-                    if (isHung(p.config.id)) return@launch
-                    val id = p.config.id
-                    val repo = p.config.name.ifBlank { id }
-                    // The live tally (not a captured one): a later pass for this
-                    // video replaces [crossTally], and the sweep's progress must
-                    // show up on whichever tally the chooser is reading.
-                    val tally = crossTally
-                    val outcome =
-                        cancellableCatching {
+                    while (true) {
+                        val p = queue.poll() ?: break
+                        // Past the ceiling: stop starting new work. Whatever is
+                        // already in flight still lands (and is published), and
+                        // the repos that lost their turn are handed to the NEXT
+                        // round (see [unasked]).
+                        if (System.currentTimeMillis() - started >= budget) {
+                            unasked.add(p)
+                            continue
+                        }
+                        // Wedged recently (see [crossHung], which now EXPIRES):
+                        // skip it rather than hold a worker on a call that cannot
+                        // come back.
+                        if (isHung(p.config.id)) continue
+                        val id = p.config.id
+                        val repo = p.config.name.ifBlank { id }
+                        // The live tally (not a captured one): a later pass for
+                        // this video replaces [crossTally], and the sweep's
+                        // progress must show up on whichever tally the chooser
+                        // is reading.
+                        val tally = crossTally
+                        val scanned = detached(SWEEP_REPO_BUDGET_MS) {
                             crossExtensionSearch(
                                 p,
                                 item,
@@ -2591,65 +2881,87 @@ class ContentRepository(private val manager: ProviderManager) {
                                 ignoreEmptyRecord = sweep.ignoreEmptyRecord,
                             )
                         }
-                            .getOrElse {
-                                null to ("search threw ${it.javaClass.simpleName}: " +
-                                    (it.message ?: "no message"))
+                        if (scanned == null) {
+                            // Parked (or threw): abandon it for this round. It
+                            // is left for a later attempt rather than
+                            // blacklisted, and it comes off the live progress
+                            // line so the count on screen can resolve.
+                            tally.running.remove(id)
+                            tally.verdict[id] = "$repo — did not answer in time"
+                            bumpCrossStatus()
+                            sweep.lastProgressAt = System.currentTimeMillis()
+                            com.hikari.app.data.Logs.log(
+                                "Search",
+                                "sweep \"${item.title}\" → $repo: no answer within " +
+                                    "${SWEEP_REPO_BUDGET_MS / 1000}s — moving on " +
+                                    "(it will be asked again)",
+                            )
+                            continue
+                        }
+                        val hit = scanned.first
+                        val verdict = scanned.second
+                        try {
+                            if (hit == null) {
+                                if (verdict == CROSS_VERDICT_SKIPPED) {
+                                    // A verification wall: dropped silently, like
+                                    // the pass does (see [crossCfSkip]).
+                                    tally.verdict.remove(id)
+                                    tally.asked.remove(id)
+                                } else {
+                                    tally.verdict[id] = "$repo — ${verdict ?: "no matching title"}"
+                                    com.hikari.app.data.Logs.log(
+                                        "Search",
+                                        "sweep \"${item.title}\" → $repo: nothing ($verdict)",
+                                    )
+                                }
+                                continue
                             }
-                    val hit = outcome.first
-                    val verdict = outcome.second
-                    try {
-                        if (hit == null) {
-                            if (verdict == CROSS_VERDICT_SKIPPED) {
-                                // A verification wall: dropped silently, like
-                                // the pass does (see [crossCfSkip]).
-                                tally.verdict.remove(id)
-                                tally.asked.remove(id)
-                            } else {
-                                tally.verdict[id] = "$repo — ${verdict ?: "no matching title"}"
+                            com.hikari.app.data.Logs.log(
+                                "Search",
+                                "sweep \"${item.title}\" → $repo: found \"${hit.candidate.title}\" " +
+                                    "— getting servers…",
+                            )
+                            val extracted = detached(SWEEP_REPO_BUDGET_MS) {
+                                crossExtensionExtract(hit, item, episode)
+                            }
+                            if (extracted == null) {
+                                tally.verdict[id] = "$repo — did not answer in time"
                                 com.hikari.app.data.Logs.log(
                                     "Search",
-                                    "sweep \"${item.title}\" → $repo: nothing ($verdict)",
+                                    "sweep \"${item.title}\" → $repo: extraction gave no answer " +
+                                        "within ${SWEEP_REPO_BUDGET_MS / 1000}s — moving on",
+                                )
+                                continue
+                            }
+                            val found = extracted.first
+                            val why = extracted.second
+                            if (found.isEmpty()) {
+                                tally.verdict[id] = "$repo — ${why ?: "no playable links"}"
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "sweep \"${item.title}\" → $repo: nothing ($why)",
+                                )
+                            } else {
+                                tally.verdict.remove(id)
+                                tally.found[id] = p.config.type.groupLabel
+                                // Proven: asked first on every later lookup.
+                                crossProven.add(id)
+                                synchronized(acc) {
+                                    found.forEach { s -> acc.putIfAbsent(s.infoHash ?: s.url, s) }
+                                }
+                                com.hikari.app.data.Logs.log(
+                                    "Search",
+                                    "sweep \"${item.title}\" → $repo: ${found.size} servers " +
+                                        "(background, while playing)",
                                 )
                             }
-                            return@launch
+                        } finally {
+                            tally.running.remove(id)
+                            bumpCrossStatus()
+                            sweep.lastProgressAt = System.currentTimeMillis()
                         }
-                        com.hikari.app.data.Logs.log(
-                            "Search",
-                            "sweep \"${item.title}\" → $repo: found \"${hit.candidate.title}\" " +
-                                "— getting servers…",
-                        )
-                        val out = cancellableCatching { crossExtensionExtract(hit, item, episode) }
-                            .getOrElse {
-                                emptyList<StreamSource>() to
-                                    ("extraction threw ${it.javaClass.simpleName}")
-                            }
-                        val found = out.first
-                        val why = out.second
-                        if (found.isEmpty()) {
-                            tally.verdict[id] = "$repo — ${why ?: "no playable links"}"
-                            com.hikari.app.data.Logs.log(
-                                "Search",
-                                "sweep \"${item.title}\" → $repo: nothing ($why)",
-                            )
-                        } else {
-                            tally.verdict.remove(id)
-                            tally.found[id] = p.config.type.groupLabel
-                            // Proven: asked first on every later lookup.
-                            crossProven.add(id)
-                            synchronized(acc) {
-                                found.forEach { s -> acc.putIfAbsent(s.infoHash ?: s.url, s) }
-                            }
-                            com.hikari.app.data.Logs.log(
-                                "Search",
-                                "sweep \"${item.title}\" → $repo: ${found.size} servers " +
-                                    "(background, while playing)",
-                            )
-                        }
-                    } finally {
-                        tally.running.remove(id)
-                        bumpCrossStatus()
+                        publish()
                     }
-                    publish()
                 }
             }
         }
@@ -3395,6 +3707,21 @@ class ContentRepository(private val manager: ProviderManager) {
         ) {
             return false
         }
+        // The episode must be THE episode. A repo entry whose own name states an
+        // episode number ("Renegade Immortal Episode 20", "第20集", "148") is only
+        // usable for the episode being played — otherwise the entry is another
+        // episode's page, and taking it hands the user a different video even
+        // though the SHOW matches (the "it played the wrong episode from another
+        // repo" half of the report). Only an explicit marker counts, so a title
+        // that merely ends in a number ("Show Season 2") is not misread as an
+        // episode number and cannot reject a perfectly good repo.
+        if (episode != null && wanted.type == MediaType.SERIES) {
+            val stated = statedEpisodeNumber(candidate.title)
+            if (stated != null && stated != episode.number) {
+                val wantedStated = statedEpisodeNumber(episode.name)
+                if (wantedStated == null || wantedStated != stated) return false
+            }
+        }
         // The ORIGINAL name is what the extensions index: a title the app renamed
         // for display (TMDB language) must still be searched for by the name
         // their sites use, or every repo answers "no matching title" and the
@@ -3411,7 +3738,20 @@ class ContentRepository(private val manager: ProviderManager) {
         // One set must contain the other: "renegade immortal" ⊂ "renegade
         // immortal xian ni". A mere intersection ("immortal" shared by
         // "Renegade Immortal" and "Immortal Samsara") is NOT a match.
-        if (!(sa.containsAll(sb) || sb.containsAll(sa))) return false
+        val extends = sb.containsAll(sa)      // the repo names the show more fully
+        val shortened = sa.containsAll(sb)    // the repo names LESS than we asked
+        if (!extends && !shortened) return false
+        // A repo entry that is a SHORTENED form of what we asked for is only
+        // trusted when it still carries at least two significant words. One word
+        // is how an unrelated video gets in: a repo page titled just "Renegade"
+        // contains "renegade", which is part of "Renegade Immortal", so the old
+        // rule accepted it and the player started whatever that page was — the
+        // reported "an adult video titled Renegade gives me its server". A repo
+        // that names the show MORE fully ("Renegade Immortal (Xian Ni)", "…Season
+        // 2") is still accepted at any length, because that is the ordinary way
+        // repositories label a show, and extending a title cannot introduce a
+        // different series.
+        if (shortened && !extends && sb.size < 2) return false
         // …and the first significant word must survive, so the match is anchored
         // to the head of the title rather than to a shared tail.
         if (!sb.contains(ta.first()) && !sa.contains(tb.first())) return false
@@ -3444,6 +3784,24 @@ class ContentRepository(private val manager: ProviderManager) {
 
     private val QUERY_ECHO =
         Regex("[?&](?:amp;)?(?:query|q|s|search|keyword|term|kw|text|name)=")
+
+    /** The episode number a row's own name EXPLICITLY states ("Ep 148",
+     *  "Episode 148", "E148", "第148集", or a name that is nothing but the
+     *  number), or null when the name says nothing about numbering.
+     *
+     *  Deliberately narrower than [episodicNumber]: a trailing number is NOT read
+     *  as an episode here ("Show Season 2" must not look like episode 2), because
+     *  this one decides whether a repo entry belongs to a DIFFERENT episode than
+     *  the one being played — a judgement that must never be made on a guess (see
+     *  [confidentTitleMatch]). */
+    private fun statedEpisodeNumber(name: String?): Int? {
+        val n = name?.trim().orEmpty()
+        if (n.isEmpty()) return null
+        EPISODE_IN_NAME.find(n)?.let { return it.groupValues[1].toIntOrNull() }
+        CJK_EPISODE_IN_NAME.find(n)?.let { return it.groupValues[1].toIntOrNull() }
+        if (n.length <= 4 && n.all { it.isDigit() }) return n.toIntOrNull()
+        return null
+    }
 
     /** The episode number a row's own NAME carries ("Ep 148", "Episode 148",
      *  "E148", "第148集"), or null when the name says nothing about numbering.
@@ -3666,10 +4024,16 @@ class ContentRepository(private val manager: ProviderManager) {
             }) ?: emptyList()
             if (eps.isNotEmpty()) {
                 val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
-                val named = withRealEpisodeNames(item, sorted)
-                val translated = translateEpisodes(item.providerId, named)
-                synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
-                return@withContext translated
+                // Auto-translate FIRST, then the TMDB name lookup: when the user
+                // has a TMDB language set, TMDB's own name for the episode is what
+                // the page and the player should print, and it must not be
+                // overwritten by the per-extension "translate this to English"
+                // option (which is about the extension's own content, not about
+                // the language the app is being read in).
+                val translated = translateEpisodes(item.providerId, sorted)
+                val named = withRealEpisodeNames(item, translated)
+                synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                return@withContext named
             }
         }
         // Last resort, for ANY series whose own list came back empty: borrow the
@@ -3687,10 +4051,12 @@ class ContentRepository(private val manager: ProviderManager) {
         // series".
         if (item.type == MediaType.SERIES) {
             episodesFromExtensions(item)?.let { list ->
-                val named = withRealEpisodeNames(item, list)
-                val translated = translateEpisodes(item.providerId, named)
-                synchronized(episodeCache) { episodeCache[item.uniqueId] = translated }
-                return@withContext translated
+                // Same order as above: auto-translate first, then TMDB's names in
+                // the app's chosen language (which win when they exist).
+                val translated = translateEpisodes(item.providerId, list)
+                val named = withRealEpisodeNames(item, translated)
+                synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                return@withContext named
             }
         }
         null
@@ -3834,9 +4200,20 @@ class ContentRepository(private val manager: ProviderManager) {
         // title localized by the app's TMDB language is not what the wiki knows
         // it as).
         val showName = item.searchTitle
-        if (eps.none { EpisodeTitles.needsEnglish(it.name, showName) }) return eps
+        // …and it asks in the app's chosen TMDB language when one is set: the
+        // episode rows and the player's top bar print the same name, so a page
+        // that is translated must not hand the player an English one (the
+        // reported "the page says El primer baile, the player says First
+        // Dance"). With no language chosen this stays exactly as it was.
+        val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
+        val needNames = eps.any { EpisodeTitles.needsEnglish(it.name, showName) }
+        // Without a language there is nothing to do unless a row's own label
+        // needs upgrading (that is what keeps ordinary shows from costing a
+        // request); WITH one, every episode is looked up, because the provider's
+        // real English title is still not the language the user chose.
+        if (language == null && !needNames) return eps
         val names = withTimeoutOrNull(12_000) {
-            EpisodeTitles.lookup(showName, item.year, numbers.toSet())
+            EpisodeTitles.lookup(showName, item.year, numbers.toSet(), language)
         } ?: return eps
         if (names.isEmpty()) return eps
         var changed = false

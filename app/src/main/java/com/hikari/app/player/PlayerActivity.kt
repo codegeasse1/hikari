@@ -4194,7 +4194,13 @@ class PlayerActivity : ComponentActivity() {
         // check the app really did ask everything). The sweep's own liveness is
         // what makes the word honest.
         val state = when {
-            running > 0 -> "$running still searching"
+            // A count that has not MOVED for a minute is not a search that is
+            // progressing — it is the frozen "30 still searching" the user
+            // reported, which used to sit there until they left the player. The
+            // tally changing means a repo started or finished, so this is a real
+            // liveness test rather than a timer on the search itself.
+            running > 0 && ContentRepository.crossStatusQuietForMs() < SEARCH_QUIET_MS ->
+                "$running still searching"
             ContentRepository.anySweepBusy() -> "pass over, still searching"
             else -> "done"
         }
@@ -8245,3 +8251,10 @@ private const val TRANSIENT_RETRIES = 8
 /** How long one load task may keep retrying a transient error before it is
  *  escalated to the app's own failover / source-refresh logic. */
 private const val MAX_RETRY_WINDOW_MS = 15_000L
+
+/** How long the live progress tally may stay completely unchanged before the
+ *  Sources panel stops describing the search as still running. A search that is
+ *  genuinely working changes the tally constantly (a repo starts, a repo
+ *  finishes, servers land), so a count that has not moved for this long is the
+ *  frozen "N still searching" that used to sit on screen forever. */
+private const val SEARCH_QUIET_MS = 60_000L
