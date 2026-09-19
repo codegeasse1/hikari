@@ -1660,6 +1660,12 @@ class ContentRepository(private val manager: ProviderManager) {
                     if (job.isCompleted) {
                         runCatching { job.getCompleted() }.getOrDefault(emptyList())
                             .forEach { s -> merged.putIfAbsent(s.infoHash ?: s.url, s) }
+                        // Kept up to date on every merge, not only at the end of
+                        // the pass: the teardown in the `finally` uses this as the
+                        // snapshot a background sweep starts from, and a pass that
+                        // is CANCELLED (the common case — see there) never reaches
+                        // the line that would have recorded it otherwise.
+                        passFound = merged.values.toList()
                     }
                 }
                 var lastEmitted = -1
