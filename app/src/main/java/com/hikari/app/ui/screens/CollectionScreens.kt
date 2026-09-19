@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tv
@@ -121,6 +122,8 @@ import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.CollectionsRepository
 import com.hikari.app.data.CoverKinds
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MediaType
+import com.hikari.app.data.NuvioCatalogImport
 import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
@@ -649,8 +652,10 @@ private fun FolderEditorPage(
 
     var tmdbSheet by remember { mutableStateOf(false) }
     var providerSheet by remember { mutableStateOf(false) }
+    var importSheet by remember { mutableStateOf(false) }
     var pickProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var catalogs by remember { mutableStateOf<List<CatalogRef>?>(null) }
+    val app = LocalContext.current.applicationContext as HikariApp
 
     // ---- Long-press to pick a catalog up, drag to put it where you want ----
     // The chevrons stay (they are exact, and right for a one-step nudge), but
@@ -773,6 +778,43 @@ private fun FolderEditorPage(
                     }
                 }
             }
+            // Importing a list of titles: the third way to fill a folder, next
+            // to TMDB presets and extension catalogs. See ImportListSheet.
+            item {
+                Surface(
+                    onClick = { importSheet = true },
+                    shape = GlassShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.List,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("Import a list (JSON)"),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                tr("Paste a Nuvio or Stremio list, or open a .json file"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 Text(
                     tr("Catalog sources"),
@@ -780,8 +822,7 @@ private fun FolderEditorPage(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 22.dp, bottom = 2.dp),
                 )
-            }
-            if (sources.isEmpty()) {
+            }            if (sources.isEmpty()) {
                 item {
                     Text(
                         tr("No catalogs yet — add a TMDB preset or a catalog from an installed extension."),
@@ -878,6 +919,37 @@ private fun FolderEditorPage(
                 tmdbSheet = false
             },
             onDismiss = { tmdbSheet = false },
+        )
+    }
+
+    if (importSheet) {
+        ImportListSheet(
+            onImport = { lists ->
+                // Imported titles live in the collection itself (there is no
+                // extension or server behind them), so each chosen list becomes
+                // one ITEMS source with its own stable id. A list whose titles
+                // are ALREADY in this folder is dropped rather than added twice.
+                val existing = sources.map { it.itemsJson }.toHashSet()
+                val added = lists.mapNotNull { group ->
+                    val json = NuvioCatalogImport.encode(group.items)
+                    if (json.isEmpty() || existing.contains(json)) return@mapNotNull null
+                    CatalogSource(
+                        kind = CatalogSourceKind.ITEMS,
+                        title = group.name.ifBlank { tr("Imported list") },
+                        itemsJson = json,
+                        type = if (group.items.any { it.type == MediaType.SERIES }) {
+                            MediaType.SERIES
+                        } else {
+                            MediaType.MOVIE
+                        },
+                        rawType = "import",
+                        uid = app.store.newId("items"),
+                    )
+                }
+                sources = sources + added
+                importSheet = false
+            },
+            onDismiss = { importSheet = false },
         )
     }
 
@@ -1073,8 +1145,11 @@ private fun SourceRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    if (source.kind == CatalogSourceKind.TMDB) Icons.Filled.Movie
-                    else Icons.Filled.Tv,
+                    when (source.kind) {
+                        CatalogSourceKind.TMDB -> Icons.Filled.Movie
+                        CatalogSourceKind.ITEMS -> Icons.Filled.List
+                        CatalogSourceKind.PROVIDER -> Icons.Filled.Tv
+                    },
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
@@ -1082,18 +1157,20 @@ private fun SourceRow(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        source.title,
+                        source.title.ifBlank { tr("Imported list") },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        if (source.kind == CatalogSourceKind.TMDB) {
-                            source.spec?.let { "TMDB · " + TmdbSources.detail(it) }
-                                ?: tr("TMDB preset")
-                        } else {
-                            tr("From an installed extension")
+                        when (source.kind) {
+                            CatalogSourceKind.TMDB ->
+                                source.spec?.let { "TMDB · " + TmdbSources.detail(it) }
+                                    ?: tr("TMDB preset")
+                            CatalogSourceKind.ITEMS ->
+                                tr("Imported list") + " · " + source.itemCount + " " + tr("titles")
+                            CatalogSourceKind.PROVIDER -> tr("From an installed extension")
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1536,8 +1613,7 @@ private fun ChipRow(
 
 /** One pill in a [ChipRow]. */
 @Composable
-private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    FilterChip(
+private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {    FilterChip(
         selected = selected,
         onClick = onClick,
         label = { Text(label) },
@@ -1549,6 +1625,265 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
             selectedLabelColor = MaterialTheme.colorScheme.primary,
         ),
     )
+}
+
+/**
+ * Imports a list of titles from JSON (a Nuvio/Stremio export, a file someone
+ * shared, a catalog response copied out of a browser) as one or more folder
+ * sources.
+ *
+ * The sheet is deliberately two-step: paste (or open a file), then LOOK at what
+ * was found before anything is added. JSON exports vary wildly — one file can
+ * hold four named catalogs — so the user picks which of the lists inside it to
+ * bring in, each shown with its name and how many titles it actually yielded.
+ * Nothing is added until they tap the button, and a file that yields nothing is
+ * reported in place rather than silently ignored.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ImportListSheet(
+    onImport: (List<NuvioCatalogImport.ImportedList>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // The JSON itself, and what the text field shows: a file's contents can be
+    // megabytes, and putting that in a TextField would stall the sheet, so a
+    // loaded file is summarised in the field and kept here.
+    var body by remember { mutableStateOf("") }
+    var fieldLabel by remember { mutableStateOf("") }
+    var lists by remember { mutableStateOf<List<NuvioCatalogImport.ImportedList>?>(null) }
+    var selected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var message by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    fun read(source: String) {
+        val found = NuvioCatalogImport.parse(source)
+        lists = found
+        selected = found.indices.filter { found[it].items.isNotEmpty() }.toSet()
+        message = when {
+            found.isEmpty() -> tr(
+                "No titles found. Paste the JSON exactly as you got it — an array of " +
+                    "titles, or an object with items/metas/catalogs inside."
+            )
+            found.all { it.items.isEmpty() } -> tr(
+                "This file describes catalogs but carries no titles of its own, so there " +
+                    "is nothing to save."
+            )
+            else -> ""
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().decodeToString()
+                    }
+                }.getOrNull()
+            }
+            busy = false
+            if (text.isNullOrBlank()) {
+                message = tr("Couldn't read that file.")
+                return@launch
+            }
+            body = text
+            fieldLabel = uri.lastPathSegment?.substringAfterLast('/') ?: tr("File loaded")
+            read(text)
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        ) {
+            Text(
+                tr("Import a list of titles"),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                tr(
+                    "Paste a Nuvio or Stremio list, a catalog response, or any JSON array of " +
+                        "titles. The names are matched on TMDB, so they get posters, details " +
+                        "and sources like every other title."
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
+            )
+            OutlinedTextField(
+                shape = GlassShape,
+                value = fieldLabel.ifBlank { body },
+                onValueChange = {
+                    fieldLabel = ""
+                    body = it
+                    lists = null
+                    message = ""
+                },
+                label = { Text(tr("JSON")) },
+                minLines = 3,
+                maxLines = 7,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 96.dp, max = 220.dp),
+            )
+            Row(
+                Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        val clip = cm?.primaryClip
+                            ?.takeIf { it.itemCount > 0 }
+                            ?.getItemAt(0)
+                            ?.coerceToText(context)
+                            ?.toString()
+                        if (clip.isNullOrBlank()) {
+                            message = tr("The clipboard is empty.")
+                        } else {
+                            body = clip
+                            fieldLabel = ""
+                            read(clip)
+                        }
+                    },
+                    shape = GlassShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ) {
+                    Text(
+                        tr("Paste"),
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                    )
+                }
+                Surface(
+                    onClick = {
+                        runCatching { picker.launch(arrayOf("application/json", "text/plain", "*/*")) }
+                    },
+                    shape = GlassShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(tr("Open file"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+                if (busy) {
+                    Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+
+            val found = lists
+            if (found != null && found.any { it.items.isNotEmpty() }) {
+                Text(
+                    tr("Found in this file"),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                )
+                found.forEachIndexed { i, group ->
+                    if (group.items.isEmpty()) return@forEachIndexed
+                    Surface(
+                        onClick = {
+                            selected = if (selected.contains(i)) selected - i else selected + i
+                        },
+                        shape = GlassShape,
+                        color = if (selected.contains(i)) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                        } else {
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (selected.contains(i)) Icons.Filled.Check else Icons.Filled.List,
+                                contentDescription = null,
+                                tint = if (selected.contains(i)) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    group.name.ifBlank { tr("Imported list") },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    group.items.size.toString() + " " + tr("titles"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            val chosen = found?.let { list ->
+                list.filterIndexed { i, g -> g.items.isNotEmpty() && selected.contains(i) }
+            }.orEmpty()
+            Surface(
+                onClick = {
+                    if (chosen.isNotEmpty()) onImport(chosen)
+                },
+                shape = GlassShape,
+                color = MaterialTheme.colorScheme.primary,
+                enabled = chosen.isNotEmpty(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp, bottom = 28.dp),
+            ) {
+                Box(Modifier.padding(vertical = 15.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (chosen.isEmpty()) tr("Add to folder") else
+                            tr("Add") + " " + chosen.size + " " + tr("to folder"),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** Installed-extension picker, shared by the folder editor. */
@@ -2262,6 +2597,8 @@ private fun CollectionFolderContent(
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             items(loaded.distinctBy { it.key }, key = { it.key }) { row ->
+                // The folder source this row came from — needed for "Show all".
+                val src = folder.sources.firstOrNull { it.key == row.catalogId }
                 MediaRow(
                     title = row.title,
                     providerName = row.providerName,
@@ -2275,26 +2612,31 @@ private fun CollectionFolderContent(
                             )
                         )
                     },
-                    onShowAll = {
-                        val source = folder.sources.firstOrNull { it.key == row.catalogId }
-                        if (source?.kind == CatalogSourceKind.TMDB) {
-                            val spec = source.spec
-                            Routes.safeNavigate(
-                                nav,
-                                if (spec != null) {
-                                    Routes.tmdbGridSpec(spec.encode(), row.title)
-                                } else {
-                                    Routes.tmdbGrid(source.tmdbPreset, row.title)
-                                }
-                            )
-                        } else {
-                            Routes.safeNavigate(
-                                nav,
-                                Routes.catalog(
-                                    row.providerId, row.catalogId, row.title,
-                                    row.providerName, row.type, row.rawType
+                    // An imported list already puts ALL of its titles in this
+                    // row, and there is no upstream catalog to page through, so
+                    // it has no "Show all" — offering one would open an empty
+                    // screen. Every other kind keeps it.
+                    onShowAll = if (src?.kind == CatalogSourceKind.ITEMS) null else {
+                        {
+                            if (src?.kind == CatalogSourceKind.TMDB) {
+                                val spec = src.spec
+                                Routes.safeNavigate(
+                                    nav,
+                                    if (spec != null) {
+                                        Routes.tmdbGridSpec(spec.encode(), row.title)
+                                    } else {
+                                        Routes.tmdbGrid(src.tmdbPreset, row.title)
+                                    }
                                 )
-                            )
+                            } else {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.catalog(
+                                        row.providerId, row.catalogId, row.title,
+                                        row.providerName, row.type, row.rawType
+                                    )
+                                )
+                            }
                         }
                     }
                 )

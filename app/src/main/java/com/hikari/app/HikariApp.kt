@@ -230,6 +230,12 @@ class HikariApp : Application() {
         appScope.launch {
             store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
         }
+        // Player UI skin (Settings → Player → Player UI): mirrored into
+        // PlayerSkins because PlayerActivity is a View-based screen that has to
+        // know the value synchronously while its controller is being inflated.
+        appScope.launch {
+            store.playerSkinFlow().collect { com.hikari.app.player.PlayerSkins.setCurrent(it) }
+        }
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
@@ -237,6 +243,10 @@ class HikariApp : Application() {
             // (fast DataStore read) so a WebView opened right after launch can
             // apply them on its first page instead of showing them after a race.
             runCatching { elementBlocks = store.elementBlocks() }
+            // Player UI skin: seed the synchronous mirror as well as collecting
+            // the flow, so a player opened immediately after launch (before the
+            // flow's first emission) still gets the right skin.
+            runCatching { com.hikari.app.player.PlayerSkins.setCurrent(store.playerSkin()) }
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()

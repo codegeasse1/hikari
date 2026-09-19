@@ -160,6 +160,28 @@ class CollectionsRepository(private val manager: ProviderManager) {
         val breadcrumb = listOf(collection.name, folder.name)
             .filter { it.isNotBlank() }
             .joinToString(" · ")
+        if (source.kind == CatalogSourceKind.ITEMS) {
+            // A list the user imported (a Nuvio/Stremio export, a shared JSON
+            // file — see NuvioCatalogImport). Its titles live inside the
+            // collection, so this row needs no network at all: the items are
+            // already MediaItems, already TMDB-addressed, and open and play
+            // exactly like any other Hikari title.
+            val items = withContext(Dispatchers.Default) {
+                NuvioCatalogImport.decode(source.itemsJson)
+            }
+            if (items.isEmpty()) return null
+            return CatalogRow(
+                providerId = "tmdb",
+                providerName = breadcrumb,
+                title = if (source.title.isNotBlank()) source.title else "Imported list",
+                items = items,
+                key = "coll|${collection.id}|${folder.id}|${source.key}",
+                catalogId = source.key,
+                type = if (items.any { it.type == MediaType.SERIES }) MediaType.SERIES
+                else MediaType.MOVIE,
+                rawType = "import",
+            )
+        }
         if (source.kind == CatalogSourceKind.TMDB) {
             // A hand-built source (a studio, a network, a person, a custom
             // discover query — see TmdbSources) carries its whole description

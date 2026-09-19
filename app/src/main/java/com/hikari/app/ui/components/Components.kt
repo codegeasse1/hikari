@@ -77,6 +77,8 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.PosterStyle
+import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -426,6 +428,70 @@ fun GlassSearchField(
     }
 }
 
+/**
+ * The shapes Home's featured banner can take — Settings → App Layout →
+ * Featured banner.
+ *
+ * All four show the same titles; they differ in how much of the page the banner
+ * owns and how much of each title it tells you. [COMPACT] gets out of the way as
+ * fast as possible, [SPOTLIGHT] is the full cinematic treatment, and
+ * [SHOWCASE] puts the poster beside the details so the artwork is never cropped.
+ */
+object HeroStyles {
+    const val CAROUSEL = "carousel"
+    const val SPOTLIGHT = "spotlight"
+    const val COMPACT = "compact"
+    const val SHOWCASE = "showcase"
+
+    val ALL = listOf(CAROUSEL, SPOTLIGHT, COMPACT, SHOWCASE)
+
+    fun normalize(key: String?): String = if (key != null && key in ALL) key else CAROUSEL
+
+    fun label(key: String): String = when (normalize(key)) {
+        SPOTLIGHT -> "Spotlight"
+        COMPACT -> "Compact strip"
+        SHOWCASE -> "Showcase"
+        else -> "Carousel"
+    }
+
+    fun description(key: String): String = when (normalize(key)) {
+        SPOTLIGHT -> "Full-width cinematic banner with the plot"
+        COMPACT -> "A short strip, so the feed starts sooner"
+        SHOWCASE -> "Poster beside the details, never cropped"
+        else -> "Wide 16:9 cards that peek in from the sides"
+    }
+}
+
+/**
+ * What the featured banner should draw: which shape, and which of the optional
+ * lines. The three flags are the "overlay metadata" switches — a plot summary,
+ * the score and the type/genre/year line can each be turned off, so a banner can
+ * be pure artwork if that is what the user wants.
+ */
+data class HeroConfig(
+    val style: String = HeroStyles.CAROUSEL,
+    val showOverview: Boolean = true,
+    val showRating: Boolean = true,
+    val showMeta: Boolean = true,
+)
+
+/** The featured banner, in whichever shape [config] asks for. */
+@Composable
+fun HeroBanner(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+) {
+    if (items.isEmpty()) return
+    when (HeroStyles.normalize(config.style)) {
+        HeroStyles.SPOTLIGHT -> HeroSpotlight(items, onClick, modifier, config)
+        HeroStyles.COMPACT -> HeroCompact(items, onClick, modifier, config)
+        HeroStyles.SHOWCASE -> HeroShowcase(items, onClick, modifier, config)
+        else -> HeroCarousel(items, onClick, modifier, config)
+    }
+}
+
 /** A carousel of wide, movie-shaped featured cards for the top of Home — the
  *  backdrop art with the title/metadata and a "View Details" pill over a bottom
  *  scrim, and pagination dots while more than one featured title exists.
@@ -436,10 +502,11 @@ fun GlassSearchField(
  *  in: that is what makes it read as a "poster carousel" instead of the tall
  *  portrait hero that used to eat the top third of Home. */
 @Composable
-fun HeroBanner(
+private fun HeroCarousel(
     items: List<MediaItem>,
     onClick: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
 ) {
     if (items.isEmpty()) return
     val pagerState = rememberPagerState { items.size }
@@ -465,6 +532,7 @@ fun HeroBanner(
             pageSpacing = 12.dp,
         ) { page ->
             val item = items[page]
+            val heroScore = if (config.showRating) rememberHeroScore(item) else null
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -517,7 +585,7 @@ fun HeroBanner(
                         item.genres.take(2).forEach { add(it) }
                         item.year?.let { add(it.toString()) }
                     }.joinToString("  ·  ")
-                    if (metaLine.isNotBlank()) {
+                    if (config.showMeta && metaLine.isNotBlank()) {
                         Text(
                             metaLine,
                             style = MaterialTheme.typography.labelSmall,
@@ -527,27 +595,43 @@ fun HeroBanner(
                             modifier = Modifier.padding(top = 2.dp),
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { onClick(item) },
-                        shape = RoundedCornerShape(50),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color.Black,
-                        ),
-                    ) {
-                        Icon(
-                            Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
+                    if (config.showOverview && !item.overview.isNullOrBlank()) {
                         Text(
-                            tr("View Details"),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
+                            item.overview!!.trim(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.72f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp),
                         )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (heroScore != null) {
+                            HeroScoreChip(heroScore)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Button(
+                            onClick = { onClick(item) },
+                            shape = RoundedCornerShape(50),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black,
+                            ),
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                tr("View Details"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                     }
                 }
             }
@@ -570,6 +654,445 @@ fun HeroBanner(
                 }
             }
         }
+    }
+}
+
+/** The score chip a featured banner can wear, when a score is known. The lookup
+ *  is the same one the poster grids use ([rememberPosterScore]), so a title's
+ *  score is fetched once for the whole app and a banner does not open a second
+ *  round of lookups. */
+@Composable
+private fun rememberHeroScore(item: MediaItem): String? =
+    rememberPosterScore(item, PosterStyle(showRatings = true))
+
+/** The score chip itself: the poster badge, enlarged for a banner. */
+@Composable
+private fun HeroScoreChip(text: String) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFF5C518),
+            maxLines = 1,
+        )
+    }
+}
+
+/** "Movie · Action, Drama · 2024" — the one line every banner shape shares. */
+private fun heroMetaLine(item: MediaItem): String = buildList {
+    when (item.type) {
+        MediaType.MOVIE -> add("Movie")
+        MediaType.SERIES -> add("Series")
+        else -> {}
+    }
+    item.genres.take(2).forEach { add(it) }
+    item.year?.let { add(it.toString()) }
+}.joinToString("  ·  ")
+
+/** The pager dots under a banner. Grown in place rather than replaced, so the
+ *  row never reflows as it advances. */
+@Composable
+private fun HeroDots(active: Int, count: Int, modifier: Modifier = Modifier) {
+    if (count <= 1) return
+    Row(
+        modifier.padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        for (i in 0 until count) {
+            Box(
+                Modifier
+                    .size(width = if (i == active) 16.dp else 6.dp, height = 6.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (i == active) Color.White else Color.White.copy(alpha = 0.4f))
+            )
+        }
+    }
+}
+
+/** Auto-advance a banner's pager, standing still while the user is dragging so
+ *  a swipe never fights the timer. */
+@Composable
+private fun HeroAutoAdvance(pagerState: androidx.compose.foundation.pager.PagerState, count: Int, everyMs: Long) {
+    LaunchedEffect(pagerState, count) {
+        if (count <= 1) return@LaunchedEffect
+        while (true) {
+            delay(everyMs)
+            if (!pagerState.isScrollInProgress) {
+                pagerState.animateScrollToPage((pagerState.currentPage + 1) % count)
+            }
+        }
+    }
+}
+
+/**
+ * The SPOTLIGHT banner: one edge-to-edge cinematic frame per featured title,
+ * taller than the carousel and carrying the whole story — title, metadata, a
+ * two-line plot summary, the score and the action pill — over a deep bottom
+ * scrim so the text always reads, whatever the artwork is doing underneath.
+ */
+@Composable
+private fun HeroSpotlight(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+) {
+    val pagerState = rememberPagerState { items.size }
+    HeroAutoAdvance(pagerState, items.size, 7000L)
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+        ) { page ->
+            val item = items[page]
+            val heroScore = if (config.showRating) rememberHeroScore(item) else null
+            val hero = Artwork.heroModel(item)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(3f / 2f)
+                    .clickable { onClick(item) }
+            ) {
+                HeroArtwork(
+                    model = hero.first,
+                    wide = hero.second,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Black.copy(alpha = 0.42f),
+                                0.32f to Color.Transparent,
+                                0.52f to Color.Black.copy(alpha = 0.30f),
+                                1f to Color.Black.copy(alpha = 0.95f),
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(start = 18.dp, end = 18.dp, bottom = 18.dp),
+                ) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val metaLine = heroMetaLine(item)
+                    if (config.showMeta && metaLine.isNotBlank()) {
+                        Text(
+                            metaLine,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.86f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                    if (config.showOverview && !item.overview.isNullOrBlank()) {
+                        Text(
+                            item.overview!!.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.74f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (heroScore != null) {
+                            HeroScoreChip(heroScore)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Button(
+                            onClick = { onClick(item) },
+                            shape = RoundedCornerShape(50),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 7.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black,
+                            ),
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                tr("View Details"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        HeroDots(
+            active = pagerState.currentPage.coerceIn(0, items.lastIndex),
+            count = items.size,
+        )
+    }
+}
+
+/**
+ * The COMPACT strip: a short, edge-to-edge band — art, title, one metadata line,
+ * a play chip on the right and a hairline progress bar instead of dots. For
+ * someone who came for the rows underneath, this is the featured banner that
+ * costs the least screen.
+ */
+@Composable
+private fun HeroCompact(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+) {
+    val pagerState = rememberPagerState { items.size }
+    HeroAutoAdvance(pagerState, items.size, 5200L)
+    Column(modifier.fillMaxWidth()) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+        ) { page ->
+            val item = items[page]
+            val heroScore = if (config.showRating) rememberHeroScore(item) else null
+            val hero = Artwork.heroModel(item)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(148.dp)
+                    .clickable { onClick(item) }
+            ) {
+                HeroArtwork(
+                    model = hero.first,
+                    wide = hero.second,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // Reads left to right, so the scrim is too: the copy sits on the
+                // left, the play chip on the right, and neither needs a caption
+                // box under it.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                0f to Color.Black.copy(alpha = 0.88f),
+                                0.55f to Color.Black.copy(alpha = 0.45f),
+                                1f to Color.Black.copy(alpha = 0.20f),
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxWidth(0.72f)
+                        .padding(start = 18.dp, end = 8.dp),
+                ) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val metaLine = heroMetaLine(item)
+                    if (config.showMeta && metaLine.isNotBlank()) {
+                        Text(
+                            metaLine,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                    if (config.showOverview && !item.overview.isNullOrBlank()) {
+                        Text(
+                            item.overview!!.trim(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.66f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                }
+                Row(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (heroScore != null) {
+                        HeroScoreChip(heroScore)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.92f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = tr("View Details"),
+                            tint = Color.Black,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+            }
+        }
+        // A hairline progress bar instead of dots: it costs 2dp of height and
+        // still says "there are more of these".
+        val active = pagerState.currentPage.coerceIn(0, items.lastIndex)
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp, start = 16.dp, end = 16.dp)) {
+            for (i in items.indices) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(2.dp)
+                        .padding(horizontal = 1.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(
+                            if (i == active) Color.White else Color.White.copy(alpha = 0.22f)
+                        )
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The SHOWCASE banner: the poster kept at its own 2:3 shape beside the details,
+ * on a glass card. Nothing is cropped and nothing is darkened, so a title whose
+ * artwork matters more than its backdrop is the one this shape is for.
+ */
+@Composable
+private fun HeroShowcase(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+) {
+    val pagerState = rememberPagerState { items.size }
+    HeroAutoAdvance(pagerState, items.size, 7000L)
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            pageSpacing = 10.dp,
+        ) { page ->
+            val item = items[page]
+            val heroScore = if (config.showRating) rememberHeroScore(item) else null
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(item) },
+            ) {
+                Row(Modifier.padding(12.dp)) {
+                    PosterArt(
+                        model = Artwork.model(item),
+                        contentDescription = item.title,
+                        style = rememberPosterStyle(),
+                        rating = item.rating,
+                        imdb = heroScore,
+                        modifier = Modifier
+                            .width(96.dp)
+                            .aspectRatio(2f / 3f),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            item.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Black,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        val metaLine = heroMetaLine(item)
+                        if (config.showMeta && metaLine.isNotBlank()) {
+                            Text(
+                                metaLine,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                        if (config.showOverview && !item.overview.isNullOrBlank()) {
+                            Text(
+                                item.overview!!.trim(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (heroScore != null) {
+                                RatingBadge(heroScore)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Surface(
+                                onClick = { onClick(item) },
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.primary,
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.PlayArrow,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(
+                                        tr("View Details"),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        HeroDots(
+            active = pagerState.currentPage.coerceIn(0, items.lastIndex),
+            count = items.size,
+        )
     }
 }
 

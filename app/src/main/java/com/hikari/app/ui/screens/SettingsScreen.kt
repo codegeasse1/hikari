@@ -42,6 +42,9 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Panorama
+import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
@@ -136,14 +139,17 @@ import com.hikari.app.net.DohDns
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
+import com.hikari.app.player.PlayerSkins
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
+import com.hikari.app.ui.PosterEffects
 import com.hikari.app.ui.components.ChoiceDialog
 import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.ChoiceRow
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
+import com.hikari.app.ui.components.HeroStyles
 import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.LanguageManager
@@ -514,6 +520,7 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { VideoEnhanceCard(app) } }
+                    item { SettingsCard { PlayerUiCard(app) } }
                     item { SettingsCard { PlaybackStartCard(app) } }
                     item { SettingsCard { LoadingBannerCard(app) } }
                 }
@@ -630,6 +637,8 @@ fun SettingsScreen(nav: NavHostController) {
                 // ---- App Layout: how a page is arranged ----
                 SettingsFolder.APP_LAYOUT -> {
                     item { SettingsCard(top = 2.dp) { DetailRatingCard(app) } }
+                    item { SettingsCard { HeroBannerCard(app) } }
+                    item { SettingsCard { DetailHeaderCard(app) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
                         .forEach { target ->
@@ -1477,6 +1486,9 @@ private fun PosterStyleCard(app: HikariApp) {
     val ratings by ratingsFlow.collectAsState(initial = false)
     val glassFlow = remember { app.store.posterGlassFlow() }
     val glass by glassFlow.collectAsState(initial = true)
+    val effectFlow = remember { app.store.posterEffectFlow() }
+    val effect by effectFlow.collectAsState(initial = PosterEffects.NONE)
+    var effectPicker by remember { mutableStateOf(false) }
 
     var blurSlider by remember { mutableStateOf(blur.toFloat()) }
     var cornerSlider by remember { mutableStateOf(corner.toFloat()) }
@@ -1490,6 +1502,17 @@ private fun PosterStyleCard(app: HikariApp) {
         summary = tr("Blur") + " " + (if (blur < 1) tr("off") else blur.toString()) +
             " · " + tr("Corners") + " " + corner,
     ) {
+        // The motion/decoration layer: static looks (a glow, a spotlight, a
+        // framed print) and the animated ones (the light sweep, the breathing
+        // aura). Off by default — the animation costs a frame callback per
+        // poster, so it stays a choice rather than a default.
+        ChoiceRow(
+            value = tr(PosterEffects.label(effect)),
+            supporting = tr(PosterEffects.description(effect)),
+            leadingIcon = Icons.Filled.AutoAwesome,
+            onClick = { effectPicker = true },
+        )
+        Spacer(Modifier.height(14.dp))
         SettingsSlider(
             label = tr("Dynamic blur"),
             value = blurSlider,
@@ -1538,6 +1561,21 @@ private fun PosterStyleCard(app: HikariApp) {
             supporting = tr("The frosted backing every card shares"),
             checked = glass,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterGlass(on) } } },
+        )
+    }
+
+    if (effectPicker) {
+        ChoiceDialog(
+            title = tr("Poster effect"),
+            items = PosterEffects.ALL.map {
+                ChoiceItem(it, tr(PosterEffects.label(it)), tr(PosterEffects.description(it)))
+            },
+            selectedKey = effect,
+            onPick = { pick ->
+                effectPicker = false
+                scope.launch { runCatching { app.store.setPosterEffect(pick) } }
+            },
+            onDismiss = { effectPicker = false },
         )
     }
 }
@@ -1659,6 +1697,161 @@ private fun DetailRatingCard(app: HikariApp) {
             onCheckedChange = { on ->
                 scope.launch { runCatching { app.store.setShowDetailRating(on) } }
             },
+        )
+    }
+}
+
+/**
+ * The Featured banner on Home (Settings → App Layout): four ways to present the
+ * big carousel at the top of the page, plus the toggles for what it says.
+ *
+ * The three toggles are separate keys rather than a fixed bundle because they
+ * are genuinely independent: someone may want the plot line but not the score
+ * chips, or the metadata badges with neither. Styles that have no room for a
+ * piece simply ignore its toggle (Compact has no room for a plot line), which is
+ * noted in each style's description.
+ */
+@Composable
+private fun HeroBannerCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val styleFlow = remember { app.store.heroStyleFlow() }
+    val style by styleFlow.collectAsState(initial = HeroStyles.CAROUSEL)
+    val overviewFlow = remember { app.store.heroOverviewFlow() }
+    val overview by overviewFlow.collectAsState(initial = true)
+    val ratingFlow = remember { app.store.heroRatingFlow() }
+    val rating by ratingFlow.collectAsState(initial = true)
+    val metaFlow = remember { app.store.heroMetaFlow() }
+    val meta by metaFlow.collectAsState(initial = true)
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.ViewCarousel, tr("Featured banner"))
+        ChoiceRow(
+            value = tr(HeroStyles.label(style)),
+            supporting = tr(HeroStyles.description(style)),
+            leadingIcon = Icons.Filled.ViewCarousel,
+            onClick = { pickerOpen = true },
+        )
+        Spacer(Modifier.height(8.dp))
+        SettingsToggle(
+            label = tr("Plot line"),
+            supporting = tr("A two-line summary under the title"),
+            checked = overview,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setHeroOverview(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Score badge"),
+            supporting = tr("The rating chip on the artwork"),
+            checked = rating,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setHeroRating(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Metadata"),
+            supporting = tr("Year, runtime, seasons and genres"),
+            checked = meta,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setHeroMeta(on) } } },
+        )
+    }
+
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Featured banner"),
+            items = HeroStyles.ALL.map {
+                ChoiceItem(it, tr(HeroStyles.label(it)), tr(HeroStyles.description(it)))
+            },
+            selectedKey = style,
+            onPick = { pick ->
+                pickerOpen = false
+                scope.launch { runCatching { app.store.setHeroStyle(pick) } }
+            },
+            onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * The header of a title page (Settings → App Layout): five shapes for the
+ * artwork a detail screen opens with — the wide cinematic band, a side-by-side
+ * band with the poster on the left, portrait art, the poster over its own
+ * backdrop, or a plain back button (for people who would rather have the
+ * information than the picture).
+ */
+@Composable
+private fun DetailHeaderCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.detailHeroStyleFlow() }
+    val style by flow.collectAsState(initial = DetailHeroStyles.WIDE)
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Panorama, tr("Details header"))
+        ChoiceRow(
+            value = tr(DetailHeroStyles.label(style)),
+            supporting = tr(DetailHeroStyles.description(style)),
+            leadingIcon = Icons.Filled.Panorama,
+            onClick = { pickerOpen = true },
+        )
+    }
+
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Details header"),
+            items = DetailHeroStyles.ALL.map {
+                ChoiceItem(it, tr(DetailHeroStyles.label(it)), tr(DetailHeroStyles.description(it)))
+            },
+            selectedKey = style,
+            onPick = { pick ->
+                pickerOpen = false
+                scope.launch { runCatching { app.store.setDetailHeroStyle(pick) } }
+            },
+            onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * The Player UI skin (Settings → Player): four looks for the playback controls.
+ *
+ * It applies to the NEXT playback session rather than the one already running —
+ * the controller is built once when the player opens, and rebuilding it
+ * mid-playback would reset the position, tracks and subtitles for a cosmetic
+ * change. The card says so, so the delay is expected rather than a bug.
+ */
+@Composable
+private fun PlayerUiCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.playerSkinFlow() }
+    val skin by flow.collectAsState(initial = PlayerSkins.GLASS)
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.SmartDisplay, tr("Player UI"))
+        ChoiceRow(
+            value = tr(PlayerSkins.label(skin)),
+            supporting = tr(PlayerSkins.description(skin)),
+            leadingIcon = Icons.Filled.SmartDisplay,
+            onClick = { pickerOpen = true },
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Applies to the next video you open."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Player UI"),
+            items = PlayerSkins.ALL.map {
+                ChoiceItem(it, tr(PlayerSkins.label(it)), tr(PlayerSkins.description(it)))
+            },
+            selectedKey = skin,
+            onPick = { pick ->
+                pickerOpen = false
+                scope.launch { runCatching { app.store.setPlayerSkin(pick) } }
+            },
+            onDismiss = { pickerOpen = false },
         )
     }
 }

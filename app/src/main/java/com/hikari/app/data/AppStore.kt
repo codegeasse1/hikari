@@ -132,6 +132,23 @@ class AppStore(private val ctx: Context) {
         val POSTER_SHOW_TITLES = booleanPreferencesKey("posterShowTitles")
         val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
         val POSTER_GLASS = booleanPreferencesKey("posterGlass")
+        /** The animated/visual treatment drawn over every poster card — see
+         *  [com.hikari.app.ui.PosterEffects]. Stored as its key, so an unknown
+         *  value (a save from a newer build) reads back as "none". */
+        val POSTER_EFFECT = stringPreferencesKey("posterEffect")
+        /** Shape of Home's featured banner — see
+         *  [com.hikari.app.ui.components.HeroStyles]. */
+        val HERO_STYLE = stringPreferencesKey("heroStyle")
+        /** Extra lines the featured banner may draw over its artwork. */
+        val HERO_OVERVIEW = booleanPreferencesKey("heroOverview")
+        val HERO_RATING = booleanPreferencesKey("heroRating")
+        val HERO_META = booleanPreferencesKey("heroMeta")
+        /** How the detail page's header art is laid out — see
+         *  [com.hikari.app.ui.screens.DetailHeroStyles]. */
+        val DETAIL_HERO_STYLE = stringPreferencesKey("detailHeroStyle")
+        /** Which player control shell the player wears — see
+         *  [com.hikari.app.player.PlayerSkins]. */
+        val PLAYER_SKIN = stringPreferencesKey("playerSkin")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -318,6 +335,73 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPosterGlass(on: Boolean) {
         store.edit { it[K.POSTER_GLASS] = on }
+    }
+
+    /** The visual effect drawn over every poster card. */
+    fun posterEffectFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.PosterEffects.normalize(it[K.POSTER_EFFECT]) }
+
+    suspend fun posterEffect(): String = posterEffectFlow().first()
+
+    suspend fun setPosterEffect(key: String) {
+        store.edit { it[K.POSTER_EFFECT] = com.hikari.app.ui.PosterEffects.normalize(key) }
+    }
+
+    // ---- Home's featured banner ----
+
+    /** How the featured banner is shaped: the carousel, a full-width spotlight,
+     *  a compact strip or the side-by-side showcase. */
+    fun heroStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.components.HeroStyles.normalize(it[K.HERO_STYLE]) }
+
+    suspend fun heroStyle(): String = heroStyleFlow().first()
+
+    suspend fun setHeroStyle(key: String) {
+        store.edit { it[K.HERO_STYLE] = com.hikari.app.ui.components.HeroStyles.normalize(key) }
+    }
+
+    fun heroOverviewFlow(): Flow<Boolean> = store.data.map { it[K.HERO_OVERVIEW] ?: true }
+
+    suspend fun heroOverview(): Boolean = heroOverviewFlow().first()
+
+    suspend fun setHeroOverview(on: Boolean) {
+        store.edit { it[K.HERO_OVERVIEW] = on }
+    }
+
+    fun heroRatingFlow(): Flow<Boolean> = store.data.map { it[K.HERO_RATING] ?: true }
+
+    suspend fun heroRating(): Boolean = heroRatingFlow().first()
+
+    suspend fun setHeroRating(on: Boolean) {
+        store.edit { it[K.HERO_RATING] = on }
+    }
+
+    fun heroMetaFlow(): Flow<Boolean> = store.data.map { it[K.HERO_META] ?: true }
+
+    suspend fun heroMeta(): Boolean = heroMetaFlow().first()
+
+    suspend fun setHeroMeta(on: Boolean) {
+        store.edit { it[K.HERO_META] = on }
+    }
+
+    /** How the detail page's header art is laid out. */
+    fun detailHeroStyleFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.screens.DetailHeroStyles.normalize(it[K.DETAIL_HERO_STYLE]) }
+
+    suspend fun detailHeroStyle(): String = detailHeroStyleFlow().first()
+
+    suspend fun setDetailHeroStyle(key: String) {
+        store.edit { it[K.DETAIL_HERO_STYLE] = com.hikari.app.ui.screens.DetailHeroStyles.normalize(key) }
+    }
+
+    /** Which player control shell the player wears. */
+    fun playerSkinFlow(): Flow<String> =
+        store.data.map { com.hikari.app.player.PlayerSkins.normalize(it[K.PLAYER_SKIN]) }
+
+    suspend fun playerSkin(): String = playerSkinFlow().first()
+
+    suspend fun setPlayerSkin(key: String) {
+        store.edit { it[K.PLAYER_SKIN] = com.hikari.app.player.PlayerSkins.normalize(key) }
     }
 
     // ---- Bottom navigation bar layout ----
@@ -1560,6 +1644,8 @@ class AppStore(private val ctx: Context) {
                             .put("raw", s.rawType)
                             .put("preset", s.tmdbPreset)
                             .put("spec", s.tmdbSpec)
+                            .put("items", s.itemsJson)
+                            .put("uid", s.uid)
                     )
                 }
                 folders.put(
@@ -1620,15 +1706,20 @@ class AppStore(private val ctx: Context) {
                                     rawType = so.optString("raw"),
                                     tmdbPreset = so.optString("preset"),
                                     tmdbSpec = so.optString("spec"),
+                                    itemsJson = so.optString("items"),
+                                    uid = so.optString("uid"),
                                 )
                                 // A source that can't resolve to anything is a
                                 // row that would never load: drop it, but keep
                                 // the folder itself.
-                                val usable = if (kind == CatalogSourceKind.TMDB) {
-                                    TmdbPresets.byKey(source.tmdbPreset) != null ||
-                                        (source.spec?.type != null)
-                                } else {
-                                    source.providerId.isNotBlank() && source.catalogId.isNotBlank()
+                                val usable = when (kind) {
+                                    CatalogSourceKind.TMDB ->
+                                        TmdbPresets.byKey(source.tmdbPreset) != null ||
+                                            (source.spec?.type != null)
+                                    CatalogSourceKind.ITEMS -> source.itemCount > 0
+                                    CatalogSourceKind.PROVIDER ->
+                                        source.providerId.isNotBlank() &&
+                                            source.catalogId.isNotBlank()
                                 }
                                 if (usable) sources.add(source)
                             }

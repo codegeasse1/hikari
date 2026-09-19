@@ -259,9 +259,11 @@ data class CatalogRef(
  * catalogue (a production company's films, a network's series) — no extension
  * has to be installed for those to work. [PROVIDER] sources point at one
  * catalog of an installed extension, so a folder is not limited to TMDB: any
- * catalog an addon exposes can sit next to a preset.
+ * catalog an addon exposes can sit next to a preset. [ITEMS] sources are a list
+ * of titles the user imported (a Nuvio/Stremio export, a shared JSON file) and
+ * stored inside the collection — see [NuvioCatalogImport].
  */
-enum class CatalogSourceKind { TMDB, PROVIDER }
+enum class CatalogSourceKind { TMDB, PROVIDER, ITEMS }
 
 /** One catalog inside a folder: either a TMDB preset or an installed catalog. */
 data class CatalogSource(
@@ -283,14 +285,40 @@ data class CatalogSource(
      * collections saved before this existed keep working untouched.
      */
     val tmdbSpec: String = "",
+    /**
+     * [CatalogSourceKind.ITEMS] only: the imported titles, as the compact JSON
+     * array [NuvioCatalogImport] reads and writes. Kept INSIDE the collection
+     * because an imported list has no server (or extension) behind it — the
+     * collection is the whole of its existence.
+     */
+    val itemsJson: String = "",
+    /**
+     * [CatalogSourceKind.ITEMS] only: this source's own stable id.
+     *
+     * Unlike the other kinds an imported list has no natural identity — it has
+     * no provider, no catalog id, and the user may rename it or add titles to it
+     * at any time — so it is given one when it is created. The key must not be
+     * derived from its contents or its name: either would change the row's
+     * Compose key mid-edit and remount it under the user's finger.
+     */
+    val uid: String = "",
 ) {
     /** The hand-built source behind this entry, or null for a plain preset. */
     val spec: TmdbSpec? get() = if (kind == CatalogSourceKind.TMDB) TmdbSpec.decode(tmdbSpec) else null
 
+    /** How many titles an [CatalogSourceKind.ITEMS] source holds. */
+    val itemCount: Int
+        get() = if (kind == CatalogSourceKind.ITEMS)
+            runCatching { org.json.JSONArray(itemsJson).length() }.getOrDefault(0)
+        else 0
+
     val key: String
-        get() = if (kind == CatalogSourceKind.TMDB)
-            "tmdb|" + tmdbSpec.ifBlank { tmdbPreset }
-        else "prov|$providerId|$type|$catalogId"
+        get() = when (kind) {
+            CatalogSourceKind.TMDB -> "tmdb|" + tmdbSpec.ifBlank { tmdbPreset }
+            CatalogSourceKind.ITEMS -> "items|" + uid.ifBlank { itemsJson.hashCode().toString(16) }
+            CatalogSourceKind.PROVIDER -> "prov|$providerId|$type|$catalogId"
+        }
+}
 }
 
 /**

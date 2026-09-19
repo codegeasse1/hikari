@@ -37,8 +37,12 @@
       android:layout_height="0dp"
       android:background="#3D000000"/>
 
-  <!-- Top bar: back button, title + metadata badges, round action buttons -->
+  <!-- Top bar: back button, title + metadata badges, round action buttons.
+       The id is Hikari's own (media3 does not know it); PlayerActivity's
+       applyPlayerSkin() finds it here to swap the bar background and its
+       margins when the Player UI skin changes. -->
   <LinearLayout
+      android:id="@+id/player_top_bar"
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
       android:layout_gravity="top"

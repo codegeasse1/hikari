@@ -1,6 +1,49 @@
-## 0.5.27
+## 0.6.0
 
-Test build — an anime's detail page now shows its **characters** instead of its voice actors, which is the cast a viewer actually recognises.
+Test build — the app gets a wardrobe. The big surfaces are now yours to shape: the Featured banner on Home, the header a title page opens with, the decoration on every poster, and the player's own control shell. Plus one new way to fill a folder: **import a list of titles** from JSON.
+
+**The Featured banner, in four shapes** (Settings → App Layout → Featured banner)
+
+- **Carousel** — the 16:9 cards that peek in from the sides, unchanged as the default.
+- **Spotlight** — a full-width cinematic banner: the title set large over the artwork, the plot line under it, a score chip, and a scrim that lifts the type off the picture.
+- **Compact strip** — a short 148dp band with the title and a round play button, so the rest of the feed starts sooner.
+- **Showcase** — the poster beside the details in a glass card instead of behind them, so the artwork is never cropped. This is the one for the people who care what the poster looks like.
+- Three independent switches for what the banner says: the **plot line**, the **score badge** and the **metadata** (year, runtime, seasons, genres). A style with no room for something simply ignores its switch, and each style's description in the picker says which.
+
+**The details header, in five shapes** (Settings → App Layout → Details header)
+
+The picture a title page opens with: **Wide** (the original 16:9 band), **Side by side** (a shorter band with the poster on the left and the back button moved to the top-right), **Tall** (portrait 3:4 art for series), **Poster** (the poster standing in front of a dimmed copy of itself), and **Plain** (no header art at all, just the back button — the fastest and the lightest on data). Every shape keeps the same back button, the same title block and the same play button beneath it; only the art above them changes.
+
+**Seven poster effects** (Settings → App Layout → Poster styling → Poster effect)
+
+- **Glow** — a coloured halo bleeding around the artwork (the blur slider, raised past it).
+- **3D tilt** — the cards lean back towards the viewer, as if held at an angle.
+- **Sheen** — a band of light sweeping across the art.
+- **Aura ring** — a breathing accent ring around the card.
+- **Spotlight** — an accent light behind the card with a scrim over the bottom of the art.
+- **Gallery frame** — the art inset behind a hairline mount, the way a print is framed.
+- **None** — the plain artwork, and still the default.
+
+The two animated effects run off a single animation clock per card, and every animated value is read inside the drawing layer rather than in composition, so a moving sheen repaints a card's layer and nothing else — no recomposition per frame, no cost to scroll. Effect, blur, corners, titles, score badges and glass trim compose together rather than replacing each other.
+
+**Four Player UI skins** (Settings → Player → Player UI)
+
+- **Glass** — Hikari's existing player, untouched: frosted bars, round glass pills, the accent-ringed play button.
+- **Minimal** — no panels at all; the title and the controls float on the picture over nothing but a whisper of a scrim (VLC-like).
+- **Cinema** — a solid rounded deck under the picture with square control plates and a solid accent play button, in the spirit of a desktop player.
+- **Neon** — the decks become floating rounded cards, clear of the screen edges, with accent hairlines and a glowing play button.
+
+A skin changes presentation only — backgrounds, metrics, the play button's decoration — so no button can be lost whatever you pick, and media3's own layout rules (its overflow handling, its minimal-mode thresholds) are untouched. It applies to the next video you open, since the controller is built once when the player starts rather than rebuilt mid-playback.
+
+**Import a list of titles from JSON** (Collections → a folder → Import a list)
+
+A list that lives outside an extension — a Nuvio/Stremio export, a `catalog` response copied out of a browser, a JSON file someone shared — now becomes a normal Home shelf. Paste it or open a `.json` file; the parser accepts a bare array of titles, an object with `items`/`metas`/`titles` inside, a Stremio addon catalog, or a manifest/export with several named `catalogs`, and it reads the common spelling of every field (id, imdb_id, tmdb_id, name, title, poster/image/cover/poster_path, background/backdrop, year/releaseInfo/first_air_date, description/overview/plot, genres, imdbRating/vote_average). Bare `/poster.jpg` paths are expanded against TMDB's image host, and `tt…` ids are kept as they are.
+
+- You choose what comes in: the sheet lists every list it found, with its name and how many titles it actually yielded, and adds nothing until you tap.
+- Imported titles are stored **inside the collection** (there is no server behind them), each list with its own stable id so renaming or extending one never remounts its row.
+- They resolve through TMDB like any other title, so they get real posters, real details and the same server search — and a list that carries no poster still opens and plays.
+
+**An anime's detail page shows its characters, not its voice actors**
 
 TMDB's credit list for an anime is the voice cast — a wall of faces and names that mean nothing unless you follow the Japanese dubbing industry. The cast row already knows the character each actor plays, but it leads with the actor. So for an animated title whose original language is Japanese (or which TMDB marks as from Japan), the characters are fetched from AniList instead: every character with its portrait on top and the Japanese actor who voices it underneath, sorted by relevance. The row's heading switches from "Cast" to **Characters** so it is obvious which list is on screen, and tapping a character searches their **actor** (or their name when no actor is listed), which is the thing that actually searches well.
 

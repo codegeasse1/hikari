@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -899,6 +900,11 @@ fun DetailScreen(
     val detailApp = context.applicationContext as HikariApp
     val detailRatingFlow = remember { detailApp.store.showDetailRatingFlow() }
     val showDetailRating by detailRatingFlow.collectAsState(initial = true)
+    // Settings → App Layout → Details header: which shape the page's header art
+    // takes (wide banner, poster beside the art, tall cinematic art, poster on a
+    // blurred backdrop, or no art at all).
+    val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
+    val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
     // The multi-provider source search must OUTLIVE this screen. Playback now
     // opens the player the instant Play is tapped, and on a memory-tight device
     // (the reported Infinix) the activity behind the player can be torn down
@@ -1783,7 +1789,7 @@ fun DetailScreen(
     Column(Modifier.fillMaxSize()) {
         // Header renders immediately from the poster we already have, so the hero
         // image shows at once instead of waiting for the slow meta fetch.
-        Hero(meta, posterUrl, onBack = { nav.popBackStack() })
+        Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = detailHeroStyle)
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -2585,46 +2591,218 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
     }.toString()
 }.getOrNull()
 
+/**
+ * The shapes the detail page's header art can take — Settings → App Layout →
+ * Details header.
+ *
+ *  - [WIDE]   the 16:9 banner the page has always opened with.
+ *  - [SIDE]   a shorter art band with the poster standing beside it, so both the
+ *             wide art and the real poster are visible at once.
+ *  - [TALL]   tall cinematic art (3:4) that owns the top of the page.
+ *  - [POSTER] just the poster, centred over a blurred copy of itself.
+ *  - [PLAIN]  no art at all — the page starts at the title. The lightest header
+ *             there is, for a slow connection or a data-saving mood.
+ */
+object DetailHeroStyles {
+    const val WIDE = "wide"
+    const val SIDE = "side"
+    const val TALL = "tall"
+    const val POSTER = "poster"
+    const val PLAIN = "plain"
+
+    val ALL = listOf(WIDE, SIDE, TALL, POSTER, PLAIN)
+
+    fun normalize(key: String?): String = if (key != null && key in ALL) key else WIDE
+
+    fun label(key: String): String = when (normalize(key)) {
+        SIDE -> "Art + poster"
+        TALL -> "Tall cinematic"
+        POSTER -> "Poster only"
+        PLAIN -> "No art"
+        else -> "Wide banner"
+    }
+
+    fun description(key: String): String = when (normalize(key)) {
+        SIDE -> "Wide art with the poster standing beside it"
+        TALL -> "Tall 3:4 artwork owns the top of the page"
+        POSTER -> "Just the poster, on a blurred copy of itself"
+        PLAIN -> "No header art — the page starts at the title"
+        else -> "A 16:9 banner that fades into the page"
+    }
+}
+
+/** The page's header art, in whichever shape [style] asks for. */
 @Composable
-private fun Hero(meta: MediaItem?, fallbackPoster: String?, onBack: () -> Unit) {
-    // A wide 16:9 banner — the same shape as the Home carousel and the Nuvio
-    // detail page — instead of the old 240dp letterbox, which cropped the sides
-    // off wide art and showed a blurry poster strip instead. With a full
-    // 16:9 frame nothing is cut off at the top, and the bottom of the art fades
-    // into the page background.
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-    ) {
-        // Item's own backdrop → the wide art we looked up → its poster, so a
-        // title an extension left blank still gets a real banner here. The
-        // wide/poster distinction matters: a portrait poster is never
-        // centre-cropped into this 16:9 frame (that is what cut the art off).
-        val (img, wide) = meta?.let { Artwork.heroModel(it) }
-            ?: (PosterLoader.model(fallbackPoster) to false)
-        HeroArtwork(
-            model = img,
-            wide = wide,
-            modifier = Modifier.fillMaxSize(),
-        )
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.55f to Color.Transparent,
-                        1f to MaterialTheme.colorScheme.background
-                    )
+private fun Hero(
+    meta: MediaItem?,
+    fallbackPoster: String?,
+    onBack: () -> Unit,
+    style: String = DetailHeroStyles.WIDE,
+) {
+    // Item's own backdrop → the wide art we looked up → its poster, so a title
+    // an extension left blank still gets a real banner here. The wide/poster
+    // distinction matters: a portrait poster is never centre-cropped into a
+    // 16:9 frame (that is what cut the art off).
+    val image = meta?.let { Artwork.heroModel(it) }
+        ?: (PosterLoader.model(fallbackPoster) to false)
+    val posterModel = PosterLoader.model(fallbackPoster)
+    when (DetailHeroStyles.normalize(style)) {
+        DetailHeroStyles.PLAIN -> Box(Modifier.fillMaxWidth()) {
+            IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
-        )
-        IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = tr("Back"),
-                tint = Color.White
+            }
+        }
+
+        DetailHeroStyles.TALL -> Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(3f / 4f)
+        ) {
+            PosterArt(
+                model = image.first,
+                contentDescription = meta?.title,
+                style = rememberPosterStyle(),
+                contentScale = if (image.second) ContentScale.Crop else ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
             )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.45f),
+                            0.30f to Color.Transparent,
+                            0.62f to Color.Transparent,
+                            1f to MaterialTheme.colorScheme.background,
+                        )
+                    )
+            )
+            IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = Color.White,
+                )
+            }
+        }
+
+        DetailHeroStyles.POSTER -> Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 10f),
+            contentAlignment = Alignment.Center,
+        ) {
+            // A scaled, dimmed copy of the very same art fills the frame, so a
+            // portrait poster is never cropped and there is still no hard edge.
+            PosterArt(
+                model = posterModel ?: image.first,
+                contentDescription = null,
+                style = rememberPosterStyle(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = 1.3f
+                        scaleY = 1.3f
+                        alpha = 0.42f
+                    },
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f))
+            )
+            PosterArt(
+                model = posterModel ?: image.first,
+                contentDescription = meta?.title,
+                style = rememberPosterStyle(),
+                modifier = Modifier
+                    .fillMaxHeight(0.86f)
+                    .aspectRatio(2f / 3f),
+            )
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(4.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = Color.White,
+                )
+            }
+        }
+
+        DetailHeroStyles.SIDE -> Box(
+            Modifier
+                .fillMaxWidth()
+                .height(214.dp),
+        ) {
+            PosterArt(
+                model = image.first,
+                contentDescription = meta?.title,
+                style = rememberPosterStyle(),
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.40f),
+                            0.45f to Color.Transparent,
+                            1f to MaterialTheme.colorScheme.background,
+                        )
+                    )
+            )
+            // The poster stands at the left, inset from the band's top and bottom
+            // so the pair reads as "the artwork, and the poster you know".
+            PosterArt(
+                model = posterModel ?: image.first,
+                contentDescription = null,
+                style = rememberPosterStyle(),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 16.dp)
+                    .fillMaxHeight(0.78f)
+                    .aspectRatio(2f / 3f),
+            )
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = Color.White,
+                )
+            }
+        }
+
+        else -> Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+        ) {
+            HeroArtwork(
+                model = image.first,
+                wide = image.second,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.55f to Color.Transparent,
+                            1f to MaterialTheme.colorScheme.background
+                        )
+                    )
+            )
+            IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = Color.White
+                )
+            }
         }
     }
 }

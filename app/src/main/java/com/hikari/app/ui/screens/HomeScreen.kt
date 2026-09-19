@@ -84,6 +84,8 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassDialog
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.HeroBanner
+import com.hikari.app.ui.components.HeroConfig
+import com.hikari.app.ui.components.HeroStyles
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -388,6 +390,25 @@ fun HomeScreen(nav: NavHostController) {
     val history by historyFlow.collectAsState(initial = emptyList())
     // Settings → "Continue Watching": lets the user hide the shelf entirely.
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
+    // Settings → App Layout → Featured banner: which shape the banner takes and
+    // which of its optional lines are drawn. Read here (not inside the banner)
+    // so the whole feed recomposes to the new shape the moment it is picked.
+    val heroStyleFlow = remember { app.store.heroStyleFlow() }
+    val heroOverviewFlow = remember { app.store.heroOverviewFlow() }
+    val heroRatingFlow = remember { app.store.heroRatingFlow() }
+    val heroMetaFlow = remember { app.store.heroMetaFlow() }
+    val heroStyle by heroStyleFlow.collectAsState(initial = HeroStyles.CAROUSEL)
+    val heroOverview by heroOverviewFlow.collectAsState(initial = true)
+    val heroRating by heroRatingFlow.collectAsState(initial = true)
+    val heroMeta by heroMetaFlow.collectAsState(initial = true)
+    val heroConfig = remember(heroStyle, heroOverview, heroRating, heroMeta) {
+        HeroConfig(
+            style = heroStyle,
+            showOverview = heroOverview,
+            showRating = heroRating,
+            showMeta = heroMeta,
+        )
+    }
     val continueEntries = remember(history) {
         history.asSequence()
             .filter {
@@ -500,6 +521,7 @@ fun HomeScreen(nav: NavHostController) {
                                     )
                                 )
                             },
+                            config = heroConfig,
                         )
                         HomeHeader(
                             selected = headerSelection,

@@ -182,6 +182,12 @@ class PlayerActivity : ComponentActivity() {
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
 
+    /** The Player UI skin in force for this playback session (Settings → Player
+     *  → Player UI). Read once here from [PlayerSkins.current] — the mirror that
+     *  HikariApp keeps up to date from AppStore — so the controller can be
+     *  styled while it is being built, before any coroutine could have run. */
+    private var skin: String = PlayerSkins.DEFAULT
+
     private var sources: List<PlayerSource> = emptyList()
     private var currentIndex = 0
 
@@ -762,6 +768,10 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        // The Player UI skin is read from the synchronous mirror HikariApp keeps
+        // in step with the saved preference (see PlayerSkins), so the controller
+        // can be styled the moment it exists.
+        skin = PlayerSkins.current()
         subtitleScale = subsPrefs.getFloat("sub_scale", 1f)
         subtitleOffsetMs = subsPrefs.getLong("sub_offset", 0L)
         subtitlePosition = subsPrefs.getFloat("sub_pos", subtitlePosition)
@@ -1017,7 +1027,7 @@ class PlayerActivity : ComponentActivity() {
         // accent-coloured derives from it already; applyAccentPalette covers the
         // pieces that were baked into XML drawables.
         runCatching { setAccent(AccentStore.player(this)) }
-        applyAccentPalette()
+        applyPlayerSkin()
 
         // The Enhance pill: realtime colour grading of the video itself.
         findViewById<TextView>(R.id.enhance_btn)?.setOnClickListener { showEnhanceMenu() }
@@ -1962,6 +1972,13 @@ class PlayerActivity : ComponentActivity() {
         R.id.sources_btn, R.id.skip_btn, R.id.enhance_btn
     )
 
+    /** Every labelled pill in the control bar (accent ones included), so the
+     *  Player UI skin can restyle the whole row in one pass. */
+    private val pillIds = intArrayOf(
+        R.id.speed_btn, R.id.episodes_btn, R.id.sources_btn, R.id.quality_btn,
+        R.id.audio_btn, R.id.subs_btn, R.id.rotate_btn, R.id.skip_btn, R.id.enhance_btn
+    )
+
     /** The cyan -> violet player gradient as a shape (the signature accent). */
     private fun accentShape(radiusDp: Float): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,
@@ -1980,29 +1997,164 @@ class PlayerActivity : ComponentActivity() {
         intArrayOf(accentStartColor, accentEndColor)
     ).apply { cornerRadius = radiusDp * resources.displayMetrics.density }
 
-    /** A ripple over the accent gradient — the accent pill (sources/skip/enhance). */
-    private fun accentPillRipple(): Drawable = RippleDrawable(
+    /** A ripple over the accent gradient — the accent pill (sources/skip/enhance).
+     *  [radiusDp] comes from the active Player UI skin, so the accent pills keep
+     *  the same corner language as their neighbours on every skin. */
+    private fun accentPillRipple(radiusDp: Float = 22f): Drawable = RippleDrawable(
         ColorStateList.valueOf(0x4DFFFFFF.toInt()),
-        accentShape(22f),
+        accentShape(radiusDp),
         null
     )
 
-    /** The big centre play button: accent gradient ring around a dark disc. */
+    /**
+     * The big centre play button, in the active skin's treatment:
+     *
+     *  - RING  (Glass)  — accent gradient ring around a translucent dark disc.
+     *  - PLAIN (Minimal)— just a dark disc; no ring, no decoration.
+     *  - SOLID (Cinema) — the whole button is the accent gradient.
+     *  - GLOW  (Neon)   — a thicker ring inside a soft accent halo.
+     */
     private fun playRingDrawable(): Drawable {
         val d = resources.displayMetrics.density
+        val treatment = PlayerSkins.spec(skin).playTreatment
+        val discColor = 0x66060A14.toInt()
+        val ripple = ColorStateList.valueOf(0x4DFFFFFF.toInt())
+
+        if (treatment == PlayerSkins.PlayTreatment.SOLID) {
+            val solid = GradientDrawable(
+                GradientDrawable.Orientation.BL_TR,
+                intArrayOf(accentStartColor, accentEndColor)
+            ).apply { shape = GradientDrawable.OVAL }
+            return RippleDrawable(ripple, solid, null)
+        }
+
         val ring = GradientDrawable(
             GradientDrawable.Orientation.BL_TR,
             intArrayOf(accentStartColor, accentEndColor)
         ).apply { shape = GradientDrawable.OVAL }
         val disc = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(0x66060A14.toInt())
+            setColor(discColor)
         }
+
+        if (treatment == PlayerSkins.PlayTreatment.PLAIN) {
+            return RippleDrawable(ripple, disc, null)
+        }
+
+        if (treatment == PlayerSkins.PlayTreatment.GLOW) {
+            // halo (accent at ~22% alpha), then ring, then disc.
+            val halo = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(withAlpha(accentMidColor, 0.22f))
+            }
+            val layers = LayerDrawable(arrayOf(halo, ring, disc))
+            val ringInset = (5f * d).roundToInt()
+            val discInset = (8f * d).roundToInt()
+            layers.setLayerInset(1, ringInset, ringInset, ringInset, ringInset)
+            layers.setLayerInset(2, discInset, discInset, discInset, discInset)
+            return RippleDrawable(ripple, layers, null)
+        }
+
         val layers = LayerDrawable(arrayOf(ring, disc))
         val inset = (3f * d).roundToInt()
         layers.setLayerInset(1, inset, inset, inset, inset)
-        return RippleDrawable(ColorStateList.valueOf(0x4DFFFFFF.toInt()), layers, null)
+        return RippleDrawable(ripple, layers, null)
     }
+
+    /**
+     * Applies the Player UI skin (Settings → Player → Player UI) to the already
+     * inflated controller. Called once from onCreate (after [applyAccentPalette]
+     * would have run) and again from [applyControlLayout], because a pill that
+     * moves between containers has to be restyled with its neighbours.
+     *
+     * The skin only touches presentation — backgrounds, paddings, margins, text
+     * sizes and the play button's decoration — so no button can be lost or
+     * rebound by picking a skin, and media3's layout ids and ordering (which its
+     * own PlayerControlViewLayoutManager relies on) are untouched.
+     *
+     * Ends by calling [applyAccentPalette], which repaints the accent-coloured
+     * pieces on top of the skin (accent has to win over the skin's own fills).
+     */
+    private fun applyPlayerSkin() {
+        val spec = PlayerSkins.spec(skin)
+        val d = resources.displayMetrics.density
+        fun dp(v: Int): Int = (v * d).roundToInt()
+
+        val topBar = findViewById<View>(R.id.player_top_bar)
+        val bottomBar = findViewById<View>(R.id.exo_bottom_bar)
+
+        // Bar backgrounds. Minimal has no panel at all, just a feather-light
+        // scrim so the title and the time labels stay readable over bright video.
+        for ((bar, drawable, bottomAnchored) in listOf(
+            Triple(topBar, spec.topBarBackground, false),
+            Triple(bottomBar, spec.bottomBarBackground, true),
+        )) {
+            if (bar == null) continue
+            bar.background = when {
+                drawable != 0 -> ContextCompat.getDrawable(this, drawable)
+                PlayerSkins.normalize(skin) == PlayerSkins.MINIMAL -> softScrim(bottomAnchored)
+                else -> null
+            }
+        }
+
+        // Floating decks (Neon): keep the panels clear of the screen edges, and
+        // give the top bar a little headroom so the rounded chip never clips.
+        val deckMargin = dp(spec.deckMarginDp)
+        for (bar in listOfNotNull(topBar, bottomBar)) {
+            (bar.layoutParams as? ViewGroup.MarginLayoutParams)?.let { lp ->
+                lp.marginStart = deckMargin
+                lp.marginEnd = deckMargin
+                lp.topMargin = if (bar === topBar) deckMargin else 0
+                lp.bottomMargin = if (bar === bottomBar) deckMargin else 0
+                bar.layoutParams = lp
+            }
+        }
+        topBar?.let { it.setPadding(it.paddingLeft, it.paddingTop, it.paddingRight, dp(spec.topBarPadBottom)) }
+
+        // The pill row: background, text size, inner padding and the gap between
+        // pills. A pill that has been compacted into the top bar is skipped — it
+        // is drawn as a round icon button there, exactly like its neighbours.
+        for (id in pillIds) {
+            val v = findViewById<TextView>(id) ?: continue
+            if ((v.parent as? View)?.id == R.id.player_top_actions) continue
+            v.background = ContextCompat.getDrawable(this, spec.pillBackground)
+            v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, spec.pillTextDp)
+            v.setPadding(dp(spec.pillPadH), dp(spec.pillPadV), dp(spec.pillPadH), dp(spec.pillPadV))
+            (v.layoutParams as? ViewGroup.MarginLayoutParams)?.let { lp ->
+                lp.marginStart = dp(spec.pillMargin)
+                lp.marginEnd = dp(spec.pillMargin)
+                v.layoutParams = lp
+            }
+        }
+
+        // The centre play button: size + the inset of its glyph (a solid fill
+        // needs a bigger inset than a ring, or the icon overflows the disc).
+        exoView("exo_play_pause")?.let { v ->
+            val side = dp(spec.playSizeDp)
+            val lp = v.layoutParams
+            lp.width = side
+            lp.height = side
+            v.layoutParams = lp
+            if (v is ImageButton) {
+                val pad = when (spec.playTreatment) {
+                    PlayerSkins.PlayTreatment.SOLID -> dp((spec.playSizeDp * 0.26f).roundToInt())
+                    PlayerSkins.PlayTreatment.GLOW -> dp((spec.playSizeDp * 0.21f).roundToInt())
+                    PlayerSkins.PlayTreatment.PLAIN -> dp((spec.playSizeDp * 0.19f).roundToInt())
+                    PlayerSkins.PlayTreatment.RING -> dp((spec.playSizeDp * 0.17f).roundToInt())
+                }
+                v.setPadding(pad, pad, pad, pad)
+            }
+        }
+
+        applyAccentPalette()
+    }
+
+    /** A single-colour vertical fade used by the Minimal skin's bars. */
+    private fun softScrim(bottomAnchored: Boolean): Drawable = GradientDrawable(
+        if (bottomAnchored) GradientDrawable.Orientation.BOTTOM_TOP
+        else GradientDrawable.Orientation.TOP_BOTTOM,
+        intArrayOf(0x99000000.toInt(), 0x00000000),
+    )
 
     /**
      * Repaints the parts of the player that are coloured by the accent but could
@@ -2017,16 +2169,17 @@ class PlayerActivity : ComponentActivity() {
         val d = resources.displayMetrics.density
 
         // Accent pills — skipped while compacted into the top bar, where they
-        // are drawn as plain glass round buttons like their neighbours.
+        // are drawn as plain glass round buttons like their neighbours. The
+        // corner radius follows the active skin.
+        val accentRadius = PlayerSkins.spec(skin).accentPillRadius
         for (id in accentPillIds) {
             val v = findViewById<TextView>(id) ?: continue
             if ((v.parent as? View)?.id == R.id.player_top_actions) continue
-            v.background = accentPillRipple()
+            v.background = accentPillRipple(accentRadius)
         }
 
         // The highlighted metadata badge (video quality).
         findViewById<TextView>(R.id.badge_quality)?.background = accentBadgeDrawable(11f)
-
         // The centre play/pause ring.
         exoView("exo_play_pause")?.background = playRingDrawable()
 
@@ -2174,7 +2327,7 @@ class PlayerActivity : ComponentActivity() {
         right.post { syncLeftSpacer() }
 
         // A pill that just moved out of the top bar needs its accent fill back.
-        applyAccentPalette()
+        applyPlayerSkin()
 
         // Start the scrollable pill row at its left edge, never wherever a
         // focus jump (media3's control view) left it.
