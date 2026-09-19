@@ -571,6 +571,20 @@ class PlayerActivity : ComponentActivity() {
      *  a little, and the Subtitles panel's Position row raises/lowers them. */
     private var subtitlePosition = 0.14f
 
+    /** Caption appearance — text colour, outline/shadow + colour, background,
+     *  bold/italic and font. Persisted next to the size/sync/position settings,
+     *  and applied to the SubtitleView on every change (see
+     *  [showSubtitleStyleDialog]). */
+    private var subtitleStyle = SubtitleStyle()
+
+    /** Set while the caption-style panel is open: a font picked from the system
+     *  file picker lands asynchronously, and this lets the panel refresh its
+     *  font row (and is cleared when the panel closes). */
+    private var fontPicked: (() -> Unit)? = null
+
+    /** The system file picker for "Pick a font file" (.ttf/.otf/.ttc). */
+    private var fontLauncher: ActivityResultLauncher<Array<String>>? = null
+
     /** url -> raw subtitle text, cached so a sync offset can re-time existing
      *  subtitles without re-fetching them over the network. */
     private val subtitleRawCache = HashMap<String, String>()
@@ -751,8 +765,10 @@ class PlayerActivity : ComponentActivity() {
         subtitleScale = subsPrefs.getFloat("sub_scale", 1f)
         subtitleOffsetMs = subsPrefs.getLong("sub_offset", 0L)
         subtitlePosition = subsPrefs.getFloat("sub_pos", subtitlePosition)
+        subtitleStyle = SubtitleStyle.load(subsPrefs)
         applySubtitleSize(subtitleScale)
         applySubtitlePosition(subtitlePosition)
+        applySubtitleStyle()
         // YouTube-style: fade the controls out after 3s instead of media3's 5s.
         playerView?.controllerShowTimeoutMs = 3000
         // Keep our own mirror of the controller visibility (media3's
@@ -957,6 +973,27 @@ class PlayerActivity : ComponentActivity() {
         externalSubLauncher = registerForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> if (uri != null) lifecycleScope.launch { addUserSubtitle(uri) } }
+
+        // "Pick a font file": a .ttf/.otf for the captions. No mime filter can
+        // be trusted for fonts on every device, so the pick is validated after
+        // the fact (SubtitleFonts.importFile) and rejected with a message.
+        fontLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null) return@registerForActivityResult
+            val key = SubtitleFonts.importFile(this, uri)
+            if (key == null) {
+                Toast.makeText(
+                    this,
+                    I18n.t("That file isn't a caption font Hikari can use"),
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                subtitleStyle = subtitleStyle.copy(font = key, enabled = true).copySaved(subsPrefs)
+                applySubtitleStyle()
+                fontPicked?.invoke()
+            }
+        }
 
         lockBtn?.setOnClickListener { lockControls() }
         resizeBtn?.setOnClickListener { cycleResize() }
@@ -4197,6 +4234,11 @@ class PlayerActivity : ComponentActivity() {
             })
         }
         addControl(controlRow(
+            "Caption style",
+            valueLabel(subtitleStyle.summary()),
+            pill("Change") { dialog.dismiss(); showSubtitleStyleDialog() },
+        ))
+        addControl(controlRow(
             "Text size",
             pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
             sizeValue,
@@ -4231,6 +4273,356 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * Caption appearance. Everything media3's [CaptionStyleCompat] can express
+     * is here — the text colour, an outline or drop shadow plus its colour, a
+     * background that can be removed entirely, bold/italic, and the font (the
+     * platform's families, or a .ttf/.otf the user brings from their device) —
+     * plus a few ready-made presets, because "white text with a black outline"
+     * or "yellow with a shadow" is what most people actually want and
+     * assembling that from three colour pickers is busywork.
+     *
+     * Every change is applied to the player's SubtitleView the moment it is
+     * made, so the panel needs no preview pane: the captions on the video ARE
+     * the preview.
+     */
+    private fun showSubtitleStyleDialog() {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        fun save(next: SubtitleStyle) {
+            subtitleStyle = next.copySaved(subsPrefs)
+            applySubtitleStyle()
+        }
+
+        fun hex(color: Int): String = if (android.graphics.Color.alpha(color) == 255) {
+            String.format("#%06X", color and 0xFFFFFF)
+        } else {
+            String.format("#%02X%06X", android.graphics.Color.alpha(color), color and 0xFFFFFF)
+        }
+
+        fun paintPill(v: TextView, active: Boolean) {
+            v.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                if (active) {
+                    setColor(withAlpha(accentMidColor, 0.22f))
+                    setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.85f))
+                } else {
+                    setColor(0x1AFFFFFF.toInt())
+                    setStroke((1 * density).toInt().coerceAtLeast(1), 0x22FFFFFF)
+                }
+            }
+            v.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
+        }
+
+        // Pills stay narrow on purpose: the panel's content area is only a few
+        // hundred dp wide, and wider controls got clipped at its edge.
+        fun pill(text: String, onClick: () -> Unit): TextView = TextView(this).apply {
+            this.text = text
+            dpText(11f)
+            setTextColor(0xFFC9D2E0.toInt())
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setPadding(
+                (9 * density).toInt(), (5 * density).toInt(),
+                (9 * density).toInt(), (5 * density).toInt()
+            )
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
+        val toggles = ArrayList<() -> Unit>()
+        fun refresh() {
+            toggles.forEach { it() }
+        }
+
+        /** A pill that shows its active state and repaints the whole panel's
+         *  toggles after it is tapped (one tap can change several of them — a
+         *  preset, or a setter that switches custom styling on). */
+        fun toggle(text: String, active: () -> Boolean, onClick: () -> Unit): TextView {
+            val v = pill(text) { onClick(); refresh() }
+            toggles.add { paintPill(v, active()) }
+            return v
+        }
+
+        /** A round colour chip showing the current value; tapping it opens the
+         *  HSV picker. [color] is a getter so the chip follows live edits. */
+        fun swatch(color: () -> Int, onClick: () -> Unit): TextView {
+            val v = TextView(this).apply {
+                text = ""
+                includeFontPadding = false
+                isClickable = true
+                layoutParams = LinearLayout.LayoutParams((32 * density).toInt(), (22 * density).toInt())
+                setOnClickListener { onClick(); refresh() }
+            }
+            toggles.add {
+                val c = color()
+                v.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(c)
+                    setStroke((1 * density).toInt().coerceAtLeast(1), 0x66FFFFFF)
+                }
+            }
+            return v
+        }
+
+        fun rowLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            dpText(12f)
+            setTextColor(0xFFE6EAF3.toInt())
+        }
+
+        fun valueLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            dpText(10.5f)
+            setTextColor(0xFF9AA5B5.toInt())
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            maxWidth = (108 * density).toInt()
+        }
+
+        fun controlRow(label: String, vararg controls: View): LinearLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                clipToPadding = false
+                setPadding(
+                    (10 * density).toInt(), (6 * density).toInt(),
+                    (10 * density).toInt(), (6 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(0x14FFFFFF.toInt())
+                }
+                addView(rowLabel(label))
+                addView(View(this@PlayerActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                })
+                controls.forEach { addView(it) }
+            }
+
+        fun addRow(row: View) {
+            panel.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), 0)
+            })
+        }
+
+        // ---- the rows -------------------------------------------------------
+
+        // Custom styling off = media3's own default captions, with whatever the
+        // subtitle file itself asks for.
+        addRow(controlRow(
+            "Caption style",
+            toggle("Stream default", { !subtitleStyle.enabled }) {
+                save(subtitleStyle.copy(enabled = false))
+            },
+            toggle("Custom", { subtitleStyle.enabled }) {
+                save(subtitleStyle.copy(enabled = true))
+            },
+        ))
+
+        // Presets: the looks people pick in practice, one tap each. Every one
+        // of them switches custom styling on (that is the point of tapping it).
+        val classic = SubtitleStyle(
+            enabled = true, textColor = 0xFFFFFFFF.toInt(), edge = SubtitleStyle.EDGE_OUTLINE,
+            edgeColor = 0xFF000000.toInt(), background = 0x00000000,
+        )
+        val cinema = SubtitleStyle(
+            enabled = true, textColor = 0xFFFFEB3B.toInt(), edge = SubtitleStyle.EDGE_SHADOW,
+            edgeColor = 0xFF000000.toInt(), background = 0x00000000,
+        )
+        val boxed = SubtitleStyle(
+            enabled = true, textColor = 0xFFFFFFFF.toInt(), edge = SubtitleStyle.EDGE_NONE,
+            background = 0xCC000000.toInt(),
+        )
+        val mono = SubtitleStyle(
+            enabled = true, textColor = 0xFFE6EAF3.toInt(), edge = SubtitleStyle.EDGE_OUTLINE,
+            edgeColor = 0xFF000000.toInt(), background = 0x00000000,
+            bold = true, font = "monospace",
+        )
+        fun isPreset(s: SubtitleStyle): Boolean = subtitleStyle.enabled &&
+            subtitleStyle.copy(enabled = true) == s
+        addRow(controlRow(
+            "Presets",
+            toggle("Classic", { isPreset(classic) }) { save(classic) },
+            toggle("Cinema", { isPreset(cinema) }) { save(cinema) },
+            toggle("Boxed", { isPreset(boxed) }) { save(boxed) },
+            toggle("Mono", { isPreset(mono) }) { save(mono) },
+        ))
+
+        fun edgeName(): String = when (subtitleStyle.edge) {
+            SubtitleStyle.EDGE_OUTLINE -> I18n.t("Outline")
+            SubtitleStyle.EDGE_SHADOW -> I18n.t("Shadow")
+            else -> I18n.t("None")
+        }
+        val textValue = valueLabel(hex(subtitleStyle.textColor))
+        val edgeColorValue = valueLabel(hex(subtitleStyle.edgeColor))
+        val bgValue = valueLabel(hex(subtitleStyle.background))
+        val fontValue = valueLabel(SubtitleFonts.label(subtitleStyle.font))
+        val edgeValue = valueLabel(edgeName())
+        // The read-outs are refreshed through the same mechanism as the pills,
+        // so nothing has to remember to update them by hand.
+        toggles.add { textValue.text = hex(subtitleStyle.textColor) }
+        toggles.add { edgeColorValue.text = hex(subtitleStyle.edgeColor) }
+        toggles.add { bgValue.text = hex(subtitleStyle.background) }
+        toggles.add { fontValue.text = SubtitleFonts.label(subtitleStyle.font) }
+        toggles.add { edgeValue.text = edgeName() }
+
+        /** Opens the HSV picker and applies what comes back as [apply]. */
+        fun pickColor(title: String, initial: Int, allowAlpha: Boolean, apply: (Int) -> Unit) {
+            ColorPickerDialog(this, accentMidColor).show(title, initial, allowAlpha) { picked ->
+                apply(picked)
+                refresh()
+            }
+        }
+
+        addRow(controlRow(
+            "Text colour",
+            swatch({ subtitleStyle.textColor }) {
+                pickColor(I18n.t("Caption colour"), subtitleStyle.textColor, false) {
+                    save(subtitleStyle.copy(textColor = it, enabled = true))
+                }
+            },
+            textValue,
+        ))
+
+        addRow(controlRow(
+            "Text",
+            toggle("Bold", { subtitleStyle.bold }) {
+                save(subtitleStyle.copy(bold = !subtitleStyle.bold, enabled = true))
+            },
+            toggle("Italic", { subtitleStyle.italic }) {
+                save(subtitleStyle.copy(italic = !subtitleStyle.italic, enabled = true))
+            },
+        ))
+
+        // Outline vs drop shadow vs nothing. media3 strokes an outline at a
+        // fixed width, so there is no width slider here — only on/off and the
+        // colour, both of which really are honoured.
+        addRow(controlRow(
+            "Edge",
+            toggle("None", { subtitleStyle.edge == SubtitleStyle.EDGE_NONE }) {
+                save(subtitleStyle.copy(edge = SubtitleStyle.EDGE_NONE, enabled = true))
+            },
+            toggle("Outline", { subtitleStyle.edge == SubtitleStyle.EDGE_OUTLINE }) {
+                save(subtitleStyle.copy(edge = SubtitleStyle.EDGE_OUTLINE, enabled = true))
+            },
+            toggle("Shadow", { subtitleStyle.edge == SubtitleStyle.EDGE_SHADOW }) {
+                save(subtitleStyle.copy(edge = SubtitleStyle.EDGE_SHADOW, enabled = true))
+            },
+            edgeValue,
+        ))
+
+        addRow(controlRow(
+            "Edge colour",
+            swatch({ subtitleStyle.edgeColor }) {
+                pickColor(I18n.t("Edge colour"), subtitleStyle.edgeColor, false) {
+                    save(subtitleStyle.copy(edgeColor = it, enabled = true))
+                }
+            },
+            edgeColorValue,
+        ))
+
+        addRow(controlRow(
+            "Background",
+            swatch({ subtitleStyle.background }) {
+                pickColor(I18n.t("Caption background"), subtitleStyle.background, true) {
+                    save(subtitleStyle.copy(background = it, enabled = true))
+                }
+            },
+            bgValue,
+            toggle("Remove", { subtitleStyle.background == 0 }) {
+                save(subtitleStyle.copy(background = 0, enabled = true))
+            },
+        ))
+
+        // Font: the platform's families or a file of the user's own. The row
+        // shows the current choice; picking happens in a nested glass menu.
+        addRow(controlRow(
+            "Font",
+            fontValue,
+            pill("Change") { showFontMenu(dialog) { label -> fontValue.text = label } },
+        ))
+
+        addRow(controlRow(
+            "Reset every caption setting",
+            pill("Reset") {
+                save(SubtitleStyle())
+                refresh()
+            },
+        ))
+
+        // The font row has to follow a file picked from the system picker
+        // (which lands long after this function returned).
+        fontPicked = {
+            fontValue.text = SubtitleFonts.label(subtitleStyle.font)
+            refresh()
+        }
+        dialog.setOnDismissListener { fontPicked = null }
+
+        presentGlass(
+            dialog,
+            "Caption style",
+            panel,
+            1000f,
+            hint = I18n.t("Applies to every subtitle, from any server."),
+            iconRes = R.drawable.ic_subtitles,
+            rowHosts = listOf(panel),
+        )
+    }
+
+    /**
+     * The caption font chooser: the platform's families plus "bring your own
+     * file". Shown on top of the caption-style panel, which stays open behind
+     * it — closing the chooser with a back press therefore lands back on the
+     * settings, not on the video. [onPicked] refreshes the caller's font row.
+     */
+    private fun showFontMenu(parent: Dialog, onPicked: (String) -> Unit) {
+        val options = ArrayList<GlassOption>()
+        SubtitleFonts.FAMILIES.forEachIndexed { i, key ->
+            options.add(
+                GlassOption(
+                    SubtitleFonts.label(key),
+                    if (i == 0) I18n.t("The player's built-in caption font") else null,
+                    selected = !SubtitleFonts.isFile(subtitleStyle.font) && subtitleStyle.font == key,
+                )
+            )
+        }
+        options.add(
+            GlassOption(
+                I18n.t("Pick a font file"),
+                I18n.t("Use a .ttf or .otf from this device"),
+                iconRes = R.drawable.ic_download,
+                marker = RowMarker.ICON,
+                selected = SubtitleFonts.isFile(subtitleStyle.font),
+            )
+        )
+        showGlassMenu(
+            I18n.t("Caption font"),
+            options,
+            hint = I18n.t("Applies to every subtitle, from any server."),
+            iconRes = R.drawable.ic_subtitles,
+            onDialog = { it.setOnDismissListener { parent.show() } },
+        ) { i ->
+            if (i < SubtitleFonts.FAMILIES.size) {
+                subtitleStyle = subtitleStyle.copy(font = SubtitleFonts.FAMILIES[i], enabled = true)
+                    .copySaved(subsPrefs)
+                applySubtitleStyle()
+                onPicked(SubtitleFonts.label(subtitleStyle.font))
+            } else {
+                fontLauncher?.launch(arrayOf("*/*"))
+            }
+        }
+    }
+
     private fun syncLabel(offsetMs: Long): String = if (offsetMs == 0L) "0.0s" else String.format("%+.1fs", offsetMs / 1000.0)
 
     /** Applies the saved text-size scale to the player's subtitle view. */
@@ -4243,6 +4635,29 @@ class PlayerActivity : ComponentActivity() {
      *  larger value lifts the subtitles further up off the bottom edge. */
     private fun applySubtitlePosition(fraction: Float) {
         runCatching { playerView?.getSubtitleView()?.setBottomPaddingFraction(fraction) }
+    }
+
+    /**
+     * Pushes [subtitleStyle] onto the player's SubtitleView.
+     *
+     * With custom styling off the style handed to media3 is its own default AND
+     * the styles embedded in the subtitle file are re-enabled — so a subtitle
+     * that ships its own font/colours keeps looking the way its author intended
+     * until the user opts into overriding it. With a custom style on, embedded
+     * styling is switched off, otherwise the file's styling would win over the
+     * user's choice.
+     *
+     * The size scale is re-applied afterwards: both settings live on the same
+     * view, and re-applying is idempotent.
+     */
+    private fun applySubtitleStyle() {
+        runCatching {
+            val view = playerView?.getSubtitleView() ?: return
+            view.setStyle(SubtitleFonts.captionStyle(this, subtitleStyle))
+            view.setApplyEmbeddedStyles(!subtitleStyle.enabled)
+            view.setApplyEmbeddedFontSizes(!subtitleStyle.enabled)
+            applySubtitleSize(subtitleScale)
+        }
     }
 
     /**

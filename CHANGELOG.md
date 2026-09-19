@@ -1,4 +1,17 @@
-## 0.5.25
+## 0.5.26
+
+Test build — full subtitle styling. The captions are no longer just a size and a nudge: text colour, outline or drop shadow with its own colour, a background you can remove entirely, bold/italic, and any font — including a .ttf/.otf from your own device. All of it is picked in a new **Subtitles → Caption style** panel, and every change lands on the video immediately.
+
+- **Text colour** — a real HSV picker (saturation/value square, hue strip, one-tap presets) rather than a colour-wheel stub, with a live caption preview drawn exactly the way the renderer will draw it. The preview shows the outline too, so a colour is judged against video, not against a swatch.
+- **Outline / shadow / plain** — the edge type plus its colour. (media3 strokes an outline at a fixed width, so there is deliberately no width slider that would do nothing.)
+- **Background** — a colour picker *with* transparency and a one-tap **Remove**, so the black caption box can be dropped entirely.
+- **Bold / Italic** and **Font**: the system families (sans, serif, monospace, casual, cursive) or a font file from your phone. A picked file is copied into the app's own storage and validated, so it survives a restart and a file that gets moved afterwards degrades to the default font instead of breaking playback.
+- **Presets** — Classic (white on a black outline), Cinema (yellow with a shadow), Boxed (white on a translucent block), Mono (monospaced and bold) — one tap each.
+- **Stream default** keeps the old behaviour exactly: the subtitle file's own styling is honoured until you switch to Custom. Custom styling off also means every caption that ships its own fonts/colours still looks the way its author intended.
+
+The **Background** row's picker is the app's own drawn panel, matching the player's dark glass dialogs. Every setting is stored per device, next to the existing size, sync and position rows, and they all still apply to any subtitle from any server.
+
+
 
 Test build — the search now finishes the job: it keeps asking every installed extension in the background while you watch, it only plays what you actually asked for, an Aniyomi extension's episodes and servers finally show up, and the player stops repeating itself.
 
