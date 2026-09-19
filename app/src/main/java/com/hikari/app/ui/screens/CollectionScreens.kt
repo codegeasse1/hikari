@@ -1,5 +1,6 @@
 package com.hikari.app.ui.screens
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.I18n
 
 import android.app.Application
 import android.content.Context
@@ -822,7 +823,8 @@ private fun FolderEditorPage(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 22.dp, bottom = 2.dp),
                 )
-            }            if (sources.isEmpty()) {
+            }
+            if (sources.isEmpty()) {
                 item {
                     Text(
                         tr("No catalogs yet — add a TMDB preset or a catalog from an installed extension."),
@@ -935,7 +937,7 @@ private fun FolderEditorPage(
                     if (json.isEmpty() || existing.contains(json)) return@mapNotNull null
                     CatalogSource(
                         kind = CatalogSourceKind.ITEMS,
-                        title = group.name.ifBlank { tr("Imported list") },
+                        title = group.name.ifBlank { I18n.t("Imported list") },
                         itemsJson = json,
                         type = if (group.items.any { it.type == MediaType.SERIES }) {
                             MediaType.SERIES
@@ -1662,12 +1664,14 @@ private fun ImportListSheet(
         val found = NuvioCatalogImport.parse(source)
         lists = found
         selected = found.indices.filter { found[it].items.isNotEmpty() }.toSet()
+        // I18n.t, not tr(): this runs from a click/file-picker callback, which
+        // is outside composition, where the composable tr() cannot be called.
         message = when {
-            found.isEmpty() -> tr(
+            found.isEmpty() -> I18n.t(
                 "No titles found. Paste the JSON exactly as you got it — an array of " +
                     "titles, or an object with items/metas/catalogs inside."
             )
-            found.all { it.items.isEmpty() } -> tr(
+            found.all { it.items.isEmpty() } -> I18n.t(
                 "This file describes catalogs but carries no titles of its own, so there " +
                     "is nothing to save."
             )
@@ -1688,11 +1692,11 @@ private fun ImportListSheet(
             }
             busy = false
             if (text.isNullOrBlank()) {
-                message = tr("Couldn't read that file.")
+                message = I18n.t("Couldn't read that file.")
                 return@launch
             }
             body = text
-            fieldLabel = uri.lastPathSegment?.substringAfterLast('/') ?: tr("File loaded")
+            fieldLabel = uri.lastPathSegment?.substringAfterLast('/') ?: I18n.t("File loaded")
             read(text)
         }
     }
@@ -1748,7 +1752,7 @@ private fun ImportListSheet(
                             ?.coerceToText(context)
                             ?.toString()
                         if (clip.isNullOrBlank()) {
-                            message = tr("The clipboard is empty.")
+                            message = I18n.t("The clipboard is empty.")
                         } else {
                             body = clip
                             fieldLabel = ""
@@ -2673,7 +2677,7 @@ private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(
                     // Preset/catalog names are translated; a user-typed
-                    // collection name isnI18n.t('t in the i18n files, so tr() hands it
+                    // collection name isn't in the i18n files, so tr() hands it
                     // back unchanged.
                     tr(title),
                     style = MaterialTheme.typography.titleLarge,

@@ -319,7 +319,6 @@ data class CatalogSource(
             CatalogSourceKind.PROVIDER -> "prov|$providerId|$type|$catalogId"
         }
 }
-}
 
 /**
  * One category a Library title is filed under (Movies, Series, Action, Romance,

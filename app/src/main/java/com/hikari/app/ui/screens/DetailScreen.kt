@@ -2001,11 +2001,15 @@ fun DetailScreen(
                 // read as "the sections are missing". Both come from the same
                 // background TMDB call, and each row is skipped entirely when
                 // that lookup found nothing.
-                extras?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
+                // A local read of the delegated property: a `by remember` value
+                // cannot be smart-cast, so the null check happens on a plain val.
+                val extrasNow = extras
+                if (extrasNow != null && extrasNow.cast.isNotEmpty()) {
                     // For an anime, `cast` holds the characters (with the
                     // Japanese voice actors as their second line) — see
                     // AnimeCast. The row says which one it is showing.
-                    val characters = extras.castIsCharacters
+                    val cast = extrasNow.cast
+                    val characters = extrasNow.castIsCharacters
                     item {
                         CastRow(cast, characters = characters) { member ->
                             // A character cell searches their ACTOR (the

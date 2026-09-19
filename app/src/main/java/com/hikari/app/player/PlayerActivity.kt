@@ -2081,7 +2081,7 @@ class PlayerActivity : ComponentActivity() {
         fun dp(v: Int): Int = (v * d).roundToInt()
 
         val topBar = findViewById<View>(R.id.player_top_bar)
-        val bottomBar = findViewById<View>(R.id.exo_bottom_bar)
+        val bottomBar = exoView("exo_bottom_bar")
 
         // Bar backgrounds. Minimal has no panel at all, just a feather-light
         // scrim so the title and the time labels stay readable over bright video.
