@@ -350,7 +350,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  which is how servers from a repo the user KNEW had them (MovieBox,
      *  4KHDHub's mirrors, …) stayed missing from the list. Results stream to the
      *  player as they land, so a longer tail costs nothing at play time. */
-    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(110_000L), 110_000L)
+    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(150_000L), 150_000L)
 
     /** Ceiling for PHASE 1 of the pass — asking every installed extension for
      *  the title. The phase ends the moment the last extension has answered, so
@@ -384,25 +384,76 @@ class ContentRepository(private val manager: ProviderManager) {
     private val CROSS_EXT_META_TIMEOUT_MS get() = minOf(NetTuning.timeout(15_000L), 20_000L)
     private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 50_000L)
 
+    // ---- Aniyomi gets a wider clock -------------------------------------
+    // An Aniyomi extension is an APK: the first call into one pays a cold class
+    // load (its dex plus its whole dependency graph through the child-first
+    // loader) on top of the site's own latency and its own OkHttp session.
+    // The generic budgets above were sized for a .cs3/JS plugin and cut a
+    // perfectly healthy Aniyomi source off mid-answer — the recorded line
+    // "Provider: Anichi [ANIYOMI]: Has the title, but its episode list timed
+    // out." is exactly that, and it is why an anime the user could see sitting
+    // in the extension's own catalogue contributed no servers at all. The
+    // ceiling is still clamped, so a dead extension cannot hold the pass.
+    private fun isAniyomi(p: ContentProvider) = p.config.type == ProviderType.ANIYOMI
+    private val ANIYOMI_SEARCH_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 60_000L)
+    private val ANIYOMI_META_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 60_000L)
+    private val ANIYOMI_EPISODES_TIMEOUT_MS get() = minOf(NetTuning.timeout(75_000L), 90_000L)
+    private val ANIYOMI_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(110_000L), 150_000L)
+
+    private fun searchTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_SEARCH_TIMEOUT_MS else CROSS_EXT_SEARCH_TIMEOUT_MS
+
+    private fun metaTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_META_TIMEOUT_MS else CROSS_EXT_META_TIMEOUT_MS
+
+    private fun episodesTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_EPISODES_TIMEOUT_MS else CROSS_EXT_EPISODES_TIMEOUT_MS
+
+    private fun streamsTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_STREAMS_TIMEOUT_MS else CROSS_EXT_STREAMS_TIMEOUT_MS
+
+    /** The Detail screen's meta fetch. A manifest-backed addon answers in
+     *  milliseconds; an Aniyomi extension is an APK that has to be class-loaded
+     *  first, and timing THAT out is what left an Aniyomi item with no meta —
+     *  and so with the raw catalogue type (see [AniyomiProvider.toItem]). */
+    private fun metaForTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_META_TIMEOUT_MS else 15_000L
+
+    /** The Detail screen's episode fetch — the same story as [metaForTimeoutMs]:
+     *  an Aniyomi extension's episode list is a real scrape, and at 12s a cold
+     *  one simply never answered. */
+    private fun episodesForTimeoutMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_EPISODES_TIMEOUT_MS else 12_000L
+
+    /** Home's per-provider ceiling, and the per-catalog one under it. Same
+     *  reasoning again: 20s is generous for a plugin manifest and tight for a
+     *  cold Aniyomi dex load plus a catalogue scrape. */
+    private val ANIYOMI_HOME_PROVIDER_CEILING_MS get() = minOf(NetTuning.timeout(90_000L), 100_000L)
+    private val ANIYOMI_HOME_CATALOG_CEILING_MS get() = minOf(NetTuning.timeout(45_000L), 60_000L)
+    private fun homeProviderCeilingMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_HOME_PROVIDER_CEILING_MS else HOME_PROVIDER_CEILING_MS
+    private fun homeCatalogCeilingMs(p: ContentProvider) =
+        if (isAniyomi(p)) ANIYOMI_HOME_CATALOG_CEILING_MS else HOME_CATALOG_CEILING_MS
+
     /** Searching a title is cheap; extracting links is not, so they get their
      *  own caps. The wider one lets every installed extension be SEARCHED in
      *  parallel (a title search across dozens of repos then still finishes in a
      *  few seconds), while the narrow one keeps only a handful of extractors
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
-    private val CROSS_EXT_SEARCH_CONCURRENCY = 64
+    private val CROSS_EXT_SEARCH_CONCURRENCY = 96
     /** How many extensions may extract at the same time. Six was low enough
      *  that, on a phone with a dozen installed repos, most targets queued behind
      *  the budget and never ran at all; with ~50 installed repos the searches
      *  alone used to take the better part of a minute, which is why the one
      *  repo that DOES carry the title (MovieBox) only landed its servers after
      *  playback had already started. */
-    private val CROSS_EXT_EXTRACT_CONCURRENCY = 12
+    private val CROSS_EXT_EXTRACT_CONCURRENCY = 20
     /** How many matched extensions may fetch their meta / episode list at once.
      *  A SEPARATE cap from the search semaphore: fetching one repo's episode
      *  list must never take a slot that another repo still needs just to be
      *  SEARCHED (that sharing is what starved the tail of the queue). */
-    private val CROSS_EXT_DETAIL_CONCURRENCY = 16
+    private val CROSS_EXT_DETAIL_CONCURRENCY = 32
     private val CROSS_EXT_SEARCH_SEMAPHORE = Semaphore(CROSS_EXT_SEARCH_CONCURRENCY)
     private val CROSS_EXT_EXTRACT_SEMAPHORE = Semaphore(CROSS_EXT_EXTRACT_CONCURRENCY)
     private val CROSS_EXT_DETAIL_SEMAPHORE = Semaphore(CROSS_EXT_DETAIL_CONCURRENCY)
@@ -453,7 +504,11 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         episode: Episode?,
     ): List<StreamSource> {
-        val timeoutMs = NetTuning.timeout(45_000L)
+        // Aniyomi extensions pay a cold APK class load before their first
+        // answer (see the Aniyomi budgets above) — 45s cut them off.
+        val timeoutMs =
+            if (isAniyomi(p)) minOf(NetTuning.timeout(90_000L), 120_000L)
+            else NetTuning.timeout(45_000L)
         val maxAttempts = NetTuning.attempts()
         var attempt = 0
         while (true) {
@@ -600,7 +655,7 @@ class ContentRepository(private val manager: ProviderManager) {
                             // provider manifest loads (a SkyStream extension
                             // boots a whole JS engine before its first byte,
                             // and its own home page can fetch a dozen sections).
-                            val loaded = withTimeoutOrNull(HOME_PROVIDER_CEILING_MS) {
+                            val loaded = withTimeoutOrNull(homeProviderCeilingMs(p)) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -608,7 +663,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     catalogs.map { c ->
                                         async {
                                             catalogGate.withPermit {
-                                                val items = withTimeoutOrNull(HOME_CATALOG_CEILING_MS) {
+                                                val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
                                                     cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                                 }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                 if (items.isEmpty()) null
@@ -628,7 +683,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                 }
                             }
                             if (loaded == null) {
-                                noteCatalogTimeout(p, HOME_PROVIDER_CEILING_MS)
+                                noteCatalogTimeout(p, homeProviderCeilingMs(p))
                                 emptyList()
                             } else loaded
                         }
@@ -677,7 +732,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 scope.async {
                     try {
                         providerGate.withPermit {
-                            val settled = withTimeoutOrNull(HOME_PROVIDER_CEILING_MS) {
+                            val settled = withTimeoutOrNull(homeProviderCeilingMs(p)) {
                                 val catalogs = p.catalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
@@ -686,7 +741,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                         async {
                                             try {
                                                 catalogGate.withPermit {
-                                                    val items = withTimeoutOrNull(HOME_CATALOG_CEILING_MS) {
+                                                    val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
                                                         cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
                                                     }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                     if (items.isNotEmpty()) {
@@ -713,7 +768,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                     }
                                 }.awaitAll()
                             }
-                            if (settled == null) noteCatalogTimeout(p, HOME_PROVIDER_CEILING_MS)
+                            if (settled == null) noteCatalogTimeout(p, homeProviderCeilingMs(p))
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -734,9 +789,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (jobs.all { it.isCompleted }) break
                 // Must cover the longest provider ceiling above, or rows that
                 // landed after this would be thrown away with the flow: the
-                // slowest extension still gets its full 80s, plus the row-level
-                // scramble on top.
-                if (System.currentTimeMillis() - started > 120_000L) break
+                // slowest extension still gets its full ceiling (an Aniyomi
+                // extension's is the widest — see the Aniyomi budgets), plus the
+                // row-level scramble on top.
+                if (System.currentTimeMillis() - started > 150_000L) break
                 delay(100)
             }
             val finalSnapshot = placed.entries.sortedBy { it.key }.map { it.value }
@@ -1456,14 +1512,30 @@ class ContentRepository(private val manager: ProviderManager) {
             val remembered = streamsRemembered[rememberKey]?.takeIf {
                 System.currentTimeMillis() - it.at < REMEMBERED_STREAMS_TTL_MS
             }
-            if (finalResult.isEmpty() && remembered != null) {
-                finalResult = remembered.list
-                com.hikari.app.data.Logs.log(
-                    "Search",
-                    "done \"${item.title}\" → reusing ${finalResult.size} server(s) " +
-                        "from the previous lookup (this pass came back empty)",
-                )
-            } else if (finalResult.isNotEmpty()) {
+            // A repeat lookup must never come back with FEWER servers than an
+            // earlier one did. The cross pass is a fresh, time-bounded sweep of
+            // 250+ repos and is not deterministic: whichever extensions happen
+            // to answer inside the budget decide the list, so the same episode
+            // replayed could show nuvio only, then hikari + nuvio, then fewer
+            // nuvio and no hikari — the reported "every attempt shows a
+            // different result". Servers this title+episode actually produced
+            // recently are therefore merged IN, not merely used as a fallback
+            // for an empty pass: what the user sees is the union, so a server
+            // that played a minute ago cannot disappear by being unlucky.
+            if (remembered != null) {
+                val have = finalResult.mapTo(HashSet<String>()) { it.infoHash ?: it.url }
+                val extra = remembered.list.filterNot { (it.infoHash ?: it.url) in have }
+                if (extra.isNotEmpty()) {
+                    val fresh = finalResult.size
+                    finalResult = finalResult + extra
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "done \"${item.title}\" → kept ${extra.size} server(s) from the " +
+                            "previous lookup (this pass found $fresh)",
+                    )
+                }
+            }
+            if (finalResult.isNotEmpty()) {
                 streamsRemembered[rememberKey] = RememberedStreams(finalResult, System.currentTimeMillis())
                 if (streamsRemembered.size > 64) {
                     val cutoff = System.currentTimeMillis() - REMEMBERED_STREAMS_TTL_MS
@@ -1645,8 +1717,17 @@ class ContentRepository(private val manager: ProviderManager) {
         repo: String,
         title: String,
         tally: CrossTally,
+        fromCache: Boolean = false,
     ) {
         tally.asked[p.config.id] = p.config.type.groupLabel
+        if (fromCache) {
+            // Answered out of this session's own record (see [crossEmpty] /
+            // [crossMatch]): the repo WAS consulted, so it must count as asked
+            // rather than as "never reached", but nothing is searching for it,
+            // so it gets no running entry and no "searching…" line.
+            bumpCrossStatus()
+            return
+        }
         tally.running[p.config.id] = repo
         bumpCrossStatus()
         com.hikari.app.data.Logs.log("Search", "cross \"$title\" → $repo: searching…")
@@ -1685,9 +1766,14 @@ class ContentRepository(private val manager: ProviderManager) {
         // Queued: counted as "still searching" until the verdict lands.
         tally.running[p.config.id] = repo
         bumpCrossStatus()
-        var attempt = searchBestMatch(p, title, item, CROSS_EXT_MIN_MATCH) {
-            markCrossSearchStarted(p, repo, title, tally)
-        }
+        var attempt = searchBestMatch(
+            p,
+            title,
+            item,
+            CROSS_EXT_MIN_MATCH,
+            onStart = { markCrossSearchStarted(p, repo, title, tally) },
+            onCached = { markCrossSearchStarted(p, repo, title, tally, fromCache = true) },
+        )
         // A search that THREW or TIMED OUT says nothing about the repo's
         // catalog — a cold plugin load ("the first call has to spin up its
         // runtime") is the usual cause, and the old code wrote that off as "no
@@ -1768,7 +1854,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // The provider's own load() also rewrites the id to its canonical form,
         // which is what its loadLinks() expects.
         val meta = CROSS_EXT_DETAIL_SEMAPHORE.withPermit {
-            withTimeoutOrNull(CROSS_EXT_META_TIMEOUT_MS) {
+            withTimeoutOrNull(metaTimeoutMs(p)) {
                 cancellableCatching { p.getMeta(best) }.getOrDefault(best)
             } ?: best
         }
@@ -1781,7 +1867,7 @@ class ContentRepository(private val manager: ProviderManager) {
             var epFailure: String? = null
             var epTimedOut = false
             val eps: List<Episode> = CROSS_EXT_DETAIL_SEMAPHORE.withPermit {
-                withTimeoutOrNull(CROSS_EXT_EPISODES_TIMEOUT_MS) {
+                withTimeoutOrNull(episodesTimeoutMs(p)) {
                     cancellableCatching { p.getEpisodes(best) }
                         .onFailure { e ->
                             epFailure = e.javaClass.simpleName + ": " + (e.message ?: "no message")
@@ -1810,8 +1896,9 @@ class ContentRepository(private val manager: ProviderManager) {
         // repo can be written off.
         var gotFailure: String? = null
         var gotTimedOut = false
+        val streamsBudget = streamsTimeoutMs(p)
         val got: List<StreamSource> = CROSS_EXT_EXTRACT_SEMAPHORE.withPermit {
-            withTimeoutOrNull(CROSS_EXT_STREAMS_TIMEOUT_MS) {
+            withTimeoutOrNull(streamsBudget) {
                 cancellableCatching { p.getStreams(meta, ep) }
                     .onFailure { e ->
                         gotFailure = e.javaClass.simpleName + ": " + (e.message ?: "no message")
@@ -1822,7 +1909,7 @@ class ContentRepository(private val manager: ProviderManager) {
         if (got.isEmpty()) {
             val why = when {
                 gotTimedOut ->
-                    "extraction timed out after ${CROSS_EXT_STREAMS_TIMEOUT_MS / 1000}s"
+                    "extraction timed out after ${streamsBudget / 1000}s"
                 gotFailure != null -> "extraction failed: $gotFailure"
                 else -> "no playable links"
             }
@@ -1943,6 +2030,7 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         minMatch: Int,
         onStart: (() -> Unit)? = null,
+        onCached: (() -> Unit)? = null,
     ): SearchAttempt = CROSS_EXT_SEARCH_SEMAPHORE.withPermit {
         // Already answered "no such title" for this exact query a moment ago
         // (see [crossEmpty]): don't spend a slot — or a cold plugin load — on
@@ -1951,6 +2039,11 @@ class ContentRepository(private val manager: ProviderManager) {
         val cachedAt = crossEmpty[cacheKey]
         if (cachedAt != null) {
             if (System.currentTimeMillis() - cachedAt < CROSS_EMPTY_TTL_MS) {
+                // Answered out of this session's own record — still CONSULTED,
+                // so the pass's progress line counts it (otherwise a pass that
+                // resolved ten of eleven repos from cache read as "asked 1 of
+                // 11 … done", which looks exactly like the search gave up).
+                onCached?.invoke()
                 return@withPermit SearchAttempt(null, null, cachedEmpty = true)
             }
             crossEmpty.remove(cacheKey)
@@ -1962,6 +2055,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // the servers are freshly resolved; only the lookup is skipped.
         crossMatch[cacheKey]?.let { hit ->
             if (System.currentTimeMillis() - hit.at < CROSS_MATCH_TTL_MS) {
+                onCached?.invoke()
                 return@withPermit SearchAttempt(hit.item, null)
             }
             crossMatch.remove(cacheKey)
@@ -1972,13 +2066,14 @@ class ContentRepository(private val manager: ProviderManager) {
         onStart?.invoke()
         var timedOut = false
         var failure: String? = null
-        val results: List<MediaItem> = withTimeoutOrNull(CROSS_EXT_SEARCH_TIMEOUT_MS) {
+        val searchBudget = searchTimeoutMs(p)
+        val results: List<MediaItem> = withTimeoutOrNull(searchBudget) {
             cancellableCatching { p.search(query, 1) }
                 .onFailure { e -> failure = e.javaClass.simpleName + ": " + (e.message ?: "no message") }
                 .getOrDefault(emptyList())
         } ?: run { timedOut = true; emptyList<MediaItem>() }
         if (timedOut) {
-            SearchAttempt(null, "search timed out after ${CROSS_EXT_SEARCH_TIMEOUT_MS / 1000}s")
+            SearchAttempt(null, "search timed out after ${searchBudget / 1000}s")
         } else if (failure != null) {
             SearchAttempt(null, "search failed: $failure")
         } else if (results.isEmpty()) {
@@ -1987,7 +2082,17 @@ class ContentRepository(private val manager: ProviderManager) {
             // search used to look identical in the log (see
             // [crossExtensionSearch]). Remember the answer so the next pass over
             // the same title skips this repo entirely.
-            crossEmpty[cacheKey] = System.currentTimeMillis()
+            //
+            // ONLY a clean empty is remembered. A page that parsed to zero items
+            // because the site handed back a challenge page, a bot wall or a
+            // 5xx is not evidence that the repo lacks the title — and
+            // remembering it for five minutes is how a repo that plainly DOES
+            // carry the show dropped out of the next lookup's server list (the
+            // reported "every attempt shows different servers"). When the
+            // extension has something to say about itself, that is the tell.
+            if (providerStreamMessage(p) == null) {
+                crossEmpty[cacheKey] = System.currentTimeMillis()
+            }
             SearchAttempt(null, null)
         } else {
             // Scored against the REAL title, never against the shortened query,
@@ -2152,8 +2257,13 @@ class ContentRepository(private val manager: ProviderManager) {
      *  because one catalog addon serves minimal metadata. */
     suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
-        var result = manager.byId(item.providerId)
-            ?.let { withTimeoutOrNull(15_000) { cancellableCatching { it.getMeta(item) }.getOrDefault(item) } }
+        val originProvider = manager.byId(item.providerId)
+        var result = originProvider
+            ?.let {
+                withTimeoutOrNull(metaForTimeoutMs(it)) {
+                    cancellableCatching { it.getMeta(item) }.getOrDefault(item)
+                }
+            }
             ?: item
         if (result.backdropUrl != null && result.overview != null) {
             val t = translateItem(result)
@@ -2196,7 +2306,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val ordered = listOfNotNull(manager.byId(item.providerId)) +
             (if (item.type == MediaType.SERIES) others else emptyList())
         for (p in ordered) {
-            val eps = (withTimeoutOrNull(12_000) {
+            val eps = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
                 cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
             }) ?: emptyList()
             if (eps.isNotEmpty()) {

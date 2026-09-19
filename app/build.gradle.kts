@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 139
-        versionName = "0.5.23"
+        versionCode = 140
+        versionName = "0.5.24"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -124,6 +124,22 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         // app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt and
         // drop the jar classes to avoid a duplicate-class build failure.
         exclude("com/lagradost/cloudstream3/CloudStreamApp*.class")
+        // The jar's MainActivity is CloudStream's own Android screen, and it
+        // does not load in this app: a plugin that merely NAMES it (CineStream
+        // builds an Intent to it from its settings dialog) dies with
+        // `NoClassDefFoundError: Failed resolution of:
+        // Lcom/lagradost/cloudstream3/MainActivity;` — on the MAIN thread, which
+        // takes the whole process down. Shadow it the same way CloudStreamApp is
+        // shadowed: app/src/main/java/com/lagradost/cloudstream3/MainActivity.kt
+        // provides a loadable class that hands the user to Hikari's own main
+        // screen, and the jar's copy is dropped so the two cannot collide
+        // ("Type ... is defined multiple times") during dex merging.
+        //
+        // MainActivityKt (the file facade — initCloudStream reads it for the
+        // app/insecure Requests) is deliberately NOT matched: these patterns
+        // require the '$' or the '.class' immediately after "MainActivity".
+        exclude("com/lagradost/cloudstream3/MainActivity.class")
+        exclude("com/lagradost/cloudstream3/MainActivity\$*.class")
         // The jar's ToastBinding is a generated ViewBinding class that
         // (a) cannot be linked without the androidx.viewbinding runtime and
         // (b) inflates by a resource id baked into the jar's own R$layout,

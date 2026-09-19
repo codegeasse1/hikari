@@ -1,3 +1,32 @@
+## 0.5.24
+
+Test build — Aniyomi fixes, a server list that no longer changes its mind, and drag-to-reorder in the Personal Catalog creator.
+
+**Aniyomi: one extension is one row again (unless it really is several)**
+
+Installing a single Aniyomi extension put several identical rows in the extension picker — one extension whose sources all report the same name read exactly like the same extension installed half a dozen times. Two things were wrong. A source list that repeats the same source (an extension that appends to a shared list, or a class named twice in its metadata) was kept in full instead of collapsing to the one source it is. And an extension that legitimately bundles several sources under one name had no way to tell them apart, so every row read the same. Repeated sources are now dropped, and sources that share a name get Aniyomi's own ` (n)` suffix — the same shape the official repo already uses for "Jellyfin (1)…(3)". Existing installs are rebuilt to match on the next app start.
+
+**Aniyomi: its episodes and servers actually show up**
+
+Selecting a donghua from an Aniyomi extension and pressing play listed no Aniyomi server, even though the extension plainly had it. The extension was being cut off before it answered: an Aniyomi extension is an APK, so the first call into one pays a cold class load on top of the site's own latency, and the shared 12–45s budgets — sized for a plugin manifest — expired mid-answer. A second, worse bug hid the episode list entirely: every item out of an Aniyomi catalogue was typed "unknown", and the app returns NO episodes for an unknown item, so the episode grid stayed empty and the title played as though it were a film. Aniyomi sources are now correctly typed as series (a film is an anime with one episode), and their search / meta / episode / stream budgets are their own, wider ones — the extension the user is playing FROM is searched first, as it should be.
+
+**The server list no longer changes every attempt**
+
+Playing the same episode repeatedly gave a different server list each time — nuvio only, then two hikari plus nuvio, then fewer nuvio and no hikari, then cloudstream plus everything. The cross-extension pass is a fresh, time-bounded sweep of 250+ repos, so whichever extensions happened to answer inside the budget decided the list, and the report could even say the search was "done" when a fifth of the repos were never reached. Four things fixed:
+
+- Servers a title produced in a recent lookup are now MERGED into the next one instead of only being used when the new pass comes back empty, so a repeat lookup can never show fewer servers than the one before it.
+- A repo that answered with an empty page is only remembered as "no such title" when it had nothing else to say. A page that parsed to zero items because the site answered with a challenge or an error page was being cached as "this repo does not carry the show" for five minutes — which is exactly how a repo that does carry it dropped out of the next attempt.
+- Repos answered from that session's own record now count as asked, so the progress line stops reading "asked 1 of 11 … done" while the remaining ten WERE consulted.
+- Searching and extraction run wider (96 searches and 20 extractors at once instead of 64 and 12, 32 episode fetches instead of 16) and the whole pass has a longer ceiling, so the repos at the back of the queue actually get their turn instead of being cut off by the clock.
+
+**Personal Catalog creator: hold a catalog and drag it where you want**
+
+Moving one catalog from the bottom of a thirty- or fifty-catalog folder to the top was thirty taps of the up chevron. Now you can hold any catalog for a moment instead: it wobbles, the phone ticks and the row lifts, so it is obvious it is in your hand — then drag it up or down and the rows move out of the way as you pass them. Let go and it drops there. Holding it near the top or bottom edge of the page scrolls the list to follow you, so a long folder can be reordered in one go. The up/down chevrons stay for a precise one-step nudge.
+
+**Fixed**
+
+- A CloudStream plugin that asks for CloudStream's own `MainActivity` (the CineStream plugin does it from its settings dialog) crashed the app on the spot: the class does not exist in Hikari, and the failure escaped through the plugin's own callback on the main thread. It is now shadowed like the other CloudStream classes Hikari stands in for — the request opens Hikari's own main screen instead of killing the process.
+
 ## 0.5.23
 
 Test build — Aniyomi `.apk` extensions, and adding several catalogs at once in the Personal Catalog creator.

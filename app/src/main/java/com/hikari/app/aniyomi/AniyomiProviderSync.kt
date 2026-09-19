@@ -55,9 +55,9 @@ object AniyomiProviderSync {
             val previousById = configs.associateBy { it.id }
             val template = configs.first()
             val kept = LinkedHashMap<String, ProviderConfig>()
-            ext.sources.forEachIndexed { i, source ->
+            ext.sources.indices.forEach { i ->
                 val id = "aniyomi|${ext.pkgName}|$i"
-                val name = source.name.ifBlank { ext.name }
+                val name = ext.labels.getOrNull(i) ?: ext.name
                 val prev = previousById[id]
                 val next = prev?.copy(name = name) ?: ProviderConfig(
                     id = id,

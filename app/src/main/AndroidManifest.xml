@@ -237,6 +237,19 @@ android:name=".player.PlayerActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:theme="@style/Theme.Hikari.App" />
 
+        <!-- CloudStream plugins name com.lagradost.cloudstream3.MainActivity when
+             they want to open "the app" (the CineStream plugin does it from its
+             own settings dialog). The class is shadowed in
+             java/com/lagradost/cloudstream3/MainActivity.kt; it must be declared
+             here too, or a real startActivity() against it would throw
+             ActivityNotFoundException — the same crash one step later. It is
+             transparent and finishes immediately, because all it does is hand
+             the user to Hikari's own main screen. -->
+        <activity
+            android:name="com.lagradost.cloudstream3.MainActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".download.DownloadService"
             android:exported="false"

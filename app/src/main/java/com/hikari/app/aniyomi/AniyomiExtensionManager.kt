@@ -27,6 +27,52 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * One display name per source: the source's own name, with a ` (n)` suffix on
+ * every name that more than one source of the same extension carries.
+ *
+ * An Aniyomi extension is not one site — it can bundle a whole family of them
+ * (`Jellyfin (1)…(3)` in the official index), and nothing stops two of them
+ * from declaring the same `name`. Listed raw, those rows are indistinguishable:
+ * nine sources called "AnimeWorld India" looked like the same extension
+ * installed nine times. Suffixing only the colliding names (never a name that
+ * is already unique) keeps every row honest and changes nothing for the
+ * single-source extensions that make up most of the ecosystem.
+ */
+private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): List<String> {
+    val base = sources.map { s ->
+        runCatching { s.name }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: fallback
+    }
+    val collisions = base.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+    if (collisions.isEmpty()) return base
+    val seen = HashMap<String, Int>()
+    return base.map { n ->
+        if (n !in collisions) {
+            n
+        } else {
+            val n1 = (seen[n] ?: 0) + 1
+            seen[n] = n1
+            "$n ($n1)"
+        }
+    }
+}
+
+/**
+ * What makes two entries of one extension's source list the SAME source:
+ * everything Aniyomi itself would use to tell them apart (its id, name, lang
+ * and site). A list that repeats a source — a factory appending to a shared
+ * list, a class named twice in the extension's metadata — collapses to the one
+ * source it really is, while genuinely different sources always differ on at
+ * least one of these and all survive.
+ */
+private fun sourceKey(s: AnimeSource): String {
+    val id = runCatching { s.id }.getOrNull()
+    val name = runCatching { s.name }.getOrNull()
+    val lang = runCatching { s.lang }.getOrNull()
+    val base = (s as? AnimeHttpSource)?.let { runCatching { it.baseUrl }.getOrNull() }
+    return "$id|$name|$lang|$base"
+}
+
+/**
  * Installs and loads **Aniyomi** anime extensions (`aniyomix` `*.apk` files).
  *
  * An Aniyomi extension is a signed APK that declares the feature
@@ -189,11 +235,11 @@ object AniyomiExtensionManager {
             val site = siteOf(ext.sources.firstOrNull())
             val icon = iconUrl ?: faviconFor(site)
             var added = 0
-            ext.sources.forEachIndexed { index, source ->
+            ext.sources.indices.forEach { index ->
                 HikariApp.instance.store.addProvider(
                     ProviderConfig(
                         id = "aniyomi|$pkgName|$index",
-                        name = source.name.ifBlank { ext.name },
+                        name = ext.labels.getOrNull(index) ?: ext.name,
                         type = ProviderType.ANIYOMI,
                         url = target.absolutePath,
                         iconUrl = icon,
@@ -350,7 +396,21 @@ object AniyomiExtensionManager {
         val isTorrent: Boolean,
         val lang: String,
         val sources: List<AnimeSource>,
-    )
+    ) {
+        /**
+         * The display name of each source, in [sources] order.
+         *
+         * One Aniyomi extension can bundle several sources (a "multipack"), and
+         * some of them publish several sources under the SAME name. Read
+         * straight from `source.name` those rows were indistinguishable — nine
+         * identical "AnimeWorld India" rows read as the one extension installed
+         * nine times, which is exactly what a user reported. A name more than
+         * one source carries therefore gets Aniyomi's own ` (n)` suffix
+         * (the same shape Aniyomi's index uses for "Jellyfin (1)…(3)"), so every
+         * row in the list says which source it actually is.
+         */
+        val labels: List<String> = disambiguateSources(sources, name)
+    }
 
     private val cache = ConcurrentHashMap<String, Extension>()
     private val lastFail = ConcurrentHashMap<String, Long>()
@@ -552,8 +612,14 @@ object AniyomiExtensionManager {
         if (sources.isEmpty()) {
             return failReason("$name: none of its sources could be loaded")
         }
+        // Deduplicate BEFORE anything counts the sources: a list that names the
+        // same source twice (a factory appending to a shared list, a class
+        // repeated in the extension's metadata) is one source, and keeping the
+        // copies is how a single-source extension produced a stack of identical
+        // provider rows.
+        val unique = sources.distinctBy { sourceKey(it) }
 
-        val langs = sources.map { it.lang }.filter { it.isNotBlank() }.toSet()
+        val langs = unique.map { it.lang }.filter { it.isNotBlank() }.toSet()
         return Extension(
             file = file,
             pkgName = pkgName,
@@ -568,7 +634,7 @@ object AniyomiExtensionManager {
                 1 -> langs.first()
                 else -> "all"
             },
-            sources = sources,
+            sources = unique,
         )
     }
 

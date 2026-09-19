@@ -202,9 +202,16 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             providerId = config.id,
             id = id,
             title = runCatching { anime.title }.getOrDefault("").ifBlank { id },
-            // An Aniyomi source is a series (or a one-episode "movie"); the real
-            // shape is decided once the episode list is known (see [metaLocked]).
-            type = MediaType.UNKNOWN,
+            // ALWAYS a series, never UNKNOWN. An Aniyomi source has no "movie"
+            // concept — a film is an anime with one episode — and UNKNOWN is not
+            // a neutral value in this app: `ContentRepository.episodesFor`
+            // returns null outright for an UNKNOWN item, so every title picked
+            // out of an Aniyomi catalogue came up with no episode list at all
+            // and (when its meta fetch also timed out, leaving the type
+            // untouched) played as though it were a film. Reporting the type the
+            // source really is keeps the episode grid, the S1E5 the user picked
+            // and the cross-extension episode match all working.
+            type = MediaType.SERIES,
             posterUrl = runCatching { anime.thumbnail_url }.getOrNull()?.takeIf { it.isNotBlank() },
             overview = runCatching { anime.description }.getOrNull()?.takeIf { it.isNotBlank() },
             genres = runCatching { anime.getGenres() }.getOrNull().orEmpty(),
@@ -244,7 +251,13 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             ?: anime
         if (detailed !== anime) lockedPut(animeCache, item.id, detailed)
 
-        val type = if (episodes.isNotEmpty()) MediaType.SERIES else MediaType.MOVIE
+        // Deliberately NOT "MOVIE when the episode list is empty": an Aniyomi
+        // source is an anime source either way, and a slow extension whose
+        // episode list did not answer yet is not evidence that the title is a
+        // film. Reclassifying it that way is what hid the episode grid, made the
+        // Play button skip the episode the user had chosen, and told the cross
+        // pass there was no S1E5 to match.
+        val type = MediaType.SERIES
         val out = MediaItem(
             providerId = item.providerId,
             id = item.id,

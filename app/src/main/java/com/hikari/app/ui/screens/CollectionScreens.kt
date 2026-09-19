@@ -8,9 +8,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,6 +42,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -82,13 +88,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -140,6 +154,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * The Collections manager: the "New Collection" / "New Folder" screens of the
@@ -637,6 +652,28 @@ private fun FolderEditorPage(
     var pickProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var catalogs by remember { mutableStateOf<List<CatalogRef>?>(null) }
 
+    // ---- Long-press to pick a catalog up, drag to put it where you want ----
+    // The chevrons stay (they are exact, and right for a one-step nudge), but
+    // walking one catalog from the bottom of a thirty- or fifty-catalog folder
+    // to the top is thirty taps. Holding a row instead lifts it — the phone
+    // ticks and the row wobbles, so it is unmistakable that it is in your hand
+    // — and dragging carries it past its neighbours, which move out of the way
+    // as it goes; letting go drops it there.
+    //
+    // Long-press rather than plain drag: a plain drag on a scrolling list IS
+    // the scroll gesture.
+    var liftedKey by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+    val dragScope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    // Plain holders, not state: these are only ever read inside the drag
+    // gesture (never during composition), and writing them from
+    // onGloballyPositioned would recompose the whole page on every scroll.
+    val rowCentres = remember { HashMap<String, Float>() }
+    val dragY = remember { floatArrayOf(0f) }
+    val listBounds = remember { floatArrayOf(0f, 0f) }
+    val autoScrollEdge = with(LocalDensity.current) { 72.dp.toPx() }
+
     BackHandler { onBack() }
 
     val picker = pickProvider
@@ -756,11 +793,47 @@ private fun FolderEditorPage(
             itemsIndexed(sources, key = { _, s -> s.key }) { index, s ->
                 SourceRow(
                     source = s,
+                    lifted = liftedKey == s.key,
                     canMoveUp = index > 0,
                     canMoveDown = index < sources.lastIndex,
                     onMoveUp = { sources = sources.moveItem(index, index - 1) },
                     onMoveDown = { sources = sources.moveItem(index, index + 1) },
                     onDelete = { sources = sources.filter { it.key != s.key } },
+                    modifier = Modifier
+                        .onGloballyPositioned { c -> rowCentres[s.key] = c.boundsInRoot().center.y }
+                        .pointerInput(s.key) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    liftedKey = s.key
+                                    dragY[0] = rowCentres[s.key] ?: 0f
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragY[0] += amount.y
+                                    val from = sources.indexOfFirst { it.key == s.key }
+                                    if (from < 0) {
+                                        return@detectDragGesturesAfterLongPress
+                                    }
+                                    val to = dragTarget(sources, rowCentres, from, dragY[0])
+                                    if (to != from && to in sources.indices) {
+                                        sources = sources.moveItem(from, to)
+                                        haptics.performHapticFeedback(
+                                            HapticFeedbackType.TextHandleMove
+                                        )
+                                    }
+                                    val step = autoScrollStep(
+                                        dragY[0],
+                                        listBounds[0],
+                                        listBounds[1],
+                                        autoScrollEdge,
+                                    )
+                                    if (step != 0f) dragScope.launch { listState.scrollBy(step) }
+                                },
+                                onDragEnd = { liftedKey = null },
+                                onDragCancel = { liftedKey = null },
+                            )
+                        },
                 )
             }
             item {
@@ -955,63 +1028,147 @@ private fun List<CatalogSource>.toggleSource(source: CatalogSource): List<Catalo
 private fun SourceRow(
     source: CatalogSource,
     onDelete: () -> Unit,
+    lifted: Boolean = false,
     canMoveUp: Boolean = false,
     canMoveDown: Boolean = false,
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
-    GlassCard(modifier = Modifier
-        .fillMaxWidth()
-        .padding(top = 10.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                if (source.kind == CatalogSourceKind.TMDB) Icons.Filled.Movie
-                else Icons.Filled.Tv,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    source.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    if (source.kind == CatalogSourceKind.TMDB) {
-                        source.spec?.let { "TMDB · " + TmdbSources.detail(it) } ?: tr("TMDB preset")
-                    } else {
-                        tr("From an installed extension")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            MoveButtons(
-                canMoveUp = canMoveUp,
-                canMoveDown = canMoveDown,
-                onMoveUp = onMoveUp,
-                onMoveDown = onMoveDown,
-            )
-            IconButton(onClick = onDelete) {
+    // A short wobble the moment the row is picked up — with the haptic tick and
+    // the lift below it, that is what says "this catalog is in your hand now",
+    // instead of leaving the user to guess whether the long press took.
+    val wobble = remember { Animatable(0f) }
+    LaunchedEffect(lifted) {
+        wobble.snapTo(0f)
+        if (!lifted) return@LaunchedEffect
+        wobble.animateTo(
+            targetValue = 0f,
+            animationSpec = keyframes {
+                durationMillis = 300
+                -3f at 40
+                3f at 120
+                -2f at 190
+                1f at 245
+            },
+        )
+    }
+    Box(
+        modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .offset { IntOffset(wobble.value.roundToInt(), 0) }
+            .then(
+                if (lifted) Modifier.graphicsLayer {
+                    scaleX = 1.03f
+                    scaleY = 1.03f
+                } else Modifier
+            ),
+    ) {
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Icon(
-                    Icons.Filled.Close,
-                    contentDescription = tr("Remove"),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
+                    if (source.kind == CatalogSourceKind.TMDB) Icons.Filled.Movie
+                    else Icons.Filled.Tv,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
                 )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        source.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (source.kind == CatalogSourceKind.TMDB) {
+                            source.spec?.let { "TMDB · " + TmdbSources.detail(it) }
+                                ?: tr("TMDB preset")
+                        } else {
+                            tr("From an installed extension")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                MoveButtons(
+                    canMoveUp = canMoveUp,
+                    canMoveDown = canMoveDown,
+                    onMoveUp = onMoveUp,
+                    onMoveDown = onMoveDown,
+                )
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = tr("Remove"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
+        }
+        // The row in your hand, ringed in the accent colour. Drawn over the card
+        // (not passed to GlassCard) because a border in the card's own modifier
+        // chain is painted UNDER its fill and would never be seen.
+        if (lifted) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clip(GlassShape)
+                    .border(2.dp, MaterialTheme.colorScheme.primary, GlassShape),
+            )
         }
     }
 }
+
+/**
+ * Where the row in hand should move to on this frame: one step up or down the
+ * moment the finger passes the neighbouring row's centre, otherwise nowhere.
+ *
+ * Stepping (rather than computing a final slot from the drag distance) is what
+ * makes the rows swap under the finger, and it only ever asks about the two
+ * neighbours — which are on screen beside the row in hand — so it cannot be
+ * confused by the rows that scrolled out of view. Each row's own centre is the
+ * measure, not a fixed row height: a TMDB preset's row is taller than one whose
+ * title is one short line.
+ */
+private fun dragTarget(
+    sources: List<CatalogSource>,
+    centres: Map<String, Float>,
+    from: Int,
+    pointerY: Float,
+): Int {
+    sources.getOrNull(from + 1)?.let { next ->
+        centres[next.key]?.let { if (pointerY > it) return from + 1 }
+    }
+    sources.getOrNull(from - 1)?.let { prev ->
+        centres[prev.key]?.let { if (pointerY < it) return from - 1 }
+    }
+    return from
+}
+
+/**
+ * How far the list should scroll while the finger is held near its top or
+ * bottom edge — `0` when it is not.
+ *
+ * Dragging the last catalog of a fifty-row folder up to the first slot means
+ * going further than the screen is tall, so the list has to follow the finger.
+ */
+private fun autoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Float): Float =
+    when {
+        bottom <= top -> 0f
+        pointerY < top + edge -> -14f
+        pointerY > bottom - edge -> 14f
+        else -> 0f
+    }
 
 /**
  * The "TMDB sources" editor — the reference client's source-type chips
