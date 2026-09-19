@@ -267,7 +267,17 @@ class CollectionsRepository(private val manager: ProviderManager) {
      * purpose: their extension is what the search itself searches, and asking
      * it here as well would double every result.
      */
-    suspend fun searchTitles(query: String, limit: Int = 24): List<CollectionHit> =
+    suspend fun searchTitles(
+        query: String,
+        limit: Int = 24,
+        /** Called with the hits gathered SO FAR, as each source answers.
+         *  Imported lists are instant but an extension catalog is a network
+         *  fetch, so without this the row stayed empty until the slowest source
+         *  of the folder had answered; the caller can then show the local
+         *  matches the moment they exist. Always called at least once (with the
+         *  final list). */
+        onPartial: ((List<CollectionHit>) -> Unit)? = null,
+    ): List<CollectionHit> =
         withContext(Dispatchers.IO) {
             val q = query.trim()
             if (q.length < 2) return@withContext emptyList()
@@ -354,9 +364,11 @@ class CollectionsRepository(private val manager: ProviderManager) {
                             if (!seen.add(item.uniqueId + "|" + collection.id)) continue
                             out += CollectionHit(item, label.ifBlank { collection.name })
                         }
+                        onPartial?.invoke(out.toList())
                     }
                 }
             }
+            onPartial?.invoke(out.toList())
             out
         }
 

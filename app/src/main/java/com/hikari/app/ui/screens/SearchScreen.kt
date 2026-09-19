@@ -141,8 +141,19 @@ class SearchViewModel(
                     // disagree about which query they are answering.
                     kotlinx.coroutines.coroutineScope {
                         launch {
-                            _collectionHits.value = runCatching { collections.searchTitles(q) }
-                                .getOrDefault(emptyList())
+                            // Published as they are found: an imported list is
+                            // instant, an extension catalog in a personal
+                            // catalog is a network fetch, and waiting for the
+                            // slowest source would hold the row back for
+                            // seconds. A cancelled run (the user typed on) keeps
+                            // whatever it had published — the newer query's list
+                            // replaces it — instead of blanking the row on every
+                            // keystroke.
+                            runCatching {
+                                collections.searchTitles(q) { partial ->
+                                    _collectionHits.value = partial
+                                }
+                            }.onSuccess { _collectionHits.value = it }
                         }
                         launch { SearchSession.search(repo, q, _selectedProviders.value) }
                     }
