@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -1815,7 +1816,7 @@ private fun TitleSearchSheet(
                             )
                         }
                         Icon(
-                            if (isAdded) Icons.Filled.CheckCircle else Icons.Filled.Add,
+                            if (isAdded) Icons.Filled.Check else Icons.Filled.Add,
                             contentDescription = null,
                             tint = if (isAdded) {
                                 MaterialTheme.colorScheme.primary
