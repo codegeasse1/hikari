@@ -856,24 +856,6 @@ class ContentRepository(private val manager: ProviderManager) {
      *  wedges them. */
     private val SWEEP_WORKERS = 8
 
-    /** Ceiling for PHASE 1 of the pass — asking every installed extension for
-     *  the title. The phase ends the moment the last extension has answered, so
-     *  this only binds when a long tail of repos is slow or dead. Everything
-     *  else (the matched extension's meta, its episode list, extraction) runs in
-     *  PHASE 2 deliberately: a repo that MATCHED used to keep holding a search
-     *  slot while it fetched its episode list, so with the .hiki family alone at
-     *  180+ repos and 18 search slots the repos at the back of the queue were
-     *  never asked at all — and the pass still reported "all done, none with
-     *  servers", which is exactly how a repo the user KNOWS carries the title
-     *  went missing. */
-    private val CROSS_EXT_SEARCH_PHASE_MS get() = minOf(NetTuning.timeout(45_000L), 45_000L)
-
-    /** How many searches may still be pending when phase 2 (extraction) is
-     *  allowed to start anyway. Searching is cheap next to extracting, so once
-     *  only this many are left the first servers may start landing while the
-     *  last few searches finish. */
-    private val CROSS_EXT_SEARCH_TAIL = 12
-
     /** ---- Wave fan-out -------------------------------------------------
      *  Every installed extension is asked (that is the whole point of the
      *  pass), but NOT all at once. A cold .hiki/.cs3/Aniyomi plugin pays a
