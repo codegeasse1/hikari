@@ -14,12 +14,42 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 150
-        versionName = "0.6.6"
+        versionCode = 151
+        versionName = "0.6.7"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        // ---- Processors this app is built for ----
+        // armeabi-v7a is the 32-bit arm build (older/cheaper phones) and
+        // arm64-v8a is the 64-bit one (every modern phone). x86 and x86_64 are
+        // only ever found in Android emulators, so their native libraries —
+        // tens of MB of ffmpeg/media binaries — were dead weight in every
+        // phone's download, which is what made the single APK so large.
+        // ("remove x86 and x86_64, from our apk as its for emulator we dont
+        // need it, its just increasing app size")
+        ndk {
+            abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
+        }
+    }
+
+    // ---- One APK per phone, plus a universal one ----
+    // With this on, a release build produces `app-armeabi-v7a-release.apk`,
+    // `app-arm64-v8a-release.apk` and `app-universal-release.apk` instead of a
+    // single file that carries every processor's libraries. A user can then
+    // download just their own phone's build (much less data) or the universal
+    // one that works anywhere — and because only the two arm ABIs are built at
+    // all now, even the universal APK is smaller than it used to be.
+    //
+    // Every APK keeps the SAME applicationId, signing key and versionCode, so
+    // installations of one over another (and the in-app updater) all work.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = true
+        }
     }
 
     buildTypes {

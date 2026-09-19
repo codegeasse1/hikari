@@ -104,12 +104,57 @@ jobs:
           fi
           exit $code
 
-      - name: Verify release APK is signed
+      # ---- Split APKs: work out which files this build produced ----
+      # The release build now emits one APK per phone processor
+      # (`-armeabi-v7a-` = 32-bit arm, `-arm64-v8a-` = 64-bit arm) plus a
+      # universal one carrying both, so the file names depend on the split
+      # filter. This step resolves them once (into $GITHUB_ENV, so every step
+      # below can use them) and dumps the build's own output-metadata.json into
+      # the log, which is where the version code of each APK is recorded.
+      - name: Collect release APKs
         run: |
-          if [ ! -f app/build/outputs/apk/release/app-release.apk ]; then
-            echo "::error::Release APK is missing - signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets."
+          OUT=app/build/outputs/apk/release
+          echo "==== release output files ===="
+          ls -la "$OUT"
+          echo "==== release output-metadata.json ===="
+          cat "$OUT/output-metadata.json" 2>/dev/null || echo "(no output-metadata.json)"
+          echo "==== debug output files ===="
+          ls -la app/build/outputs/apk/debug 2>/dev/null || true
+          APK_ARM64=$(ls "$OUT" 2>/dev/null | grep -E 'arm64-v8a.*\.apk$' | head -n1 || true)
+          APK_ARM32=$(ls "$OUT" 2>/dev/null | grep -E 'armeabi-v7a.*\.apk$' | head -n1 || true)
+          APK_UNIVERSAL=$(ls "$OUT" 2>/dev/null | grep -E 'universal.*\.apk$' | head -n1 || true)
+          # Some AGP versions name the universal APK plainly app-release.apk;
+          # accept that too so this step can never be what breaks a release.
+          if [ -z "$APK_UNIVERSAL" ] && [ -f "$OUT/app-release.apk" ]; then
+            APK_UNIVERSAL=app-release.apk
+          fi
+          {
+            echo "APK_ARM64=$APK_ARM64"
+            echo "APK_ARM32=$APK_ARM32"
+            echo "APK_UNIVERSAL=$APK_UNIVERSAL"
+          } >> "$GITHUB_ENV"
+          echo "armv8=[$APK_ARM64] armv7=[$APK_ARM32] universal=[$APK_UNIVERSAL]"
+
+      - name: Verify release APKs are signed
+        run: |
+          if [ -z "$APK_UNIVERSAL" ]; then
+            echo "::error::Release APK is missing - signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets, and that the ABI splits still produce a universal APK."
             exit 1
           fi
+          # One APK per processor type plus the universal one, each plausibly
+          # sized (a split whose signing was skipped would come out near-empty).
+          for f in "$APK_ARM64" "$APK_ARM32" "$APK_UNIVERSAL"; do
+            if [ -z "$f" ]; then
+              echo "::error::A release APK is missing - expected one per ABI plus a universal APK."
+              exit 1
+            fi
+            size=$(stat -c%s "app/build/outputs/apk/release/$f")
+            echo "$f = $size bytes"
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error::$f is only $size bytes - signing was probably not configured."
+              exit 1
+            fi
+          done
           ls -la app/build/outputs/apk/release/
 
       - name: Upload build log
@@ -125,8 +170,8 @@ jobs:
         with:
           name: hikari-apk
           path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       # ---- TEST CHANNELS: updated on every push to main ----
@@ -135,7 +180,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
           SIZE_MB=$(du -m hikari.apk | cut -f1)
           if [ "$SIZE_MB" -ge 100 ]; then
             echo "hikari.apk is ${SIZE_MB}MB - over GitHub's 100MB file limit, skipping build-branch push (the release APK is still in the artifacts)."
@@ -144,7 +189,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
-          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
           git add hikari.apk
           git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
           git push origin build --force || { echo "build-branch push rejected (APK too large for GitHub's 100MB limit) - not fatal, release APK stays in artifacts."; exit 0; }
@@ -155,17 +200,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp app/build/outputs/apk/release/app-release.apk hikari-signed.apk
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari-signed.apk
+          cp "app/build/outputs/apk/release/$APK_ARM64" hikari-arm64-v8a.apk
+          cp "app/build/outputs/apk/release/$APK_ARM32" hikari-armeabi-v7a.apk
           if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             for i in 1 2 3; do
-              gh release upload continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              gh release upload continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" --clobber && break
               echo "continuous upload attempt $i failed (often a transient race with a concurrent build), retrying..."
               sleep 5
             done
           else
-            gh release create continuous hikari-signed.apk --repo "$GITHUB_REPOSITORY" \
+            gh release create continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" \
               --title "Continuous build" \
-              --notes "Signed test APK, auto-built from main." || true
+              --notes "Signed test APKs, auto-built from main. hikari-signed.apk is the universal build; the arm64-v8a / armeabi-v7a ones are smaller and for that processor type only." || true
           fi
 
       # ---- MAIN RELEASE: only when manually triggered with "release" checked ----
@@ -176,7 +223,13 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           TAG="v${VERSION:-0.1.0}"
-          cp app/build/outputs/apk/release/app-release.apk hikari.apk
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
+          # Each release carries all three builds: the universal APK under the
+          # name every existing link and the in-app updater already use, plus
+          # the two processor-specific ones so a user can download the smaller
+          # file that matches their phone.
+          cp "app/build/outputs/apk/release/$APK_ARM64" hikari-arm64-v8a.apk
+          cp "app/build/outputs/apk/release/$APK_ARM32" hikari-armeabi-v7a.apk
           # The release body is that version's own CHANGELOG.md section, so the
           # releases page and the changelog can never drift apart.
           NOTES=""
@@ -189,14 +242,14 @@ jobs:
           fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             for i in 1 2 3; do
-              gh release upload "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              gh release upload "$TAG" hikari.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" --clobber && break
               echo "release upload attempt $i failed (often a transient race with a concurrent build), retrying..."
               sleep 5
             done
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "Hikari $VERSION" --notes "$NOTES" || true
           else
-            gh release create "$TAG" hikari.apk --repo "$GITHUB_REPOSITORY" \
+            gh release create "$TAG" hikari.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" \
               --title "Hikari $VERSION" \
               --notes "$NOTES" || true
           fi

@@ -3,6 +3,7 @@ package com.hikari.app.net
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.hikari.app.BuildConfig
@@ -33,9 +34,27 @@ object Updater {
             "unknown"
         }
 
-    /** The newest non-draft, non-prerelease `v*` release tag (excludes the
-     *  `continuous` test channel), else null. */
-    private fun latestReleaseTag(): String? =
+    /** The build this phone should install: its own processor type's APK when
+     *  the release carries one, otherwise the universal one that works
+     *  anywhere.
+     *
+     *  Hikari is published as an ABI split (see app/build.gradle.kts): a
+     *  release holds `hikari-arm64-v8a.apk` for 64-bit arm phones,
+     *  `hikari-armeabi-v7a.apk` for the older 32-bit ones, and `hikari.apk`
+     *  which contains both. Every phone can install any of them (same
+     *  applicationId, key and version), so picking the matching one is purely
+     *  about not downloading a second set of native libraries the device can
+     *  never load. */
+    private fun preferredAssetName(): String =
+        if (Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }) "hikari-arm64-v8a.apk"
+        else "hikari-armeabi-v7a.apk"
+
+    /** The newest non-draft, non-prerelease `v*` release (the `continuous` test
+     *  channel is excluded) together with the asset name best suited to this
+     *  device, or null when there is nothing to compare against. */
+    private class Latest(val tag: String, val asset: String?)
+
+    private fun latestRelease(): Latest? =
         try {
             val json = Http.getString(
                 "https://api.github.com/repos/$REPO/releases?per_page=10",
@@ -47,7 +66,20 @@ object Updater {
                 if (rel.optBoolean("draft", false) || rel.optBoolean("prerelease", false)) continue
                 val tag = rel.optString("tag_name").ifBlank { continue }
                 if (tag == "continuous") continue
-                return tag
+                val names = rel.optJSONArray("assets")?.let { a ->
+                    (0 until a.length()).mapNotNull { k ->
+                        a.optJSONObject(k)?.optString("name")?.ifBlank { null }
+                    }
+                }.orEmpty()
+                val want = preferredAssetName()
+                // A release published before the split, or one whose per-ABI
+                // asset failed to upload, still updates — with the universal APK.
+                val asset = when {
+                    want in names -> want
+                    "hikari.apk" in names -> "hikari.apk"
+                    else -> null
+                }
+                return Latest(tag, asset)
             }
             null
         } catch (e: Exception) {
@@ -72,16 +104,20 @@ object Updater {
     /** Compares the running app version against the newest GitHub release. */
     suspend fun checkForUpdate(): UpdateStatus = withContext(Dispatchers.IO) {
         val current = currentVersion()
-        val tag = latestReleaseTag()
-        if (tag == null || current == "unknown") {
-            return@withContext UpdateStatus(false, current, tag ?: "unknown")
+        val rel = latestRelease()
+        if (rel == null || current == "unknown") {
+            return@withContext UpdateStatus(false, current, rel?.tag ?: "unknown")
         }
-        val latest = tag.removePrefix("v").ifBlank { tag }
+        val latest = rel.tag.removePrefix("v").ifBlank { rel.tag }
         UpdateStatus(
             available = isNewer(latest, current),
             currentVersion = current,
             latestVersion = latest,
-            apkUrl = "https://github.com/$REPO/releases/download/$tag/hikari.apk",
+            apkUrl = if (rel.asset != null) {
+                "https://github.com/$REPO/releases/download/${rel.tag}/${rel.asset}"
+            } else {
+                UPDATE_URL
+            },
         )
     }
 

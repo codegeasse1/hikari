@@ -39,8 +39,9 @@ curl -X POST \
 tag, takes the newest release and compares dotted versions against
 `BuildConfig.VERSION_NAME` — so once `v<version>` exists and its `versionName` is
 newer than the installed one, the in-app **Update** button finds it, and it is
-also the first download on the releases page. Dispatch only stores the APK in
-one asset (`hikari.apk`, ~145 MB), so it costs nothing but a CI run.
+also the first download on the releases page. Dispatch stores three assets per
+release (`hikari.apk` universal, plus `hikari-arm64-v8a.apk` and
+`hikari-armeabi-v7a.apk`), so it costs nothing but a CI run.
 
 Bump `versionCode` **and** `versionName` in `app/build.gradle.kts` and add a
 `## <version>` section to `CHANGELOG.md` first — the release body is taken from

@@ -1,3 +1,13 @@
+## 0.6.7
+
+Smaller downloads: Hikari is now built for each phone processor type, and the emulator-only builds are gone.
+
+### Changed
+
+- **Emulator-only processor builds removed.** Every release used to carry native libraries for x86 and x86_64 as well. Those processors only exist in Android emulators, so no phone could ever load them — they were simply a large part of every download. Only arm builds are produced now, which makes every APK smaller.
+- **Three APKs per release instead of one.** Each release publishes `hikari-arm64-v8a.apk` (64-bit phones, which is every phone sold today), `hikari-armeabi-v7a.apk` (older 32-bit phones) and `hikari.apk` (universal — contains both, and works on any device). Download the file for your phone to use less data; if you are not sure which you have, the universal one is always correct.
+- **The in-app update downloads the right build by itself.** The update dialog now fetches the APK for your phone's processor instead of the universal one, so updating uses less data as well.
+
 ## 0.6.6
 
 The extension a title was opened from now gets to play it, an extension that stops responding can no longer freeze the server count, and the loading screen is never a plain black frame.
