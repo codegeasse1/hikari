@@ -867,7 +867,13 @@ private fun FolderEditorPage(
                     )
                 }
             }
-            itemsIndexed(sources, key = { _, s -> s.key }) { index, s ->
+            // The key carries the row's position as well as the catalog's own
+            // key, so a list that somehow held the same catalog twice can never
+            // crash the page (`Key "prov|cs3|…" was already used` — the crash a
+            // user reported while picking catalogs in the personal catalog
+            // creator). The list is deduped on load and on save, so the index is
+            // only ever the second half of a key that was already unique.
+            itemsIndexed(sources, key = { index, s -> "$index|" + s.key }) { index, s ->
                 SourceRow(
                     source = s,
                     lifted = liftedKey == s.key,
@@ -3647,8 +3653,16 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            loaded.forEach { row ->
-                item(key = "shelf|" + row.key, span = { GridItemSpan(maxLineSpan) }) {
+            // The grid's keys carry the row's INDEX as well as the catalog's own
+            // key. A row's key is its catalog (`prov|…|row:8:0`), and two rows
+            // can only ever share one if the same catalog is somehow on the list
+            // twice — which used to crash this whole screen with
+            //   IllegalArgumentException: Key "prov|cs3|…" was already used.
+            // Sources are deduped on the way in (AppStore, CollectionsRepository)
+            // so it should not happen at all; the index makes it impossible for
+            // it to crash the grid even if it ever does again.
+            loaded.forEachIndexed { rowIndex, row ->
+                item(key = "shelf|$rowIndex|" + row.key, span = { GridItemSpan(maxLineSpan) }) {
                     Column(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp)) {
                         Text(
                             row.title,
@@ -3670,7 +3684,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                 }
                 items(
                     row.items.distinctBy { it.uniqueId },
-                    key = { item -> row.key + "|" + item.uniqueId },
+                    key = { item -> "$rowIndex|" + row.key + "|" + item.uniqueId },
                 ) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(

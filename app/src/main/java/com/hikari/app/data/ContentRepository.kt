@@ -161,6 +161,20 @@ class ContentRepository(private val manager: ProviderManager) {
             return false
         }
 
+        /**
+         * How the last [crossExtensionTargets] call split the installed
+         * extensions, one count per exclusion reason ("disabled", "origin",
+         * "cf-skip", "hung", "family(Nuvio)", …).
+         *
+         * Logged at the start of every pass next to the target count, because
+         * "the cross pass went from 245 targets to 137 between two taps and the
+         * second one found a fraction of the servers" has exactly one honest
+         * answer — WHICH filter dropped those repos — and without this line it
+         * can only be guessed at from a shared log.
+         */
+        @Volatile
+        var crossFilterReasons: Map<String, Int> = emptyMap()
+
         /** Verdict sentinel meaning "this extension was skipped — say nothing
          *  about it anywhere". Never shown, never counted. */
         const val CROSS_VERDICT_SKIPPED = "\u0000skipped"
@@ -638,6 +652,31 @@ class ContentRepository(private val manager: ProviderManager) {
      *  asked", as opposed to "the repo answered, and the answer was no". */
     private val SWEEP_RETRY_BUCKETS =
         setOf("no answer in time", "timed out", "search error", "could not load")
+
+    /** [crossReasonBucket]'s bucket for "the repo HAS this title but no link of
+     *  its resolved in time" — also swept, and the likeliest of all to produce
+     *  servers, because the repo is a proven match and its plugin is warm by
+     *  then. (The pass's own extraction is cancelled the moment it ends, so a
+     *  match found in the last seconds of the pass never gets its links.) */
+    private val SWEEP_MATCHED_NO_LINKS_BUCKET = "title found, no links"
+
+    /** How many unfinished repos make a background sweep worth starting even
+     *  when the pass came back with a healthy server list. Below this, the few
+     *  stragglers are left alone: keeping the cover on "still searching the
+     *  remaining extensions…" for two repos is worse than the two servers they
+     *  might have added. */
+    private val CROSS_SWEEP_MIN_TARGETS = 10
+
+    /** How many background sweeps may run at the same time.
+     *
+     *  Every title the user opens now hands its unfinished tail over (see the
+     *  hand-off in the pass's `finally`), and on a big install that tail is real
+     *  work — 250 extensions to search and extract from. Without a ceiling,
+     *  browsing ten titles quickly would leave ten sweeps doing that at once on
+     *  a phone. Three is enough that the title being watched and the one just
+     *  left both keep filling in; past that a new sweep is not started, and the
+     *  pass's own list stands — which is where it was before the sweep existed. */
+    private val MAX_PARALLEL_SWEEPS = 3
 
     /** How long a BACKGROUND SWEEP keeps working after the pass that started it
      *  has ended. Deliberately long: this is the "keep searching every installed
@@ -1350,6 +1389,39 @@ class ContentRepository(private val manager: ProviderManager) {
         return record.list
     }
 
+    /**
+     * Register [sink] on the background sweep already running for this video, so
+     * the caller receives its finds as they land (and, straight away, whatever
+     * the sweep has found so far). Returns false when there was no live sweep to
+     * join, in which case the caller must do the work itself.
+     *
+     * This is what makes a tap that arrives while a sweep is running CONTINUE
+     * that search instead of merely snapshotting it: a sweep's sinks belong to
+     * the pass that started it, and that pass's live session is not the new
+     * caller's — so without this, the second tap would be handed the servers
+     * found so far and then sit on them while the sweep quietly went on finding
+     * servers for a session that had already closed. See [startSweepIfNeeded].
+     */
+    fun attachToRunningSweep(
+        item: MediaItem,
+        episode: Episode?,
+        sink: (suspend (List<StreamSource>) -> Unit)?,
+    ): Boolean {
+        if (sink == null) return false
+        val sweep = synchronized(sweeps) {
+            sweeps[streamsRememberedKey(item, episode)]
+        } ?: return false
+        if (sweep.job?.isActive != true) return false
+        sweep.sinks += sink
+        val have = sweep.current
+        if (have.isNotEmpty()) {
+            HikariApp.instance.appScope.launch {
+                cancellableCatching { sink(have) }
+            }
+        }
+        return true
+    }
+
     private suspend fun streamsForInner(
         item: MediaItem,
         episode: Episode?,
@@ -1401,22 +1473,22 @@ class ContentRepository(private val manager: ProviderManager) {
             // The other installed extensions that get their turn on EVERY
             // lookup (see crossExtensionSearch). Resolved up front so both the
             // merge loop and the deadline below can use the list.
-        val crossTargets = crossExtensionTargets(item, origin)
-        // Other repos of the SAME engine as the origin (e.g. the user's other
-        // CloudStream repos when the title was opened from one) are pulled out
-        // and searched in the FIRST pass, right beside the origin: they search
-        // by the same kind of id, and they are the closest thing to "my
-        // provider". Waiting out the grace window for them is what buried them
-        // under forty Hikari servers.
-        val sameEngine = if (origin == null) {
-            emptyList()
-        } else {
-            crossTargets.filter { it.config.type == origin.config.type }
-        }
-        val lateTargets = crossTargets.filter { it !in sameEngine }
-        if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
+            val crossTargets = crossExtensionTargets(item, origin)
+            // Other repos of the SAME engine as the origin (e.g. the user's other
+            // CloudStream repos when the title was opened from one) are pulled out
+            // and searched in the FIRST pass, right beside the origin: they search
+            // by the same kind of id, and they are the closest thing to "my
+            // provider". Waiting out the grace window for them is what buried them
+            // under forty Hikari servers.
+            val sameEngine = if (origin == null) {
+                emptyList()
+            } else {
+                crossTargets.filter { it.config.type == origin.config.type }
+            }
+            val lateTargets = crossTargets.filter { it !in sameEngine }
+            if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
 
-        com.hikari.app.data.Logs.log(
+            com.hikari.app.data.Logs.log(
             "Search",
             // The app version leads the line so a shared log identifies the
             // build it came from without having to guess (the session-start
@@ -1443,6 +1515,17 @@ class ContentRepository(private val manager: ProviderManager) {
                     .groupingBy { it.config.type.groupLabel }
                     .eachCount()
                     .entries
+                    .sortedBy { it.key }
+                    .joinToString(",") { "${it.key}=${it.value}" } +
+                // …and WHY the rest of the installed extensions were left out,
+                // one count per reason ("disabled", "origin", "cf-skip",
+                // "hung", "family(Nuvio)", …). The three numbers above can only
+                // say that the target list shrank; this says what removed them,
+                // which is the difference between "the user's repo is not
+                // installed", "it is installed but sitting behind a Cloudflare
+                // wall", and "it is installed and healthy but starved of a slot
+                // by the budget". See [crossFilterReasons].
+                " skipped=" + crossFilterReasons.entries
                     .sortedBy { it.key }
                     .joinToString(",") { "${it.key}=${it.value}" },
         )
@@ -1493,6 +1576,19 @@ class ContentRepository(private val manager: ProviderManager) {
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var result: List<StreamSource> = emptyList()
+            // Mirrors of the pass's own clock and result, hoisted OUT of the
+            // pass body so its teardown can still reason about the repos it
+            // never finished with even when the body was CANCELLED before it
+            // could report anything — which is the case the user's own log is
+            // full of (no pass ever reached its "done" line). See the hand-off
+            // at the top of the `finally`.
+            var passStartedAt = 0L
+            var passDeadlineAt = 0L
+            var passFound: List<StreamSource> = emptyList()
+            /** Set at the very end of the pass body — clear of the `finally`
+             *  below — so a teardown that runs without it knows the pass was
+             *  cut off (cancelled or thrown) rather than finished. */
+            var passCompleted = false
             try {
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
@@ -1549,6 +1645,8 @@ class ContentRepository(private val manager: ProviderManager) {
                 // emitted progressively via onProgress, so the UI never sits on
                 // an empty spinner while this runs.
                 val deadline = started + minOf(NetTuning.timeout(55_000L), 60_000L)
+                passStartedAt = started
+                passDeadlineAt = deadline
                 // With no main targets at all (e.g. a title opened from a repo
                 // that has since been uninstalled) there is nothing to wait
                 // for — start the other extensions immediately instead of
@@ -1783,31 +1881,6 @@ class ContentRepository(private val manager: ProviderManager) {
                         // finds through the same sink the pass used — so it
                         // lands in the live feed and the player's server list
                         // exactly like a server that had arrived in time.
-                        val remaining = crossTargets.filter { p ->
-                            val id = p.config.id
-                            if (isCfSkipped(id) || crossFound.containsKey(id)) {
-                                return@filter false
-                            }
-                            val verdict = crossVerdict[id]
-                                ?: return@filter true // never answered at all
-                            // "No such title" is an ANSWER: the repo's own search
-                            // page really came back without this title, and
-                            // re-asking it is exactly the pointless work that made
-                            // the pass crawl. A repo that could not be ASKED —
-                            // a search that timed out, a plugin load that had to
-                            // wait behind the loader's six process-wide slots —
-                            // said nothing about its catalogue, and its plugin is
-                            // loaded and cached by now, so the sweep's retry is
-                            // both cheap and likely to succeed.
-                            crossReasonBucket(verdict) in SWEEP_RETRY_BUCKETS
-                        }
-                        startSweepIfNeeded(
-                            item,
-                            episode,
-                            remaining,
-                            merged.values.toList(),
-                            onProgress,
-                        )
                         break
                     }
                     kotlinx.coroutines.delay(80)
@@ -1815,7 +1888,18 @@ class ContentRepository(private val manager: ProviderManager) {
                 jobs.forEach { it.cancel() }
                 searchJobs.forEach { it.cancel() }
                 extractJobs.forEach { it.cancel() }
-                result = merged.values.toList()
+                // What this pass has to show for itself, recorded for the
+                // teardown below. The leftover-repos → background-sweep hand-off
+                // lives THERE, not here, and that is the whole point: a
+                // cancellation skips everything from this line onwards, and a
+                // pass is at least as likely to be cancelled mid-flight (the
+                // detail screen re-created: back out of the player, a rotation, a
+                // fresh navigation — its viewModelScope dies with it) as it is to
+                // reach its end. In the user's own log not one pass ever reached
+                // its "done" line, so a hand-off that only ran on a clean exit
+                // was never going to run at all.
+                passFound = merged.values.toList()
+                result = passFound
                 // Name the repos the pass did not actually get to. The old pass
                 // wrote "asked" for every QUEUED repo, so with 180+ .hiki repos
                 // behind a handful of slots it could announce "Asked 231 other
@@ -1880,8 +1964,88 @@ class ContentRepository(private val manager: ProviderManager) {
                         (if (breakdown.isBlank()) "" else " · $breakdown") +
                         (if (examples.isBlank()) "" else " · e.g. $examples"),
                 )
+                passCompleted = true
             } finally {
                 scope.cancel()
+                // ---- Hand the leftovers to the background sweep ----
+                //
+                // This is the pass's ONLY hand-off, and it is here — in the
+                // `finally` — rather than anywhere in the body above, because
+                // this block runs on EVERY exit: a normal return, a throw, and a
+                // cancellation. The pass body is skipped from the first
+                // suspension point after a cancel, and cancellation is the
+                // COMMON case in practice (the detail screen is re-created when
+                // the user backs out of the player, rotates, or re-opens the
+                // title, and its viewModelScope — which owns the prefetch pass —
+                // dies with it). Ran from the line above, the hand-off ran only
+                // for a pass that finished cleanly, so in the user's own log
+                // (four passes, no "done" line in any of them) it never ran at
+                // all, and the servers the tail still held never arrived: "it
+                // says 5 servers and the search finished, then on the second tap
+                // it shows all the servers". The sweep itself runs on the
+                // APPLICATION scope, so it outlives the screen that started it.
+                //
+                // What counts as a leftover: a repo the pass never asked, one
+                // that timed out or could not load, and one that MATCHED the
+                // title but had its extraction cut off when the pass ended (the
+                // warmest candidates of all — their plugin is already loaded).
+                // "No such title" is deliberately NOT swept: the repo's own
+                // search page really did come back without this title, and
+                // re-asking it is exactly the pointless work that made the pass
+                // crawl.
+                val tail = sweepableTail(crossTargets, crossFound, crossVerdict)
+                val servable = passFound.size
+                val ranOutOfTime = System.currentTimeMillis() >=
+                    maxOf(passDeadlineAt, passStartedAt + CROSS_EXT_BUDGET_MS)
+                // …and the repos this pass answered OUT OF MEMORY. They are not
+                // in the tail (each has a verdict, it just came from the
+                // session's own "no such title" record rather than from the
+                // repo), but they are the least trustworthy answers in the whole
+                // search: ONE blank page is enough to create that record, and it
+                // then hides the repo from every lookup for minutes. When the
+                // pass came back thin, they are re-asked for real — merged into
+                // the SAME sweep as the tail, because a second sweep for the same
+                // video would only join the first one and drop its own targets.
+                val fromMemory = cachedEmptyTargets(crossTargets, item.searchTitle)
+                val reAsk = if (fromMemory.isNotEmpty() && servable < CROSS_THIN_RESULT) {
+                    fromMemory
+                } else {
+                    emptyList()
+                }
+                val sweepTargets = (tail + reAsk).distinctBy { it.config.id }
+                // A sweep is worth starting when a real tail of work is left,
+                // when the pass came back with almost nothing (a short list
+                // across 250+ repos is exactly the case the user watched go from
+                // 5 servers to 43 on the next tap), when it was cut off by the
+                // clock, or when repos answered from memory and need asking for
+                // real. A pass that found a full list with only a couple of
+                // stragglers left is NOT swept: that would keep the "still
+                // searching" line up for no gain.
+                val worthSweeping = sweepTargets.isNotEmpty() &&
+                    (tail.size >= CROSS_SWEEP_MIN_TARGETS ||
+                        reAsk.isNotEmpty() ||
+                        servable < CROSS_THIN_RESULT ||
+                        ranOutOfTime)
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "cross \"${item.title}\" pass over: ${crossTargets.size} target(s), " +
+                        "${crossFound.size} with servers, $servable server(s) on the list, " +
+                        "${tail.size} repo(s) unfinished" +
+                        (if (reAsk.isEmpty()) "" else " + ${reAsk.size} answered from memory") +
+                        (if (passCompleted) "" else " (pass was CUT OFF early)") +
+                        " (time=$ranOutOfTime) → " +
+                        (if (worthSweeping) "sweeping them in the background" else "not sweeping"),
+                )
+                if (worthSweeping) {
+                    startSweepIfNeeded(
+                        item,
+                        episode,
+                        sweepTargets,
+                        passFound,
+                        onProgress,
+                        ignoreEmptyRecord = reAsk.isNotEmpty(),
+                    )
+                }
                 // Teardown that must happen even when the pass above threw or
                 // was cancelled before its own reporting block ran: the chooser
                 // reads [crossRunning] for its "N still searching" line, and a
@@ -1976,48 +2140,17 @@ class ContentRepository(private val manager: ProviderManager) {
                     streamsRemembered.entries.removeAll { it.value.at < cutoff }
                 }
             }
-            // The repos this pass answered OUT OF MEMORY are asked for real
-            // whenever it did not bring back a real list — nothing at all, OR
-            // just a couple of servers.
-            //
-            // Those are the repos answered out of [crossEmpty], the session's
-            // own "no such title" record — by far the least trustworthy answer
-            // in the whole search, because ONE blank page (a site hiccup, a bot
-            // wall that said nothing about itself) is enough to create it, and
-            // it then hides that repo from every lookup for minutes. That is the
-            // "sometimes it finds nothing at all, and the next try finds plenty"
-            // report: the difference between the two attempts was which repos
-            // were written off from memory rather than asked.
-            //
-            // Empty was the first half of that report and is handled above; the
-            // OTHER half is the one the user kept hitting — "it says 2 servers
-            // and the search is finished, then on the fourth tap it finds 36".
-            // A pass that answers from memory is fast and SMALL: the memory
-            // answers land instantly, so the pass's own budget never gets spent
-            // and it "finishes" in seconds with whatever the two or three repos
-            // that were really asked happened to return. Anything below
-            // [CROSS_THIN_RESULT] that leaned on that record is therefore
-            // finished in the background too, and every server the sweep finds
-            // streams into the same list the player is already showing.
-            val fromCache = cachedEmptyTargets(crossTargets, item.searchTitle)
-            if (fromCache.isNotEmpty() &&
-                (finalResult.isEmpty() || finalResult.size < CROSS_THIN_RESULT)
-            ) {
-                com.hikari.app.data.Logs.log(
-                    "Search",
-                    "\"${item.title}\" came back with ${finalResult.size} server(s) and " +
-                        "${fromCache.size} repo(s) answered from the session's \"no such " +
-                        "title\" record — re-asking them for real in the background",
-                )
-                startSweepIfNeeded(
-                    item,
-                    episode,
-                    fromCache,
-                    finalResult,
-                    onProgress,
-                    ignoreEmptyRecord = true,
-                )
-            }
+            // The repos this pass answered OUT OF MEMORY ([crossEmpty], the
+            // session's own "no such title" record) are re-asked for real
+            // whenever the pass came back thin, and the repos it never finished
+            // with are handed over too — both in ONE place now: the hand-off in
+            // the pass's `finally` above (see the long note there). The memory
+            // answers are the least trustworthy ones in the whole search (ONE
+            // blank page is enough to create the record, and it then hides that
+            // repo from every lookup for minutes — "sometimes it finds nothing at
+            // all, and the next try finds plenty"), so they are merged into the
+            // same sweep as the tail; a second sweep for the same video would
+            // only join the first one and silently drop its own targets.
             com.hikari.app.data.Logs.log(
                 "Search",
                 "done \"${item.title}\" → ${finalResult.size} servers " +
@@ -2088,6 +2221,20 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
                 return
             }
+            // A ceiling on how many sweeps run at once — see
+            // [MAX_PARALLEL_SWEEPS]. Refusing to start one is honest: the list
+            // the pass already produced is what the user has, and the alternative
+            // is a phone searching hundreds of extensions for several titles at
+            // once.
+            val live = sweeps.values.count { it.job?.isActive == true }
+            if (live >= MAX_PARALLEL_SWEEPS) {
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "sweep \"${item.title}\" not started — $live sweep(s) already running " +
+                        "(${targets.size} repo(s) left unfinished)",
+                )
+                return
+            }
             val sweep = Sweep()
             sweep.ignoreEmptyRecord = ignoreEmptyRecord
             sweep.sinks += sink
@@ -2147,6 +2294,17 @@ class ContentRepository(private val manager: ProviderManager) {
         val key = streamsRememberedKey(item, episode)
         val acc = LinkedHashMap<String, StreamSource>()
         snapshot.forEach { acc[it.infoHash ?: it.url] = it }
+        // …plus anything this video's servers were already known to be, so a
+        // sweep that started from a cut-off pass (whose own snapshot is empty
+        // because it never reached the line that records one) publishes the
+        // UNION rather than a shorter list. [publish] writes that list back into
+        // [streamsRemembered], and a repeat lookup merges it in — so publishing a
+        // regression here is exactly how a server that played a minute ago would
+        // disappear from the next attempt.
+        streamsRemembered[key]
+            ?.takeIf { System.currentTimeMillis() - it.at < REMEMBERED_STREAMS_TTL_MS }
+            ?.list
+            ?.forEach { acc.putIfAbsent(it.infoHash ?: it.url, it) }
         sweep.current = acc.values.toList()
         var lastEmitted = acc.size
         val budget = SWEEP_BUDGET_MS
@@ -2285,6 +2443,28 @@ class ContentRepository(private val manager: ProviderManager) {
         }
     }
 
+    /** The repos a pass never really finished with: never asked, timed out, could
+     *  not load, or MATCHED the title but had its links cut off when the pass
+     *  ended. Exactly the set a background sweep is allowed to retry
+     *  ([SWEEP_RETRY_BUCKETS] plus the matched-but-no-links bucket) — see the
+     *  hand-off in the pass's `finally`.
+     *
+     *  "No such title" is deliberately absent: the repo's own search page really
+     *  did come back without this title, so re-asking it is the pointless work
+     *  that made the pass crawl. A repo with NO verdict at all counts as
+     *  unfinished, because it is one the pass never got an answer from. */
+    private fun sweepableTail(
+        targets: List<ContentProvider>,
+        found: Map<String, String>,
+        verdicts: Map<String, String>,
+    ): List<ContentProvider> = targets.filter { p ->
+        val id = p.config.id
+        if (isCfSkipped(id) || found.containsKey(id)) return@filter false
+        val verdict = verdicts[id] ?: return@filter true
+        val bucket = crossReasonBucket(verdict)
+        bucket in SWEEP_RETRY_BUCKETS || bucket == SWEEP_MATCHED_NO_LINKS_BUCKET
+    }
+
     /** The other installed extensions worth asking by title: .cs3 / .hiki /
      *  universal providers all expose search + load() + loadLinks(), and a
      *  Stremio addon does too (search → meta → stream) — so a title opened from
@@ -2300,6 +2480,17 @@ class ContentRepository(private val manager: ProviderManager) {
     private fun crossExtensionTargets(item: MediaItem, origin: ContentProvider?): List<ContentProvider> {
         val originType = origin?.config?.type
         val originIsStremio = originType == ProviderType.STREMIO
+        // Why each installed extension did or did not make this pass's target
+        // list, counted by reason and published to [crossFilterReasons] so the
+        // pass's own log line can print it. Without this, a target list that
+        // shrinks between two taps of the same title ("245 targets, then 137,
+        // and the second pass found a fraction of the servers") can only be
+        // guessed at from a shared log — the numbers say WHICH filter dropped
+        // those repos.
+        val skipped = LinkedHashMap<String, Int>()
+        fun noteSkipped(reason: String) {
+            skipped[reason] = (skipped[reason] ?: 0) + 1
+        }
         // Trust rank: the origin's OWN engine first (other repos of the same
         // plugin family are the ones the user expects right after the origin —
         // the CloudStream repos next to the CloudStream title), then native
@@ -2316,20 +2507,33 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         val families = manager.providers.value
             .filter { p ->
-                if (!p.config.enabled || p.config.id == item.providerId) return@filter false
+                if (!p.config.enabled) {
+                    noteSkipped("disabled")
+                    return@filter false
+                }
+                if (p.config.id == item.providerId) {
+                    noteSkipped("origin")
+                    return@filter false
+                }
                 // An extension that answered with a Cloudflare verification wall
                 // is dropped BEFORE anything is queued for it — no search slot,
                 // no cold plugin load, no verdict, nothing in the progress line.
                 // Skipping it here (rather than searching it and then reporting
                 // the block) is the point: it is not worth searching, and its
                 // block is not something to read in the server list.
-                if (isCfSkipped(p.config.id)) return@filter false
+                if (isCfSkipped(p.config.id)) {
+                    noteSkipped("cf-skip")
+                    return@filter false
+                }
                 // An extension whose plugin STOPPED COMING BACK earlier in this
                 // session is dropped the same way (see [crossHung]): asking it
                 // again only spends a slot and a cold load on a call that will
                 // never answer. Reported once, honestly, rather than left to
                 // look like a repo that has no such title.
-                if (isHung(p.config.id)) return@filter false
+                if (isHung(p.config.id)) {
+                    noteSkipped("hung")
+                    return@filter false
+                }
                 // SkyStream extensions declare their site in their manifest, so
                 // a host already known to answer with a challenge can be ruled
                 // out BEFORE the extension is queued — its search would go to
@@ -2351,6 +2555,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)
                     ) {
                         crossCfSkip[p.config.id] = System.currentTimeMillis()
+                        noteSkipped("sky-host-blocked")
                         return@filter false
                     }
                 }
@@ -2369,9 +2574,20 @@ class ContentRepository(private val manager: ProviderManager) {
                     // source can search by title), so they are asked exactly
                     // like the other site-scraper families.
                     ProviderType.ANIYOMI -> true
-                    ProviderType.STREMIO -> !originIsStremio
-                    ProviderType.NUVIO -> false
-                    else -> false
+                    ProviderType.STREMIO -> if (originIsStremio) {
+                        noteSkipped("family(Stremio)")
+                        false
+                    } else {
+                        true
+                    }
+                    ProviderType.NUVIO -> {
+                        noteSkipped("family(Nuvio)")
+                        false
+                    }
+                    else -> {
+                        noteSkipped("family(${p.config.type.groupLabel})")
+                        false
+                    }
                 }
             }
             .groupBy { it.config.type }
@@ -2422,6 +2638,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // writing the same diagnostic map — so one of them read the other's note
         // back and reported the repo as "couldn't be searched" when it had in
         // fact answered normally.
+        crossFilterReasons = skipped
         return out.distinctBy { it.config.id }
     }
 

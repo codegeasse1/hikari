@@ -48,14 +48,21 @@ class CollectionsRepository(private val manager: ProviderManager) {
     /** One row per source of [folder], in the folder's own source order. */
     fun folderRows(collection: Collection, folder: CollectionFolder): Flow<List<CatalogRow>> =
         channelFlow flow@{
-            if (folder.sources.isEmpty()) {
+            // Deduped by key: two sources with the same key ARE the same
+            // catalog, and two rows with the same key crash any lazy list that
+            // draws them (`Key "prov|cs3|…" was already used`). AppStore drops
+            // the copies when it reads a collection, but a collection built in
+            // memory (the editor, a just-imported list) can still carry a pair,
+            // so the row builder refuses them too.
+            val sources = folder.sources.distinctBy { it.key }
+            if (sources.isEmpty()) {
                 send(emptyList())
                 return@flow
             }
             val placed = HashMap<Int, CatalogRow>()
             val work = com.hikari.app.work.BackgroundWork.begin("Loading " + folder.name)
             try {
-                folder.sources.forEachIndexed { i, source ->
+                sources.forEachIndexed { i, source ->
                     launch {
                         val row = withContext(Dispatchers.IO) {
                             gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
@@ -63,7 +70,7 @@ class CollectionsRepository(private val manager: ProviderManager) {
                         synchronized(placed) {
                             if (row != null && row.items.isNotEmpty()) placed[i] = row
                         }
-                        publish(this@flow, placed, folder.sources.size)
+                        publish(this@flow, placed, sources.size)
                     }
                 }
             } finally {
@@ -123,7 +130,13 @@ class CollectionsRepository(private val manager: ProviderManager) {
      */
     fun allRows(collection: Collection): Flow<List<CatalogRow>> = channelFlow flow@{
         val slots = ArrayList<Pair<CollectionFolder, CatalogSource>>()
-        collection.folders.forEach { f -> f.sources.forEach { s -> slots += f to s } }
+        // One slot per DISTINCT source of each folder (see [folderRows]): the
+        // "Show all" page draws one row per slot, and two slots with the same
+        // catalog key are two rows with the same key — a lazy list crash, and a
+        // duplicate shelf for the user.
+        collection.folders.forEach { f ->
+            f.sources.distinctBy { it.key }.forEach { s -> slots += f to s }
+        }
         if (slots.isEmpty()) {
             send(emptyList())
             return@flow

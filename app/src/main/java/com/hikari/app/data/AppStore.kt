@@ -1746,7 +1746,18 @@ class AppStore(private val ctx: Context) {
                             CollectionFolder(
                                 id = fid,
                                 name = fname,
-                                sources = sources,
+                                // Deduped on the way IN, not just on the way out:
+                                // a folder that already holds the same catalog
+                                // twice (written by an older build, or restored
+                                // from a backup) used to reach a lazy list with
+                                // two identical keys and crash the editor and the
+                                // collection view with
+                                //   IllegalArgumentException: Key "prov|cs3|…"
+                                //   was already used.
+                                // Two entries with the same key ARE the same
+                                // catalog (same extension, same catalog id), so
+                                // dropping the copy loses nothing.
+                                sources = sources.distinctBy { it.key },
                                 coverKind = CoverKinds.normalize(fo.optString("coverKind")),
                                 coverValue = fo.optString("coverValue"),
                                 tileShape = TileShapes.normalize(fo.optString("tileShape")),

@@ -639,6 +639,21 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 onProgress?.invoke(recent)
             }
         }
+        // Every provider response is mirrored into the live feed so the UI can
+        // start playback with the first server found, regardless of which caller
+        // kicked off the search (prefetch or Play tap) — and it is also what a
+        // BACKGROUND SWEEP's late finds travel through to a player that is
+        // already open, so it is built here, before the two join paths below,
+        // rather than inside the extraction.
+        val feed: (suspend (List<StreamSource>) -> Unit) = { partial ->
+            _liveStreams.value = partial
+            onProgress?.invoke(partial)
+            // …and straight to the player when the play flow has a session up
+            // (see [liveSink]): this is the only route a BACKGROUND SWEEP's late
+            // finds have to a player that is already playing, because the
+            // screen's own collector is stopped as soon as its pass ends.
+            liveSink?.invoke(partial)
+        }
         // Someone (another instance of this screen for the same title, or a
         // prefetch that is still running) already owns this extraction: join it
         // instead of running the providers a second time. BOUNDED: an owner that
@@ -646,6 +661,38 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // otherwise park every later lookup of this title on `await()` for good,
         // which is the difference between "one slow search" and "this title
         // never searches again".
+        //
+        // A BACKGROUND SWEEP for this video counts as an owner too. It is
+        // already asking every repo the last pass did not finish, on the
+        // application scope, with the plugins warm — and every server it finds
+        // is streamed to the player through the live session. Starting a whole
+        // new pass on top of it is exactly the reported "it says 5 servers and
+        // search finished, then on the second tap it searches everything again
+        // and shows all of them": the second tap re-ran 250 extensions from
+        // scratch while the first tap's own continuation was still running. So
+        // when there is already something to play (the ledger the sweep keeps
+        // up to date, or the live feed), the caller gets it marked "not a
+        // verdict" and the sweep keeps adding servers to it.
+        //
+        // Joining also means REGISTERING [feed] as a sink of that sweep — the
+        // sweep's other sinks belong to the pass that started it, and that pass's
+        // live session is not this caller's. Without this the joined list would
+        // be a snapshot that never grows, and a tap made while a sweep was
+        // running would look like a search that stopped the moment it returned.
+        if (!force) {
+            val joined = _liveStreams.value.takeIf { it.isNotEmpty() }
+                ?: repo.recentlyFoundStreams(item, ep)
+            if (ContentRepository.sweepBusyFor(item, ep)) {
+                if (repo.attachToRunningSweep(item, ep, feed)) {
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "join \"${item.title}\" — its background sweep is still working " +
+                            "(${joined.size} server(s) so far, more on the way)",
+                    )
+                    return StreamLookup(joined, complete = false)
+                }
+            }
+        }
         StreamCache.joined(key)?.let { pending ->
             return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() }
                 ?: StreamLookup(emptyList(), complete = false)
@@ -658,19 +705,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ?: StreamLookup(emptyList(), complete = false)
         }
         try {
-            // Every provider response is mirrored into the live feed so the UI
-            // can start playback with the first server found, regardless of
-            // which caller kicked off the search (prefetch or Play tap).
-            val feed: (suspend (List<StreamSource>) -> Unit) = { partial ->
-                _liveStreams.value = partial
-                onProgress?.invoke(partial)
-                // …and straight to the player when the play flow has a session
-                // up (see [liveSink]): this is the only route a BACKGROUND
-                // SWEEP's late finds have to a player that is already playing,
-                // because the screen's own collector is stopped as soon as its
-                // pass ends.
-                liveSink?.invoke(partial)
-            }
             val lookup = withContext(Dispatchers.IO) {
                 repo.streamsForOutcome(item, ep, feed)
             }
@@ -881,6 +915,22 @@ private const val SEARCH_RETRY_PAUSE_MS = 1_500L
  *  the watcher never gives up on a sweep that is still legitimately working. */
 private const val SWEEP_WATCH_CAP_MS = 11 * 60 * 1000L
 
+/** How long the list of servers has to stay UNCHANGED before a lookup that never
+ *  reached a verdict is declared over.
+ *
+ *  A lookup can come back with servers but no verdict — it was cut short, or it
+ *  joined a pass that is still running (the detail screen's own prefetch pass,
+ *  another screen's lookup) and gave up waiting for it. That other pass is still
+ *  pushing its servers into this very session, which is why the count on the
+ *  cover used to say "5 servers — search finished" and then be 43 a minute
+ *  later. So instead of announcing a verdict the flow does not have, the cover
+ *  keeps saying the search is still going and simply watches the list: n servers
+ *  arriving keeps it alive, and this much silence ends it. Long enough that a
+ *  slow extension's answer is never mistaken for the end (several minutes of
+ *  nothing IS the end, at that point), and short enough that a genuinely dead
+ *  tail does not leave the player waiting out its own safety timeout. */
+private const val STREAMS_QUIET_MS = 12_000L
+
 /** How long the player holds playback at the start of a fresh search, waiting
  *  for a server from the extension the title was opened from, before it takes
  *  whichever other extension answered first. Keep this SHORT: the promise is
@@ -907,6 +957,42 @@ private const val STREAM_CACHE_TTL_MS = 300_000L
  *  already open on its title card for the whole wait, so the tap still feels
  *  instant — this only decides which episode the source search runs for. */
 private const val EPISODE_WAIT_MS = 25_000L
+
+/**
+ * Titles an automatic resume has ALREADY been started for, and when.
+ *
+ * The detail page auto-plays when it is opened FROM WATCH HISTORY with a saved
+ * position (see the resume effect), which is what makes "Continue watching" feel
+ * like it works. The guard that makes it fire once — `resumeHandled` — lives in
+ * the composition, so it only ever covered ONE instance of the screen: the page
+ * is re-created constantly in practice (back out of the player, rotate, the
+ * process being rebuilt, a fresh navigation from the same History row seconds
+ * later), and every one of those creations saw `resumeHandled = false` again,
+ * with the episode id and position restored from the same navigation arguments.
+ * The result was the reported "I press back and it starts loading the screen all
+ * over again with the server search": the player was re-opened, from scratch —
+ * and on a title where that happened twice, two player instances deep.
+ *
+ * So the claim is kept out here, process-wide, and is HONOURED for
+ * [TTL_MS]: within that window a re-created page shows the title card and its
+ * Play/Resume button instead of starting a search by itself — which is what a
+ * user who has just backed out of the player wants. A deliberate tap still
+ * plays, of course; this only suppresses the AUTOMATIC resume.
+ */
+private object AutoResumeGuard {
+    /** Long enough to cover a burst of re-creations, short enough that coming
+     *  back to the title later still resumes it. */
+    private const val TTL_MS = 5 * 60 * 1000L
+
+    private val at = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** True the FIRST time this video asks; false while a recent claim stands. */
+    fun claim(key: String): Boolean {
+        val now = System.currentTimeMillis()
+        at.entries.removeAll { now - it.value >= TTL_MS }
+        return at.putIfAbsent(key, now) == null
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1709,6 +1795,23 @@ fun DetailScreen(
                             "Searching the remaining extensions in the background…"
                         },
                     )
+                } else if (foundCount > 0 && !lookupComplete) {
+                    // Servers are on the list, but this lookup never reached a
+                    // VERDICT: it was cut short, or it joined a pass that is
+                    // still running and came back before that pass finished.
+                    // Saying "search finished" here is the lie the user kept
+                    // reporting — "it says 5 servers and the search is finished,
+                    // then on the second tap it shows all the servers" — because
+                    // the pass it was waiting on was still pushing its servers
+                    // into this very session while the cover said the search was
+                    // over. The count is real, so it is shown; the verdict is
+                    // not, so it is not claimed. The watcher below says when the
+                    // list has genuinely stopped growing.
+                    StreamsLive.setStatus(
+                        sid,
+                        "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
+                            " — still searching…",
+                    )
                 } else if (foundCount > 0) {
                     // Servers WERE found and nothing more is coming — say that
                     // the search is over, so the cover/hint never keeps reading
@@ -1757,6 +1860,58 @@ fun DetailScreen(
                             vm.backgroundSweepBusy(searchedEpisode)
                         ) {
                             delay(1_000)
+                        }
+                        val total = StreamsLive.flow(sid).value.size
+                        if (total > 0) {
+                            StreamsLive.setStatus(
+                                sid,
+                                "Found $total server" + (if (total == 1) "" else "s") +
+                                    " — search finished.",
+                            )
+                        } else {
+                            StreamsLive.setStatus(sid, noResultNote())
+                        }
+                        StreamsLive.markDone(sid)
+                    }
+                } else if (foundCount > 0 && !lookupComplete) {
+                    // Servers are on the list and the lookup never reached a
+                    // verdict — the same "still searching…" case as the status
+                    // above. Declaring the search over here (as `foundCount > 0`
+                    // used to do) is what let a live list be described as a
+                    // finished one, so the search is followed to its real end
+                    // instead: every server that arrives keeps it alive, and it
+                    // ends after [STREAMS_QUIET_MS] with nothing new — or when
+                    // the sweep watch cap is reached, for a list that keeps
+                    // trickling servers for hours. The count is re-stated on
+                    // every change, so the cover is a running total the whole
+                    // time and never has to "jump" from 5 to 43.
+                    app.appScope.launch {
+                        var lastSeen = StreamsLive.flow(sid).value.size
+                        var quietSince = System.currentTimeMillis()
+                        val watchDeadline = System.currentTimeMillis() + SWEEP_WATCH_CAP_MS
+                        while (System.currentTimeMillis() < watchDeadline) {
+                            delay(1_500)
+                            val nowCount = StreamsLive.flow(sid).value.size
+                            if (nowCount != lastSeen) {
+                                lastSeen = nowCount
+                                quietSince = System.currentTimeMillis()
+                                StreamsLive.setStatus(
+                                    sid,
+                                    "Found $nowCount server" +
+                                        (if (nowCount == 1) "" else "s") +
+                                        " — still searching…",
+                                )
+                                continue
+                            }
+                            // A sweep that started while this list was already
+                            // growing is doing the same work on the same repos:
+                            // while one is alive the search is not over, however
+                            // quiet the list looks this second.
+                            if (vm.backgroundSweepBusy(searchedEpisode)) {
+                                quietSince = System.currentTimeMillis()
+                                continue
+                            }
+                            if (System.currentTimeMillis() - quietSince >= STREAMS_QUIET_MS) break
                         }
                         val total = StreamsLive.flow(sid).value.size
                         if (total > 0) {
@@ -1879,7 +2034,16 @@ fun DetailScreen(
 
     // Arriving from watch history: once metadata/episodes are loaded, offer to
     // resume the target episode (or the movie) instead of silently jumping in.
-    var resumeHandled by remember { mutableStateOf(false) }
+    //
+    // `resumeHandled` is [rememberSaveable] and the claim is ALSO held
+    // process-wide for a few minutes ([AutoResumeGuard]), so a page that is
+    // re-created — back out of the player, rotate, rebuild, re-open the same
+    // History row — shows its own Play/Resume button instead of starting the
+    // player and a fresh server search again by itself. That re-play is what the
+    // user was watching happen ("clicking back starts loading the screen all
+    // over again with the server search"), and it is also how two and three
+    // player instances ended up stacked on the same episode.
+    var resumeHandled by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(meta, episodes, episodeId, startPositionMs, historyForTitle) {
         if (resumeHandled) return@LaunchedEffect
         if (episodeId.isBlank() && startPositionMs <= 0L) return@LaunchedEffect
@@ -1888,9 +2052,11 @@ fun DetailScreen(
             val eps = episodes ?: return@LaunchedEffect
             val ep = eps.firstOrNull { it.id == episodeId } ?: return@LaunchedEffect
             resumeHandled = true
+            if (!AutoResumeGuard.claim("$providerId|$mediaId|${ep.id}")) return@LaunchedEffect
             tryPlay(ep)
         } else if (episodes.isNullOrEmpty()) {
             resumeHandled = true
+            if (!AutoResumeGuard.claim("$providerId|$mediaId|movie")) return@LaunchedEffect
             tryPlay(null)
         }
     }
