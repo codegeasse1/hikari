@@ -1315,10 +1315,11 @@ fun DetailScreen(
                 // grouped by engine, instead of starting one by itself.
                 putExtra("askServer", askServerOnPlay)
                 // "Your own extension goes first": the player holds the first
-                // start for a moment so the extension this title was opened
-                // from gets a chance to answer. 0 when that extension is
-                // disabled or uninstalled — it is not in [streamTargets], so
-                // there would be nothing to wait for.
+                // start until the extension this title was opened from has
+                // answered (see ORIGIN_PLAY_GRACE_MS for the full reasoning), so
+                // the link the user actually asked for is the link that plays.
+                // 0 when that extension is disabled or uninstalled — it is not
+                // in [streamTargets], so there would be nothing to wait for.
                 putExtra(
                     "originGraceMs",
                     // [livePid] is the provider this page actually resolved to —

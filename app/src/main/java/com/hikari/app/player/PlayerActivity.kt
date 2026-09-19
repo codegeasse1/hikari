@@ -1392,8 +1392,19 @@ class PlayerActivity : ComponentActivity() {
                 // the whole backstop, and a .hiki plugin that needs twenty
                 // seconds to answer must not be cut off at two.
                 var originSettled = false
+                // Assigned once [tryStart] exists (below). The settle signal is
+                // not just a flag that the hold's condition reads — it has to
+                // RELEASE a start that is already pending. The origin answering
+                // "nothing for this episode" produces no servers, so it wakes no
+                // feed batch and nothing else would call [tryStart] until the
+                // grace window's own alarm fired: the user would wait out the
+                // whole backstop for an answer that had already come.
+                var onOriginSettled: (() -> Unit)? = null
                 if (!liveId.isNullOrBlank()) launch {
-                    StreamsLive.originSettledFlow(liveId).collect { originSettled = it }
+                    StreamsLive.originSettledFlow(liveId).collect { settled ->
+                        originSettled = settled
+                        if (settled) onOriginSettled?.invoke()
+                    }
                 }
                 /** True once there is no reason left to hold for the origin. */
                 val originReady = {
@@ -1440,6 +1451,13 @@ class PlayerActivity : ComponentActivity() {
                         startOrAsk()
                     }
                 }
+                // [tryStart] exists now, so the settle signal can release a
+                // pending start the moment it arrives (and again here, in case
+                // the origin had already answered before this block ran — a
+                // MutableStateFlow replays, and the collector above fires
+                // eagerly, before the hook was assigned).
+                onOriginSettled = { if (pendingStart) launch { tryStart() } }
+                if (originSettled) onOriginSettled?.invoke()
                 // The hold's own alarm (see the note above): if the origin never
                 // answers, this fires at the deadline and starts the first
                 // server from anywhere — no other call to [tryStart] is coming
@@ -1456,11 +1474,16 @@ class PlayerActivity : ComponentActivity() {
                     // reason unless the log explains the origin never
                     // answered (which is what happened in the "it played a
                     // XFree/AFree source instead of the MRDS one" report).
-                    if (!originFound() && !originSettled) {
+                    if (!originFound()) {
+                        val why = if (originSettled) {
+                            "answered with nothing for this episode"
+                        } else {
+                            "never answered in the ${originGraceMs}ms grace window"
+                        }
                         com.hikari.app.data.Logs.log(
                             "Player",
-                            "origin \"$originProviderName\" ($originProviderId) never answered in the " +
-                                "${originGraceMs}ms grace window — starting on the first server from anywhere",
+                            "origin \"$originProviderName\" ($originProviderId) $why — " +
+                                "starting on the first server from anywhere",
                         )
                     }
                     tryStart()
