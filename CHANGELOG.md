@@ -1,12 +1,52 @@
 ## 0.9.8
 
-Playback is silent the moment you leave the player, and no extension can open a Cloudflare/Turnstile verification page over the app on its own.
+Everything added and fixed since the last version released here (0.6.6). Pick the APK for your phone: **hikari-arm64-v8a.apk** (64-bit, every phone sold today), **hikari-armeabi-v7a.apk** (older 32-bit phones) or **hikari.apk** (universal — works on any device).
+
+### Added
+
+- **IPTV playlists.** Add an M3U/M3U8 link (an Xtream panel's get.php?...&type=m3u_plus link works) or pick a playlist file from storage. Channels appear on Home (an "All channels" row plus the playlist's own groups, biggest first), in search, in the player's server list under an **IPTV** heading, and can be marked as exception extensions. The playlist is read before it is saved, so you are told how many channels it holds, and Refresh re-reads one on demand.
+- **Stremio addons.** Add any addon manifest URL. Catalog addons get Home rows and a name search; stream-only addons browse TMDB, so their servers appear for titles opened from any extension.
+- **Aniyomi, Nuvio and SkyStream engines**, alongside CloudStream plugins and Hikari extensions — all installed and managed from the Extensions screen.
+- **Poster styling** (Settings → App Layout → Poster styling): dynamic blur halo, corner rounding, titles, score badges and glass trim, with effects — Glow, 3D tilt, Sheen, Aura ring, Spotlight and Gallery frame. Several effects can be on at once, and the aura ring has its own colour.
+- **Loading screen options**: four styles (poster card, cinematic, minimal, spotlight), the same effect set (sheen, aura ring, gallery frame, accent glow), and a dark backdrop when a title has no artwork.
+- **Taskbar & navigation styles**: Floating animation, Floating, Always compact, Classic — plus the option to turn off full-screen app mode.
+- **In-app UI scale** in 1% steps, and a choice to ignore or follow the phone's font and display size settings.
+- **Other layout choices**: featured banner styles, detail-page header styles, ratings visibility, Continue Watching, and the taskbar's own options.
+- **Player options**: player skins, video-enhance presets, subtitle styling (font, size, colour, background), playback speed, 10-second seek steps, and a resume prompt.
+- **Server search options** (Settings → Playback & Servers): "Search all installed extensions", play as soon as the first server is found, and **exception extensions** — whole engines (CloudStream, Hikari, Aniyomi, Nuvio, SkyStream, Stremio) or single extensions that are asked for every title.
+- **Themes and language**: dark/light/system, eleven accent colours, a font of your own, app icons, and an interface translated into 20+ languages.
+- **Downloads, Continue Watching, history, collections and folders** (with custom covers, including animated GIFs), a personal catalog, and **backup & restore** of your extensions, repos and settings.
+- **In-app updater** that downloads the build for your phone's processor, and a **Stop** button for Install all / Update all.
 
 ### Fixed
 
-- **The video's sound kept playing for a second or two after Back.** Leaving the player called `finish()` and nothing else — the ExoPlayer was only released in `onDestroy`, which lands after the back animation and after the detail screen has resumed, so the audio kept coming out of the speaker over the screen behind it. The player is now silenced on the way out: the Back button pauses and mutes before it finishes, and `onPause` does the same for every other way the activity can end (the system back gesture, a closed PiP window, the failure/downgrade paths that call `finish()`). Backgrounding the app with the Home button is unchanged — PiP and background audio still work.
+- **Episodes appear immediately** instead of after several seconds, and a series is no longer shown as "No episode list available" while its list is still on the way.
+- **Ratings and the Related/Similar rows load together with the episode list** instead of after it, and titles whose names carry episode or release tags ("Episode 172", "S01E12", "English Subtitles", "1080p") find their score again.
+- **The resume prompt now arrives with the first frame**, not several seconds into the video.
+- **A second press of Play is no longer needed**: a source that timed out (Nuvio, Hikari or CloudStream) is asked again while the film plays, and anything it finds joins the server list.
+- **No more "searching…" that never ends**: a stalled extension, a dead repo and an unreachable addon are each reported with a retry, a repo behind a Cloudflare check is skipped on purpose and no longer counted, and a search whose progress has stopped is reported as finished.
+- **Only the right title and the right episode**: a repo that matches one word of a title, or names a different episode number, is rejected, so another video can no longer play instead of the one you opened.
+- **The extension a title was opened from plays it** (first in the server list), and a title you open inside one of your exception extensions plays from that extension alone.
+- **Uninstall removes exactly the extension you tapped**, same-named plugins from other repos no longer overwrite or uninstall each other, and installed extensions no longer disappear from the list.
+- **Repo funding and donation cards are blocked**, so a page or a loading episode is never covered by a "Help keep this alive" overlay or a donation popup.
+- **No extension can open a Cloudflare/Turnstile verification page by itself** — such a popup is closed the moment it appears. The app's own verify button remains the only way a challenge page opens.
+- **Playback is silent the moment you leave the player** (no sound for a second or two after Back) — while PiP and background audio still work.
+- **Other apps' audio pauses** when playback starts, instead of a trailer, a browser tab or music playing underneath the video.
+- **Closing the app really closes it**: no notification saying it is still searching, and no splash screen that will not go away.
+- **The title, description and episode names stay in the language you chose.**
+- **The coloured glow around posters shows on every Android version**, and the 3D tilt looks 3D.
+- **Settings always save**, and the settings screen can no longer hang the app until it is restarted.
+- **No crash on launch**, no more "0 episodes" after backing out of the player, and no crash opening a personal catalog that lists the same entry twice.
+- **A server name is no longer cut in half in the player.**
 
-- **An extension's own \"Security Check\" page opened by itself over a loading episode.** Some extensions don't ask, and don't have a switch to ask with: Anichi (Phisher repo, `Anichi.cs3` — checked by reading its dex strings) ships `AnichiTurnstileDialog`, a dialog it shows on its own in the middle of resolving links, headed **\"Anichi Security Check\"** with the line *\"Solve the security check if prompted. Dialog closes automatically once the episode loads.\"*, plus an injected `window.AnichiApiBridge` that reports the challenge it finds in the page. Its funding dialog (`DonationDialogFragment`) rides the same path. Forcing extension preference keys off could never stop these — the dialog *is* the flow, with no key to force. Hikari now closes such a popup the moment it reaches one of its own screens: a fragment from a plugin's class loader whose class name or show tag names a verification/Turnstile/Cloudflare/captcha dance (or a donation/funding screen) is dismissed before it can draw, and the reason is written to the app log. A plugin's own settings sheet never matches, so those are untouched. Settings → Sources & Extensions → \"Open their verification pages\" remains the way to let an extension through when a source only works via its own bypass screen.
+### Changed
+
+- **Every setting now lives in the right folder**: Playback & Servers (controls, video enhancement, loading screen, server search), App Layout (UI scale, posters, ratings, taskbar, full screen), Appearance & Theme, Sources & Extensions (installed extensions, userscripts, extensions' verification pages), Privacy & Browsing, and Player.
+- **A new look out of the box**: coloured halo and gallery frame on posters, the Showcase featured banner, the poster-beside-the-art detail header, the Neon player skin and the poster-card loading screen.
+- **Smaller downloads**: emulator-only builds, the bundled yt-dlp engine removed, unused code and resources stripped from the release build, native libraries stored compressed — and one APK per processor type plus a universal one, with the updater fetching the right one for your phone.
+- **Smoother scrolling, tapping and settings**: per-poster blur layers removed, poster styling read once per row, Home and Search lists built once per change, and settings reads no longer repeated per poster.
+- **Faster, more predictable searches**: extensions are asked in waves instead of all at once, servers start resolving while the search is still running, a frozen extension is retried after two minutes instead of being dropped for the session, and the Sources line counts every engine, Nuvio included.
+- **Repos and extensions**: duplicate repos are merged instead of stacked, extensions published as GitHub release files get their own identity, and a mistyped short name is answered with the name you meant.
 
 ## 0.9.7
 
