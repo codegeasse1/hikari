@@ -12,6 +12,11 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
    Stremio origin) the other Stremio addons, plus Nuvio providers when the item
    resolves to a TMDB id. These search by the provider's own id and their servers
    stream into the list as they land.
+   With **Server search: "Only this extension"** (Settings → Playback & Servers,
+   `SearchScope.allExtensions == false`) it is the origin ALONE: no sibling
+   addons, no nuvio engines, no cross pass, no sweep, and no episode list
+   borrowed from another site. The switch is read once at the top of
+   `streamsForInner` into a local, so one lookup can never be half-scoped.
 2. **Same-engine family** — the other repos of the origin's own engine, queued
    first in the cross pass.
 3. **Cross pass** — every other installed extension asked *by title*:
@@ -99,6 +104,15 @@ So anything that WAITS on such a call can be wedged indefinitely. Consequences:
   widening only while answers come back. Firing ~96 cold plugin runtimes at the
   same instant is what wedges them on a phone. Waves only stagger the start —
   every target is still asked, in trust order (`crossExtensionTargets`).
+- **The origin's hold is a HEAD START, not a wait.** With "play as soon as the
+  first server is found" (the default), `originReady` in PlayerActivity stops
+  holding the moment `ORIGIN_HEAD_START_MS` (3 s) has passed since the FIRST
+  server arrived — `originHeadStartMs` in the launch intent, and
+  `firstServersAt` in the live collector. Only "wait for more servers first"
+  uses the full `ORIGIN_PLAY_GRACE_MS` (45 s) window. The report: *"it found
+  70-80 servers but it still searching on loading screen instead of playing"* —
+  a full server list was held behind one repo's answer. The origin's own
+  servers still arrive and are still placed at the top of the list.
 
 ### 3. Every state on screen must be able to resolve
 

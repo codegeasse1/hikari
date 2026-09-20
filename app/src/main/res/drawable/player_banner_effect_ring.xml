@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Loading cover EFFECT "Aura ring": a ring of accent light behind the title
+     that breathes (PlayerActivity animates its alpha and scale). Drawn UNDER
+     the title block, so the name sits inside the ring of light. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <stroke
+        android:width="2dp"
+        android:color="@color/hikari_accent_mid" />
+    <solid android:color="@android:color/transparent" />
+</shape>

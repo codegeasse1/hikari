@@ -526,6 +526,13 @@ class PlayerActivity : ComponentActivity() {
      *  [com.hikari.app.ui.LoadingStyles] and [showLoadingBanner]). */
     private var loadingCardPoster: ImageView? = null
     private var loadingGlow: View? = null
+    /** The chosen loading EFFECT's views (Settings → App Layout → Loading screen
+     *  → Effect): a ring behind the title, a band of light sweeping across the
+     *  cover, and the gallery frame around it. All GONE unless that effect is
+     *  chosen — see [com.hikari.app.ui.LoadingEffects] and [showLoadingBanner]. */
+    private var loadingEffectRing: View? = null
+    private var loadingEffectSheen: View? = null
+    private var loadingEffectFrame: View? = null
     /** The darkening layer over the backdrop. Kept weak when there is no
      *  artwork underneath (see [showLoadingBanner]) so it does not re-blacken
      *  the fallback wash and put us back to the flat black screen. */
@@ -541,6 +548,12 @@ class PlayerActivity : ComponentActivity() {
      *  player never changes the design under the user. See
      *  [com.hikari.app.ui.LoadingStyles]. */
     private var loadingStyle = com.hikari.app.ui.LoadingStyles.CINEMATIC
+
+    /** Which treatment is drawn over that cover (Settings → App Layout →
+     *  Loading screen → Effect) — one of
+     *  [com.hikari.app.ui.LoadingEffects], handed over by the detail screen so
+     *  the two covers stay identical through the hand-off. */
+    private var loadingEffect = com.hikari.app.ui.LoadingEffects.NONE
 
     private var speedIndex = 2
 
@@ -876,11 +889,20 @@ class PlayerActivity : ComponentActivity() {
         loadingSpinnerStatus = findViewById(R.id.loading_spinner_status)
         loadingCardPoster = findViewById(R.id.loading_card_poster)
         loadingGlow = findViewById(R.id.loading_glow)
+        loadingEffectRing = findViewById(R.id.loading_effect_ring)
+        loadingEffectSheen = findViewById(R.id.loading_effect_sheen)
+        loadingEffectFrame = findViewById(R.id.loading_effect_frame)
         loadingScrim = findViewById(R.id.loading_scrim)
 
         bannerMode = intent.getBooleanExtra("showLoadingBanner", true)
         loadingStyle = com.hikari.app.ui.LoadingStyles.normalize(
             intent.getStringExtra("loadingStyle")
+        )
+        // The treatment over that card — same hand-off, same look (see
+        // [com.hikari.app.ui.LoadingEffects]). Falls back to the default when an
+        // older screen launched this player without the extra.
+        loadingEffect = com.hikari.app.ui.LoadingEffects.normalize(
+            intent.getStringExtra("loadingEffect")
         )
         // A Download tap from outside the player opens the server chooser first
         // and never plays anything (see [downloadPickMode]); the in-player
@@ -1381,6 +1403,18 @@ class PlayerActivity : ComponentActivity() {
                 // and uninstalled extensions must not cost a wait).
                 val originGraceMs = intent.getIntExtra("originGraceMs", 0).coerceAtLeast(0)
                 val originHoldUntil = System.currentTimeMillis() + originGraceMs
+                // How long playback waits for the origin once servers are already
+                // IN HAND — see ORIGIN_HEAD_START_MS (DetailScreen). This is what
+                // makes the default "play as soon as the first server is found"
+                // actually instant: the origin gets a few seconds' head start, not
+                // the whole backstop, and its servers keep arriving afterwards.
+                // 0 = the "wait for more servers first" choice, which keeps the
+                // old behaviour of holding for the full grace window.
+                val originHeadStartMs = intent.getIntExtra("originHeadStartMs", 0).coerceAtLeast(0)
+                // When the first server arrived. Written by the live collector
+                // below; the head start is measured from here, not from launch.
+                var firstServersAt = 0L
+                var headStartLogged = false
                 val originFound = {
                     originProviderId.isNotBlank() &&
                         sources.any { it.providerId == originProviderId }
@@ -1410,7 +1444,14 @@ class PlayerActivity : ComponentActivity() {
                 val originReady = {
                     originGraceMs <= 0 || originProviderId.isBlank() || originFound() ||
                         originSettled || searchDone ||
-                        System.currentTimeMillis() >= originHoldUntil
+                        System.currentTimeMillis() >= originHoldUntil ||
+                        // The head start has run out with servers in hand: play
+                        // one of them instead of holding the whole server list
+                        // hostage to one repo. The origin's answer is not lost —
+                        // its servers still stream in below and are still placed
+                        // at the top of the list.
+                        (originHeadStartMs > 0 && firstServersAt > 0 &&
+                            System.currentTimeMillis() - firstServersAt >= originHeadStartMs)
                 }
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
@@ -1488,6 +1529,39 @@ class PlayerActivity : ComponentActivity() {
                     }
                     tryStart()
                 }
+                // The head start's own alarm (see ORIGIN_HEAD_START_MS).
+                //
+                // The rule inside [originReady] is only consulted when something
+                // calls [tryStart], and after the first batch nothing may call it
+                // again for a while — a slow repo that answered late is exactly
+                // the case where the servers are in hand and the next arrival is
+                // far off. So the hold gets a deadline measured from the moment
+                // there was something to play, and this is it.
+                if (awaitLive && originHeadStartMs > 0) launch {
+                    // Wait for the first servers (bounded by the origin's own
+                    // backstop, in case nothing ever arrives — there is then
+                    // nothing for this to start either).
+                    while (firstServersAt == 0L && System.currentTimeMillis() < originHoldUntil) {
+                        if (sources.isNotEmpty()) {
+                            firstServersAt = System.currentTimeMillis()
+                            break
+                        }
+                        delay(150L)
+                    }
+                    if (firstServersAt == 0L) return@launch
+                    delay(originHeadStartMs)
+                    if (!originFound() && !originSettled && !headStartLogged) {
+                        headStartLogged = true
+                        com.hikari.app.data.Logs.log(
+                            "Player",
+                            "origin \"$originProviderName\" ($originProviderId) has not " +
+                                "answered yet — starting on a server that has " +
+                                "(${sources.size} in the list). Its own servers are still " +
+                                "being searched for and will be added to \"Select server\".",
+                        )
+                    }
+                    tryStart()
+                }
                 // The detail screen signals when its whole search is finished;
                 // if it ended with nothing, fail fast instead of waiting out
                 // the safety timeout above — and if it ended with fewer servers
@@ -1538,6 +1612,10 @@ class PlayerActivity : ComponentActivity() {
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
+                    // When the first server arrived — the head start (see
+                    // [originReady]) is measured from here: the clock only starts
+                    // once there is actually something to play.
+                    if (firstServersAt == 0L) firstServersAt = System.currentTimeMillis()
                     notifySourcesChanged()
                     // Resolve the new servers in the background too, so picking
                     // one from "Select server" doesn't fall back to a probe wait.
@@ -7284,6 +7362,27 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+        // ---- The loading EFFECT (Settings → App Layout → Loading screen →
+        // Effect) ----
+        //
+        // Drawn over whichever style was chosen, so all four styles offer the
+        // same treatments (see [com.hikari.app.ui.LoadingEffects]). Applied here
+        // rather than inside the style branches above: the effect is independent
+        // of the style by design ("Minimal + gallery frame" is one setting each).
+        val effect = com.hikari.app.ui.LoadingEffects.normalize(loadingEffect)
+        loadingEffectRing?.visibility =
+            if (effect == com.hikari.app.ui.LoadingEffects.AURA) View.VISIBLE else View.GONE
+        loadingEffectSheen?.visibility =
+            if (effect == com.hikari.app.ui.LoadingEffects.SHEEN) View.VISIBLE else View.GONE
+        loadingEffectFrame?.visibility =
+            if (effect == com.hikari.app.ui.LoadingEffects.FRAME) View.VISIBLE else View.GONE
+        // The accent bloom behind the title is drawn for two reasons — the
+        // SPOTLIGHT style (above) and the "Accent glow" effect — so an effect
+        // can only ever switch it ON, never off.
+        if (com.hikari.app.ui.LoadingEffects.usesGlow(effect)) {
+            loadingGlow?.visibility = View.VISIBLE
+        }
+
         loadingBackdrop?.let { iv ->
             if (backdropVisible && bannerModel != null) {
                 artShown = true
@@ -7358,7 +7457,38 @@ class PlayerActivity : ComponentActivity() {
                 repeatCount = android.animation.ValueAnimator.INFINITE
             }
         }
-        bannerAnimators = listOfNotNull(titleScale, backdropScale, glowPulse)
+        // SHEEN: the band of light crosses the cover. Driven by a ValueAnimator
+        // rather than a property animator because the distance depends on the
+        // view's measured width, which is not known until the first layout —
+        // reading it on every frame means the sweep is right on every screen
+        // size (and needs no dimension maths here).
+        val sheenSweep = loadingEffectSheen?.takeIf { it.visibility == View.VISIBLE }?.let { v ->
+            android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 2600L
+                interpolator = android.view.animation.LinearInterpolator()
+                repeatCount = android.animation.ValueAnimator.INFINITE
+                addUpdateListener { a ->
+                    val w = v.width.coerceAtLeast(1).toFloat()
+                    v.translationX = -w + ((a.animatedValue as Float) * w * 2f)
+                }
+            }
+        }
+        // AURA: the ring breathes — brighter and a little larger, then back.
+        val auraRing = loadingEffectRing?.takeIf { it.visibility == View.VISIBLE }?.let { v ->
+            ObjectAnimator.ofPropertyValuesHolder(
+                v,
+                PropertyValuesHolder.ofFloat(View.ALPHA, 0.35f, 1f, 0.35f),
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 0.92f, 1.06f, 0.92f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.92f, 1.06f, 0.92f),
+            ).apply {
+                duration = 3400L
+                interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                repeatCount = android.animation.ValueAnimator.INFINITE
+            }
+        }
+        // (The gallery frame is deliberately still — it is the quietest of the
+        // effects, and a moving frame around a loading screen is a distraction.)
+        bannerAnimators = listOfNotNull(titleScale, backdropScale, glowPulse, sheenSweep, auraRing)
         bannerAnimators.forEach { runCatching { it.start() } }
         banner.animate().cancel()
         banner.alpha = 1f

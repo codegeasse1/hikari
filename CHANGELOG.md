@@ -1,3 +1,27 @@
+## 0.7.0
+
+Playback starts the moment there is something to play, a title can now be searched through the extension you opened it from and no other, the loading screen has real effect options, and the poster halo shows on every phone.
+
+### Added
+
+- **A "Playback & Servers" settings folder.** It holds the new Server search option and the playback-start choice, so "what plays, and when" is in one place.
+- **Server search: "Search all installed extensions".** On by default (how Hikari has always worked): a title is searched across every extension you have installed, and the server list gathers what all of them found. Turn it off and a title is only ever searched through the extension you opened it from — the way CloudStream works — with no other extension contacted, no background search, and no episode list borrowed from another site.
+- **Loading screen effects.** The Loading screen setting now has an Effect of its own, with the same kind of signature treatments the poster styling has: **Sheen** (a band of light sweeping across the card), **Aura ring** (a breathing accent ring behind the name), **Gallery frame** (a hairline mount around the card) and **Accent glow** (a pool of light swelling behind the title). They work with any of the four styles, so "Minimal + gallery frame" or "Spotlight + sheen" is one setting each.
+- **A retry when an episode list will not load.** If an extension cannot answer with the episode list, the page now says so and offers **Try again**, instead of claiming the series has no episodes.
+
+### Fixed
+
+- **The app becoming "buggy" until it was closed and reopened.** Adding or removing a website in the extensions screen could hang the app's settings storage permanently: the write waited for a read of its own data that could never be answered, and because that write never finished, every later setting — and the episode lookup on a series page — queued behind it forever. That is the reported "I click a series and it shows no episode, and every setting I pick stays on the old one, and it is only fixed by closing the app". The read now happens before the write.
+- **Settings that would not stay put.** A settings save that failed was invisible: the choice silently reverted and nothing anywhere said why. Saves are now retried, and one that keeps failing is written to the log with the reason and shown as a message, so a device with no free space says so instead of looking like the app ignores its settings.
+- **A slow app open.** Two places read the settings synchronously while the app was starting, so a settings file that was slow to answer held the launch screen with no way forward. Both now have a limit, the app comes up either way, and the log records how long the start took and which step was slow.
+- **The poster blur/halo not showing for some people.** The soft coloured halo behind a poster was drawn with Android's blur, which only exists from Android 12 — so identical settings gave one phone a glowing halo and the next one flat artwork. The halo is now drawn from the artwork itself, which works on every Android version, and the Dynamic blur slider is a real gradient of softness on all of them.
+- **A series that showed no episodes.** An empty episode list was treated as final for the page: one cold extension (the first call to an Aniyomi extension loads its whole APK; a plugin has to start its runtime) or one dropped request left "Episodes (0) — No episode list available" over a show that has plenty, and only reopening the app cleared it. The lookup is now retried, and if it still fails the page says it could not load the list and offers a retry — it no longer presents a failure as "this show has no episodes". A cancelled lookup can also no longer be mistaken for an empty one.
+- **Waiting on the loading screen while servers were already in hand.** With "play as soon as the first server is found" selected, playback still waited for the extension the title was opened from — up to 45 seconds — even with dozens of servers ready from other extensions, which is the reported "it found 70 servers and was still searching instead of playing". The extension you opened the title from now gets a three-second head start: if it answers, its server plays as before, and if it does not, playback starts on the best server available while the rest of the search keeps running and its finds keep appearing in the server list.
+
+### Changed
+
+- **A new look out of the box.** A fresh install now starts on the styling people ask for: the coloured halo and gallery frame on posters (blur 15, corners 28, titles and score badges on, glass trim on), the side-by-side **Showcase** featured banner, the **Art + poster** detail header, and the **Neon** player skin. Every one of them is still a normal setting — a choice you make yourself always wins.
+
 ## 0.6.9
 
 Nothing a search starts is dropped any more — for nuvio, and for every other extension — and the Sources line now tells the truth about nuvio while its engines are still starting.

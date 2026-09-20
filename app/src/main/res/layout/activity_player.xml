@@ -44,13 +44,27 @@
             android:background="@drawable/player_banner_scrim" />
 
         <!-- SPOTLIGHT style only: the accent bloom behind the title (see
-             player_banner_glow). GONE for every other loading style. -->
+             player_banner_glow). GONE for every other loading style — and also
+             shown for the "Accent glow" loading EFFECT, which is the same pool
+             of light on a style that does not draw one itself. -->
         <View
             android:id="@+id/loading_glow"
             android:layout_width="520dp"
             android:layout_height="520dp"
             android:layout_gravity="center"
             android:background="@drawable/player_banner_glow"
+            android:visibility="gone" />
+
+        <!-- Loading EFFECT "Aura ring" (Settings → App Layout → Loading screen
+             → Effect): a ring of accent light behind the title. GONE unless
+             that effect is chosen. Declared here, before the title block, so the
+             name is drawn ON TOP of the ring rather than under its stroke. -->
+        <View
+            android:id="@+id/loading_effect_ring"
+            android:layout_width="300dp"
+            android:layout_height="300dp"
+            android:layout_gravity="center"
+            android:background="@drawable/player_banner_effect_ring"
             android:visibility="gone" />
 
         <LinearLayout
@@ -140,6 +154,26 @@
                 android:textColor="#CCFFFFFF"
                 android:textSize="13sp" />
         </LinearLayout>
+
+        <!-- Loading EFFECT "Sheen" and "Gallery frame" (Settings → App Layout →
+             Loading screen → Effect). Both cover the whole card and are drawn
+             LAST, so the light sweeps over everything the style drew and the
+             frame sits on top of it, exactly as they do on the detail screen's
+             cover. GONE unless that effect is chosen. -->
+        <View
+            android:id="@+id/loading_effect_sheen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/player_banner_effect_sheen"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/loading_effect_frame"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_margin="14dp"
+            android:background="@drawable/player_banner_effect_frame"
+            android:visibility="gone" />
     </FrameLayout>
 
     <!-- Spinner-only cover: the same "finding your server" moment as the title

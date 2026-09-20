@@ -52,3 +52,60 @@ object LoadingStyles {
     fun usesArtwork(key: String?): Boolean =
         normalize(key) == CINEMATIC || normalize(key) == POSTER
 }
+
+/**
+ * The treatment drawn OVER the loading card — Settings → App Layout → Loading
+ * screen → Effect.
+ *
+ * The two quiet styles were reported as too plain ("minimal and spotlight is so
+ * simple, it just shows the title zooming in and out"), so the loading cover now
+ * has the same kind of signature details a poster card does: a band of light
+ * sweeping across it, a breathing accent ring, a gallery mat around the frame,
+ * or an accent bloom behind the name.
+ *
+ * Deliberately independent of the style: an effect is drawn over whichever card
+ * the user chose, so "Minimal + gallery frame" and "Spotlight + sheen" are both
+ * one setting each. Every effect is pure drawing on top of the existing cover —
+ * no extra network request, no extra copy of the artwork — and they compose with
+ * the styles' own motion rather than replacing it.
+ *
+ *  - [NONE]  nothing over the card (the styles as they were).
+ *  - [SHEEN] a band of light sweeps across the cover, like a glossy print
+ *            catching the light.
+ *  - [AURA]  a breathing accent ring behind the name.
+ *  - [FRAME] a hairline gallery frame inset around the whole cover.
+ *  - [GLOW]  an accent bloom that swells and fades behind the title.
+ */
+object LoadingEffects {
+    const val NONE = "none"
+    const val SHEEN = "sheen"
+    const val AURA = "aura"
+    const val FRAME = "frame"
+    const val GLOW = "glow"
+
+    /** Every effect, in the order Settings lists them. */
+    val ALL = listOf(NONE, SHEEN, AURA, FRAME, GLOW)
+
+    fun normalize(key: String?): String = if (key != null && key in ALL) key else NONE
+
+    fun label(key: String?): String = when (normalize(key)) {
+        SHEEN -> "Sheen"
+        AURA -> "Aura ring"
+        FRAME -> "Gallery frame"
+        GLOW -> "Accent glow"
+        else -> "None"
+    }
+
+    fun description(key: String?): String = when (normalize(key)) {
+        SHEEN -> "A band of light sweeps across the cover"
+        AURA -> "A breathing accent ring behind the title"
+        FRAME -> "A hairline gallery frame around the cover"
+        GLOW -> "An accent bloom that swells behind the title"
+        else -> "No extra treatment"
+    }
+
+    /** True when this effect asks for the accent bloom view
+     *  (`loading_glow` / the Compose glow layer) — see [LoadingStyles] and the
+     *  player's own cover. */
+    fun usesGlow(key: String?): Boolean = normalize(key) == GLOW
+}

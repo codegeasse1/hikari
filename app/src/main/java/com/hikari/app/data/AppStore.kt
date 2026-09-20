@@ -154,6 +154,18 @@ class AppStore(private val ctx: Context) {
         /** Look of the "finding your server" card — see
          *  [com.hikari.app.ui.LoadingStyles]. */
         val LOADING_STYLE = stringPreferencesKey("loadingStyle")
+        /** The treatment drawn over the loading card (a sheen, an aura ring, a
+         *  gallery frame, an accent bloom) — see
+         *  [com.hikari.app.ui.LoadingEffects]. Stored as its key, so an unknown
+         *  value (a save from a newer build) reads back as "none". */
+        val LOADING_EFFECT = stringPreferencesKey("loadingEffect")
+        /** "Search every installed extension" (Settings → Playback → Server
+         *  search). On by default: a title is searched across every installed
+         *  extension, the way it always has been. Off, only the extension the
+         *  title was opened from is asked — CloudStream's own model, where a
+         *  film plays from the repo you picked and nowhere else. See
+         *  [com.hikari.app.data.SearchScope]. */
+        val SEARCH_ALL_EXTENSIONS = booleanPreferencesKey("searchAllExtensions")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -171,8 +183,90 @@ class AppStore(private val ctx: Context) {
         val FULLSCREEN_OFF = booleanPreferencesKey("fullscreenOff")
     }
 
-    // ---- The launcher icon the user picked (see AppIconManager) ----
+    // ---- Settings writes ----
+    //
+    // Every write a setting makes goes through [write] below rather than
+    // `store.edit` directly. Two reasons, both from the "I pick an option and it
+    // stays on the old one" report:
+    //
+    //  - a write can FAIL. DataStore writes the whole preferences file, so a
+    //    full disk, a momentarily busy file system or a wedged read leaves the
+    //    user's choice unsaved, the live flow keeps emitting the old value, and
+    //    the toggle in front of them flips back — silently, because every call
+    //    site wrapped it in `runCatching`. Retrying and then SAYING SO is the
+    //    difference between a diagnosable bug and a haunted app;
+    //  - a failure needs to be visible in the shared log (and, once, on screen),
+    //    or the only evidence is a setting that will not stay put.
 
+    /** Attempts made at one settings write before giving up and telling the
+     *  user. A failed DataStore write is almost always transient. */
+    private val WRITE_TRIES = 3
+
+    /** At most one "couldn't save" toast a minute, so broken storage cannot put
+     *  a stream of them on screen. */
+    private val WRITE_WARNING_COOLDOWN_MS = 60_000L
+
+    @Volatile
+    private var lastWriteWarningAt = 0L
+
+    /**
+     * Writes settings, retrying a failed attempt and reporting one that keeps
+     * failing — see the note above. [what] names the setting for the log line
+     * and the warning.
+     */
+    private suspend fun write(
+        what: String,
+        transform: suspend (androidx.datastore.preferences.core.MutablePreferences) -> Unit,
+    ) {
+        var last: Throwable? = null
+        for (attempt in 1..WRITE_TRIES) {
+            try {
+                store.edit(transform)
+                if (attempt > 1) Logs.log("Store", "saved $what on attempt $attempt")
+                return
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // The caller went away (the screen was left mid-save): not a
+                // failure, and retrying a cancelled write is meaningless.
+                throw c
+            } catch (t: Throwable) {
+                last = t
+                Logs.log(
+                    "Store",
+                    "✗ could not save $what (${t.javaClass.simpleName}: ${t.message}) — " +
+                        "attempt $attempt of $WRITE_TRIES",
+                )
+                kotlinx.coroutines.delay(250L * attempt)
+            }
+        }
+        Logs.log(
+            "Store",
+            "✗✗ GAVE UP saving $what — the choice will revert. Last error: " +
+                "${last?.javaClass?.simpleName}: ${last?.message}. " +
+                "If this repeats, the device is out of space or the app's data is unreadable.",
+        )
+        warnWriteFailure(what)
+    }
+
+    /** Says, once in a while, that a choice could not be saved. Silence is what
+     *  made this look like the app ignoring its own settings. */
+    private fun warnWriteFailure(what: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastWriteWarningAt < WRITE_WARNING_COOLDOWN_MS) return
+        lastWriteWarningAt = now
+        runCatching {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching {
+                    android.widget.Toast.makeText(
+                        ctx,
+                        "Hikari couldn't save that setting ($what). Check the device's free space.",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    // ---- The launcher icon the user picked (see AppIconManager) ----
     /** Key of the launcher-icon variant in use — one of
      *  [com.hikari.app.ui.AppIconVariants]. The choice lives in the manifest as
      *  the enabled `activity-alias`, so this mirror is what lets the app put the
@@ -183,7 +277,7 @@ class AppStore(private val ctx: Context) {
     suspend fun appIcon(): String = appIconFlow().first()
 
     suspend fun setAppIcon(key: String) {
-        store.edit { it[K.APP_ICON] = key }
+        write("APP_ICON") { it[K.APP_ICON] = key }
     }
 
     // ---- Title language for TMDB metadata ----
@@ -197,7 +291,7 @@ class AppStore(private val ctx: Context) {
     suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
 
     suspend fun setTmdbLanguage(mode: String) {
-        store.edit { it[K.TMDB_LANGUAGE] = mode.trim() }
+        write("TMDB_LANGUAGE") { it[K.TMDB_LANGUAGE] = mode.trim() }
     }
 
     // ---- App-wide font (Settings → Appearance & Theme → App font) ----
@@ -209,7 +303,7 @@ class AppStore(private val ctx: Context) {
     suspend fun appFont(): String = appFontFlow().first()
 
     suspend fun setAppFont(key: String) {
-        store.edit { it[K.APP_FONT] = key }
+        write("APP_FONT") { it[K.APP_FONT] = key }
     }
 
     /** File name (inside `filesDir/fonts`) of a font the user imported, or "".
@@ -226,7 +320,7 @@ class AppStore(private val ctx: Context) {
     suspend fun appFontLabel(): String = appFontLabelFlow().first()
 
     suspend fun setImportedFont(fileName: String, label: String) {
-        store.edit {
+        write("APP_FONT_FILE") {
             it[K.APP_FONT_FILE] = fileName
             it[K.APP_FONT_LABEL] = label
         }
@@ -241,7 +335,7 @@ class AppStore(private val ctx: Context) {
     suspend fun libraryCategories(): List<LibraryCategory> = libraryCategoriesFlow().first()
 
     suspend fun saveLibraryCategories(list: List<LibraryCategory>) {
-        store.edit { it[K.LIBRARY_CATEGORIES] = encodeCategories(list) }
+        write("LIBRARY_CATEGORIES") { it[K.LIBRARY_CATEGORIES] = encodeCategories(list) }
     }
 
     suspend fun addLibraryCategory(name: String): LibraryCategory {
@@ -260,7 +354,7 @@ class AppStore(private val ctx: Context) {
     /** Deletes a category and unfiles every title that was in it. */
     suspend fun removeLibraryCategory(id: String) {
         saveLibraryCategories(libraryCategories().filter { it.id != id })
-        store.edit { prefs ->
+        write("FAVORITE_CATEGORIES") { prefs ->
             val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES])
             prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(
                 cur.mapValues { (_, set) -> set - id }.filterValues { it.isNotEmpty() }
@@ -277,7 +371,7 @@ class AppStore(private val ctx: Context) {
     /** Replaces one title's filing. An empty set simply forgets the title. */
     suspend fun setFavoriteCategories(uniqueId: String, categories: Set<String>) {
         if (uniqueId.isBlank()) return
-        store.edit { prefs ->
+        write("FAVORITE_CATEGORIES") { prefs ->
             val cur = parseCategoryMap(prefs[K.FAVORITE_CATEGORIES]).toMutableMap()
             if (categories.isEmpty()) cur.remove(uniqueId) else cur[uniqueId] = categories
             prefs[K.FAVORITE_CATEGORIES] = encodeCategoryMap(cur)
@@ -292,26 +386,63 @@ class AppStore(private val ctx: Context) {
         setFavoriteCategories(uniqueId, cur + categories)
     }
 
+    /**
+     * The look the app ships with — what a fresh install shows before the user
+     * has touched anything (Settings → App Layout).
+     *
+     * These are the defaults the reference clients are known for, so Hikari
+     * looks its best out of the box instead of asking the user to go and find
+     * the styling screen first:
+     *
+     *  - posters wear the coloured halo + gallery frame, rounded and badged;
+     *  - Home's featured banner is the side-by-side Showcase;
+     *  - the detail page opens on "Art + poster";
+     *  - the player wears the Neon skin.
+     *
+     * They are only DEFAULTS: every one of them is a normal setting, and a user
+     * who picks something else keeps it (a stored value always wins — see each
+     * getter below).
+     */
+    private companion object ShipDefaults {
+        /** dp of halo behind each poster. */
+        const val DEFAULT_POSTER_BLUR = 15
+
+        /** dp of corner rounding on each poster. */
+        const val DEFAULT_POSTER_CORNER = 28
+
+        /** The signature card treatment ([com.hikari.app.ui.PosterEffects]). */
+        const val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.FRAME
+
+        /** Home's featured banner shape ([HeroStyles]). */
+        const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
+
+        /** The detail page's header art ([DetailHeroStyles]). */
+        const val DEFAULT_DETAIL_HERO_STYLE = com.hikari.app.ui.screens.DetailHeroStyles.SIDE
+
+        /** The player's control shell ([PlayerSkins]). */
+        const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.NEON
+    }
+
     // ---- Poster & icon styling ----
 
     /** Backdrop blur radius in dp behind a poster (0 = the plain art). */
     fun posterBlurFlow(): Flow<Int> =
-        store.data.map { (it[K.POSTER_BLUR] ?: 0).coerceIn(0, 24) }
+        store.data.map { (it[K.POSTER_BLUR] ?: DEFAULT_POSTER_BLUR).coerceIn(0, 24) }
 
     suspend fun posterBlur(): Int = posterBlurFlow().first()
 
     suspend fun setPosterBlur(value: Int) {
-        store.edit { it[K.POSTER_BLUR] = value.coerceIn(0, 24) }
+        write("POSTER_BLUR") { it[K.POSTER_BLUR] = value.coerceIn(0, 24) }
     }
 
     /** Poster corner rounding in dp. */
     fun posterCornerFlow(): Flow<Int> =
-        store.data.map { (it[K.POSTER_CORNER] ?: 14).coerceIn(0, 28) }
+        store.data.map { (it[K.POSTER_CORNER] ?: DEFAULT_POSTER_CORNER).coerceIn(0, 28) }
 
     suspend fun posterCorner(): Int = posterCornerFlow().first()
 
     suspend fun setPosterCorner(value: Int) {
-        store.edit { it[K.POSTER_CORNER] = value.coerceIn(0, 28) }
+        write("POSTER_CORNER") { it[K.POSTER_CORNER] = value.coerceIn(0, 28) }
     }
 
     fun posterShowTitlesFlow(): Flow<Boolean> =
@@ -320,16 +451,16 @@ class AppStore(private val ctx: Context) {
     suspend fun posterShowTitles(): Boolean = posterShowTitlesFlow().first()
 
     suspend fun setPosterShowTitles(show: Boolean) {
-        store.edit { it[K.POSTER_SHOW_TITLES] = show }
+        write("POSTER_SHOW_TITLES") { it[K.POSTER_SHOW_TITLES] = show }
     }
 
     fun posterShowRatingsFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: false }
+        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: true }
 
     suspend fun posterShowRatings(): Boolean = posterShowRatingsFlow().first()
 
     suspend fun setPosterShowRatings(show: Boolean) {
-        store.edit { it[K.POSTER_SHOW_RATINGS] = show }
+        write("POSTER_SHOW_RATINGS") { it[K.POSTER_SHOW_RATINGS] = show }
     }
 
     /** The glass hairline + soft sheen over every poster. */
@@ -339,17 +470,21 @@ class AppStore(private val ctx: Context) {
     suspend fun posterGlass(): Boolean = posterGlassFlow().first()
 
     suspend fun setPosterGlass(on: Boolean) {
-        store.edit { it[K.POSTER_GLASS] = on }
+        write("POSTER_GLASS") { it[K.POSTER_GLASS] = on }
     }
 
     /** The visual effect drawn over every poster card. */
     fun posterEffectFlow(): Flow<String> =
-        store.data.map { com.hikari.app.ui.PosterEffects.normalize(it[K.POSTER_EFFECT]) }
+        store.data.map {
+            com.hikari.app.ui.PosterEffects.normalize(
+                it[K.POSTER_EFFECT] ?: DEFAULT_POSTER_EFFECT,
+            )
+        }
 
     suspend fun posterEffect(): String = posterEffectFlow().first()
 
     suspend fun setPosterEffect(key: String) {
-        store.edit { it[K.POSTER_EFFECT] = com.hikari.app.ui.PosterEffects.normalize(key) }
+        write("POSTER_EFFECT") { it[K.POSTER_EFFECT] = com.hikari.app.ui.PosterEffects.normalize(key) }
     }
 
     // ---- Home's featured banner ----
@@ -357,12 +492,16 @@ class AppStore(private val ctx: Context) {
     /** How the featured banner is shaped: the carousel, a full-width spotlight,
      *  a compact strip or the side-by-side showcase. */
     fun heroStyleFlow(): Flow<String> =
-        store.data.map { com.hikari.app.ui.components.HeroStyles.normalize(it[K.HERO_STYLE]) }
+        store.data.map {
+            com.hikari.app.ui.components.HeroStyles.normalize(
+                it[K.HERO_STYLE] ?: DEFAULT_HERO_STYLE,
+            )
+        }
 
     suspend fun heroStyle(): String = heroStyleFlow().first()
 
     suspend fun setHeroStyle(key: String) {
-        store.edit { it[K.HERO_STYLE] = com.hikari.app.ui.components.HeroStyles.normalize(key) }
+        write("HERO_STYLE") { it[K.HERO_STYLE] = com.hikari.app.ui.components.HeroStyles.normalize(key) }
     }
 
     fun heroOverviewFlow(): Flow<Boolean> = store.data.map { it[K.HERO_OVERVIEW] ?: true }
@@ -370,7 +509,7 @@ class AppStore(private val ctx: Context) {
     suspend fun heroOverview(): Boolean = heroOverviewFlow().first()
 
     suspend fun setHeroOverview(on: Boolean) {
-        store.edit { it[K.HERO_OVERVIEW] = on }
+        write("HERO_OVERVIEW") { it[K.HERO_OVERVIEW] = on }
     }
 
     fun heroRatingFlow(): Flow<Boolean> = store.data.map { it[K.HERO_RATING] ?: true }
@@ -378,7 +517,7 @@ class AppStore(private val ctx: Context) {
     suspend fun heroRating(): Boolean = heroRatingFlow().first()
 
     suspend fun setHeroRating(on: Boolean) {
-        store.edit { it[K.HERO_RATING] = on }
+        write("HERO_RATING") { it[K.HERO_RATING] = on }
     }
 
     fun heroMetaFlow(): Flow<Boolean> = store.data.map { it[K.HERO_META] ?: true }
@@ -386,27 +525,35 @@ class AppStore(private val ctx: Context) {
     suspend fun heroMeta(): Boolean = heroMetaFlow().first()
 
     suspend fun setHeroMeta(on: Boolean) {
-        store.edit { it[K.HERO_META] = on }
+        write("HERO_META") { it[K.HERO_META] = on }
     }
 
     /** How the detail page's header art is laid out. */
     fun detailHeroStyleFlow(): Flow<String> =
-        store.data.map { com.hikari.app.ui.screens.DetailHeroStyles.normalize(it[K.DETAIL_HERO_STYLE]) }
+        store.data.map {
+            com.hikari.app.ui.screens.DetailHeroStyles.normalize(
+                it[K.DETAIL_HERO_STYLE] ?: DEFAULT_DETAIL_HERO_STYLE,
+            )
+        }
 
     suspend fun detailHeroStyle(): String = detailHeroStyleFlow().first()
 
     suspend fun setDetailHeroStyle(key: String) {
-        store.edit { it[K.DETAIL_HERO_STYLE] = com.hikari.app.ui.screens.DetailHeroStyles.normalize(key) }
+        write("DETAIL_HERO_STYLE") { it[K.DETAIL_HERO_STYLE] = com.hikari.app.ui.screens.DetailHeroStyles.normalize(key) }
     }
 
     /** Which player control shell the player wears. */
     fun playerSkinFlow(): Flow<String> =
-        store.data.map { com.hikari.app.player.PlayerSkins.normalize(it[K.PLAYER_SKIN]) }
+        store.data.map {
+            com.hikari.app.player.PlayerSkins.normalize(
+                it[K.PLAYER_SKIN] ?: DEFAULT_PLAYER_SKIN,
+            )
+        }
 
     suspend fun playerSkin(): String = playerSkinFlow().first()
 
     suspend fun setPlayerSkin(key: String) {
-        store.edit { it[K.PLAYER_SKIN] = com.hikari.app.player.PlayerSkins.normalize(key) }
+        write("PLAYER_SKIN") { it[K.PLAYER_SKIN] = com.hikari.app.player.PlayerSkins.normalize(key) }
     }
 
     // ---- The "finding your server" card (Settings → App Layout) ----
@@ -421,7 +568,41 @@ class AppStore(private val ctx: Context) {
     suspend fun loadingStyle(): String = loadingStyleFlow().first()
 
     suspend fun setLoadingStyle(key: String) {
-        store.edit { it[K.LOADING_STYLE] = com.hikari.app.ui.LoadingStyles.normalize(key) }
+        write("LOADING_STYLE") { it[K.LOADING_STYLE] = com.hikari.app.ui.LoadingStyles.normalize(key) }
+    }
+
+    /** The treatment drawn over the loading card — see
+     *  [com.hikari.app.ui.LoadingEffects]. Works with every style, so the
+     *  quietest card can wear the same kind of signature detail a poster does. */
+    fun loadingEffectFlow(): Flow<String> =
+        store.data.map { com.hikari.app.ui.LoadingEffects.normalize(it[K.LOADING_EFFECT]) }
+
+    suspend fun loadingEffect(): String = loadingEffectFlow().first()
+
+    suspend fun setLoadingEffect(key: String) {
+        write("LOADING_EFFECT") { it[K.LOADING_EFFECT] = com.hikari.app.ui.LoadingEffects.normalize(key) }
+    }
+
+    // ---- Server search (Settings → Playback) ----
+
+    /**
+     * May a lookup ask extensions OTHER than the one the title was opened from?
+     *
+     * On by default, which is the behaviour the app has always had: every
+     * installed extension is searched and the player's server list gathers
+     * whatever all of them found. Off, a title is searched ONLY through its own
+     * extension — the CloudStream model, where a film plays from the repo you
+     * picked and its own hosts, and the other ~250 extensions are left alone
+     * entirely (no cross search, no background sweep, no episode list borrowed
+     * from another site).
+     */
+    fun searchAllExtensionsFlow(): Flow<Boolean> =
+        store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: true }
+
+    suspend fun searchAllExtensions(): Boolean = searchAllExtensionsFlow().first()
+
+    suspend fun setSearchAllExtensions(all: Boolean) {
+        write("SEARCH_ALL_EXTENSIONS") { it[K.SEARCH_ALL_EXTENSIONS] = all }
     }
 
     // ---- Bottom navigation bar layout ----
@@ -439,7 +620,7 @@ class AppStore(private val ctx: Context) {
     suspend fun navStyle(): String = navStyleFlow().first()
 
     suspend fun setNavStyle(style: String) {
-        store.edit { it[K.NAV_STYLE] = style }
+        write("NAV_STYLE") { it[K.NAV_STYLE] = style }
     }
 
     // ---- The taskbar's icon labels (Settings → App Layout) ----
@@ -452,7 +633,7 @@ class AppStore(private val ctx: Context) {
     suspend fun tabLabels(): Boolean = tabLabelsFlow().first()
 
     suspend fun setTabLabels(show: Boolean) {
-        store.edit { it[K.TAB_LABELS] = show }
+        write("TAB_LABELS") { it[K.TAB_LABELS] = show }
     }
 
     // ---- The detail page's rating strip (Settings → App Layout) ----
@@ -465,7 +646,7 @@ class AppStore(private val ctx: Context) {
     suspend fun showDetailRating(): Boolean = showDetailRatingFlow().first()
 
     suspend fun setShowDetailRating(show: Boolean) {
-        store.edit { it[K.SHOW_DETAIL_RATING] = show }
+        write("SHOW_DETAIL_RATING") { it[K.SHOW_DETAIL_RATING] = show }
     }
 
     // ---- Full screen app mode (Settings → App Layout) ----
@@ -478,7 +659,7 @@ class AppStore(private val ctx: Context) {
     suspend fun fullscreenOff(): Boolean = fullscreenOffFlow().first()
 
     suspend fun setFullscreenOff(off: Boolean) {
-        store.edit { it[K.FULLSCREEN_OFF] = off }
+        write("FULLSCREEN_OFF") { it[K.FULLSCREEN_OFF] = off }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----
@@ -494,7 +675,7 @@ class AppStore(private val ctx: Context) {
     suspend fun setTabHidden(route: String, hidden: Boolean) {
         val cur = hiddenTabs()
         val next = if (hidden) cur + route else cur - route
-        store.edit { it[K.HIDDEN_TABS] = encodeStringList(next.toList()) }
+        write("HIDDEN_TABS") { it[K.HIDDEN_TABS] = encodeStringList(next.toList()) }
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe
@@ -507,7 +688,7 @@ class AppStore(private val ctx: Context) {
     suspend fun slowConnection(): Boolean = slowConnectionFlow().first()
 
     suspend fun setSlowConnection(enabled: Boolean) {
-        store.edit { it[K.SLOW_CONNECTION] = enabled }
+        write("SLOW_CONNECTION") { it[K.SLOW_CONNECTION] = enabled }
     }
 
     /** The chosen resolver ([com.hikari.app.net.DnsProviders] key). Default is
@@ -519,7 +700,7 @@ class AppStore(private val ctx: Context) {
     suspend fun dnsProvider(): String = dnsProviderFlow().first()
 
     suspend fun setDnsProvider(key: String) {
-        store.edit { it[K.DNS_PROVIDER] = key }
+        write("DNS_PROVIDER") { it[K.DNS_PROVIDER] = key }
     }
 
     /** What a Custom DNS choice points at, as the user typed it (normalised to
@@ -530,7 +711,7 @@ class AppStore(private val ctx: Context) {
     suspend fun customDns(): String = customDnsFlow().first()
 
     suspend fun setCustomDns(url: String) {
-        store.edit { it[K.CUSTOM_DNS] = url }
+        write("CUSTOM_DNS") { it[K.CUSTOM_DNS] = url }
     }
 
     /** Playback start rule: false = start the moment the FIRST server is found
@@ -544,7 +725,7 @@ class AppStore(private val ctx: Context) {
     suspend fun playWaitServers(): Boolean = playWaitServersFlow().first()
 
     suspend fun setPlayWaitServers(wait: Boolean) {
-        store.edit { it[K.PLAY_WAIT_SERVERS] = wait }
+        write("PLAY_WAIT_SERVERS") { it[K.PLAY_WAIT_SERVERS] = wait }
     }
 
     /** How many servers to wait for when [playWaitServersFlow] is on (1–5). */
@@ -554,7 +735,7 @@ class AppStore(private val ctx: Context) {
     suspend fun playMinServers(): Int = playMinServersFlow().first()
 
     suspend fun setPlayMinServers(n: Int) {
-        store.edit { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
+        write("PLAY_MIN_SERVERS") { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
     }
 
     /**
@@ -571,7 +752,7 @@ class AppStore(private val ctx: Context) {
     suspend fun askServerOnPlay(): Boolean = askServerOnPlayFlow().first()
 
     suspend fun setAskServerOnPlay(ask: Boolean) {
-        store.edit { it[K.ASK_SERVER] = ask }
+        write("ASK_SERVER") { it[K.ASK_SERVER] = ask }
     }
 
     /**
@@ -592,7 +773,7 @@ class AppStore(private val ctx: Context) {
     suspend fun failoverAskOnFailure(): Boolean = failoverAskOnFailureFlow().first()
 
     suspend fun setFailoverAskOnFailure(ask: Boolean) {
-        store.edit { it[K.FAILOVER_ASK] = ask }
+        write("FAILOVER_ASK") { it[K.FAILOVER_ASK] = ask }
     }
 
     /** Show the full-screen title card (backdrop + breathing name) from Play
@@ -604,7 +785,7 @@ class AppStore(private val ctx: Context) {
     suspend fun showLoadingBanner(): Boolean = showLoadingBannerFlow().first()
 
     suspend fun setShowLoadingBanner(show: Boolean) {
-        store.edit { it[K.SHOW_LOADING_BANNER] = show }
+        write("SHOW_LOADING_BANNER") { it[K.SHOW_LOADING_BANNER] = show }
     }
 
     /** Whether the player may suggest turning on Slow connection mode when a
@@ -617,7 +798,7 @@ class AppStore(private val ctx: Context) {
     suspend fun slowTipEnabled(): Boolean = slowTipEnabledFlow().first()
 
     suspend fun setSlowTipEnabled(enabled: Boolean) {
-        store.edit { it[K.SLOW_TIP_ENABLED] = enabled }
+        write("SLOW_TIP_ENABLED") { it[K.SLOW_TIP_ENABLED] = enabled }
     }
 
     /** Set by the dialog's "Don't ask again" — permanent, unlike the timed
@@ -628,7 +809,7 @@ class AppStore(private val ctx: Context) {
     suspend fun slowTipDontAsk(): Boolean = slowTipDontAskFlow().first()
 
     suspend fun setSlowTipDontAsk(dontAsk: Boolean) {
-        store.edit { it[K.SLOW_TIP_DONT_ASK] = dontAsk }
+        write("SLOW_TIP_DONT_ASK") { it[K.SLOW_TIP_DONT_ASK] = dontAsk }
     }
 
     /** When the tip was last dismissed with "Not now" (0 = never). Keeps the
@@ -639,7 +820,7 @@ class AppStore(private val ctx: Context) {
     suspend fun slowTipLastDismiss(): Long = slowTipLastDismissFlow().first()
 
     suspend fun setSlowTipLastDismiss(atMs: Long) {
-        store.edit { it[K.SLOW_TIP_LAST_DISMISS] = atMs }
+        write("SLOW_TIP_LAST_DISMISS") { it[K.SLOW_TIP_LAST_DISMISS] = atMs }
     }
 
     /** Set by the launch Telegram invitation's "Don't show this again" checkbox,
@@ -650,7 +831,7 @@ class AppStore(private val ctx: Context) {
     suspend fun telegramDontShow(): Boolean = telegramDontShowFlow().first()
 
     suspend fun setTelegramDontShow(dontShow: Boolean) {
-        store.edit { it[K.TELEGRAM_DONT_SHOW] = dontShow }
+        write("TELEGRAM_DONT_SHOW") { it[K.TELEGRAM_DONT_SHOW] = dontShow }
     }
 
     /** How many downloads may run simultaneously (1–10). */
@@ -660,7 +841,7 @@ class AppStore(private val ctx: Context) {
     suspend fun downloadConcurrency(): Int = downloadConcurrencyFlow().first()
 
     suspend fun setDownloadConcurrency(n: Int) {
-        store.edit { it[K.DOWNLOAD_CONCURRENCY] = n.coerceIn(1, 10) }
+        write("DOWNLOAD_CONCURRENCY") { it[K.DOWNLOAD_CONCURRENCY] = n.coerceIn(1, 10) }
     }
 
     /** Which provider the Home screen is currently showing (empty = All). */
@@ -670,7 +851,7 @@ class AppStore(private val ctx: Context) {
     suspend fun homeProvider(): String = homeProviderFlow().first()
 
     suspend fun setHomeProvider(id: String) {
-        store.edit { it[K.HOME_PROVIDER] = id }
+        write("HOME_PROVIDER") { it[K.HOME_PROVIDER] = id }
     }
 
     // ---- Per-extension auto-translate (WebView pages → English) ----
@@ -684,7 +865,7 @@ class AppStore(private val ctx: Context) {
     suspend fun setTranslateProvider(id: String, enabled: Boolean) {
         val cur = translateProviders()
         val next = if (enabled) cur + id else cur - id
-        store.edit { it[K.TRANSLATE_PROVIDERS] = encodeStringList(next.toList()) }
+        write("TRANSLATE_PROVIDERS") { it[K.TRANSLATE_PROVIDERS] = encodeStringList(next.toList()) }
     }
 
     /** Persisted original→English translation pairs (title cache). */
@@ -692,7 +873,7 @@ class AppStore(private val ctx: Context) {
         store.data.map { parsePairs(it[K.TRANSLATE_CACHE]) }.first()
 
     suspend fun setTranslateCache(list: List<Pair<String, String>>) {
-        store.edit { it[K.TRANSLATE_CACHE] = encodePairs(list) }
+        write("TRANSLATE_CACHE") { it[K.TRANSLATE_CACHE] = encodePairs(list) }
     }
 
     private fun encodePairs(list: List<Pair<String, String>>): String {
@@ -722,7 +903,7 @@ class AppStore(private val ctx: Context) {
     suspend fun theme(): String = themeFlow().first()
 
     suspend fun setTheme(key: String) {
-        store.edit { it[K.THEME] = key }
+        write("THEME") { it[K.THEME] = key }
     }
 
     // ---- Accent colours (app + player) ----
@@ -736,7 +917,7 @@ class AppStore(private val ctx: Context) {
     suspend fun appAccent(): String = appAccentFlow().first()
 
     suspend fun setAppAccent(key: String) {
-        store.edit { it[K.APP_ACCENT] = key }
+        write("APP_ACCENT") { it[K.APP_ACCENT] = key }
         syncAccents()
     }
 
@@ -748,7 +929,7 @@ class AppStore(private val ctx: Context) {
     suspend fun playerAccent(): String = playerAccentFlow().first()
 
     suspend fun setPlayerAccent(key: String) {
-        store.edit { it[K.PLAYER_ACCENT] = key }
+        write("PLAYER_ACCENT") { it[K.PLAYER_ACCENT] = key }
         syncAccents()
     }
 
@@ -760,7 +941,7 @@ class AppStore(private val ctx: Context) {
     suspend fun themeLinked(): Boolean = themeLinkedFlow().first()
 
     suspend fun setThemeLinked(linked: Boolean) {
-        store.edit { it[K.THEME_LINKED] = linked }
+        write("THEME_LINKED") { it[K.THEME_LINKED] = linked }
         syncAccents()
     }
 
@@ -787,7 +968,7 @@ class AppStore(private val ctx: Context) {
     suspend fun playerControls(): String = playerControlsFlow().first()
 
     suspend fun setPlayerControls(json: String) {
-        store.edit { it[K.PLAYER_CONTROLS] = json }
+        write("PLAYER_CONTROLS") { it[K.PLAYER_CONTROLS] = json }
     }
 
     /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */
@@ -797,7 +978,7 @@ class AppStore(private val ctx: Context) {
     suspend fun enhancePreset(): String = enhancePresetFlow().first()
 
     suspend fun setEnhancePreset(key: String) {
-        store.edit { it[K.PLAYER_ENHANCE] = key }
+        write("PLAYER_ENHANCE") { it[K.PLAYER_ENHANCE] = key }
     }
 
     /**
@@ -812,7 +993,7 @@ class AppStore(private val ctx: Context) {
     suspend fun enhanceUnsupported(): Boolean = enhanceUnsupportedFlow().first()
 
     suspend fun setEnhanceUnsupported(value: Boolean) {
-        store.edit { it[K.PLAYER_ENHANCE_UNSUPPORTED] = value }
+        write("PLAYER_ENHANCE_UNSUPPORTED") { it[K.PLAYER_ENHANCE_UNSUPPORTED] = value }
     }
 
     // ---- In-app UI scale ----
@@ -826,7 +1007,7 @@ class AppStore(private val ctx: Context) {
     suspend fun uiScaleEnabled(): Boolean = uiScaleEnabledFlow().first()
 
     suspend fun setUiScaleEnabled(enabled: Boolean) {
-        store.edit { it[K.UI_SCALE_ENABLED] = enabled }
+        write("UI_SCALE_ENABLED") { it[K.UI_SCALE_ENABLED] = enabled }
         // Mirror into the synchronous cache so View-based screens (player,
         // WebView) and the next cold start pick the change up immediately.
         runCatching { UiScale.sync(ctx, enabled, uiScale()) }
@@ -839,7 +1020,7 @@ class AppStore(private val ctx: Context) {
     suspend fun uiScale(): Float = uiScaleFlow().first()
 
     suspend fun setUiScale(percent: Int) {
-        store.edit { it[K.UI_SCALE_PERCENT] = percent.coerceIn(70, 130) }
+        write("UI_SCALE_PERCENT") { it[K.UI_SCALE_PERCENT] = percent.coerceIn(70, 130) }
         runCatching { UiScale.sync(ctx, uiScaleEnabled(), uiScale()) }
     }
 
@@ -851,7 +1032,7 @@ class AppStore(private val ctx: Context) {
     suspend fun adEnabled(): Boolean = adEnabledFlow().first()
 
     suspend fun setAdEnabled(enabled: Boolean) {
-        store.edit { it[K.AD_ENABLED] = enabled }
+        write("AD_ENABLED") { it[K.AD_ENABLED] = enabled }
     }
 
     fun adListsFlow(): Flow<List<AdBlocker.HostList>> =
@@ -860,7 +1041,7 @@ class AppStore(private val ctx: Context) {
     suspend fun adLists(): List<AdBlocker.HostList> = adListsFlow().first()
 
     suspend fun setAdLists(list: List<AdBlocker.HostList>) {
-        store.edit { it[K.AD_LISTS] = encodeHostLists(list) }
+        write("AD_LISTS") { it[K.AD_LISTS] = encodeHostLists(list) }
     }
 
     fun adBlockFlow(): Flow<List<String>> =
@@ -869,7 +1050,7 @@ class AppStore(private val ctx: Context) {
     suspend fun adBlock(): List<String> = adBlockFlow().first()
 
     suspend fun setAdBlock(list: List<String>) {
-        store.edit { it[K.AD_BLOCK] = encodeStringList(list) }
+        write("AD_BLOCK") { it[K.AD_BLOCK] = encodeStringList(list) }
     }
 
     fun adWhiteFlow(): Flow<List<String>> =
@@ -878,7 +1059,7 @@ class AppStore(private val ctx: Context) {
     suspend fun adWhite(): List<String> = adWhiteFlow().first()
 
     suspend fun setAdWhite(list: List<String>) {
-        store.edit { it[K.AD_WHITE] = encodeStringList(list) }
+        write("AD_WHITE") { it[K.AD_WHITE] = encodeStringList(list) }
     }
 
     // ---- WebView safety (redirect + popup protection; default ON) ----
@@ -889,7 +1070,7 @@ class AppStore(private val ctx: Context) {
     suspend fun webviewRedirect(): Boolean = webviewRedirectFlow().first()
 
     suspend fun setWebviewRedirect(enabled: Boolean) {
-        store.edit { it[K.WEBVIEW_REDIRECT] = enabled }
+        write("WEBVIEW_REDIRECT") { it[K.WEBVIEW_REDIRECT] = enabled }
     }
 
     fun webviewPopupFlow(): Flow<Boolean> =
@@ -898,7 +1079,7 @@ class AppStore(private val ctx: Context) {
     suspend fun webviewPopup(): Boolean = webviewPopupFlow().first()
 
     suspend fun setWebviewPopup(enabled: Boolean) {
-        store.edit { it[K.WEBVIEW_POPUP] = enabled }
+        write("WEBVIEW_POPUP") { it[K.WEBVIEW_POPUP] = enabled }
     }
 
     /** Legacy preference: "Solve Cloudflare checks automatically" used to exist
@@ -912,7 +1093,7 @@ class AppStore(private val ctx: Context) {
     suspend fun cfAutoSolve(): Boolean = cfAutoSolveFlow().first()
 
     suspend fun setCfAutoSolve(enabled: Boolean) {
-        store.edit { it[K.CF_AUTO_SOLVE] = enabled }
+        write("CF_AUTO_SOLVE") { it[K.CF_AUTO_SOLVE] = enabled }
     }
 
     /**
@@ -939,7 +1120,7 @@ class AppStore(private val ctx: Context) {
     suspend fun extensionVerifyWebview(): Boolean = extensionVerifyWebviewFlow().first()
 
     suspend fun setExtensionVerifyWebview(allowed: Boolean) {
-        store.edit { it[K.EXT_VERIFY_WEBVIEW] = allowed }
+        write("EXT_VERIFY_WEBVIEW") { it[K.EXT_VERIFY_WEBVIEW] = allowed }
         // Apply immediately (not just on the next launch) so the choice takes
         // effect for the very next source search.
         runCatching { ExtensionVerifyGuard.apply(ctx, allowed) }
@@ -953,7 +1134,7 @@ class AppStore(private val ctx: Context) {
     suspend fun webviewRedirectAllow(): List<String> = webviewRedirectAllowFlow().first()
 
     suspend fun setWebviewRedirectAllow(list: List<String>) {
-        store.edit { it[K.WEBVIEW_REDIRECT_ALLOW] = encodeStringList(list) }
+        write("WEBVIEW_REDIRECT_ALLOW") { it[K.WEBVIEW_REDIRECT_ALLOW] = encodeStringList(list) }
     }
 
     // ---- WebView user agent (stock Android default vs custom) ----
@@ -969,7 +1150,7 @@ class AppStore(private val ctx: Context) {
     suspend fun webviewCustomUa(): String = webviewCustomUaFlow().first()
 
     suspend fun setWebViewUa(useDefault: Boolean, customUa: String) {
-        store.edit {
+        write("WEBVIEW_DEFAULT_UA") {
             it[K.WEBVIEW_DEFAULT_UA] = useDefault
             it[K.WEBVIEW_CUSTOM_UA] = customUa
         }
@@ -987,7 +1168,7 @@ class AppStore(private val ctx: Context) {
     suspend fun language(): String = languageFlow().first()
 
     suspend fun setLanguage(tag: String) {
-        store.edit { it[K.LANGUAGE] = tag }
+        write("LANGUAGE") { it[K.LANGUAGE] = tag }
     }
 
     // ---- Universal extractor (yt-dlp fallback) ----
@@ -998,7 +1179,7 @@ class AppStore(private val ctx: Context) {
     suspend fun ytdlpEnabled(): Boolean = ytdlpEnabledFlow().first()
 
     suspend fun setYtdlpEnabled(enabled: Boolean) {
-        store.edit { it[K.YTDLP_ENABLED] = enabled }
+        write("YTDLP_ENABLED") { it[K.YTDLP_ENABLED] = enabled }
     }
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {
@@ -1110,7 +1291,7 @@ class AppStore(private val ctx: Context) {
     suspend fun userscripts(): List<Userscript> = userscriptsFlow().first()
 
     suspend fun setUserscripts(list: List<Userscript>) {
-        store.edit { it[K.USERS] = encodeUserscripts(list) }
+        write("USERS") { it[K.USERS] = encodeUserscripts(list) }
     }
 
     private fun parseUserscripts(s: String?): List<Userscript> {
@@ -1171,7 +1352,7 @@ class AppStore(private val ctx: Context) {
      * caller's read-then-write atomic).
      */
     suspend fun saveProviders(list: List<ProviderConfig>) = providerWrites.withLock {
-        store.edit { it[K.PROVIDERS] = encodeProviders(list) }
+        write("PROVIDERS") { it[K.PROVIDERS] = encodeProviders(list) }
     }
 
     private val providerWrites = Mutex()
@@ -1191,7 +1372,7 @@ class AppStore(private val ctx: Context) {
         transform: (List<ProviderConfig>) -> List<ProviderConfig>,
     ): List<ProviderConfig> = providerWrites.withLock {
         var result: List<ProviderConfig> = emptyList()
-        store.edit { prefs ->
+        write("PROVIDERS") { prefs ->
             result = transform(parseProviders(prefs[K.PROVIDERS]))
             prefs[K.PROVIDERS] = encodeProviders(result)
         }
@@ -1200,7 +1381,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun addProvider(c: ProviderConfig) {
         providerWrites.withLock {
-            store.edit { prefs ->
+            write("PROVIDERS") { prefs ->
                 prefs[K.PROVIDERS] =
                     encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id != c.id } + c)
             }
@@ -1209,7 +1390,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun removeProvider(id: String) {
         providerWrites.withLock {
-            store.edit { prefs ->
+            write("PROVIDERS") { prefs ->
                 prefs[K.PROVIDERS] =
                     encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id != id })
             }
@@ -1218,7 +1399,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
         providerWrites.withLock {
-            store.edit { prefs ->
+            write("PROVIDERS") { prefs ->
                 prefs[K.PROVIDERS] = encodeProviders(
                     parseProviders(prefs[K.PROVIDERS])
                         .map { if (it.id == id) it.copy(enabled = enabled) else it },
@@ -1259,7 +1440,7 @@ class AppStore(private val ctx: Context) {
     }
 
     private suspend fun saveRepos(list: List<Cs3Repo>) {
-        store.edit { it[K.CS3_REPOS] = encodeRepos(dedupeRepos(list)) }
+        write("CS3_REPOS") { it[K.CS3_REPOS] = encodeRepos(dedupeRepos(list)) }
     }
 
     /**
@@ -1298,7 +1479,7 @@ class AppStore(private val ctx: Context) {
     /** Replaces the whole list — the editor always hands back the full set, so
      *  a create/rename/reorder is one atomic write. */
     suspend fun saveCollections(list: List<Collection>) {
-        store.edit { it[K.COLLECTIONS] = encodeCollections(list) }
+        write("COLLECTIONS") { it[K.COLLECTIONS] = encodeCollections(list) }
     }
 
     /** Adds [c] (or replaces the same-id entry) and returns the saved list. */
@@ -1326,7 +1507,7 @@ class AppStore(private val ctx: Context) {
         store.data.map { it[K.SEEDED_REPOS] ?: false }.first()
 
     suspend fun markReposSeeded() {
-        store.edit { it[K.SEEDED_REPOS] = true }
+        write("SEEDED_REPOS") { it[K.SEEDED_REPOS] = true }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =
@@ -1336,11 +1517,11 @@ class AppStore(private val ctx: Context) {
 
     suspend fun addFavorite(m: MediaItem) {
         val list = favorites().filter { it.uniqueId != m.uniqueId } + m
-        store.edit { it[K.FAVORITES] = encodeMedia(list) }
+        write("FAVORITES") { it[K.FAVORITES] = encodeMedia(list) }
     }
 
     suspend fun removeFavorite(id: String) {
-        store.edit { prefs ->
+        write("FAVORITES") { prefs ->
             prefs[K.FAVORITES] = encodeMedia(parseMedia(prefs[K.FAVORITES]).filter { f -> f.uniqueId != id })
             // Unfiling the title is part of removing it: leaving the mapping
             // behind would file the NEXT title saved under the same id.
@@ -1355,11 +1536,22 @@ class AppStore(private val ctx: Context) {
     suspend fun sites(): List<Site> = sitesFlow().first()
 
     suspend fun addSite(s: Site) {
-        store.edit { it[K.SITES] = encodeSites(sites().filter { it.url != s.url } + s) }
+        // The current list is read BEFORE the write. It used to be read inside
+        // the `edit` block (`sites()` → `store.data.first()`), and DataStore
+        // serves reads and writes through ONE actor: a read issued from inside a
+        // write's transform can never be answered, so the write never completes
+        // — and because that write holds the actor, EVERY later read and write
+        // in the whole app queues behind it forever. That is the reported
+        // "the app becomes buggy: settings stop saving, series show no episodes
+        // … fixed by closing and reopening it", and it is why the fix is to
+        // hoist the read out of the transaction.
+        val list = sites().filter { it.url != s.url } + s
+        write("SITES") { it[K.SITES] = encodeSites(list) }
     }
 
     suspend fun removeSite(url: String) {
-        store.edit { it[K.SITES] = encodeSites(sites().filter { it.url != url }) }
+        val list = sites().filter { it.url != url }
+        write("SITES") { it[K.SITES] = encodeSites(list) }
     }
 
     private fun encodeSites(list: List<Site>): String {
@@ -1386,7 +1578,7 @@ class AppStore(private val ctx: Context) {
     }
 
     suspend fun clearAll() {
-        store.edit { it.clear() }
+        write("every setting") { it.clear() }
     }
 
     // ---- Backup & restore (Settings → Backup & Restore) ----
@@ -1413,7 +1605,7 @@ class AppStore(private val ctx: Context) {
      */
     suspend fun restorePreferences(records: List<PrefRecord>) {
         if (records.isEmpty()) return
-        store.edit { prefs ->
+        write("the restored backup") { prefs ->
             for (r in records) applyRecord(prefs, r)
         }
     }
@@ -1466,7 +1658,7 @@ class AppStore(private val ctx: Context) {
      *  single DataStore edit so the 5-second save tick and the onStop/onDestroy
      *  write can't race and drop one of two different entries. */
     suspend fun addHistory(e: HistoryEntry) {
-        store.edit { prefs ->
+        write("HISTORY") { prefs ->
             val cur = parseHistory(prefs[K.HISTORY])
             val next = (listOf(e) + cur.filter { it.uniqueKey != e.uniqueKey }).take(200)
             prefs[K.HISTORY] = encodeHistory(next)
@@ -1474,13 +1666,13 @@ class AppStore(private val ctx: Context) {
     }
 
     suspend fun clearHistory() {
-        store.edit { it[K.HISTORY] = "[]" }
+        write("HISTORY") { it[K.HISTORY] = "[]" }
     }
 
     /** Remove ONE entry — a single movie, or a single episode of a series
      *  (episodes of one title share a mediaId, so the key is per-video). */
     suspend fun removeHistory(uniqueKey: String) {
-        store.edit { prefs ->
+        write("HISTORY") { prefs ->
             val cur = parseHistory(prefs[K.HISTORY])
             prefs[K.HISTORY] = encodeHistory(cur.filter { it.uniqueKey != uniqueKey })
         }
@@ -1492,7 +1684,7 @@ class AppStore(private val ctx: Context) {
     suspend fun historyPaused(): Boolean = historyPausedFlow().first()
 
     suspend fun setHistoryPaused(paused: Boolean) {
-        store.edit { it[K.HISTORY_PAUSED] = paused }
+        write("HISTORY_PAUSED") { it[K.HISTORY_PAUSED] = paused }
     }
 
     /** When true, the Home screen hides its "Continue Watching" row entirely
@@ -1503,7 +1695,7 @@ class AppStore(private val ctx: Context) {
     suspend fun hideContinue(): Boolean = hideContinueFlow().first()
 
     suspend fun setHideContinue(hide: Boolean) {
-        store.edit { it[K.HIDE_CONTINUE] = hide }
+        write("HIDE_CONTINUE") { it[K.HIDE_CONTINUE] = hide }
     }
 
     // ---- Last-used server per video ----
@@ -1524,7 +1716,7 @@ class AppStore(private val ctx: Context) {
         if (key.isBlank()) return
         val cur = lastSourcesFlow().first().toMutableMap()
         cur[key] = LastSource(url, name, headerVariant)
-        store.edit { it[K.LAST_SOURCE] = encodeLastSources(cur) }
+        write("LAST_SOURCE") { it[K.LAST_SOURCE] = encodeLastSources(cur) }
     }
 
     private fun encodeLastSources(map: Map<String, LastSource>): String {
@@ -1569,7 +1761,7 @@ class AppStore(private val ctx: Context) {
     suspend fun addElementBlock(selector: String) {
         val cur = elementBlocks()
         if (selector in cur) return
-        store.edit { it[K.ELEMENT_BLOCKS] = encodeStringList((cur + selector).take(200)) }
+        write("ELEMENT_BLOCKS") { it[K.ELEMENT_BLOCKS] = encodeStringList((cur + selector).take(200)) }
     }
 
     /** Removes and returns the most recently blocked selector (null if none). */
@@ -1577,12 +1769,12 @@ class AppStore(private val ctx: Context) {
         val cur = elementBlocks()
         if (cur.isEmpty()) return null
         val last = cur.last()
-        store.edit { it[K.ELEMENT_BLOCKS] = encodeStringList(cur.dropLast(1)) }
+        write("ELEMENT_BLOCKS") { it[K.ELEMENT_BLOCKS] = encodeStringList(cur.dropLast(1)) }
         return last
     }
 
     suspend fun clearElementBlocks() {
-        store.edit { it[K.ELEMENT_BLOCKS] = "[]" }
+        write("ELEMENT_BLOCKS") { it[K.ELEMENT_BLOCKS] = "[]" }
     }
 
     private fun encodeHistory(list: List<HistoryEntry>): String {

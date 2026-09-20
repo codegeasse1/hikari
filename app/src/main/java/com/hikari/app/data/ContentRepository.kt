@@ -36,6 +36,32 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * How wide a lookup is allowed to search — Settings → Playback → Server search.
+ *
+ * [allExtensions] is the app's long-standing behaviour and the default: a title
+ * is searched across every installed extension at once, so whichever repo has a
+ * working server wins, and the player's "Select server" list gathers what all of
+ * them found.
+ *
+ * Off, a lookup is confined to the ONE extension the title was opened from —
+ * the CloudStream model, where a film plays from the repo you picked and its own
+ * hosts, and nothing else is contacted: no cross-extension search, no background
+ * sweep, no episode list borrowed from another site. For someone who installed a
+ * hundred extensions and wants a title to play from the one they chose (and not
+ * spend a minute asking the other ninety-nine), that is the honest switch.
+ *
+ * A process-wide flag rather than a parameter because the pass, the sweep, the
+ * episode fallback and the player's status line all have to agree on it within
+ * one lookup, and only the store knows the user's choice. Mirrored from the
+ * store at startup and on every change (see HikariApp), so the search never has
+ * to await DataStore mid-pass.
+ */
+object SearchScope {
+    @Volatile
+    var allExtensions: Boolean = true
+}
+
 class ContentRepository(private val manager: ProviderManager) {
 
     /**
@@ -1885,7 +1911,18 @@ class ContentRepository(private val manager: ProviderManager) {
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
             val origin = manager.byId(item.providerId)
-            val primaryTargets = if (origin?.config?.type == ProviderType.STREMIO) {
+            // Settings → Playback → Server search. Off ("only this extension",
+            // the CloudStream model) means the lookup never leaves the repo the
+            // title was opened from: no sibling repos of the same engine, no
+            // stremio addons, no nuvio engines, no cross pass, no sweep. The
+            // origin is the only thing asked — see [SearchScope].
+            val scopeAll = SearchScope.allExtensions
+            val primaryTargets = if (!scopeAll) {
+                // The title's own extension, and nothing else. It is still asked
+                // FIRST (and re-asked in the background if it does not answer),
+                // because it is now the only source this lookup has.
+                listOfNotNull(origin)
+            } else if (origin?.config?.type == ProviderType.STREMIO) {
                 // Like the real client: ask every Stremio addon plus the origin.
                 all.filter { p ->
                     p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
@@ -1900,7 +1937,12 @@ class ContentRepository(private val manager: ProviderManager) {
             // source servers alongside the origin. Cheap pre-filter first,
             // then sorted so the historically-fast providers get first shot
             // at the parallel engine slots (NUVIO_PRIORITY order).
-            val nuvioTargets = if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+            val nuvioTargets = if (!scopeAll) {
+                // "Only this extension": a nuvio engine is another source, so
+                // none of them are asked (the origin, if it IS one, is already
+                // in [primaryTargets]).
+                emptyList()
+            } else if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
                     .sortedWith(
                         compareBy(
@@ -1953,7 +1995,14 @@ class ContentRepository(private val manager: ProviderManager) {
             // the pass must ask EXACTLY what it reports — and everything that
             // was installed when the lookup started, so a provider can no longer
             // be left out of a pass by a list that moved under it.
-            val crossTargets = crossExtensionTargets(item, origin, all, tally)
+            val crossTargets = if (scopeAll) {
+                crossExtensionTargets(item, origin, all, tally)
+            } else {
+                // "Server search: only this extension" — there is nothing else
+                // to search, so the cross pass and every sweep below are skipped
+                // rather than launched and left to find nothing.
+                emptyList()
+            }
             // Other repos of the SAME engine as the origin (e.g. the user's other
             // CloudStream repos when the title was opened from one) are pulled out
             // and searched in the FIRST pass, right beside the origin: they search
@@ -4491,6 +4540,12 @@ class ContentRepository(private val manager: ProviderManager) {
      */
     private suspend fun episodesFromExtensions(item: MediaItem): List<Episode>? {
         if (item.type != MediaType.SERIES) return null
+        // "Server search: only this extension" (Settings → Playback): borrowing
+        // another site's episode list is exactly the cross-extension behaviour
+        // that switch turns off — and asking for it here would have made the
+        // option leak anyway (the detail page would quietly scrape every other
+        // extension the moment the origin's own list came back thin).
+        if (!SearchScope.allExtensions) return null
         val originType = manager.byId(item.providerId)?.config?.type
         val candidates = manager.providers.value
             .filter { p ->

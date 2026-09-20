@@ -103,9 +103,16 @@ class MainActivity : AppCompatActivity() {
         // bar. Settings → App Layout can turn that off; the mirror is seeded
         // here because onResume/onWindowFocusChanged re-apply the mode and
         // cannot await DataStore.
+        // Bounded: this is a blocking settings read on the main thread during
+        // onCreate. Every other store read in the app is async; this one cannot
+        // be (onResume re-applies the mode and cannot await DataStore), so it
+        // gets a timeout instead — a wedged store must never be able to hold the
+        // window's first frame (see HikariApp.STARTUP_STORE_READ_MS).
         fullscreenOff = runCatching {
-            kotlinx.coroutines.runBlocking { store.fullscreenOff() }
-        }.getOrDefault(false)
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(3_000L) { store.fullscreenOff() }
+            }
+        }.getOrNull() ?: false
         applyImmersiveMode()
         setContent {
             val scope = rememberCoroutineScope()

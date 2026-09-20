@@ -325,15 +325,28 @@ fun PosterArt(
             )
         }
         if (halo > 0) {
+            // The halo is a TINY decode of the same artwork, scaled back up —
+            // see [PosterLoader.haloModel]. That is what makes it show on every
+            // Android version: `Modifier.blur` (used here before) is a no-op
+            // below API 31, so identical settings gave one user a coloured halo
+            // and another flat artwork. On 31+ the blur is applied on top as
+            // well, since it costs nothing and softens the upscale further.
+            val haloModel = remember(model, halo) { PosterLoader.haloModel(model, halo) }
             PosterImage(
-                model = model,
+                model = haloModel,
                 contentDescription = null,
                 modifier = Modifier
                     .matchParentSize()
                     // Grown past the cell so the halo peeks out around the art
                     // instead of being hidden behind it.
                     .scale(1.08f)
-                    .blur(halo.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                    .then(
+                        if (android.os.Build.VERSION.SDK_INT >= 31) {
+                            Modifier.blur(halo.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                        } else {
+                            Modifier
+                        },
+                    )
                     .alpha(0.78f),
                 contentScale = ContentScale.Crop,
             )

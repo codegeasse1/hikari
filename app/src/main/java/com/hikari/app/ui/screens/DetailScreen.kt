@@ -138,6 +138,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -174,6 +175,17 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  item genuinely has none", so a series is never searched with no episode. */
     private val _episodesLoaded = MutableStateFlow(false)
     val episodesLoaded: StateFlow<Boolean> = _episodesLoaded.asStateFlow()
+
+    /** True when the episode lookup came back empty even after every retry —
+     *  i.e. the extension could not answer, rather than "this show has no
+     *  episodes". The page shows a real, tappable "couldn't load" line for that
+     *  instead of the flat "No episode list available.", which is what made a
+     *  cold plugin look like an empty series (see [loadEpisodesFor]). */
+    private val _episodesFailed = MutableStateFlow(false)
+    val episodesFailed: StateFlow<Boolean> = _episodesFailed.asStateFlow()
+
+    /** The page's own "retry the episode list" tap (see [retryEpisodes]). */
+    private var episodeRetryJob: Job? = null
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -525,7 +537,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 _episodesLoading.value = true
                 try {
-                    _episodes.value = runCatching { repo.episodesFor(meta) }.getOrNull()
+                    // Retried, never silently final — see [loadEpisodesFor]. This
+                    // used to be a bare `runCatching { repo.episodesFor(meta) }`
+                    // whose null (a failed load, or a CANCELLED one, since
+                    // runCatching swallows CancellationException too) painted
+                    // "Episodes (0) — No episode list available." over a series
+                    // that has plenty of episodes — and that verdict stayed for
+                    // the life of the screen.
+                    _episodes.value = loadEpisodesFor(meta)
                 } finally {
                     _episodesLoading.value = false
                     _episodesLoaded.value = true
@@ -539,6 +558,86 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             prefetchFirstStreams(item)
         }
         loadJob.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+    }
+
+    /**
+     * The episode list for [item], asked again when it comes back empty.
+     *
+     * An empty answer used to be FINAL for the whole screen: one cold plugin
+     * runtime (an Aniyomi extension pays an APK class load before its first
+     * answer; a .hiki/.cs3 plugin spins its runtime and its site session up) or
+     * one dropped request put "Episodes (0) — No episode list available." on a
+     * series that plainly has episodes — and only closing and reopening the app
+     * cleared it, which is precisely the reported "sometimes I click a series and
+     * it shows no episode, and it is fine after I restart the app": the retry the
+     * user performed by hand was really the FIRST attempt against a warm runtime.
+     *
+     * So the lookup is retried here instead, with a pause long enough for a cold
+     * runtime to finish coming up. When even the retries come back empty,
+     * [episodesFailed] is set and the page offers a tappable retry rather than a
+     * sentence that reads like the show has no episodes at all.
+     *
+     * Cancellation is NEVER swallowed. `runCatching` around this call used to do
+     * exactly that: a screen left mid-load wrote an empty list, i.e. a
+     * "no episodes" verdict for a lookup that had simply been cancelled.
+     */
+    private suspend fun loadEpisodesFor(item: MediaItem): List<Episode> {
+        // A movie (or an item whose type is still unknown) has no episode list
+        // to retry — one ask, and its answer stands.
+        val tries = if (item.type == MediaType.SERIES) EPISODE_LOAD_TRIES else 1
+        var got: List<Episode> = emptyList()
+        for (attempt in 1..tries) {
+            val at = System.currentTimeMillis()
+            got = try {
+                repo.episodesFor(item).orEmpty()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                com.hikari.app.data.Logs.log(
+                    "Episodes",
+                    "\"${item.title}\" episode list threw on attempt $attempt " +
+                        "(${t.javaClass.simpleName}: ${t.message})",
+                )
+                emptyList()
+            }
+            if (got.isNotEmpty()) {
+                if (attempt > 1) {
+                    com.hikari.app.data.Logs.log(
+                        "Episodes",
+                        "\"${item.title}\": ${got.size} episode(s) on attempt $attempt — " +
+                            "the first ${attempt - 1} attempt(s) came back empty",
+                    )
+                }
+                _episodesFailed.value = false
+                return got
+            }
+            com.hikari.app.data.Logs.log(
+                "Episodes",
+                "\"${item.title}\": no episode list on attempt $attempt of $tries " +
+                    "(${System.currentTimeMillis() - at}ms, type ${item.type})",
+            )
+            if (attempt < tries) delay(EPISODE_LOAD_PAUSE_MS * attempt)
+        }
+        // Empty after every attempt: the extension could not answer. The page
+        // says so (and offers a retry) instead of implying the series has none.
+        _episodesFailed.value = true
+        return got
+    }
+
+    /** Re-runs the episode lookup for the page on screen — the page's own
+     *  "couldn't load the episode list" tap. */
+    fun retryEpisodes() {
+        val item = _meta.value ?: return
+        episodeRetryJob?.cancel()
+        episodeRetryJob = viewModelScope.launch {
+            _episodesLoading.value = true
+            try {
+                _episodes.value = loadEpisodesFor(item)
+            } finally {
+                _episodesLoading.value = false
+                _episodesLoaded.value = true
+            }
+        }
     }
 
     private suspend fun loadShelves(item: MediaItem) {
@@ -974,6 +1073,31 @@ private const val STREAMS_QUIET_MS = 12_000L
  *  that never comes back at all costs the full 45s. */
 private const val ORIGIN_PLAY_GRACE_MS = 45_000L
 
+/**
+ * How long playback waits for the title's own extension when the user chose
+ * "play as soon as the first server is found" (the default) and servers are
+ * ALREADY available from somewhere else.
+ *
+ * This is the fix for "it had 70 servers and was still on the searching screen":
+ * the origin's own link is worth a moment — it is the extension the user opened
+ * the title from, and by then its runtime is warm from browsing — but it is not
+ * worth a server list sitting in hand. Three seconds is long enough for a warm
+ * repo to answer and short enough that the video starts while the rest of the
+ * search continues in the background (its finds still stream into "Select
+ * server", and an origin server that lands later is still moved to the top of
+ * the list).
+ */
+private const val ORIGIN_HEAD_START_MS = 3_000L
+
+/**
+ * The BACKSTOP for that case: how long the origin is given in total for "play as
+ * soon as the first server is found" when no other server has arrived either.
+ * With nothing to play there is nothing to start, so this window costs the user
+ * nothing at all — it only decides when the player stops waiting for the origin
+ * and says so.
+ */
+private const val ORIGIN_INSTANT_GRACE_MS = 20_000L
+
 /** How long a prefetched source list may be reused before it must be resolved
  *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
  *  a detail page left open for a few minutes used to replay those dead links on
@@ -987,6 +1111,23 @@ private const val STREAM_CACHE_TTL_MS = 300_000L
  *  already open on its title card for the whole wait, so the tap still feels
  *  instant — this only decides which episode the source search runs for. */
 private const val EPISODE_WAIT_MS = 25_000L
+
+/**
+ * How many times the episode list is asked for before the page accepts that the
+ * extension could not answer (see DetailViewModel.loadEpisodesFor).
+ *
+ * Three, because the failure this exists for is a COLD runtime: the first ask
+ * pays an APK class load or a plugin runtime boot and can come back empty simply
+ * because nothing was ready, and the second ask — against what the first one
+ * warmed — is the one that works. That is exactly the user's own workaround
+ * ("it fixed after I closed the app and opened it again"), done here instead of
+ * making them do it.
+ */
+private const val EPISODE_LOAD_TRIES = 3
+
+/** Pause between those attempts. Long enough for a cold runtime to come up,
+ *  short enough that a genuinely empty series does not sit on a spinner. */
+private const val EPISODE_LOAD_PAUSE_MS = 1_500L
 
 /**
  * Titles an automatic resume has ALREADY been started for, and when.
@@ -1043,6 +1184,10 @@ fun DetailScreen(
     val meta by vm.meta.collectAsState()
     val episodes by vm.episodes.collectAsState()
     val episodesLoading by vm.episodesLoading.collectAsState()
+    // True when the episode lookup failed outright (every retry came back
+    // empty) — the page then says "couldn't load" and offers a retry instead of
+    // claiming the series has no episodes (see DetailViewModel.loadEpisodesFor).
+    val episodesFailed by vm.episodesFailed.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
     val searchedProviders by vm.searchedProviders.collectAsState()
@@ -1235,6 +1380,12 @@ fun DetailScreen(
     // disagree (see [LoadingStyles] and PlayerActivity.showLoadingBanner).
     val loadingStyleFlow = remember { app.store.loadingStyleFlow() }
     val loadingStyleSetting by loadingStyleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
+    // The treatment drawn over that card — handed over the same way, so the
+    // detail page's cover and the player's cover stay identical through the
+    // hand-off (see [com.hikari.app.ui.LoadingEffects]).
+    val loadingEffectFlow = remember { app.store.loadingEffectFlow() }
+    val loadingEffectSetting by loadingEffectFlow
+        .collectAsState(initial = com.hikari.app.ui.LoadingEffects.NONE)
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1335,6 +1486,7 @@ fun DetailScreen(
                 )
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
+                putExtra("loadingEffect", loadingEffectSetting)
                 putExtra("startAfterServers", startAfterServers)
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
@@ -1345,18 +1497,35 @@ fun DetailScreen(
                 // the link the user actually asked for is the link that plays.
                 // 0 when that extension is disabled or uninstalled — it is not
                 // in [streamTargets], so there would be nothing to wait for.
+                //
+                // HOW LONG that hold lasts depends on the choice the user made,
+                // and that is the fix for "it had 70 servers and still sat on the
+                // loading screen": with "play as soon as the first server is
+                // found" (the default) the hold is only a HEAD START — a few
+                // seconds for the origin's already-warm runtime to answer — and
+                // the moment any playable server is in hand the video starts,
+                // while the origin keeps working in the background and its
+                // servers still land at the top of the list. The long backstop
+                // is for "wait for more servers first", where the user has asked
+                // for exactly that patience.
+                val originSearched =
+                    providers.firstOrNull { it.config.id == livePid }?.config?.enabled == true
                 putExtra(
                     "originGraceMs",
-                    // [livePid] is the provider this page actually resolved to —
-                    // the extension the title was opened from, or its live
-                    // replacement if that one is gone. A disabled or missing
-                    // one is not in the search at all, so there is nothing to
-                    // hold the first start for.
-                    // (This deliberately does NOT use [liveId]: that is the
-                    // random live-session id, which never matches a provider,
-                    // so the hold silently never happened.)
-                    if (providers.firstOrNull { it.config.id == livePid }?.config?.enabled == true)
-                        ORIGIN_PLAY_GRACE_MS.toInt() else 0
+                    if (!originSearched) 0
+                    else if (playWaitServers) ORIGIN_PLAY_GRACE_MS.toInt()
+                    // Short: the head start below is what actually ends the
+                    // hold. This is only the "the origin never answers at all"
+                    // backstop, so it can be generous without costing the user
+                    // anything.
+                    else ORIGIN_INSTANT_GRACE_MS.toInt()
+                )
+                // The head start itself: how long playback will wait for the
+                // origin once servers are ALREADY available. 0 with "wait for
+                // more servers first" (that path uses the full grace window).
+                putExtra(
+                    "originHeadStartMs",
+                    if (originSearched && !playWaitServers) ORIGIN_HEAD_START_MS.toInt() else 0
                 )
                 putExtra("openDownload", wantsDownload)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
@@ -1515,7 +1684,16 @@ fun DetailScreen(
                 val searchable = providers.count { it.config.enabled }
                 StreamsLive.setStatus(
                     sid,
-                    "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…",
+                    // "Search all installed extensions" off (Settings → Playback
+                    // & Servers → Server search) means exactly ONE extension is
+                    // being asked, and saying "Searching 257 extensions…" over a
+                    // single-repo lookup would be a plain lie on the only line
+                    // the user can see.
+                    if (!com.hikari.app.data.SearchScope.allExtensions) {
+                        "Searching your extension for servers…"
+                    } else {
+                        "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…"
+                    },
                 )
                 // Which episode the search runs for: the tapped one, or episode 1
                 // when the origin addon was still listing episodes. The player is
@@ -1826,18 +2004,33 @@ fun DetailScreen(
                 // a lambda so the sweep's own watcher below can use the very same
                 // wording if the sweep comes back empty a minute later.
                 val noResultNote = {
+                    val scoped = !com.hikari.app.data.SearchScope.allExtensions
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
                     val note = buildString {
-                        append("No playable server found after searching $enabledN ")
-                        append(if (enabledN == 1) "extension" else "extensions")
+                        if (scoped) {
+                            // "Only this extension" is on, so the lookup's verdict
+                            // is about ONE repo — say that, and say why it might
+                            // be empty when the user knows other extensions have
+                            // the title.
+                            append("No playable server found in the extension this title came from")
+                        } else {
+                            append("No playable server found after searching $enabledN ")
+                            append(if (enabledN == 1) "extension" else "extensions")
+                        }
                         // Only worth saying when a real number of extensions is
                         // switched off — "only 256 of your 257" is noise, and it
                         // made a normal empty result read like a configuration
                         // problem.
-                        if (installedN - enabledN >= 5) {
+                        if (!scoped && installedN - enabledN >= 5) {
                             append(" — ${installedN - enabledN} of your installed extensions are turned off")
+                        }
+                        if (scoped) {
+                            append(
+                                "\nOnly the extension this title came from is searched " +
+                                    "(Settings → Playback & Servers → Server search)."
+                            )
                         }
                         // Across the whole pass: how many extensions were asked,
                         // how many answered with servers, and why the rest came
@@ -1846,8 +2039,10 @@ fun DetailScreen(
                         // Extensions behind a verification wall are left out of
                         // the pass (and of this count) entirely, so no host name
                         // and no Cloudflare wording ever appears here.
-                        com.hikari.app.data.ContentRepository.crossSummary()?.let {
-                            append("\n").append(it)
+                        if (!scoped) {
+                            com.hikari.app.data.ContentRepository.crossSummary()?.let {
+                                append("\n").append(it)
+                            }
                         }
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }
@@ -2487,12 +2682,37 @@ fun DetailScreen(
                                     )
                                 }
                             } else {
-                                Text(
-                                    tr("No episode list available."),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
+                                // "Couldn't load" and "there are none" are
+                                // different facts, and the page must not present
+                                // the first as the second: an extension whose
+                                // runtime cold-started (or a request that
+                                // dropped) used to leave "No episode list
+                                // available." over a series with a full episode
+                                // list, with no way out but closing the app. Now
+                                // the failure says so and offers the retry.
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                    Text(
+                                        if (episodesFailed) {
+                                            tr("Couldn't load the episode list from this extension.")
+                                        } else {
+                                            tr("No episode list available.")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (episodesFailed) {
+                                        Spacer(Modifier.height(6.dp))
+                                        OutlinedButton(
+                                            onClick = { vm.retryEpisodes() },
+                                            contentPadding = PaddingValues(
+                                                horizontal = 14.dp,
+                                                vertical = 4.dp,
+                                            ),
+                                        ) {
+                                            Text(tr("Try again"))
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -2803,11 +3023,12 @@ private fun PlayLoadingBanner(
     image: String?,
 ) {
     val style = rememberLoadingStyle()
+    val effect = rememberLoadingEffect()
     when (LoadingStyles.normalize(style)) {
-        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail)
-        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image)
-        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image)
-        else -> CinematicLoadingCard(title, episodeLabel, detail, image)
+        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, effect)
+        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, effect)
+        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image, effect)
+        else -> CinematicLoadingCard(title, episodeLabel, detail, image, effect)
     }
 }
 
@@ -2819,6 +3040,16 @@ private fun rememberLoadingStyle(): String {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
     val flow = remember(app) { app.store.loadingStyleFlow() }
     return remember(flow) { flow }.collectAsState(initial = LoadingStyles.CINEMATIC).value
+}
+
+/** The treatment drawn over that card (Settings → App Layout → Loading screen →
+ *  Effect), read the same way — see [com.hikari.app.ui.LoadingEffects]. */
+@Composable
+private fun rememberLoadingEffect(): String {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
+    val flow = remember(app) { app.store.loadingEffectFlow() }
+    return remember(flow) { flow }
+        .collectAsState(initial = com.hikari.app.ui.LoadingEffects.NONE).value
 }
 
 /**
@@ -2885,6 +3116,139 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
     }
 }
 
+/**
+ * The chosen loading treatment, drawn over whichever card the user picked —
+ * Settings → App Layout → Loading screen → Effect (see [LoadingEffects]).
+ *
+ * One implementation for all four styles, so "Minimal + gallery frame" and
+ * "Spotlight + sheen" are exactly the same drawing code. Every effect is pure
+ * paint on top of the cover the style already draws: no extra image load, no
+ * extra network request, and the style's own motion (the breathing title, the
+ * drifting backdrop) keeps running underneath.
+ *
+ * The two quiet styles were reported as too plain — "minimal and spotlight is so
+ * simple, it just shows the title zooming in and out" — and this is the answer:
+ * the same signature details a poster card can wear, on the loading card.
+ *
+ * [accent] is the colour the CARD is using for its own title and spinner (the
+ * brand gold on Cinematic, the theme accent on the rest), so the treatment
+ * belongs to the card it is drawn over instead of fighting it.
+ */
+@Composable
+private fun LoadingCoverEffect(effect: String, accent: Color) {
+    when (com.hikari.app.ui.LoadingEffects.normalize(effect)) {
+        com.hikari.app.ui.LoadingEffects.SHEEN -> {
+            // A band of light crossing the cover, the way a glossy print does
+            // when the light catches it.
+            val clock = rememberInfiniteTransition(label = "loading-sheen")
+            val sweep by clock.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(2800, easing = LinearEasing)),
+                label = "sweep",
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // Read INSIDE the layer: a moving sheen invalidates this
+                        // drawing layer only, never the composition.
+                        translationX = -size.width + sweep * size.width * 2f
+                        rotationZ = 16f
+                    }
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.16f),
+                                Color.Transparent,
+                            )
+                        )
+                    )
+            )
+        }
+
+        com.hikari.app.ui.LoadingEffects.AURA -> {
+            // A ring of accent light behind the title that breathes.
+            val clock = rememberInfiniteTransition(label = "loading-aura")
+            val breathe by clock.animateFloat(
+                initialValue = 0.25f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(1700, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "breathe",
+            )
+            Canvas(Modifier.fillMaxSize()) {
+                val r = kotlin.math.min(size.width, size.height) * 0.30f
+                val center = Offset(size.width / 2f, size.height * 0.42f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(accent.copy(alpha = 0.22f * breathe), Color.Transparent),
+                        center = center,
+                        radius = r,
+                    ),
+                    radius = r,
+                    center = center,
+                )
+                drawCircle(
+                    color = accent.copy(alpha = 0.16f + 0.38f * breathe),
+                    radius = r,
+                    center = center,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
+                )
+            }
+        }
+
+        com.hikari.app.ui.LoadingEffects.FRAME -> {
+            // A gallery mat: the card sits inside a hairline mount, the way a
+            // print does in a frame.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(14.dp)
+                    .border(
+                        1.dp,
+                        Color.White.copy(alpha = 0.22f),
+                        RoundedCornerShape(20.dp),
+                    )
+            )
+        }
+
+        com.hikari.app.ui.LoadingEffects.GLOW -> {
+            // The accent bloom behind the title, swelling and fading.
+            val clock = rememberInfiniteTransition(label = "loading-glow")
+            val pool by clock.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(3200, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "pool",
+            )
+            Canvas(Modifier.fillMaxSize()) {
+                val r = kotlin.math.min(size.width, size.height) * (0.34f + pool * 0.10f)
+                val center = Offset(size.width / 2f, size.height * 0.42f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            accent.copy(alpha = 0.18f + 0.22f * pool),
+                            accent.copy(alpha = 0.10f * pool),
+                            Color.Transparent,
+                        ),
+                        center = center,
+                        radius = r,
+                    ),
+                    radius = r,
+                    center = center,
+                )
+            }
+        }
+    }
+}
+
 /** CINEMATIC — the original look: the backdrop drifting slowly under a heavy
  *  scrim, the title breathing in and out, the status line at the bottom. */
 @Composable
@@ -2893,6 +3257,7 @@ private fun CinematicLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    effect: String,
 ) {
     val transition = rememberInfiniteTransition()
     val breath by transition.animateFloat(
@@ -2962,6 +3327,9 @@ private fun CinematicLoadingCard(
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
         }
+        // The chosen loading treatment, over everything the style just drew
+        // (Settings → App Layout → Loading screen → Effect).
+        LoadingCoverEffect(effect, Color(0xFFF5C569))
     }
 }
 
@@ -3010,6 +3378,7 @@ private fun SpotlightLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    effect: String,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val glowStart = MaterialTheme.colorScheme.tertiary
@@ -3064,6 +3433,9 @@ private fun SpotlightLoadingCard(
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(accent, Color(0xCCFFFFFF))
         }
+        // The chosen loading treatment — on this style the accent blooms are
+        // drawn over the title's own pool of light.
+        LoadingCoverEffect(effect, accent)
     }
 }
 
@@ -3076,6 +3448,7 @@ private fun PosterLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    effect: String,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val transition = rememberInfiniteTransition()
@@ -3151,6 +3524,8 @@ private fun PosterLoadingCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        // The chosen loading treatment, over the glass card and its poster.
+        LoadingCoverEffect(effect, accent)
     }
 }
 
@@ -3161,6 +3536,7 @@ private fun MinimalLoadingCard(
     title: String,
     episodeLabel: String?,
     detail: String?,
+    effect: String,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     Box(
@@ -3199,6 +3575,9 @@ private fun MinimalLoadingCard(
             Spacer(Modifier.height(26.dp))
             LoadingStatusLine(accent, MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        // The chosen loading treatment. On this style it is the whole point:
+        // without it the card is a title and a spinner and nothing else.
+        LoadingCoverEffect(effect, accent)
     }
 }
 

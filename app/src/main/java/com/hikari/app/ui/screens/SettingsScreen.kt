@@ -143,6 +143,7 @@ import com.hikari.app.player.PlayerSkins
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
+import com.hikari.app.ui.LoadingEffects
 import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterEffects
 import com.hikari.app.ui.components.ChoiceDialog
@@ -217,6 +218,18 @@ private enum class SettingsFolder(
         "Player",
         "Playback start & loading screen",
         Icons.Filled.PlayArrow,
+    ),
+    // Where a title's SERVERS come from — the other half of "playing a video",
+    // kept apart from the Player folder (which is about the controls and the
+    // look of the player itself). This is the CloudStream-shaped question: do a
+    // lookup's servers come from the extension you opened the title from, or
+    // from every extension you have installed? It also carries the playback
+    // start choice, so "what plays and when" is one folder.
+    PLAYBACK_SERVERS(
+        "servers",
+        "Playback & Servers",
+        "Where servers come from & when playback starts",
+        Icons.Filled.SmartDisplay,
     ),
     NETWORK(
         "network",
@@ -524,6 +537,13 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { PlayerUiCard(app) } }
                     item { SettingsCard { PlaybackStartCard(app) } }
                     item { SettingsCard { LoadingBannerCard(app) } }
+                }
+                SettingsFolder.PLAYBACK_SERVERS -> {
+                    item { SettingsCard(top = 2.dp) { ServerSearchCard(app) } }
+                    // The same card the Player folder shows, by the same store
+                    // values — both stay in step, and "what plays, and when"
+                    // reads as one subject.
+                    item { SettingsCard { PlaybackStartCard(app) } }
                 }
                 SettingsFolder.NETWORK -> {
                     item {
@@ -2486,13 +2506,80 @@ private fun PlaybackStartCard(app: HikariApp) {
     }
 }
 
+/**
+ * Settings → Playback & Servers → Server search.
+ *
+ * The CloudStream-shaped question: when a title is opened, whose servers may it
+ * be played from? On (the default, and how Hikari has always worked) every
+ * installed extension is searched and the player's "Select server" list gathers
+ * what all of them found. Off, a lookup never leaves the extension the title was
+ * opened from — its own repo and its own hosts, nothing else — which is what
+ * CloudStream itself does, and what someone with a hundred installed extensions
+ * may well prefer: a definite source, no minute-long cross-search, no servers
+ * from repos they did not ask.
+ *
+ * This is not only the cross pass: the background sweep and the "borrow another
+ * site's episode list" fallback are part of the same behaviour and are switched
+ * off with it (see [com.hikari.app.data.SearchScope]).
+ */
+@Composable
+private fun ServerSearchCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.searchAllExtensionsFlow() }
+    val all by flow.collectAsState(initial = true)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Extension, tr("Server search"))
+        SettingsToggle(
+            label = tr("Search all installed extensions"),
+            supporting = if (all) {
+                tr("Every installed extension is asked for servers, for every title")
+            } else {
+                tr("Only the extension the title was opened from")
+            },
+            checked = all,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setSearchAllExtensions(on) } }
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (all) {
+                tr(
+                    "A title is searched across all of your extensions at once, so whichever one " +
+                        "has a working server wins and the server list gathers what every " +
+                        "extension found."
+                )
+            } else {
+                tr(
+                    "A title only ever plays from the extension you opened it from — the same " +
+                        "way CloudStream works. Nothing else is searched: no other extensions, " +
+                        "no background search, and no episode list borrowed from another site. " +
+                        "Titles from an extension that has nothing for them will show no servers."
+                )
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Applies from the next search you start."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun LoadingBannerCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(true) }
     val styleFlow = remember { app.store.loadingStyleFlow() }
     val style by styleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
+    val effectFlow = remember { app.store.loadingEffectFlow() }
+    val effect by effectFlow.collectAsState(initial = LoadingEffects.NONE)
     var pickerOpen by remember { mutableStateOf(false) }
+    var effectPickerOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         enabled = app.store.showLoadingBanner()
@@ -2522,6 +2609,17 @@ private fun LoadingBannerCard(app: HikariApp) {
                 leadingIcon = Icons.Filled.Slideshow,
                 onClick = { pickerOpen = true },
             )
+            Spacer(Modifier.height(10.dp))
+            // The signature treatment over that card: the loading screen's half
+            // of Poster styling's effects (sheen, aura ring, gallery frame,
+            // accent glow). Works with every style, so the quietest card can
+            // wear the same kind of detail a poster card does.
+            ChoiceRow(
+                value = tr(LoadingEffects.label(effect)),
+                supporting = tr(LoadingEffects.description(effect)),
+                leadingIcon = Icons.Filled.AutoAwesome,
+                onClick = { effectPickerOpen = true },
+            )
             Spacer(Modifier.height(6.dp))
             Text(
                 tr("Applies to the next video you open."),
@@ -2543,6 +2641,21 @@ private fun LoadingBannerCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setLoadingStyle(pick) } }
             },
             onDismiss = { pickerOpen = false },
+        )
+    }
+
+    if (effectPickerOpen) {
+        ChoiceDialog(
+            title = tr("Loading effect"),
+            items = LoadingEffects.ALL.map {
+                ChoiceItem(it, tr(LoadingEffects.label(it)), tr(LoadingEffects.description(it)))
+            },
+            selectedKey = effect,
+            onPick = { pick ->
+                effectPickerOpen = false
+                scope.launch { runCatching { app.store.setLoadingEffect(pick) } }
+            },
+            onDismiss = { effectPickerOpen = false },
         )
     }
 }

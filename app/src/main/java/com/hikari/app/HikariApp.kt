@@ -46,6 +46,20 @@ class HikariApp : Application() {
         lateinit var instance: HikariApp
             private set
 
+        /**
+         * How long the one blocking settings read at startup may take before the
+         * app gives up on it and comes up with defaults (see onCreate).
+         *
+         * Deliberately short. Every other store read in the app is asynchronous
+         * and cancellable; this single one has to be synchronous — the app
+         * language must be applied before the first Activity exists, or the UI
+         * flashes English and rebuilds. The price of that is that a wedged store
+         * could hold the whole launch here, which is not a trade worth making:
+         * three seconds is more than a cold read of the preferences file ever
+         * takes, and past it the honest thing is to start and log why.
+         */
+        private const val STARTUP_STORE_READ_MS = 3_000L
+
         /** Stack trace of the last uncaught crash (shown as a one-shot Home
          *  warning — see [crashNoticeShown]). */
         @Volatile
@@ -191,14 +205,34 @@ class HikariApp : Application() {
         runCatching { registerAniyomiSingletons() }
         initCloudStream(this)
         store = AppStore(this)
+        val startupAt = System.currentTimeMillis()
         // Restore the saved app language BEFORE any Activity is created, so the
         // whole UI (player overlay labels, content descriptions, settings)
         // comes up in the chosen language instead of flashing English first.
+        //
+        // The read is BOUNDED. It is a blocking DataStore read on the main
+        // thread — the one place in the app that is — and if the store is ever
+        // wedged (a write that never completed, a file system that stopped
+        // answering) an unbounded read here means the app never opens at all:
+        // the launch screen sits there until the OS kills it, which is exactly
+        // the reported "opening took much longer than it should". With a timeout
+        // the worst case is one setting applied a moment late, and the log says
+        // so.
         runCatching {
-            com.hikari.app.ui.LanguageManager.apply(
-                kotlinx.coroutines.runBlocking { store.language() }
-            )
+            val tag = kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(STARTUP_STORE_READ_MS) { store.language() }
+            }
+            if (tag == null) {
+                Logs.log(
+                    "App",
+                    "the settings store did not answer within ${STARTUP_STORE_READ_MS}ms — " +
+                        "starting with the default language (see Store lines above for why)",
+                )
+            } else {
+                com.hikari.app.ui.LanguageManager.apply(tag)
+            }
         }
+        Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
         providers = ProviderManager(store)
         // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
         // verification page opens only when the user taps the WebView (globe)
@@ -229,6 +263,16 @@ class HikariApp : Application() {
         }
         appScope.launch {
             store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
+        }
+        // How wide a lookup may search (Settings → Playback → Server search).
+        // Read synchronously mid-pass by the target builder, the sweeps and the
+        // episode fallback, so it lives in a plain flag (see [SearchScope])
+        // mirrored here — a search must never have to await DataStore.
+        appScope.launch {
+            com.hikari.app.data.SearchScope.allExtensions = store.searchAllExtensions()
+            store.searchAllExtensionsFlow().collect {
+                com.hikari.app.data.SearchScope.allExtensions = it
+            }
         }
         // Player UI skin (Settings → Player → Player UI): mirrored into
         // PlayerSkins because PlayerActivity is a View-based screen that has to
@@ -374,7 +418,25 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
             }
-            Logs.log("App", "startup complete (${providers.providers.value.size} providers)")
+            Logs.log(
+                "App",
+                "blur support: " + if (android.os.Build.VERSION.SDK_INT >= 31) {
+                    "yes (API ${android.os.Build.VERSION.SDK_INT})"
+                } else {
+                    // Modifier.blur is a no-op below API 31, which is why a user
+                    // on Android 11 or older reported "the blur works for you but
+                    // not for me" with identical settings. The halo is now drawn
+                    // from the artwork itself on every version (see PosterArt), so
+                    // this line is for diagnosis, not for behaviour.
+                    "no (API ${android.os.Build.VERSION.SDK_INT} — the poster halo is drawn " +
+                        "from the artwork pixels instead of Modifier.blur)"
+                },
+            )
+            Logs.log(
+                "App",
+                "startup complete (${providers.providers.value.size} providers) in " +
+                    "${System.currentTimeMillis() - startupAt}ms",
+            )
         }
     }
 

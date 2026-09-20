@@ -153,6 +153,43 @@ object PosterLoader {
     }
 
     /**
+     * A deliberately TINY decode of the same artwork, for the soft coloured halo
+     * drawn behind a poster card (see [com.hikari.app.ui.PosterStyle]).
+     *
+     * The halo used to be the artwork itself under `Modifier.blur` — and that
+     * modifier is a NO-OP below Android 12 (`RenderEffect` does not exist there).
+     * So two people with identical poster settings got two different apps: a
+     * coloured halo on Android 12+, flat artwork on anything older. That is the
+     * reported "he kept the same settings as me but the blur effect doesn't show
+     * for him".
+     *
+     * Asking Coil for a [px]×[px] copy of the same image and scaling it back up
+     * IS a blur (upscaling a twenty-pixel image is exactly what the effect looks
+     * like), and it works on every Android version. [blurDp] drives the size, so
+     * the Settings slider is a real gradient of softness: more blur, smaller
+     * decode, softer halo.
+     *
+     * Cheap by construction — a few hundred bytes of pixels, cached by Coil under
+     * its own memory key (the key MUST differ from the card's own, or the cache
+     * would hand back the full-size bitmap), and for an http(s) poster the bytes
+     * are already in Coil's disk cache from the card's own image.
+     */
+    fun haloModel(model: Any?, blurDp: Int): Any? {
+        if (model == null || blurDp <= 0) return null
+        val px = (34 - blurDp).coerceIn(6, 34)
+        val builder = if (model is ImageRequest) model.newBuilder()
+        else ImageRequest.Builder(HikariApp.instance).data(model)
+        // A distinct memory key per size: the halo is a DIFFERENT decode of the
+        // same bytes, and without this the card's full-resolution bitmap would
+        // be served straight out of Coil's memory cache and drawn at full size.
+        val source = (model as? ImageRequest)?.memoryCacheKey ?: model.toString()
+        builder.memoryCacheKey("hikari-halo:$px:$source")
+        builder.size(px, px)
+        builder.setParameter("hikariHalo", px)
+        return builder.build()
+    }
+
+    /**
      * Replaces a base64 `data:` poster with a tiny stable token whose bytes are
      * persisted in the on-disk store, so a giant catalog can hold thousands of
      * posters in memory without an OutOfMemoryError while the grid still shows
