@@ -359,8 +359,8 @@ dependencies {
 // implementation, which is why 0.9.0 was fine.
 //
 // Excluding it here makes compile time, R8's view and the device agree on one
-// org.json: the platform's. app/proguard-rules.pro carries the matching
-// -neverinline guard so a copy cannot come back and do this again.
+// org.json: the platform's. Any dependency that declares org.json:json brings
+// this crash back with it, so check for it when adding one.
 // ---------------------------------------------------------------------------
 configurations.configureEach {
     exclude(mapOf("group" to "org.json", "module" to "json"))

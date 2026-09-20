@@ -245,16 +245,19 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn org.mozilla.javascript.**
-# org.json is the platform's (see the note above `configurations.configureEach`
-# in build.gradle.kts — the org.json:json that NiceHttp declares is excluded from
-# the runtime classpath). These two lines are the safety net: if a copy ever
-# comes back through some other dependency or a repackaged jar, the optimizer
-# must still never inline it, because inlining a shadowed copy is exactly what
-# killed 0.9.2 at startup — a working `JSONObject(text)` call became a direct
-# `new JSONTokener(String, JSONParserConfiguration)` call, and the constructor
-# only exists in the copy the device is not running.
+# org.json is the platform's — see the note above `configurations.configureEach`
+# in build.gradle.kts, which keeps the org.json:json that NiceHttp declares off
+# our classpath entirely. That exclusion is the fix for the 0.9.2 startup crash:
+# R8 took the shadowed copy as the definition of `JSONObject` and inlined its
+# `JSONObject(String)` body into our classes, producing a
+# `new JSONTokener(String, JSONParserConfiguration)` call that only the copy
+# has. This line is only here for the compile warnings the exclusion leaves
+# behind (methods a prebuilt jar calls that the platform's org.json lacks).
+#
+# A copy can only come back with a dependency that declares org.json:json, and
+# if it does, the crash comes back with it — a bundled org.json can never be
+# the copy the device runs. Check for it when adding a dependency.
 -dontwarn org.json.**
--neverinline class org.json.** { *; }
 -dontwarn org.jsoup.**
 -dontwarn org.conscrypt.**
 -dontwarn com.fleeksoft.**
