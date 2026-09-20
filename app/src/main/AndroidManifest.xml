@@ -20,7 +20,7 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <!-- ------------------------------------------------------------------
+    <!-- ==================================================================
          ONE APK, PHONES AND TELEVISIONS
 
          The same APK installs on a phone/tablet and on a television (Android
@@ -37,7 +37,7 @@
           * android.software.leanback required=false — leanback is the d-pad /
             10-foot feature that Android TV and Google TV declare. Declared
             optional so the ordinary phone install is unaffected.
-         ------------------------------------------------------------------ -->
+         ================================================================== -->
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
