@@ -615,8 +615,8 @@ class ContentRepository(private val manager: ProviderManager) {
         fun notePendingWork(
             item: MediaItem,
             episode: Episode?,
-            byTitle: Collection<String>,
-            direct: Collection<String>,
+            byTitle: kotlin.collections.Collection<String>,
+            direct: kotlin.collections.Collection<String>,
             ignoreEmptyRecord: Boolean,
             /** True for a hand-off from a pass the user actually started: it
              *  clears the retry count, because "the user asked again" is exactly
