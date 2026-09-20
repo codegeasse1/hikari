@@ -145,7 +145,11 @@ object NuvioPluginManager {
         val all = store.providers()
         val paths = all.filter { it.type == ProviderType.NUVIO && it.extra == sourceUrl }
             .map { it.url }.toSet()
-        store.saveProviders(all.filter { it.type != ProviderType.NUVIO || it.extra != sourceUrl })
+        // Locked read-modify-write: see [AppStore.updateProviders]. A rebuild
+        // from the snapshot read above would drop anything installed meanwhile.
+        store.updateProviders { list ->
+            list.filter { it.type != ProviderType.NUVIO || it.extra != sourceUrl }
+        }
         HikariApp.instance.providers.refresh()
         withContext(Dispatchers.IO) {
             val remaining = store.providers().map { it.url }.toSet()

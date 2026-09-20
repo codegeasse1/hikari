@@ -1,3 +1,20 @@
+## 0.6.9
+
+Nothing a search starts is dropped any more — for nuvio, and for every other extension — and the Sources line now tells the truth about nuvio while its engines are still starting.
+
+### Fixed
+
+- **The first play showing every server except nuvio.** Nuvio sources are asked differently from the rest (they resolve from a TMDB id, with no title search), and they were the one kind with no second chance: on a cold start each nuvio source has to boot its own JavaScript engine, which makes them the slowest thing in the whole lookup — so when the search's time ran out, whatever had not answered was cancelled and forgotten. Their servers then showed up on the *next* press of Play, against engines that were warm by that point. That is the "first time no nuvio server showed, second and third time it showed" half of the report, and it is what this fixes: a nuvio source that timed out, failed, or was cut off mid-request is now asked again in the background while the film plays, and whatever it finds is added to the list you are watching. Every other extension already worked this way, so this now holds for all of them — hikari, cloudstream, skystream, aniyomi, stremio and nuvio alike.
+- **"Search done" while nuvio was still starting.** The Sources line counted only the other extensions — nuvio sources appeared in none of its numbers — so it could say the search had finished while the nuvio engines were still booting and the nuvio tab was still missing. The line now counts every extension that was asked, nuvio included ("Nuvio 13 of 13"), and keeps reading "still searching" until they have answered.
+- **Repos skipped without a reason being given.** Two searches of the same title, minutes apart, asked 238 extensions and then 140: the ~100 that went missing were Hikari repos sitting behind a Cloudflare check, which the app drops on purpose for ten minutes (re-asking a wall only wastes the phone's time). The drop was meant to be invisible in the server list — but it was invisible in the log too, so the only way to find out was to guess. The count and the reasons are now printed together on every search, from that search's own records, so the numbers always add up and `cf-skip=104` says exactly what happened.
+- **Unfinished work that was waiting for a free slot being lost.** When three background searches were already running, a fourth hand-off was refused — and the repos it was carrying were simply dropped: never asked, never shown, recoverable only by leaving the player and pressing Play again. Unfinished work is now recorded per title and picked up the moment a background slot frees; and pressing Play yourself always retries it.
+- **Installed extensions disappearing.** Installing, updating or removing an extension rewrites the whole installed list, and doing that from a copy made a moment earlier meant two of them at once could overwrite one another — so an extension could vanish from the app (which is also why one search could ask 140 extensions and the next 238). Every write to that list is now a locked read-modify-write, and every change to it is written to the log with its size, enabled count and per-engine split.
+
+### Changed
+
+- **One retry mechanism instead of two.** The title's own extension used to have a private "ask me again" path of its own; it is now re-asked by the same mechanism as everything else, which means it cannot be asked twice at once and no provider is left out because of the family it belongs to.
+- A nuvio source that answers "I have nothing for this episode" is not re-asked (asking again only spends its time); only a source that never really answered is.
+
 ## 0.6.8
 
 The search no longer stops working when an extension freezes, servers start resolving while the search is still going, and everything you read — title, description, episode names — stays in the language you chose.

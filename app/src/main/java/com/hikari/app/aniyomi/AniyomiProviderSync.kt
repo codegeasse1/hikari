@@ -76,10 +76,13 @@ object AniyomiProviderSync {
 
         if (!changed) return false
         val ids = mine.map { it.id }.toSet()
-        val out = ArrayList<ProviderConfig>(current.size)
-        for (c in current) if (c.id !in ids) out.add(c)
-        out.addAll(merged.values)
-        store.saveProviders(out)
+        // Written as a locked read-modify-write: the list this rebuilds is the
+        // one in the store RIGHT NOW, so a provider another thread added while
+        // this ran (an install, another engine's reconcile) is kept instead of
+        // being overwritten by this snapshot (see [AppStore.updateProviders]).
+        store.updateProviders { all ->
+            all.filterNot { it.id in ids } + merged.values
+        }
         return true
     }
 }

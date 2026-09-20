@@ -1523,7 +1523,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun uninstallCs3Plugin(pluginUrl: String) {
         val all = store.providers()
         val paths = all.filter { sourceMatches(it, pluginUrl) }.map { it.url }.toSet()
-        store.saveProviders(all.filterNot { sourceMatches(it, pluginUrl) })
+        // Locked read-modify-write: see [AppStore.updateProviders].
+        store.updateProviders { list -> list.filterNot { sourceMatches(it, pluginUrl) } }
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {
@@ -1696,7 +1697,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             p.type == ProviderType.HIKARI && sourceMatches(p, pluginUrl)
         val all = store.providers()
         val paths = all.filter { fromPlugin(it) }.map { it.url }.toSet()
-        store.saveProviders(all.filter { !fromPlugin(it) })
+        // Locked read-modify-write: see [AppStore.updateProviders].
+        store.updateProviders { list -> list.filter { !fromPlugin(it) } }
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {

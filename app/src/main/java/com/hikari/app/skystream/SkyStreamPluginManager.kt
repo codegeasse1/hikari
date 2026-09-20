@@ -157,7 +157,11 @@ object SkyStreamPluginManager {
         val all = store.providers()
         val mine = all.filter { it.type == ProviderType.SKYSTREAM && it.extra == sourceUrl }
         if (mine.isEmpty()) return
-        store.saveProviders(all.filterNot { it.type == ProviderType.SKYSTREAM && it.extra == sourceUrl })
+        // Locked read-modify-write: see [AppStore.updateProviders]. Rebuilding
+        // from the snapshot read above would drop anything installed meanwhile.
+        store.updateProviders { list ->
+            list.filterNot { it.type == ProviderType.SKYSTREAM && it.extra == sourceUrl }
+        }
         HikariApp.instance.providers.refresh()
         withContext(Dispatchers.IO) {
             val keep = store.providers().filter { it.type == ProviderType.SKYSTREAM }

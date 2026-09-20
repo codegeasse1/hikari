@@ -17,10 +17,49 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
 3. **Cross pass** — every other installed extension asked *by title*:
    search → pick the best matching entry (`confidentTitleMatch`) → resolve its
    meta + episode list → extract servers.
-4. **Background sweep** — the repos the pass did not finish with are re-asked
-   while the video plays, on the application scope.
+4. **Background sweep** — the providers the pass did not finish with are re-asked
+   while the video plays, on the application scope. It carries BOTH kinds of
+   work (`SweepUnit.byTitle`): repos to search by title, and the pass's primary
+   targets to ask directly (a nuvio engine resolves from the TMDB id alone).
 
 ## Invariants
+
+### 0. Nothing a lookup starts may be dropped — for ANY engine
+
+The user's report, twice: *"the first time it searched everything except nuvio,
+the second and third time nuvio was there"*, and *"you told me it was fixed, so
+why does it still show all servers once and skip others"*. Both halves are this
+invariant.
+
+- **Every provider a lookup asks is either asked or handed over.** The pass's
+  primary targets (the title's own extension, the nuvio engines, the Stremio
+  addons) and the cross repos all end up in `PendingWork` unless they really
+  ANSWERED. Answered means: the provider's own last call ended in an answer
+  (`providerOutcome == "no servers"`, or it returned servers) — a timeout, a
+  thrown failure, or a call cancelled while the pass was being torn down
+  (`"✗ cut off after Ns (still searching)"`) is NOT an answer and IS re-asked.
+  Never reintroduce a family-specific path here: nuvio is excluded from
+  `crossExtensionTargets` (it is asked by id, not by title) and that exclusion
+  once meant a nuvio engine that lost the race with the pass's clock was thrown
+  away with nothing left to re-ask it.
+- **A refused sweep is not a dropped one.** `MAX_PARALLEL_SWEEPS` may refuse to
+  start a sweep; the work stays on the ledger and `drainSweeps()` (run whenever a
+  sweep ends) starts it as soon as a slot frees. Automatic retries stop after
+  `SWEEP_MAX_TRIES`, and a lookup the USER starts resets that count.
+- **"No such title" is still not re-asked** (it is a real answer, and re-asking
+  it is the work that made the pass crawl), and a provider sitting behind a
+  Cloudflare wall (`crossCfSkip`) is dropped on purpose — but that drop is now
+  *counted* in the pass's `skipped=` line, because it is invisible on screen and
+  was previously invisible in the log too: 100+ Hikari repos disappeared between
+  two passes of the same title and no line said why.
+- **One provider list per pass.** `streamsForInner` reads `manager.providers`
+  ONCE and hands that snapshot to `crossExtensionTargets`; `families=` and
+  `installed=` in the pass's log line therefore always describe the same list.
+  It used to re-read the manager, so a refresh landing in between made a pass ask
+  ~100 fewer repos than the line next to it reported.
+- **The skip reasons belong to the pass that prints them** (`CrossTally.
+  filterReasons`, never a shared field): two passes run at once all the time, and
+  the shared field let one print the other's reasons.
 
 ### 1. Every provider call is a plain blocking call
 
@@ -44,7 +83,9 @@ So anything that WAITS on such a call can be wedged indefinitely. Consequences:
   shrank for the rest of the session until nothing could start.
 - **A wedged extension is NOT blacklisted for the session.** `isHung` expires
   after `HUNG_TTL_MS` (2 min). Blacklisting for the session made the automatic
-  retry skip exactly the repos that needed re-asking.
+  retry skip exactly the repos that needed re-asking. (A repo skipped as hung is
+  deliberately NOT marked `Sweep.answered`, so it stays on the ledger and is
+  asked once its wedge expires.)
 
 ### 2. First server fast, on EVERY play — not just the second
 
@@ -69,6 +110,16 @@ So anything that WAITS on such a call can be wedged indefinitely. Consequences:
 - The player's Sources line counts `running` only while the tally has changed
   within `SEARCH_QUIET_MS` (PlayerActivity), so a frozen count cannot be shown
   as a running search.
+- **The Sources line counts EVERY engine** (`CrossTally.running` +
+  `primaryRunning`, and likewise for `asked`/`found`). It used to count only the
+  cross repos, so a nuvio engine still cold-booting was in none of its numbers:
+  the line said "done" — honestly, by its own books — over a list with no nuvio
+  tab at all. Anything whose answer the player is waiting for must move these
+  maps, and `crossStatusQuietForMs` (which decides whether a count is still
+  moving) is bumped on every primary arrival for the same reason.
+- `sweepBusyFor` also reports TRUE while this video has unfinished work waiting
+  for a free sweep slot, so the detail screen does not announce "no playable
+  server found" over a repo that has not been asked yet.
 - The detail screen watches the sweep for at most `SWEEP_WATCH_CAP_MS` (5 min)
   and then commits to a verdict and calls `StreamsLive.markDone`.
 

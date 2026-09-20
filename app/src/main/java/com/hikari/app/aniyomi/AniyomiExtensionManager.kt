@@ -329,10 +329,14 @@ object AniyomiExtensionManager {
             // installed again), so the provider list grew a second copy of names
             // the user had already installed — the reported "I installed Anime
             // World again and now it lists six of the same provider".
-            store.saveProviders(
-                existing.filterNot { it.type == ProviderType.ANIYOMI && it.id.startsWith(prefix) } +
+            // Locked read-modify-write (see [AppStore.updateProviders]): the old
+            // rows this replaces are looked up in the store at the moment of the
+            // write, so a provider added while the extension was being unpacked
+            // survives it.
+            store.updateProviders { list ->
+                list.filterNot { it.type == ProviderType.ANIYOMI && it.id.startsWith(prefix) } +
                     fresh
-            )
+            }
             HikariApp.instance.providers.refresh()
             Result.success(fresh.size)
         } finally {
@@ -347,9 +351,11 @@ object AniyomiExtensionManager {
         val all = store.providers()
         val mine = all.filter { it.type == ProviderType.ANIYOMI && it.extra == sourceUrl }
         if (mine.isEmpty()) return
-        store.saveProviders(
-            all.filterNot { it.type == ProviderType.ANIYOMI && it.extra == sourceUrl }
-        )
+        // Locked read-modify-write: see [AppStore.updateProviders]. Rebuilding
+        // from the snapshot read above would drop anything installed meanwhile.
+        store.updateProviders { list ->
+            list.filterNot { it.type == ProviderType.ANIYOMI && it.extra == sourceUrl }
+        }
         HikariApp.instance.providers.refresh()
         withContext(Dispatchers.IO) {
             val keep = store.providers().filter { it.type == ProviderType.ANIYOMI }

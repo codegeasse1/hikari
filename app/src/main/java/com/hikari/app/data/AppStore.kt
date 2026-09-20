@@ -23,6 +23,8 @@ import com.hikari.app.ui.theme.HikariThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -1152,19 +1154,77 @@ class AppStore(private val ctx: Context) {
 
     suspend fun providers(): List<ProviderConfig> = providersFlow().first()
 
-    suspend fun saveProviders(list: List<ProviderConfig>) {
+    /**
+     * Every write to the installed-provider list goes through here, one at a
+     * time.
+     *
+     * The list is stored as ONE JSON array, so each change is a read (of the
+     * whole list), a copy with one entry added/removed/toggled, and a write —
+     * and two of those interleaving (a repo sync installing several extensions
+     * while the Extensions screen toggles one) lose whichever finished first.
+     * A lost update here does not just fail to add something: it writes back a
+     * list built from a snapshot that never had the other change in it, so
+     * INSTALLED extensions disappear from the store — which is the "sometimes it
+     * searches 140 repos, sometimes 238, and my Hikari repos are not all in
+     * either count" report. Serialising the read-modify-write removes the race
+     * (DataStore only makes each individual write atomic; it cannot make a
+     * caller's read-then-write atomic).
+     */
+    suspend fun saveProviders(list: List<ProviderConfig>) = providerWrites.withLock {
         store.edit { it[K.PROVIDERS] = encodeProviders(list) }
     }
 
-    suspend fun addProvider(c: ProviderConfig) {
-        saveProviders(providers().filter { it.id != c.id } + c)
+    private val providerWrites = Mutex()
+
+    /**
+     * The ATOMIC read-modify-write of the installed-provider list: [transform]
+     * sees the list as it is at the moment of the write, under the same lock
+     * every other provider write takes.
+     *
+     * Callers used to read the list themselves and hand the result to
+     * [saveProviders], which is a lost update waiting to happen (an extension
+     * repo sync writing its rebuilt list while an install adds one more provider
+     * drops the install — see [saveProviders]). Anything that rebuilds or prunes
+     * the list belongs in here.
+     */
+    suspend fun updateProviders(
+        transform: (List<ProviderConfig>) -> List<ProviderConfig>,
+    ): List<ProviderConfig> = providerWrites.withLock {
+        var result: List<ProviderConfig> = emptyList()
+        store.edit { prefs ->
+            result = transform(parseProviders(prefs[K.PROVIDERS]))
+            prefs[K.PROVIDERS] = encodeProviders(result)
+        }
+        result
     }
 
-    suspend fun removeProvider(id: String) =
-        saveProviders(providers().filter { it.id != id })
+    suspend fun addProvider(c: ProviderConfig) {
+        providerWrites.withLock {
+            store.edit { prefs ->
+                prefs[K.PROVIDERS] =
+                    encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id != c.id } + c)
+            }
+        }
+    }
+
+    suspend fun removeProvider(id: String) {
+        providerWrites.withLock {
+            store.edit { prefs ->
+                prefs[K.PROVIDERS] =
+                    encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id != id })
+            }
+        }
+    }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
-        saveProviders(providers().map { if (it.id == id) it.copy(enabled = enabled) else it })
+        providerWrites.withLock {
+            store.edit { prefs ->
+                prefs[K.PROVIDERS] = encodeProviders(
+                    parseProviders(prefs[K.PROVIDERS])
+                        .map { if (it.id == id) it.copy(enabled = enabled) else it },
+                )
+            }
+        }
     }
 
     fun reposFlow(): Flow<List<Cs3Repo>> =

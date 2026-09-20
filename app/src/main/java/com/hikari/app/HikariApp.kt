@@ -313,6 +313,28 @@ class HikariApp : Application() {
             }
             providers.refresh()
             Logs.log("Providers", "refreshed: ${providers.providers.value.size} installed")
+            // Watch the provider list itself, for the whole session.
+            //
+            // A lookup asks the providers that were installed when it started, so
+            // the one thing that must never happen is for the list to change
+            // under it — and when it did, the log was silent about it: a pass
+            // would report "Hikari 77 of 181" one minute and "176 of 181" the
+            // next, with the repos that went missing named nowhere. This line
+            // makes every change to the list, its size, its enabled count and its
+            // per-engine split visible in any log the user shares (see also the
+            // "start …" line each pass writes, which prints its own snapshot).
+            appScope.launch {
+                providers.providers.collect { list ->
+                    val enabled = list.count { it.config.enabled }
+                    Logs.log(
+                        "Providers",
+                        "provider list: ${list.size} installed, $enabled enabled (" +
+                            com.hikari.app.data.ContentRepository.providerCounts(
+                                list.filter { it.config.enabled },
+                            ) + ")",
+                    )
+                }
+            }
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }

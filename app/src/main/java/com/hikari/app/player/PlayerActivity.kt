@@ -4122,10 +4122,18 @@ class PlayerActivity : ComponentActivity() {
         // running, which is why the numbers could not add up ("93 asked · 164 no
         // such title").
         val tally = ContentRepository.crossTally
-        val asked = tally.asked.values.toList()
+        // EVERY engine, not only the cross repos: the pass's primary targets —
+        // the title's own extension and the nuvio engines — are the ones the
+        // player is actually waiting for, and leaving them out of this tally made
+        // the line announce "done" (and list engines that looked complete) while
+        // the nuvio engines were still cold-booting. The user's own words: the
+        // first play showed every server except nuvio and said the search was
+        // done; the second play showed nuvio. Now the line says "Nuvio 2 of 13"
+        // and keeps saying "still searching" until those engines have answered.
+        val asked = tally.asked.values.toList() + tally.primaryAsked.values.toList()
         if (asked.isEmpty()) return null
-        val running = tally.running.size
-        val found = tally.found.size
+        val running = tally.running.size + tally.primaryRunning.size
+        val found = tally.found.size + tally.primaryFound.size
         // NOTE: the line is shown even when the picker already HAS servers.
         // Hiding it on a non-empty list was tried and rejected by the user: this
         // line is how they can tell that the app really did ask every installed
