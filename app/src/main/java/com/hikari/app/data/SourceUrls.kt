@@ -11,6 +11,10 @@ package com.hikari.app.data
  * (`cdn.jsdelivr.net/gh/o/r@<branch>/X.cs3`), and the CNC repo for example
  * mixes both raw spellings in one build.
  *
+ * A repo built by CI publishes its files as GitHub RELEASE ASSETS instead
+ * (`github.com/o/r/releases/download/<tag>/X.cs3`). Those used to collapse
+ * onto the repo root, i.e. every extension of such a repo shared one identity.
+ *
  * Comparing those strings literally made Hikari treat an already-installed
  * extension as "not installed" (an Install button in the repo it came from,
  * while the extension kept working on Home), and let one repo be added twice
@@ -36,6 +40,24 @@ object SourceUrls {
      *  (and a re-added repo handed out Install buttons again). */
     private val GH_FILE = Regex(
         "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/(?:blob|raw|resolve)/(.+)$",
+        RegexOption.IGNORE_CASE,
+    )
+    /**
+     * A GitHub RELEASE-ASSET link
+     * (`github.com/o/r/releases/download/<tag>/<file>`, and the `latest` form).
+     *
+     * This is the shape extension repos that are built by CI publish, and it
+     * must be handled before the repo-page rule below: without it, every asset
+     * of a repo collapsed onto the repo ROOT, i.e. every extension in a repo
+     * built this way shared ONE identity. Installing one made the whole repo
+     * read as installed (each row showing Uninstall with the Install button
+     * nowhere), Install-all skipped everything, and uninstalling a row could
+     * take a different extension with it — the reported "installing one shows
+     * all installed, uninstalling one shows all uninstalled".
+     */
+    private val GH_RELEASE = Regex(
+        "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/releases/" +
+            "(?:download/([^/]+)/(.+)|latest/download/(.+))$",
         RegexOption.IGNORE_CASE,
     )
     private val GH_WEB = Regex(
@@ -65,6 +87,15 @@ object SourceUrls {
         GH_FILE.find(t)?.let { m ->
             return "https://raw.githubusercontent.com/${m.groupValues[1].lowercase()}/" +
                 "${m.groupValues[2].lowercase()}/${dropRefPrefix(m.groupValues[3])}"
+        }
+        // A release asset keeps its tag: two files in the same repo are two
+        // files, and the tag only pins WHICH build of that file (a new tag is
+        // the same file — see [fileKey], which ignores it).
+        GH_RELEASE.find(t)?.let { m ->
+            return "https://github.com/${m.groupValues[1].lowercase()}/" +
+                "${m.groupValues[2].lowercase()}/releases/download/" +
+                "${m.groupValues[3].ifBlank { "latest" }}/" +
+                m.groupValues[4].ifBlank { m.groupValues[5] }
         }
         GH_WEB.find(t)?.let { m ->
             return "https://github.com/${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}"
@@ -127,10 +158,22 @@ object SourceUrls {
      */
     fun fileKey(raw: String): String? {
         val c = canonical(clean(raw))
-        val m = RAW_GH.find(c) ?: return null
-        val file = m.groupValues[3].substringAfterLast('/').lowercase()
-        if (file.isBlank()) return null
-        return "${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$file"
+        RAW_GH.find(c)?.let { m ->
+            val file = m.groupValues[3].substringAfterLast('/').lowercase()
+            if (file.isBlank()) return null
+            return "${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$file"
+        }
+        // The same release asset under another tag (`continuous` → `v1.2`, or
+        // GitHub's `latest`) is the same extension, so the tag is not part of
+        // the file's identity — exactly as the branch is not part of a raw
+        // file's.
+        GH_RELEASE.find(c)?.let { m ->
+            val file = (m.groupValues[4].ifBlank { m.groupValues[5] })
+                .substringAfterLast('/').lowercase()
+            if (file.isBlank()) return null
+            return "${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$file"
+        }
+        return null
     }
 
     /**

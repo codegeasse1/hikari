@@ -170,6 +170,36 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private var installJob: Job? = null
     private var backgroundGeneration = 0L
 
+    /**
+     * True while an Install all / Update all run is going, and true again from
+     * the moment the user asks it to stop until it has. A bulk run over a
+     * hundred-odd extensions is a long job the user must be able to walk away
+     * from — and the stop is deliberate about WHERE it lands: the extension
+     * being installed right now is finished first (a half-downloaded `.cs3` is
+     * not left in storage and not left half-registered), then the loop ends.
+     */
+    private val _installRunning = MutableStateFlow(false)
+    val installRunning: StateFlow<Boolean> = _installRunning.asStateFlow()
+    private val _installStopping = MutableStateFlow(false)
+    val installStopping: StateFlow<Boolean> = _installStopping.asStateFlow()
+
+    /** Set by [stopBulkInstall]; read at the top of every loop pass. */
+    @Volatile
+    private var installCancelled = false
+
+    /** The loop generation, so a replaced job's exit cannot clear the flag of
+     *  the job that replaced it. */
+    private var installGeneration = 0L
+
+    /** Asks the running Install all / Update all to finish the extension it is
+     *  on and then stop. Harmless when nothing is running. */
+    fun stopBulkInstall() {
+        if (!_installRunning.value || installCancelled) return
+        installCancelled = true
+        _installStopping.value = true
+        _busyMsg.value = "Stopping after the current extension…"
+    }
+
     /** Repos whose plugin list is being fetched right now — guards the window
      *  between a load starting and `repoState` reporting it as loading. */
     private val reposLoading = mutableSetOf<String>()
@@ -945,7 +975,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
             val resolved = com.hikari.app.skystream.SkyStreamPluginManager.resolveRepoUrl(trimmed)
                 ?: return Result.failure(
-                    Exception("Must start with http(s):// — or a SkyStream shortcode")
+                    Exception(
+                        unknownShortName(
+                            trimmed,
+                            "SkyStream shortcode",
+                            "Must start with http(s):// — or a SkyStream shortcode",
+                            RepoKind.SKYSTREAM,
+                        )
+                    )
                 )
             return addRepo(resolved, RepoKind.SKYSTREAM)
         }
@@ -1017,7 +1054,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun addAniyomiRepo(rawUrl: String): Result<Cs3Repo> {
         val resolved = com.hikari.app.aniyomi.AniyomiExtensionManager.resolveRepoUrl(rawUrl)
             ?: return Result.failure(
-                Exception("Must be a link to an index.min.json (or the repo folder)")
+                Exception(
+                    unknownShortName(
+                        rawUrl,
+                        "Aniyomi repo name",
+                        "Must be a link to an index.min.json (or the repo folder)",
+                        RepoKind.ANIYOMI,
+                    )
+                )
             )
         return addAniyomiRepoUrl(resolved)
     }
@@ -1394,6 +1438,70 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return REPO_ALIASES[key]
     }
 
+    /**
+     * The short name the user probably meant, or null when nothing is close.
+     *
+     * A swapped pair ("hiakri" for "hikari") is ONE edit by the distance that
+     * counts here, not two — that is what a typo is. Answering with the name
+     * they meant is worth more than a hint that reads like a rejection of a
+     * word they got nearly right.
+     *
+     * [kind] narrows the search where only one kind of repo can be added at
+     * that dialog (a SkyStream shortcode field must not suggest a Nuvio repo).
+     */
+    private fun suggestRepoAlias(raw: String, kind: RepoKind? = null): String? {
+        val typed = raw.trim().lowercase()
+            .removePrefix("@")
+            .removeSuffix(".json")
+            .trimEnd('/')
+        // Only a word can be a mistyped short name; a pasted URL never is.
+        if (typed.length < 4 || typed.contains('/') || typed.contains(' ') || typed in REPO_ALIASES) {
+            return null
+        }
+        var best: String? = null
+        var bestScore = Int.MAX_VALUE
+        for ((key, aliases) in REPO_ALIASES) {
+            if (kind != null && aliases.none { it.kind == kind }) continue
+            val score = editDistance(typed, key)
+            if (score < bestScore) {
+                bestScore = score
+                best = key
+            }
+        }
+        return if (best != null && bestScore <= 2) best else null
+    }
+
+    /** Optimal-string-alignment distance: Levenshtein, plus a swapped pair of
+     *  neighbouring letters counting as ONE edit (Damerau). Small and bounded —
+     *  it only ever runs over the short-name table, on a rejected input. */
+    private fun editDistance(a: String, b: String): Int {
+        val d = Array(a.length + 1) { IntArray(b.length + 1) }
+        for (i in 0..a.length) d[i][0] = i
+        for (j in 0..b.length) d[0][j] = j
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                d[i][j] = minOf(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
+                    d[i][j] = minOf(d[i][j], d[i - 2][j - 2] + 1)
+                }
+            }
+        }
+        return d[a.length][b.length]
+    }
+
+    /** What to say when a short name matches nothing: the name we think was
+     *  meant when it is a typo away, else [fallback]. */
+    private fun unknownShortName(
+        typed: String,
+        what: String,
+        fallback: String,
+        kind: RepoKind? = null,
+    ): String {
+        val guess = suggestRepoAlias(typed, kind) ?: return fallback
+        return "Unknown $what \"${typed.trim()}\" — did you mean \"$guess\"?"
+    }
+
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
         val trimmed = rawUrl.trim()
         resolveRepoAlias(trimmed)?.let { aliases ->
@@ -1414,7 +1522,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
             return Result.failure(
-                Exception("Must start with http(s):// — or a short name (megarepo, hikari, nuvio, …)")
+                Exception(
+                    unknownShortName(
+                        trimmed,
+                        "short name",
+                        "Must start with http(s):// — or a short name (megarepo, hikari, nuvio, …)",
+                    )
+                )
             )
         }
         return addRepoUrl(trimmed, kind)
@@ -1938,7 +2052,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Installs every not-yet-installed plugin/extension/provider in [plugins]
      *  one after another in the background (survives tab switches like the
      *  single installs), showing progress in the busy message. Reports how many
-     *  succeeded and names any that failed. */
+     *  succeeded and names any that failed.
+     *
+     *  A hundred-plus extensions take a while, so the run can be stopped
+     *  part-way: [stopBulkInstall] ends it after the extension it is on, and
+     *  the report says where it got to. */
     fun installAllPlugins(plugins: List<Cs3RepoPlugin>, kind: RepoKind, installedUrls: Set<String>) {
         installJob?.cancel()
         val unit = when (kind) {
@@ -1954,34 +2072,47 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             setSuccess("All $n $unit${if (n == 1) "" else "s"} already installed")
             return
         }
+        val gen = ++installGeneration
         installJob = startBackground {
-            _busyMsg.value = "Installing ${pending.first().name} (1/${pending.size})…"
-            clearStatus()
-            var ok = 0
-            val failed = mutableListOf<String>()
-            for ((i, p) in pending.withIndex()) {
-                _busyMsg.value = "Installing ${p.name} (${i + 1}/${pending.size})…"
-                val r = runCatching {
-                    withTimeoutOrNull(90_000) {
-                        when (effectiveRepoKind(kind, p.url)) {
-                            RepoKind.CS3 -> installCs3Plugin(p)
-                            RepoKind.HIKARI -> installHikiPlugin(p)
-                            RepoKind.NUVIO -> installNuvioPlugin(p)
-                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
-                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+            installCancelled = false
+            _installRunning.value = true
+            try {
+                clearStatus()
+                var ok = 0
+                val failed = mutableListOf<String>()
+                for ((i, p) in pending.withIndex()) {
+                    if (installCancelled) break
+                    _busyMsg.value = "Installing ${p.name} (${i + 1}/${pending.size})…"
+                    val r = runCatching {
+                        withTimeoutOrNull(90_000) {
+                            when (effectiveRepoKind(kind, p.url)) {
+                                RepoKind.CS3 -> installCs3Plugin(p)
+                                RepoKind.HIKARI -> installHikiPlugin(p)
+                                RepoKind.NUVIO -> installNuvioPlugin(p)
+                                RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                                RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+                            }
                         }
-                    }
-                }.getOrNull()
-                if (r != null && r.isSuccess) ok++ else failed.add(p.name)
-            }
-            if (failed.isEmpty()) {
+                    }.getOrNull()
+                    if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+                }
                 val n = pending.size
-                setSuccess("Installed $ok of $n $unit${if (n == 1) "" else "s"}")
-            } else {
-                setSuccess(
-                    "Installed $ok of ${pending.size} — failed: " +
-                        failed.take(3).joinToString(", ") + (if (failed.size > 3) "…" else "")
-                )
+                val plurals = if (n == 1) "" else "s"
+                when {
+                    installCancelled ->
+                        setSuccess("Stopped — installed $ok of $n $unit$plurals")
+                    failed.isEmpty() -> setSuccess("Installed $ok of $n $unit$plurals")
+                    else -> setSuccess(
+                        "Installed $ok of $n — failed: " +
+                            failed.take(3).joinToString(", ") +
+                            (if (failed.size > 3) "…" else "")
+                    )
+                }
+            } finally {
+                if (installGeneration == gen) {
+                    _installRunning.value = false
+                    _installStopping.value = false
+                }
             }
         }
     }
@@ -2016,7 +2147,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 for (plugin in plugins) {
                     val hash = plugin.fileHash ?: continue
                     if (!hash.startsWith("sha256-")) continue
-                    val path = onDisk[plugin.url] ?: continue
+                    // The installed file can be indexed under another spelling
+                    // of this URL (the repo rewrote it, or it was installed
+                    // from the other branch): ask for every key the plugin's
+                    // URL answers to, not just the literal string.
+                    val keys = SourceUrls.matchKeys(plugin.url)
+                    val path = onDisk[plugin.url]
+                        ?: keys.firstOrNull { onDisk.containsKey(it) }?.let { onDisk[it] }
+                        ?: continue
                     val expected = hash.removePrefix("sha256-").lowercase()
                     val actual = runCatching { sha256Hex(File(path).readBytes()) }.getOrNull()
                         ?: continue
@@ -2036,37 +2174,56 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      * the Update button on a row, and Update all. [items] are run one after
      * another inside ONE background job (an install cancels the previous job,
      * so a loop of individual installs would cancel itself).
+     *
+     * Like [installAllPlugins], a run over many extensions can be stopped
+     * part-way with [stopBulkInstall].
      */
     fun updatePlugins(items: List<Pair<Cs3RepoPlugin, RepoKind>>) {
         if (items.isEmpty()) return
         installJob?.cancel()
+        val gen = ++installGeneration
         installJob = startBackground {
-            clearStatus()
-            var ok = 0
-            val failed = mutableListOf<String>()
-            for ((i, item) in items.withIndex()) {
-                val (p, kind) = item
-                _busyMsg.value = "Updating ${p.name} (${i + 1}/${items.size})…"
-                val r = runCatching {
-                    withTimeoutOrNull(90_000) {
-                        when (effectiveRepoKind(kind, p.url)) {
-                            RepoKind.CS3 -> installCs3Plugin(p)
-                            RepoKind.HIKARI -> installHikiPlugin(p)
-                            RepoKind.NUVIO -> installNuvioPlugin(p)
-                            RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
-                            RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+            installCancelled = false
+            _installRunning.value = true
+            try {
+                clearStatus()
+                var ok = 0
+                val failed = mutableListOf<String>()
+                for ((i, item) in items.withIndex()) {
+                    if (installCancelled) break
+                    val (p, kind) = item
+                    _busyMsg.value = "Updating ${p.name} (${i + 1}/${items.size})…"
+                    val r = runCatching {
+                        withTimeoutOrNull(90_000) {
+                            when (effectiveRepoKind(kind, p.url)) {
+                                RepoKind.CS3 -> installCs3Plugin(p)
+                                RepoKind.HIKARI -> installHikiPlugin(p)
+                                RepoKind.NUVIO -> installNuvioPlugin(p)
+                                RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
+                                RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+                            }
                         }
+                    }.getOrNull()
+                    if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+                }
+                // Re-hash: anything that came back clean loses its Update button.
+                checkUpdates()
+                setSuccess(
+                    when {
+                        installCancelled ->
+                            "Stopped — updated $ok of ${items.size}"
+                        failed.isEmpty() -> "Updated $ok extension${if (ok == 1) "" else "s"}"
+                        else -> "Updated $ok of ${items.size} — failed: " +
+                            failed.take(3).joinToString(", ") +
+                            (if (failed.size > 3) "…" else "")
                     }
-                }.getOrNull()
-                if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+                )
+            } finally {
+                if (installGeneration == gen) {
+                    _installRunning.value = false
+                    _installStopping.value = false
+                }
             }
-            // Re-hash: anything that came back clean loses its Update button.
-            checkUpdates()
-            setSuccess(
-                if (failed.isEmpty()) "Updated $ok extension${if (ok == 1) "" else "s"}"
-                else "Updated $ok of ${items.size} — failed: " +
-                    failed.take(3).joinToString(", ") + (if (failed.size > 3) "…" else "")
-            )
         }
     }
 
@@ -2159,6 +2316,11 @@ fun ExtensionsScreen() {
     var repoUrl by remember { mutableStateOf("") }
     val busy by vm.busy.collectAsState()
     val busyMsg by vm.busyMsg.collectAsState()
+    // A bulk install/update can be stopped while it runs (see
+    // [ExtensionsViewModel.stopBulkInstall]) — the screens that can start one
+    // show the Stop button in their progress line.
+    val installRunning by vm.installRunning.collectAsState()
+    val installStopping by vm.installStopping.collectAsState()
     val errorMsg by vm.errorMsg.collectAsState()
     val successMsg by vm.successMsg.collectAsState()
 
@@ -2333,6 +2495,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onBack = { openRepoUrl = null; vm.clearStatus() },
             onRefresh = { vm.refreshRepo(openRepo) },
             onInstall = { installPlugin(it, openRepo.kind) },
@@ -2416,6 +2581,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onBack = { installedOpen = false; vm.clearStatus() },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
@@ -2462,6 +2630,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
                 vm.clearStatus()
@@ -3272,6 +3443,11 @@ private fun RepoBrowserView(
     installedUrls: Set<String>,
     outdatedUrls: Set<String> = emptySet(),
     onUpdateAll: () -> Unit = {},
+    /** True while a bulk install/update runs, and true again while it is
+     *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onOpenRepo: (Cs3Repo) -> Unit,
     onOpenSources: () -> Unit,
     onOpenFolder: (SourceFolder) -> Unit,
@@ -3385,11 +3561,24 @@ private fun RepoBrowserView(
         if (busy) {
             item {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(
-                    busyMsg,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(16.dp)
-                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        busyMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (installRunning) {
+                        Spacer(Modifier.width(12.dp))
+                        OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                            Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                        }
+                    }
+                }
             }
         }
         successMsg?.let { msg ->
@@ -3809,6 +3998,11 @@ private fun RepoPluginsView(
     onInstall: (Cs3RepoPlugin) -> Unit,
     onUninstall: (Cs3RepoPlugin) -> Unit,
     onUpdate: (Cs3RepoPlugin) -> Unit,
+    /** True while a bulk install/update runs, and true again while it is
+     *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onOpenSettings: (ContentProvider) -> Unit,
     onInstallAll: () -> Unit,
 ) {
@@ -3864,11 +4058,24 @@ private fun RepoPluginsView(
         if (state.loading || busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             if (busy) {
-                Text(
-                    busyMsg,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(16.dp)
-                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        busyMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (installRunning) {
+                        Spacer(Modifier.width(12.dp))
+                        OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                            Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                        }
+                    }
+                }
             }
         }
         successMsg?.let { msg ->
@@ -5195,11 +5402,24 @@ private fun SourceFolderView(
         HorizontalDivider()
         if (busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(
-                busyMsg,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(16.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (installRunning) {
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                        Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                    }
+                }
+            }
         }
         successMsg?.let { msg ->
             Text(
@@ -5717,6 +5937,11 @@ private fun InstalledExtensionsView(
     errorMsg: String?,
     outdatedUrls: Set<String> = emptySet(),
     onUpdateProvider: (ContentProvider) -> Unit = {},
+    /** A bulk install/update started elsewhere is still running — see the
+     *  Stop button below (and [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onBack: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,

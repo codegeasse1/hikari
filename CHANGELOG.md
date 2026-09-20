@@ -1,3 +1,16 @@
+## 0.9.6
+
+Extensions that are published as GitHub release files are told apart from each other — and a long Install all can be stopped.
+
+### Fixed
+
+- **Installing one extension made the whole repo read as installed — and uninstalling one made the whole repo read as uninstalled.** A repo that is built by CI publishes its files as GitHub **release assets** (`github.com/o/r/releases/download/<tag>/<file>`). The URL-identity code knew raw file links and `blob`/`raw`/`resolve` links, but a release link fell through to the "this is just the repo's page" rule and collapsed onto the bare repository — so all 144 extensions of such a repo shared ONE identity. One install lit up every row ("Uninstall" on 143 extensions you do not have, and no Install button anywhere), "Install all" thought there was nothing to do, uninstalling a row could take a different extension with it, and the updates list was wrong for the same reason. A release file is now identified as `owner/repo/filename`, exactly like a raw file (`continuous`, a version tag and GitHub's `latest` spelling are all the same file), so each extension stands on its own: one install shows one Uninstall, the rest keep their Install button, Install all installs what is missing, and Uninstall removes exactly the row you tapped.
+
+### Added
+
+- **Stop for Install all / Update all.** A repo with a hundred-plus extensions is a long job to start by accident, and there was no way out of it. The progress line now carries a **Stop** button while a bulk install or update runs: it finishes the extension it is on right now (so nothing is left half-downloaded or half-registered) and then ends the run, reporting where it got to ("Stopped — installed 57 of 144 extensions").
+- **A mistyped short name now answers with the name you meant.** Typing `hiakri` used to be answered with the generic "must start with http(s):// — or a short name (megarepo, hikari, nuvio, …)" hint, which reads like a rejection of a word you nearly got right. One swapped pair (or two letters out of place) is recognised as a typo and answered directly: `Unknown short name "hiakri" — did you mean "hikari"?` — with the check narrowed to the kind of repo the dialog can actually add.
+
 ## 0.9.5
 
 Your repo list stops growing duplicates, Uninstall tells the truth, a whole engine can be marked and then trimmed, and an IPTV playlist is a first-class extension.
