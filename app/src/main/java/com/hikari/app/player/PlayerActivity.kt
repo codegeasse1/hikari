@@ -1549,7 +1549,7 @@ class PlayerActivity : ComponentActivity() {
                         delay(150L)
                     }
                     if (firstServersAt == 0L) return@launch
-                    delay(originHeadStartMs)
+                    delay(originHeadStartMs.toLong())
                     if (!originFound() && !originSettled && !headStartLogged) {
                         headStartLogged = true
                         com.hikari.app.data.Logs.log(
