@@ -411,7 +411,8 @@ class AppStore(private val ctx: Context) {
      *  - posters wear the coloured halo + gallery frame, rounded and badged;
      *  - Home's featured banner is the side-by-side Showcase;
      *  - the detail page opens on "Art + poster";
-     *  - the player wears the Neon skin.
+     *  - the player wears the Neon skin;
+     *  - the loading screen is the title's poster card with a sheen across it.
      *
      * They are only DEFAULTS: every one of them is a normal setting, and a user
      * who picks something else keeps it (a stored value always wins — see each

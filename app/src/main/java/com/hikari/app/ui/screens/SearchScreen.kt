@@ -483,7 +483,12 @@ fun SearchScreen(
                 action = null
             )
         } else {
-            val namesById = providers.associateBy({ it.config.id }, { it.config.name })
+            // Built once per provider list, not once per recomposition: this
+            // screen recomposes on every keystroke and on every batch of results
+            // arriving, and the map has one entry per installed extension.
+            val namesById = remember(providers) {
+                providers.associateBy({ it.config.id }, { it.config.name })
+            }
             Column(Modifier.fillMaxSize()) {
                 // The user's own collections first: an imported list or a
                 // hand-built TMDB source belongs to them, and no extension
