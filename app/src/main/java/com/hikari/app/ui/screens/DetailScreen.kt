@@ -1400,6 +1400,12 @@ fun DetailScreen(
     // hand-off from one to the other looks like a second loading screen.
     val loadingAuraColorSetting by remember { app.store.loadingAuraColorFlow() }
         .collectAsState(initial = com.hikari.app.ui.AuraColors.THEME)
+    // The ring's colour as the ARGB the player is handed. Resolved HERE, in
+    // composition, rather than inside the launch lambda below: reading
+    // MaterialTheme is a composable call, and that lambda is not composable.
+    val loadingAuraArgb = com.hikari.app.ui.AuraColors
+        .color(loadingAuraColorSetting, MaterialTheme.colorScheme.primary)
+        .toArgb()
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1503,13 +1509,8 @@ fun DetailScreen(
                 putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
                 // The aura ring's colour, resolved to the same ARGB this page
                 // draws it in, so the player's cover continues the exact picture
-                // the detail page put up (see loadingAuraColorSetting above).
-                putExtra(
-                    "loadingAuraColor",
-                    com.hikari.app.ui.AuraColors
-                        .color(loadingAuraColorSetting, MaterialTheme.colorScheme.primary)
-                        .toArgb(),
-                )
+                // the detail page put up (see loadingAuraArgb above).
+                putExtra("loadingAuraColor", loadingAuraArgb)
                 putExtra("startAfterServers", startAfterServers)
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.

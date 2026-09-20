@@ -3437,7 +3437,11 @@ class TmdbGridViewModel(
                 page++
             }
             _loading.value = false
-        }.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        }.also { job ->
+            // `also` (not a chained `invokeOnCompletion`) — the latter returns a
+            // DisposableHandle, not the Job this holder has to keep.
+            job.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        }
     }
 
     fun refresh() {
