@@ -210,6 +210,12 @@ fun rememberPosterStyle(): PosterStyle {
     val glassFlow = remember { app.store.posterGlassFlow() }
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val auraFlow = remember { app.store.posterAuraColorFlow() }
+    // Television performance mode (Settings → TV & Remote): a TV stick is
+    // decoding 1080p with a chip a phone would have called slow, so while it is
+    // on the expensive per-poster work is dropped — the animated treatments and
+    // the blurred halo behind each card — and the posters are drawn plain.
+    val perfFlow = remember { app.store.tvPerfFlow() }
+    val perf by perfFlow.collectAsState(initial = false)
     val blur by blurFlow.collectAsState(initial = 0)
     val corner by cornerFlow.collectAsState(initial = 14)
     val titles by titlesFlow.collectAsState(initial = true)
@@ -218,12 +224,12 @@ fun rememberPosterStyle(): PosterStyle {
     val effects by effectsFlow.collectAsState(initial = emptySet())
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     return PosterStyle(
-        blur = blur.coerceIn(0, 24),
+        blur = if (perf) 0 else blur.coerceIn(0, 24),
         corner = corner.coerceIn(0, 28),
         showTitles = titles,
         showRatings = ratings,
         glass = glass,
-        effects = PosterEffects.normalizeSet(effects),
+        effects = if (perf) emptySet() else PosterEffects.normalizeSet(effects),
         auraColor = AuraColors.normalize(auraColor),
     )
 }

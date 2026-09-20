@@ -2007,6 +2007,130 @@ class PlayerActivity : ComponentActivity() {
         if (controllerVisible) pv.hideController() else pv.showController()
     }
 
+    /**
+     * The television remote.
+     *
+     * A remote has no touch: it has Up/Down/Left/Right, OK and Back, plus the
+     * transport buttons (play/pause, rewind, fast-forward). None of the phone
+     * gestures exist there, so without this the app would be a video the viewer
+     * could not pause, seek or leave. The model, which is the one every
+     * streaming app on the platform uses:
+     *
+     *  - **Controls hidden (watching).** Left/Right seek 10 seconds each way and
+     *    flash the same on-screen indicator a double-tap does (holding the
+     *    button down repeats, so it scrubs — the remote sends repeats for a
+     *    held key). Up/Down/OK bring the controls up instead of changing
+     *    anything, so a stray press while watching never pauses the film.
+     *  - **Controls visible (navigating).** Every direction key is handed to the
+     *    controls themselves, which is what lets the D-pad walk the buttons:
+     *    media3 gives its own control views focus, and intercepting Left/Right
+     *    here as well would make the buttons beside the focused one unreachable.
+     *  - **Play/pause, rewind and fast-forward** work at any time (a remote's
+     *    transport buttons mean exactly what they say), and Back closes the
+     *    controls first and only leaves the player on the second press.
+     *
+     * Only active on a television: on a phone this method does not run at all
+     * (see the first line of [dispatchKeyEvent]), so not one key behaves
+     * differently there.
+     */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (!com.hikari.app.tv.TvMode.isTv) return super.dispatchKeyEvent(event)
+        if (event.action == android.view.KeyEvent.ACTION_DOWN && handleTvKey(event.keyCode)) {
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** True when the key was handled here — see [dispatchKeyEvent]. */
+    private fun handleTvKey(code: Int): Boolean {
+        val p = player
+        return when (code) {
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                // OK with the controls up belongs to the focused button; OK
+                // with them down is "show me the controls", never "pause" — a
+                // stray press while watching must not stop the film.
+                if (controllerVisible || holdingFast || controlsLocked) {
+                    false
+                } else {
+                    playerView?.showController()
+                    true
+                }
+            }
+
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                if (p == null) {
+                    false
+                } else {
+                    if (p.isPlaying) p.pause() else p.play()
+                    playerView?.showController()
+                    true
+                }
+            }
+
+            android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                if (controllerVisible) false else { tvSeek(TV_SEEK_LONG_MS); true }
+            }
+
+            android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                if (controllerVisible) false else { tvSeek(-TV_SEEK_LONG_MS); true }
+            }
+
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                if (controllerVisible) false else { tvSeek(-TV_SEEK_STEP_MS); true }
+            }
+
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                if (controllerVisible) false else { tvSeek(TV_SEEK_STEP_MS); true }
+            }
+
+            android.view.KeyEvent.KEYCODE_DPAD_UP,
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (controllerVisible || holdingFast || controlsLocked) {
+                    false
+                } else {
+                    playerView?.showController()
+                    true
+                }
+            }
+
+            // Back closes the controls first (the way every television app
+            // behaves) and only leaves the player once they are already down —
+            // so one stray Back press while browsing the controls does not end
+            // the film.
+            android.view.KeyEvent.KEYCODE_BACK -> {
+                if (controllerVisible) {
+                    playerView?.hideController()
+                    true
+                } else {
+                    false
+                }
+            }
+
+            else -> false
+        }
+    }
+
+    /**
+     * Seeks by [deltaMs] from a remote key and flashes the same indicator the
+     * double-tap gesture uses (see [showSeekFeedback]).
+     *
+     * Deliberately does NOT bring the controls up: seeking while watching must
+     * not hand the next Left/Right press to the buttons (see [handleTvKey]),
+     * and the indicator is already unmistakable feedback.
+     */
+    private fun tvSeek(deltaMs: Long) {
+        if (controlsLocked) return
+        val p = player ?: return
+        val target = (p.currentPosition + deltaMs)
+            .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
+        p.seekTo(target)
+        showSeekFeedback(deltaMs)
+    }
+
     /** Double-tap seek: left half rewinds 10s, right half forwards 10s
      *  (matching the 10s shown on the centre rewind/forward buttons). */
     private fun seekByTap(x: Float) {
@@ -8460,6 +8584,16 @@ class PlayerActivity : ComponentActivity() {
         private const val RELINK_WAIT_MS = 12_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
+        // ---- Television remote seek distances (see handleTvKey) ----
+        //
+        // Two sizes, because a remote has two kinds of seek: the arrow keys are
+        // the "nudge" (the same ten seconds the phone's double-tap seeks, so the
+        // two interfaces move the film identically), and a remote's dedicated
+        // rewind / fast-forward buttons are the "skip", which wants to cover
+        // more ground per press.
+        private const val TV_SEEK_STEP_MS = 10_000L
+        private const val TV_SEEK_LONG_MS = 30_000L
 
         /** How much a vertical drag moves the brightness/volume sliders, in
          *  "screen heights". 4 means roughly a quarter of a screen-height swipe

@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -3123,7 +3124,7 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             return@Column
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 150.dp),
+            columns = GridCells.Adaptive(minSize = TvUi.gridMin(150)),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3508,7 +3509,7 @@ fun TmdbGridScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 84.dp),
+                columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
@@ -3654,7 +3655,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             return@Column
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 84.dp),
+            columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

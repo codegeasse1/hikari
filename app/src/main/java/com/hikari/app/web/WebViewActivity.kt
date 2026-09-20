@@ -254,7 +254,28 @@ class WebViewActivity : ComponentActivity() {
             setOnClickListener { playVideo() }
         }
 
-        webView = WebView(this)
+        // A TELEVISION BOX MAY HAVE NO WEBVIEW AT ALL. The WebView is part of
+        // the system on a phone, but plenty of cheap Android TV / Fire TV boxes
+        // ship without a usable provider — and constructing one there throws
+        // (MissingWebViewPackageException from WebViewFactory) instead of
+        // failing politely, which used to be an instant crash the moment a
+        // title, a Cloudflare check or a site link tried to open a web page.
+        // Now it is a message and a closed screen.
+        webView = try {
+            WebView(this)
+        } catch (t: Throwable) {
+            com.hikari.app.data.Logs.log(
+                "WebView",
+                "this device has no usable WebView ($t) — cannot open $startUrl",
+            )
+            Toast.makeText(
+                this,
+                I18n.t("This device has no web browser (WebView), so this page can't be opened"),
+                Toast.LENGTH_LONG,
+            ).show()
+            finish()
+            return
+        }
         // JS → Kotlin bridge for the auto hand-off: when a page's own <video>
         // is stuck buffering forever (common on WebView-hostile tube sites),
         // the page calls HikariBridge.stuckVideo(url) and we hand the real

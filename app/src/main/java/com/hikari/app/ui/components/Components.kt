@@ -81,6 +81,8 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.tv.TvMode
+import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.shape
 import kotlinx.coroutines.delay
@@ -266,9 +268,12 @@ fun PosterCard(
     // title and repaints the cell when the answer lands (see
     // rememberPosterScore). Off, it costs nothing at all.
     val badge = rememberPosterScore(item, style)
+    // On a television the same card is drawn at living-room size: a phone's
+    // 120dp cell is a thumbnail at four metres (see TvUi.POSTER_WIDTH_DP).
+    val cardWidth = if (TvMode.current()) TvUi.posterWidth else 120.dp
     Column(
         Modifier
-            .width(120.dp)
+            .width(cardWidth)
             // Deliberately NOT clipped to the poster's rounding: the outer
             // corner curve reached down into the title and bit the first and
             // last letters off it at high corner values. The artwork applies

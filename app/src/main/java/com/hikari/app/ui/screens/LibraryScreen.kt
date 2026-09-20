@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -111,7 +112,7 @@ fun LibraryScreen(nav: NavHostController) {
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 104.dp),
+        columns = GridCells.Adaptive(minSize = TvUi.gridMin(104)),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             start = 16.dp,

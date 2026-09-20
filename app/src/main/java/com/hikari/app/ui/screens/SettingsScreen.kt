@@ -1,4 +1,9 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvUi
+import com.hikari.app.tv.TvMode
+import androidx.compose.material.icons.filled.SettingsRemote
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Tv
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -208,6 +213,11 @@ private enum class SettingsFolder(
     val icon: ImageVector,
     /** Id of the folder this one lives inside, or null for a top-level folder. */
     val parent: String? = null,
+    /** A folder that only makes sense on a phone/tablet, so it is not offered at
+     *  all on a television: it configures something the television layout does
+     *  not have (the taskbar, the launcher icon aliases — a TV launcher shows
+     *  the banner instead). See com.hikari.app.tv.TvMode. */
+    val phoneOnly: Boolean = false,
 ) {
     APPEARANCE(
         "appearance",
@@ -220,6 +230,16 @@ private enum class SettingsFolder(
         "App Layout",
         "UI scale, posters, ratings, taskbar & full screen",
         Icons.Filled.Dashboard,
+    ),
+    // The television half of "one APK, two layouts" (see com.hikari.app.tv.TvMode).
+    // Offered on both kinds of device on purpose: a phone user can switch the TV
+    // layout on to see it, and a television whose box reports itself as a phone
+    // can switch it on from here — which is the whole reason the folder exists.
+    TV(
+        "tv",
+        "TV & Remote",
+        "Television layout, screen edges & performance",
+        Icons.Filled.Tv,
     ),
     PLAYER(
         "player",
@@ -314,6 +334,9 @@ private enum class SettingsFolder(
         "Your home-screen icon",
         Icons.Filled.Android,
         parent = "appearance",
+        // A television launcher does not show an icon: it shows the app's
+        // banner, and the aliases below are the phone launcher's.
+        phoneOnly = true,
     ),
     LAYOUT_POSTER(
         "layout.poster",
@@ -328,6 +351,9 @@ private enum class SettingsFolder(
         "Bar layout & which buttons stay",
         Icons.Filled.Tune,
         parent = "layout",
+        // A television has no taskbar to configure — the app draws its
+        // navigation rail there instead (see TvNavRail).
+        phoneOnly = true,
     ),
 }
 
@@ -442,6 +468,11 @@ fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
+    // Which layout this device is drawing (see com.hikari.app.tv.TvMode). It
+    // decides which cards are offered at all: the taskbar, the launcher icon and
+    // "full screen app mode" are phone things, and a television gets its own
+    // folder instead.
+    val isTv = TvMode.current()
 
     var themeMenuOpen by remember { mutableStateOf(false) }
     var checkingUpdates by remember { mutableStateOf(false) }
@@ -638,6 +669,7 @@ fun SettingsScreen(nav: NavHostController) {
                     // layout, not decoration — see SettingsFolder.APP_LAYOUT.)
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APPEARANCE.key }
+                        .filter { !isTv || !it.phoneOnly }
                         .forEach { target ->
                             item {
                                 SettingsFolderRow(
@@ -681,6 +713,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
+                        .filter { !isTv || !it.phoneOnly }
                         .forEach { target ->
                             item {
                                 SettingsFolderRow(
@@ -690,7 +723,13 @@ fun SettingsScreen(nav: NavHostController) {
                                 )
                             }
                         }
-                    item { SettingsCard { FullscreenCard(app) } }
+                    // "Turn off full screen app mode" is a phone setting: a
+                    // television is always immersive (there is no status bar to
+                    // read and no navigation bar to reach), so the card is not
+                    // offered there — see MainActivity.applyImmersiveMode.
+                    if (!isTv) {
+                        item { SettingsCard { FullscreenCard(app) } }
+                    }
                 }
                 SettingsFolder.LAYOUT_POSTER -> {
                     item { SettingsCard(top = 2.dp) { PosterStyleCard(app) } }
@@ -701,6 +740,12 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.LAYOUT_NAV -> {
                     item { SettingsCard(top = 2.dp) { NavBarCard(app) } }
                     item { SettingsCard { TaskbarCard(app) } }
+                }
+                SettingsFolder.TV -> {
+                    item { SettingsCard(top = 2.dp) { TvDeviceCard(app) } }
+                    item { SettingsCard { TvOverscanCard(app) } }
+                    item { SettingsCard { TvPerformanceCard(app) } }
+                    item { SettingsCard { TvRemoteCard() } }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -885,8 +930,11 @@ fun SettingsScreen(nav: NavHostController) {
                 }
             }
             // Only the top-level folders: a sub-folder is reached from inside its
-            // parent, not from the index.
-            SettingsFolder.entries.filter { it.parent == null }.forEach { target ->
+            // parent, not from the index. On a television the phone-only ones
+            // (the taskbar, the launcher icon aliases) are left out entirely.
+            SettingsFolder.entries
+                .filter { it.parent == null && (!isTv || !it.phoneOnly) }
+                .forEach { target ->
                 item {
                     SettingsFolderRow(folder = target, onClick = { openFolder = target })
                 }
@@ -1663,7 +1711,236 @@ private fun PosterStyleCard(app: HikariApp) {
     }
 }
 
-/** A labelled slider with its value on the right — used by [PosterStyleCard]. */
+// ---- Television & remote (see com.hikari.app.tv.TvMode) ----
+//
+// This folder is offered on BOTH kinds of device. On a television it is where
+// the layout, the safe area and the performance mode live; on a phone it is how
+// the television layout can be seen (and checked) without a television, and how
+// a box that reports itself wrongly can be corrected.
+
+/**
+ * Which of the two layouts this install draws.
+ *
+ * "Automatic" is the shipped behaviour and the right answer for almost
+ * everybody: the layout is chosen from the device itself (see
+ * [com.hikari.app.tv.TvMode] — the Android TV/Leanback features, a Fire TV
+ * marker, or simply the absence of a touchscreen). The two explicit choices are
+ * the escape hatch, and they exist because device detection is a set of
+ * heuristics: an unusual Android box can report none of the television signals
+ * and would then be handed a taskbar no remote can press, and a phone with a
+ * desktop-mode dock could claim to be one.
+ */
+@Composable
+private fun TvDeviceCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val modeFlow = remember { app.store.tvModeFlow() }
+    val stored by modeFlow.collectAsState(initial = TvMode.AUTO)
+    var menuOpen by remember { mutableStateOf(false) }
+    val mode = TvMode.normalize(stored)
+    val look = if (TvMode.deviceIsTelevision) {
+        tr("this device reports itself as a TV")
+    } else {
+        tr("this device reports itself as a phone or tablet")
+    }
+    val currentLabel = when (mode) {
+        TvMode.TV -> tr("Always the TV layout")
+        TvMode.PHONE -> tr("Always the phone layout")
+        else -> tr("Automatic") + " — " + look
+    }
+    Column {
+        ListItem(
+            leadingContent = {
+                Icon(
+                    Icons.Filled.Tv,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            },
+            headlineContent = { Text(tr("Layout")) },
+            supportingContent = { Text(currentLabel) },
+            trailingContent = {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+            modifier = Modifier.clickable { menuOpen = true },
+        )
+        if (menuOpen) {
+            ChoiceDialog(
+                title = tr("Layout"),
+                items = listOf(
+                    ChoiceItem(TvMode.AUTO, tr("Automatic")),
+                    ChoiceItem(TvMode.TV, tr("TV layout")),
+                    ChoiceItem(TvMode.PHONE, tr("Phone layout")),
+                ),
+                selectedKey = mode,
+                onPick = { pick ->
+                    menuOpen = false
+                    scope.launch { runCatching { app.store.setTvMode(pick) } }
+                },
+                onDismiss = { menuOpen = false },
+            )
+        }
+        Text(
+            tr(
+                "One APK, two layouts. The TV layout puts the tabs in a rail down " +
+                    "the left, draws everything bigger and pads it away from the " +
+                    "screen edges, and follows the remote's arrow keys. Switching " +
+                    "this takes effect immediately — no restart."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+/**
+ * The safe area: how far content is kept from the edge of the screen.
+ *
+ * Televisions have cropped a few percent off the picture since the CRT days,
+ * and plenty of modern sets and HDMI switches still do. Anything drawn hard
+ * against the edge is simply not there on those screens — which is how a back
+ * button ends up half off the left side of a Fire TV. The default (see
+ * [TvUi.DEFAULT_OVERSCAN_DP]) keeps every control well inside; the slider is
+ * here because the right number belongs to the television, and a set that shows
+ * the whole frame wants 0.
+ */
+@Composable
+private fun TvOverscanCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tvOverscanFlow() }
+    val stored by flow.collectAsState(initial = TvUi.DEFAULT_OVERSCAN_DP)
+    var slider by remember { mutableStateOf(stored.toFloat()) }
+    LaunchedEffect(stored) { slider = stored.toFloat() }
+
+    SettingsSection(
+        id = "tv.overscan",
+        icon = Icons.Filled.AspectRatio,
+        title = tr("Screen edges"),
+        summary = slider.roundToInt().toString() + " dp",
+    ) {
+        SettingsSlider(
+            label = tr("Keep controls away from the edge"),
+            value = slider,
+            valueText = slider.roundToInt().toString() + " dp",
+            valueRange = 0f..TvUi.MAX_OVERSCAN_DP.toFloat(),
+            // 4dp steps: 16 of them across 0..64.
+            steps = TvUi.MAX_OVERSCAN_DP / 4 - 1,
+            onValueChange = { v -> slider = (v / 4f).roundToInt().toFloat() * 4f },
+            onValueChangeFinished = {
+                scope.launch { runCatching { app.store.setTvOverscan(slider.roundToInt()) } }
+            },
+        )
+        Text(
+            tr(
+                "Televisions crop a few percent off the picture, so content drawn " +
+                    "at the very edge can be invisible. Raise this until nothing " +
+                    "is cut off; lower it if your TV shows the whole frame."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+/**
+ * The television performance mode: draw the plain posters.
+ *
+ * A TV stick is decoding 1080p with a chip a phone would have called slow, and
+ * the poster treatments (an animated frame, a sheen sweep, an aura) are drawn
+ * per card, per frame, on top of that. On is the shipped default on a
+ * television (see HikariApp's first-run seeding) and it also drops the blurred
+ * halo behind each card; off restores whatever the poster settings say.
+ */
+@Composable
+private fun TvPerformanceCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tvPerfFlow() }
+    val on by flow.collectAsState(initial = false)
+
+    SettingsSection(
+        id = "tv.perf",
+        icon = Icons.Filled.Speed,
+        title = tr("Performance mode"),
+        summary = if (on) tr("On — plain posters, no effects")
+        else tr("Off — the poster effects are drawn"),
+    ) {
+        SettingsToggle(
+            label = tr("Lighter visuals"),
+            supporting = tr("Skips the poster treatments and their blur"),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setTvPerf(value) } }
+            },
+        )
+        Text(
+            tr(
+                "Television boxes are much weaker than phones, and smoother " +
+                    "scrolling matters more on a big screen than a fancy poster. " +
+                    "Turn this off if your box handles the effects without trouble."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+/**
+ * What the remote does, written down.
+ *
+ * A remote has up to a dozen buttons and no touchscreen; the player's gestures
+ * (drag for brightness, double-tap to seek, hold for 2×) do not exist there, so
+ * without this card the television controls are invisible knowledge.
+ */
+@Composable
+private fun TvRemoteCard() {
+    SettingsSection(
+        id = "tv.remote",
+        icon = Icons.Filled.SettingsRemote,
+        title = tr("Remote controls"),
+        summary = tr("What each button does"),
+    ) {
+        TvKeyRow(tr("Up / Down / OK"), tr("Bring the player's controls up"))
+        TvKeyRow(tr("Left / Right"), tr("Seek 10 seconds (hold to scrub). With the controls up, they move between its buttons"))
+        TvKeyRow(tr("Rewind / Fast-forward"), tr("Seek 30 seconds"))
+        TvKeyRow(tr("Play / Pause"), tr("Pause and resume"))
+        TvKeyRow(tr("Back"), tr("Close the controls — press it again to leave the player"))
+        TvKeyRow(tr("In the app"), tr("Left/Right walks a row, Up/Down moves between rows, and the rail on the left changes tab"))
+    }
+}
+
+/** One line of [TvRemoteCard]: the button, then what it does. */
+@Composable
+private fun TvKeyRow(keys: String, what: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            keys,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.width(150.dp),
+        )
+        Text(
+            what,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * A labelled slider with its value on the right — used by [PosterStyleCard]. */
 @Composable
 private fun SettingsSlider(
     label: String,

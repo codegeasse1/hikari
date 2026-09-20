@@ -95,6 +95,9 @@ import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
+import com.hikari.app.tv.TvMode
+import com.hikari.app.tv.TvNavRail
+import com.hikari.app.tv.TvUi
 import androidx.compose.runtime.collectAsState
 
 object Routes {
@@ -741,6 +744,19 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // what actually brings the bars back).
     val fullscreenOffFlow = remember { app.store.fullscreenOffFlow() }
     val fullscreenOff by fullscreenOffFlow.collectAsState(initial = false)
+    // ---- Television (one APK, two layouts — see com.hikari.app.tv.TvMode) ----
+    //
+    // Subscribes to the user's choice, so switching "This device is a TV" in
+    // Settings re-lays-out the app on the spot. What changes on a television:
+    // the navigation rail instead of the taskbar, a wider poster, everything
+    // padded in from the screen edges (see TvUi), and the focus ring every
+    // clickable inherits from MainActivity's TvFocusProvider.
+    val isTv = TvMode.current()
+    // The gap kept clear of the screen's edges on a television ("overscan" —
+    // see TvUi.DEFAULT_OVERSCAN_DP for why televisions need one at all).
+    val overscanFlow = remember { app.store.tvOverscanFlow() }
+    val overscanDp by overscanFlow.collectAsState(initial = TvUi.DEFAULT_OVERSCAN_DP)
+    val tvEdge = if (isTv) overscanDp.dp else 0.dp
     // The animated layout's two states. A page's own scrolling drives it: the
     // bar rests at its full, labelled size and eases into a smaller floating
     // pill as the user scrolls back up towards the top of a page (swiping up is
@@ -773,7 +789,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
     }
 
-    Box(Modifier.fillMaxSize().nestedScroll(barScroll)) {
+    Box(Modifier.fillMaxSize().nestedScroll(barScroll).padding(tvEdge)) {
         // The page backdrop, drawn here rather than by the Scaffold so the
         // translucent cards have something to be glass OVER (the Scaffold below
         // is transparent for exactly that reason).
@@ -852,8 +868,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             //
             // With "Turn off full screen app mode" the bars ARE on screen, so
             // the top inset comes back; the bottom is left to the bar itself
-            // (see the navigationBars padding on the NavHost below).
-            contentWindowInsets = if (fullscreenOff) {
+            // (see the navigationBars padding on the NavHost below). A
+            // television is always immersive, so that preference is ignored
+            // there (its card is hidden on a TV too — see MainActivity).
+            contentWindowInsets = if (fullscreenOff && !isTv) {
                 WindowInsets.statusBars
             } else {
                 WindowInsets(0, 0, 0, 0)
@@ -874,7 +892,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 // page that padded only by the bar's height would still end up
                 // under it. In immersive mode — the default, and what the whole
                 // design assumes — that inset is 0 and this is just the bar.
-                LocalTaskbarInset provides if (showBar) {
+                LocalTaskbarInset provides if (showBar && !isTv) {
                     val navBarBottom = with(LocalDensity.current) {
                         WindowInsets.navigationBars.getBottom(this).toDp()
                     }
@@ -890,11 +908,18 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                         // would otherwise end under the three buttons; the bar
                         // itself already lifts above them.
                         .then(
-                            if (fullscreenOff && !showBar) {
+                            if (fullscreenOff && !showBar && !isTv) {
                                 Modifier.windowInsetsPadding(WindowInsets.navigationBars)
                             } else {
                                 Modifier
                             }
+                        )
+                        // On a television every page starts to the right of the
+                        // navigation rail, which is what the rail is: the room
+                        // the tab strip takes from the page (the same job the
+                        // taskbar inset does at the bottom on a phone).
+                        .then(
+                            if (isTv) Modifier.padding(start = TvUi.RAIL_WIDTH) else Modifier
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }
@@ -1013,7 +1038,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         // comment on the Scaffold). It is the last child of the Box, so it sits
         // on top of every screen, and it is transparent wherever the pill is not
         // — nothing around it is painted.
-        if (showBar) {
+        if (showBar && !isTv) {
             AppBottomBar(
                 currentRoute = tabRoute,
                 hidden = hiddenTabs,
@@ -1022,6 +1047,17 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 showLabels = showTabLabels,
                 onNavigate = { route -> Routes.navigateTab(nav, route) },
                 modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+        // On a television the tabs live in a rail down the left edge instead
+        // (see TvNavRail for why the platform does it that way), and it is
+        // where the remote's focus starts.
+        if (showBar && isTv) {
+            TvNavRail(
+                currentRoute = tabRoute,
+                hidden = hiddenTabs,
+                onNavigate = { route -> Routes.navigateTab(nav, route) },
+                modifier = Modifier.align(Alignment.CenterStart),
             )
         }
     }

@@ -22,6 +22,9 @@ import com.hikari.app.ui.navigation.AppRoot
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariTheme
 import com.hikari.app.ui.theme.HikariThemeMode
+import com.hikari.app.tv.TvFocusProvider
+import com.hikari.app.tv.TvMode
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -111,6 +114,24 @@ class MainActivity : AppCompatActivity() {
             true,
         )
         val store = (application as HikariApp).store
+        // Which kind of device this is. Asked again here — HikariApp asked at
+        // process start — because a few boxes only settle their UI mode once an
+        // Activity exists. The user's override is read synchronously for the
+        // same reason the fullscreen flag below is: the very first frame has to
+        // already be the right layout, and Compose cannot await DataStore.
+        TvMode.detect(this)
+        TvMode.setOverride(
+            runCatching {
+                kotlinx.coroutines.runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(3_000L) { store.tvMode() }
+                }
+            }.getOrNull() ?: TvMode.AUTO
+        )
+        com.hikari.app.data.Logs.log(
+            "App",
+            "layout: " + (if (TvMode.isTv) "television" else "phone/tablet") +
+                " (" + TvMode.describe(this) + ")",
+        )
         // True fullscreen (the default): hide the system status + navigation
         // bars everywhere (swipe from any edge to briefly reveal them), so
         // content fills the whole screen instead of stopping below a status
@@ -272,6 +293,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // The television layout can be chosen at runtime (Settings → TV &
+            // Remote → "This device is a TV"), so the mirror the whole app reads
+            // is kept in step with the stored choice — switching it re-lays-out
+            // the interface live, without a restart.
+            val tvModeFlow = remember { store.tvModeFlow() }
+            LaunchedEffect(tvModeFlow) {
+                tvModeFlow.collect { TvMode.setOverride(it) }
+            }
+
             CompositionLocalProvider(
                 com.hikari.app.i18n.I18n.LocalMap provides i18nMap
             ) {
@@ -282,6 +312,11 @@ class MainActivity : AppCompatActivity() {
                 uiScale = uiScale,
                 fontFamily = appFontFamily,
             ) {
+                // On a television, every clickable in the app inherits the focus
+                // ring from here (see TvFocusProvider) — including the dialogs
+                // below, which is why the provider wraps them too. On a phone
+                // this is a pass-through and the platform ripple is unchanged.
+                TvFocusProvider(androidx.compose.material3.MaterialTheme.colorScheme.primary) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
                     UpdateDialog(
@@ -298,6 +333,7 @@ class MainActivity : AppCompatActivity() {
                             scope.launch { runCatching { store.setTelegramDontShow(true) } }
                         },
                     )
+                }
                 }
             }
             }
@@ -343,7 +379,12 @@ class MainActivity : AppCompatActivity() {
             androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
             val controller =
                 androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-            if (fullscreenOff) {
+            // A television is always fullscreen: there is no status bar to read
+            // and no navigation bar to reach, and every television app hides the
+            // two rows a touch device would show. The "Turn off full screen app
+            // mode" preference is therefore a phone-only setting (its card is
+            // hidden there too) — it cannot take the bars back on a TV.
+            if (fullscreenOff && !TvMode.isTv) {
                 controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
                 controller.systemBarsBehavior =
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_DEFAULT

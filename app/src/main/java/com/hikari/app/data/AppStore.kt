@@ -207,6 +207,27 @@ class AppStore(private val ctx: Context) {
          *  them behind an immersive, swipe-to-reveal fullscreen. Off = the app
          *  is immersive (the way it ships); on = normal windowed layout. */
         val FULLSCREEN_OFF = booleanPreferencesKey("fullscreenOff")
+        // ---- Television ----
+        //
+        // One APK runs on phones and on televisions, and the layout follows the
+        // device it finds itself on (see [com.hikari.app.tv.TvMode]). These four
+        // preferences are the user's hand on that decision.
+        //
+        /** "auto" (follow the device) | "tv" (always the television layout) |
+         *  "phone" (never). Some boxes report themselves wrongly, and being
+         *  stuck with an interface the remote cannot work is not acceptable. */
+        val TV_MODE = stringPreferencesKey("tvMode")
+        /** Screen-edge padding in dp on a television ("overscan"). Televisions
+         *  crop a few percent of the picture off, so content drawn hard against
+         *  the edge is not visible on many sets. */
+        val TV_OVERSCAN = intPreferencesKey("tvOverscan")
+        /** Lighter visuals on a television: drops the poster treatments and the
+         *  backdrop effects that a cheap TV stick's GPU cannot afford while it
+         *  is also decoding video. */
+        val TV_PERF = booleanPreferencesKey("tvPerf")
+        /** Whether the first-run television defaults have been applied to this
+         *  install already (they must be applied once, not on every launch). */
+        val TV_SEEDED = booleanPreferencesKey("tvSeeded")
     }
 
     // ---- Settings writes ----
@@ -842,6 +863,55 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setFullscreenOff(off: Boolean) {
         write("FULLSCREEN_OFF") { it[K.FULLSCREEN_OFF] = off }
+    }
+
+    // ---- Television (one APK, two layouts — see com.hikari.app.tv.TvMode) ----
+
+    /** Which layout to draw: "auto" (follow the device), "tv" or "phone". */
+    fun tvModeFlow(): Flow<String> =
+        store.data.map { com.hikari.app.tv.TvMode.normalize(it[K.TV_MODE]) }
+
+    suspend fun tvMode(): String = tvModeFlow().first()
+
+    suspend fun setTvMode(mode: String) {
+        write("TV_MODE") { it[K.TV_MODE] = com.hikari.app.tv.TvMode.normalize(mode) }
+    }
+
+    /** Screen-edge padding in dp on a television — see [K.TV_OVERSCAN]. */
+    fun tvOverscanFlow(): Flow<Int> =
+        store.data.map {
+            (it[K.TV_OVERSCAN] ?: com.hikari.app.tv.TvUi.DEFAULT_OVERSCAN_DP)
+                .coerceIn(0, com.hikari.app.tv.TvUi.MAX_OVERSCAN_DP)
+        }
+
+    suspend fun tvOverscan(): Int = tvOverscanFlow().first()
+
+    suspend fun setTvOverscan(dp: Int) {
+        write("TV_OVERSCAN") {
+            it[K.TV_OVERSCAN] = dp.coerceIn(0, com.hikari.app.tv.TvUi.MAX_OVERSCAN_DP)
+        }
+    }
+
+    /** Lighter visuals on a television — see [K.TV_PERF]. Read by
+     *  [com.hikari.app.ui.rememberPosterStyle], which drops the poster
+     *  treatments while it is on. */
+    fun tvPerfFlow(): Flow<Boolean> =
+        store.data.map { it[K.TV_PERF] ?: false }
+
+    suspend fun tvPerf(): Boolean = tvPerfFlow().first()
+
+    suspend fun setTvPerf(on: Boolean) {
+        write("TV_PERF") { it[K.TV_PERF] = on }
+    }
+
+    /** True once the first-run television defaults have been applied. */
+    fun tvSeededFlow(): Flow<Boolean> =
+        store.data.map { it[K.TV_SEEDED] ?: false }
+
+    suspend fun tvSeeded(): Boolean = tvSeededFlow().first()
+
+    suspend fun setTvSeeded(seeded: Boolean) {
+        write("TV_SEEDED") { it[K.TV_SEEDED] = seeded }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----

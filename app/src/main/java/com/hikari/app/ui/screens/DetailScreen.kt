@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import androidx.compose.ui.focus.focusRequester
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 
@@ -1298,6 +1299,21 @@ fun DetailScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    // Television: the remote's focus starts on this page's Play button, so
+    // opening a title and pressing Enter plays it — no hunting for the button
+    // with the D-pad first (see com.hikari.app.tv.TvMode). Done in a retry loop
+    // because the button is a LazyColumn item: until it is laid out there is
+    // nothing to point the focus requester at, and requesting focus early is an
+    // error rather than a no-op.
+    val playFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        repeat(20) {
+            val moved = runCatching { playFocus.requestFocus() }.getOrDefault(false)
+            if (moved) return@LaunchedEffect
+            delay(120L)
+        }
+    }
     // The score strip (IMDb / RT / …) on the details block is drawn unless the
     // user switched it off in Settings → App Layout: it is on by default,
     // because a title's score is part of what the page is for.
@@ -2576,7 +2592,11 @@ fun DetailScreen(
                     ) {
                         Button(
                             onClick = { tryPlay(btnEp) },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                // The remote lands here when the page opens (see
+                                // playFocus above); a no-op on a phone.
+                                .focusRequester(playFocus)
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))

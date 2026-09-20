@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 
 import android.app.Application
@@ -251,8 +252,11 @@ fun CatalogScreen(
                 // Same small-tile, clearly-gapped look as the search results
                 // grid: smaller posters than before, each in its own cell with
                 // a real gap, so the "Show All" wall never reads as one
-                // continuous sheet of artwork.
-                columns = GridCells.Adaptive(minSize = 84.dp),
+                // continuous sheet of artwork. On a television the same grid is
+                // laid out around a living-room cell size instead (see TvUi) —
+                // a phone's 84dp minimum on a 1920dp screen would be twenty-two
+                // columns of thumbnails.
+                columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),

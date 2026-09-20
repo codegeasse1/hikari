@@ -1,4 +1,5 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -520,7 +521,7 @@ fun SearchScreen(
                 val gridItems = remember(results) { results.distinctBy { it.uniqueId } }
                 val style = rememberPosterStyle()
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
+                    columns = GridCells.Fixed(TvUi.gridColumns(4)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),

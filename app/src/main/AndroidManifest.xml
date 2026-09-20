@@ -20,6 +20,31 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!-- ------------------------------------------------------------------
+         ONE APK, PHONES AND TELEVISIONS
+
+         The same APK installs on a phone/tablet and on a television (Android
+         TV, Google TV, Fire TV) and picks its layout from the device it finds
+         itself on — see com.hikari.app.tv.TvMode. These two lines are what make
+         that possible at the *store/launcher* level, and both are
+         required="false" on purpose:
+
+          * android.hardware.touchscreen required=false — THE one that matters
+            on a TV. A launcher filters out any app whose declared features the
+            device lacks, and a television has no touchscreen: leaving this
+            implied as required is what makes an APK invisible (uninstallable)
+            on every television.
+          * android.software.leanback required=false — leanback is the d-pad /
+            10-foot feature that Android TV and Google TV declare. Declared
+            optional so the ordinary phone install is unaffected.
+         ------------------------------------------------------------------ -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
     <application
         android:name=".HikariApp"
         android:allowBackup="true"
@@ -218,6 +243,35 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- The TELEVISION launcher entry.
+
+             A television home screen lists what carries LEANBACK_LAUNCHER and
+             draws the app's `banner` (a 320x180 image) instead of an icon, which
+             is why this alias is the one that has one. It is deliberately:
+
+              * always enabled and NEVER touched by the phone icon switching
+                (AppIconManager only ever enables/disables the icon aliases
+                above), so picking a different phone icon can never remove Hikari
+                from a television's home screen; and
+              * separate from the aliases above, because those carry
+                CATEGORY_LAUNCHER and a television launcher does not list that —
+                adding the leanback category to them would have made choosing an
+                icon a TV-launcher decision as well. -->
+        <activity-alias
+            android:name="com.hikari.app.tv.Launcher"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:banner="@drawable/tv_banner"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity-alias>
 

@@ -200,6 +200,12 @@ class HikariApp : Application() {
         Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
         watchForTheUserClosingTheApp()
+        // Which kind of device this is — a phone/tablet or a television — asked
+        // here, before anything can draw. ONE APK runs on both, and the answer
+        // decides the whole layout (see com.hikari.app.tv.TvMode); it is asked
+        // again in MainActivity, because a few boxes only settle their UI mode
+        // after the application object exists.
+        runCatching { com.hikari.app.tv.TvMode.detect(this) }
         // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
         // loader builds a class loader over the .ext and instantiates a source,
         // and the source immediately resolves its own dependencies out of
@@ -252,6 +258,43 @@ class HikariApp : Application() {
         appScope.launch {
             runCatching {
                 ExtensionVerifyGuard.apply(this@HikariApp, store.extensionVerifyWebview())
+            }
+        }
+        // Television: the user's layout choice, and the first-run television
+        // defaults. Both are reads/writes of the settings store, so they cannot
+        // happen on this thread — MainActivity reads the same preference
+        // synchronously before its first frame, and this keeps it current from
+        // then on.
+        appScope.launch {
+            runCatching {
+                val mode = store.tvMode()
+                com.hikari.app.tv.TvMode.setOverride(mode)
+                if (!store.tvSeeded()) {
+                    // Applied exactly once per install. A television gets the
+                    // quiet defaults: a TV stick is decoding 1080p with a chip a
+                    // phone would have called slow, so the first thing it shows
+                    // should not be a dozen animated posters. A phone's first run
+                    // changes nothing.
+                    if (com.hikari.app.tv.TvMode.isTv) {
+                        store.setPosterEffects(emptySet())
+                        store.setPosterBlur(0)
+                        store.setLoadingEffects(setOf(com.hikari.app.ui.LoadingEffects.SHEEN))
+                        store.setUiScaleEnabled(true)
+                        store.setUiScale(110)
+                        store.setTvPerf(true)
+                        Logs.log(
+                            "App",
+                            "television detected (${com.hikari.app.tv.TvMode.describe(this@HikariApp)})" +
+                                " — applied the TV defaults: no poster effects, 110% UI scale",
+                        )
+                    } else {
+                        Logs.log(
+                            "App",
+                            "phone/tablet detected (${com.hikari.app.tv.TvMode.describe(this@HikariApp)})",
+                        )
+                    }
+                    store.setTvSeeded(true)
+                }
             }
         }
         // "Your connection looks slow?" tip: measures in the background while a

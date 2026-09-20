@@ -1,3 +1,23 @@
+## 0.9.9
+
+Hikari now runs on televisions as well as phones — the same APK, whichever device you install it on.
+
+### Added
+
+- **Android TV, Google TV and Fire TV support.** The APK is universal: install it on a phone and it is the phone app you already know; install the *same file* on a television and it comes up as a television app — a navigation rail down the left instead of the taskbar, bigger posters, everything padded in from the screen edges, and a focus ring so you can always see what the remote's OK button is about to press. Nothing about the phone interface changes.
+- **The remote does everything it should in the player.** Up/Down/OK bring the controls up, Left/Right seek 10 seconds (hold to scrub), the remote's Rewind/Fast-forward buttons seek 30 seconds, Play/Pause works at any time, and Back closes the controls before it leaves the player. With the controls up, the arrows move between the buttons as they should.
+- **A TV & Remote settings folder**: the layout (Automatic, or forced TV/phone for a box that reports itself wrongly), **screen edges** — the safe area, because televisions crop a few percent off the picture, which is how a back button ends up half off the side of a Fire TV — **performance mode** (plain posters instead of the animated treatments, for the weaker sticks), and a written guide to what each remote button does.
+- **A television launcher entry** with a proper TV banner, so Hikari appears on an Android TV / Fire TV home screen like a native app. Choosing a different phone icon never affects it.
+
+### Fixed
+
+- **No crash on a device without a WebView.** Plenty of cheap television boxes ship without one, and opening any web page (a title's site, a Cloudflare check, a link) used to crash the app; it now says so and closes the page instead.
+
+### Changed
+
+- **On a television the app is always fullscreen**, and the settings that only make sense on a phone — the taskbar layout and its buttons, "turn off full screen app mode", the home-screen icon and the app icon variants — are not offered there at all, instead of being shown and doing nothing.
+- **First run on a television is quieter out of the box**: no animated poster treatments, no poster blur, and a slightly larger interface, so a TV stick can keep the interface smooth while it decodes video.
+
 ## 0.9.8
 
 Everything added and fixed since the last version released here (0.6.6). Pick the APK for your phone: **hikari-arm64-v8a.apk** (64-bit, every phone sold today), **hikari-armeabi-v7a.apk** (older 32-bit phones) or **hikari.apk** (universal — works on any device).
