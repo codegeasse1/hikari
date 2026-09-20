@@ -108,13 +108,25 @@
 -keep class org.jsoup.** { *; }
 -keep class rx.** { *; }
 -keep class io.reactivex.** { *; }
+# NanoHTTPD is published under two package names, and the two extension hosts
+# we support do not agree on which. `fi.iki.elonen.**` is the original one, and
+# it is the one the Aniyomi extension API vendored into this module actually
+# extends: `eu/kanade/tachiyomi/animesource/model/HttpServer.kt` implements
+# `fi.iki.elonen.NanoHTTPD`, and an extension's `createHttpServer()` hands that
+# socket to the reader. `org.nanohttpd.**` is the later fork, kept for
+# extensions built against it. Neither is referenced by Hikari's own source, so
+# these two lines are the only thing standing between an extension that serves
+# its own pages and a NoClassDefFoundError.
+-keep class fi.iki.elonen.** { *; }
 -keep class org.nanohttpd.** { *; }
 -keep class org.mozilla.javascript.** { *; }
 -keep class com.fasterxml.jackson.** { *; }
 -keep class com.google.gson.** { *; }
 -keep class io.ktor.** { *; }
 -keep class com.fleeksoft.** { *; }
--keep class com.github.blatzar.** { *; }
+# (NiceHttp — the HTTP client CloudStream extensions use — is
+# `com.lagradost.nicehttp.**`, and the CloudStream rule above already keeps it
+# whole. There is no `com.github.blatzar.**` in this app.)
 -keep class org.conscrypt.** { *; }
 -keep class io.github.anilbeesetti.** { *; }
 -keep class coil.** { *; }
@@ -236,7 +248,7 @@
 -dontwarn org.jsoup.**
 -dontwarn org.conscrypt.**
 -dontwarn com.fleeksoft.**
--dontwarn com.github.blatzar.**
+-dontwarn fi.iki.elonen.**
 -dontwarn uy.kohesive.injekt.**
 -dontwarn eu.kanade.**
 -dontwarn tachiyomi.**

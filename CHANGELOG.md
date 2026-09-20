@@ -1,3 +1,14 @@
+## 0.9.2
+
+A maintenance release with nothing visible in it. Two keep rules added in 0.9.1 named packages that do not exist in this app, so one of them was protecting nothing.
+
+### Fixed
+
+- **The keep rule for the extension API's local HTTP server was pointed at the wrong package.** An Aniyomi extension that serves its pages over a socket instead of returning a direct link starts that server itself — `createHttpServer()`, from `eu.kanade.tachiyomi.animesource.model.HttpServer` — and the server it starts is NanoHTTPD. The 0.9.1 rule named it `org.nanohttpd.**`, but the artifact that actually ships here (`org.nanohttpd:nanohttpd:2.3.1`) puts its classes in `fi.iki.elonen`, and the extension API vendored into Hikari is `fi.iki.elonen.NanoHTTPD`. It survived the 0.9.1 shrink only because it happened to be reachable from the extension API we keep whole — correct by luck, not by rule. A later change to that API could have dropped it silently, and every extension that reads its pages over a socket would then have failed with `NoClassDefFoundError` the first time it served one. Both package names are now kept, and both are in the `-dontwarn` list.
+- **A keep rule for a package that is not in the app.** The same list carried `com.github.blatzar.**`, which does not exist here at all; the CloudStream HTTP client extensions use is `com.lagradost.nicehttp.**`, already kept whole by the CloudStream rule. Removed.
+
+Nothing about the app's behaviour on your phone changes in 0.9.2, and the APK sizes are the same as 0.9.1.
+
 ## 0.9.1
 
 A smaller download. The APK no longer carries a bundled yt-dlp/Python engine, and the release build now drops the code and resources nothing in the app can reach.
