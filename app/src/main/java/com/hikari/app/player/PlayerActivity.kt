@@ -5697,7 +5697,7 @@ class PlayerActivity : ComponentActivity() {
             // once before playback so the real mime/URL is known. Otherwise
             // ExoPlayer treats them as a progressive container and reports
             // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED on streams that are
-            // perfectly playable (the "every yt-dlp source fails" symptom).
+            // perfectly playable (the "every source fails" symptom).
             // A URL a probe has already proved dead is skipped outright when
             // there is anywhere else to go, instead of paying ExoPlayer's own
             // error timeout to re-discover it.

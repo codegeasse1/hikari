@@ -1,3 +1,19 @@
+## 0.9.1
+
+A smaller download. The APK no longer carries a bundled yt-dlp/Python engine, and the release build now drops the code and resources nothing in the app can reach.
+
+### Changed
+
+- **A smaller APK.** Three things came off the download:
+  - the bundled **yt-dlp engine** is gone (see below) — a full CPython 3.13 interpreter, roughly 15 MB of the arm64 build, plus the few seconds it spent starting up at every app launch;
+  - the release build now **shrinks**: code nothing can reach and resources nothing refers to are dropped. **Nothing is renamed** — every class a plugin or an extension links against by name is kept exactly as it was, which is the whole point of `app/proguard-rules.pro` (read the comment at the top of that file before changing it);
+  - the **native libraries are stored compressed** in the APK (TorrServer's Go engine, Conscrypt), which takes a few more MB off every download in exchange for a little unpacking at install time.
+
+### Removed
+
+- **Universal extraction (yt-dlp)**, and the setting that switched it on. It only ever ran *after* the plugin's own `loadLinks`, the CloudStream jar extractor registry, MovieBlast, FallbackResolver and the Nuvio/SkyStream JS runtimes had **all** returned nothing — exactly the case where a plain-Python yt-dlp was least likely to find anything either, and the free build of that library has no TLS impersonation, so the sites that needed it failed regardless. It was also arm64-only (on a 32-bit phone `YtDlp.init()` threw, so those users never had it at all) and it cost up to 45 seconds of waiting on every title it was tried for. Every other engine is untouched.
+  If a title now reports no playable source, that is a plugin or extractor that came up empty — the same answer the fallback usually produced anyway — and the player's panel still names the reason.
+
 ## 0.9.0
 
 The coloured glow is back around every poster, the loading screen's ring and frame wrap the whole screen with a colour of their own, and closing the app now really stops it — no more notification saying it is still running, and no more splash screen that will not go away.

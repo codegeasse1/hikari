@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 156
-        versionName = "0.9.0"
+        versionCode = 157
+        versionName = "0.9.1"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -54,7 +54,22 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // ---- Shrinking: ON ----
+            //
+            // The release build was shipping every class of every dependency:
+            // ~70 MB of dex, most of it code nothing in this APK can reach
+            // (unused Compose components, unused Material icons, library
+            // internals). `isShrinkResources` needs `isMinifyEnabled`, so the
+            // two go together.
+            //
+            // It is safe HERE because app/proguard-rules.pro starts with
+            // `-dontobfuscate` and keeps every namespace that a plugin or an
+            // extension links against by name — read that file before changing
+            // anything in it, and re-read it before turning either of these
+            // back off in a panic: the fix for a broken plugin is a kept
+            // namespace there, not a lost 10 MB here.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // CI passes signing config via env vars (decoded from the SIGNING_KEY
             // repo secret). Local builds stay unsigned.
@@ -89,6 +104,18 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        // Native libraries are stored COMPRESSED in the APK.
+        //
+        // The platform default since AGP 4.2 is uncompressed (and page-aligned)
+        // so the loader can mmap them straight out of the APK — which is faster
+        // to start and is what 16 KB-page devices want — but it also means the
+        // biggest files in the download are stored at their raw size. Our two
+        // biggest are TorrServer's Go binary (~12 MB per ABI) and Conscrypt
+        // (~2 MB per ABI); compressing them costs a little install-time
+        // extraction and takes a few MB off every APK.
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }
@@ -301,7 +328,10 @@ dependencies {
     // res/layout/hikari_toast.xml), so the class must be on the compile+runtime
     // classpath too.
     implementation(libs.androidx.cardview)
-    implementation(libs.yt.dlp.android)
+    // (The bundled yt-dlp "universal extractor" — dev.ffmpegkit-maintained's
+    // yt-dlp-android, a full CPython 3.13 embedded through Chaquopy — was
+    // removed in 0.9.1. It was ~15 MB of the APK, arm64-only, and only ever
+    // ran on pages every other engine had already failed on. See CHANGELOG.)
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)
     debugImplementation(libs.androidx.compose.ui.tooling)

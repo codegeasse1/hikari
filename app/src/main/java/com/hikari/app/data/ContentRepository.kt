@@ -2,7 +2,6 @@ package com.hikari.app.data
 
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.Cs3MainApiProvider
-import com.hikari.app.cs3.YtDlpResolver
 import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.NetTuning
 import com.hikari.app.nuvio.EpisodeTitles
@@ -2879,13 +2878,12 @@ class ContentRepository(private val manager: ProviderManager) {
             // w3.org page in the web view instead of playing).
             var finalResult = result.filterNot { isGarbageUrl(it.url) }
                 .distinctBy { it.infoHash ?: it.url }
-            // App-wide universal last resort: every provider type funnels
-            // through here, so when they ALL come up empty the bundled yt-dlp
-            // extractor still gets one shot at the page (see the helper).
-            if (finalResult.isEmpty()) {
-                finalResult = ytdlpUniversalFallback(item, episode)
-                    .filterNot { isGarbageUrl(it.url) }
-            }
+            // (A bundled yt-dlp engine used to take one last shot at the page
+            // here when every provider type came up empty. It was removed in
+            // 0.9.1 — see the CHANGELOG. Everything above still applies; the
+            // remaining engines are the plugin's own loadLinks, the jar
+            // extractor registry, MovieBlast, FallbackResolver and the
+            // Nuvio/SkyStream JS runtimes.)
             // A title that JUST played is usually looked up again (replay,
             // picking another server, backing out and in), and the second pass
             // is a fresh, cold, time-bounded sweep — it can be slower, hit
@@ -4407,37 +4405,6 @@ class ContentRepository(private val manager: ProviderManager) {
      * would only double the wait. Gated behind the same "Universal extraction"
      * setting as that path.
      */
-    private suspend fun ytdlpUniversalFallback(item: MediaItem, episode: Episode?): List<StreamSource> {
-        val origin = manager.byId(item.providerId) ?: return emptyList()
-        if (origin.config.type == ProviderType.CS3) return emptyList()
-        val pageUrl = episode?.id ?: item.id
-        if (!pageUrl.startsWith("http://") && !pageUrl.startsWith("https://")) return emptyList()
-        val enabled = runCatching { HikariApp.instance.store.ytdlpEnabled() }.getOrDefault(true)
-        if (!enabled) return emptyList()
-
-        recordStreamMessage(origin, "Standard extractors found nothing - trying yt-dlp...")
-        var timedOut = false
-        val got = runCatching {
-            withTimeoutOrNull(NetTuning.timeout(45_000)) { YtDlpResolver.resolve(pageUrl) }
-                ?: run { timedOut = true; emptyList() }
-        }.getOrDefault(emptyList())
-        if (got.isEmpty()) {
-            val why = YtDlpResolver.initFailure
-            val detail = YtDlpResolver.lastExtractError
-            recordStreamMessage(
-                origin,
-                when {
-                    why != null -> "Universal extractor (yt-dlp) unavailable: $why"
-                    timedOut -> "yt-dlp timed out after 45s extracting this page."
-                    detail != null -> "yt-dlp couldn't extract a playable stream from this page: $detail"
-                    else -> "yt-dlp couldn't extract a playable stream from this page either."
-                }
-            )
-        } else {
-            recordStreamMessage(origin, null)
-        }
-        return tagGroup(got, origin)
-    }
 
     /** Routes a provider's stream message into the right per-provider error map
      *  so the Detail screen's "no sources" panel can explain what happened.

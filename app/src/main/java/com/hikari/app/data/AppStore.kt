@@ -91,7 +91,6 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_DEFAULT_UA = booleanPreferencesKey("webviewDefaultUa")
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val LANGUAGE = stringPreferencesKey("appLanguage")
-        val YTDLP_ENABLED = booleanPreferencesKey("ytdlpEnabled")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
@@ -1300,15 +1299,10 @@ class AppStore(private val ctx: Context) {
     }
 
     // ---- Universal extractor (yt-dlp fallback) ----
-
-    fun ytdlpEnabledFlow(): Flow<Boolean> =
-        store.data.map { it[K.YTDLP_ENABLED] ?: true }
-
-    suspend fun ytdlpEnabled(): Boolean = ytdlpEnabledFlow().first()
-
-    suspend fun setYtdlpEnabled(enabled: Boolean) {
-        write("YTDLP_ENABLED") { it[K.YTDLP_ENABLED] = enabled }
-    }
+    //
+    // REMOVED in 0.9.1, along with the whole bundled yt-dlp runtime. The
+    // preference key ("ytdlpEnabled") is deliberately not written or read any
+    // more: a stale value left in somebody's DataStore is simply ignored.
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {
         val arr = JSONArray()

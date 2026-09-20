@@ -564,7 +564,6 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
-                    item { SettingsCard { UniversalExtractionCard(app) } }
                     item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
                     item { SettingsCard { UserscriptsCard(app) } }
                 }
@@ -2839,28 +2838,9 @@ private fun LoadingBannerCard(app: HikariApp) {
     }
 }
 
-@Composable
-private fun UniversalExtractionCard(app: HikariApp) {
-    val scope = rememberCoroutineScope()
-    var enabled by remember { mutableStateOf(true) }
-
-    LaunchedEffect(Unit) {
-        enabled = app.store.ytdlpEnabled()
-    }
-
-    Column(Modifier.padding(16.dp)) {
-        SettingsCardHeading(Icons.Filled.Extension, tr("Universal extraction (yt-dlp)"))
-        SettingsToggle(
-            label = tr("Fall back to yt-dlp"),
-            supporting = tr("When no other extractor finds a source"),
-            checked = enabled,
-            onCheckedChange = {
-                enabled = it
-                scope.launch { runCatching { app.store.setYtdlpEnabled(it) } }
-            },
-        )
-    }
-}
+// (The "Universal extraction (yt-dlp)" settings card stood here. It was removed
+// in 0.9.1 along with the bundled yt-dlp runtime it controlled — see the
+// CHANGELOG. There is nothing left to switch on or off.)
 
 @Composable
 private fun LanguageCard(app: HikariApp, current: String) {

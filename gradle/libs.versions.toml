@@ -25,7 +25,6 @@ datetime = "0.8.0"
 atomicfu = "0.33.0"
 newpipeextractor = "v0.26.3"
 cryptography = "0.6.0"
-ytdlp = "2.0.2"
 viewbinding = "8.7.3"
 cardview = "1.0.0"
 
@@ -72,7 +71,7 @@ atomicfu = { group = "org.jetbrains.kotlinx", name = "atomicfu", version.ref = "
 newpipeextractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeextractor" }
 cryptography-core = { group = "dev.whyoleg.cryptography", name = "cryptography-core", version.ref = "cryptography" }
 cryptography-provider-optimal = { group = "dev.whyoleg.cryptography", name = "cryptography-provider-optimal", version.ref = "cryptography" }
-yt-dlp-android = { group = "dev.ffmpegkit-maintained", name = "yt-dlp-android", version.ref = "ytdlp" }
+# (yt-dlp-android / Chaquopy was removed in 0.9.1 — see the CHANGELOG.)
 androidx-viewbinding = { group = "androidx.databinding", name = "viewbinding", version.ref = "viewbinding" }
 androidx-cardview = { group = "androidx.cardview", name = "cardview", version.ref = "cardview" }
 

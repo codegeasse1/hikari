@@ -30,8 +30,8 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
 
     companion object {
         /** Per-provider last-resort message (native .hiki failures + the
-         *  app-wide yt-dlp pass) - shown in the Detail screen's "no sources"
-         *  panel so HIKARI providers aren't a silent wall of mystery. */
+         *  app-wide extraction passes) - shown in the Detail screen's "no
+         *  sources" panel so HIKARI providers aren't a silent wall of mystery. */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
     }
 

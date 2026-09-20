@@ -61,7 +61,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
         /** Per-provider last-resort message (shown in the Detail screen's "no
-         *  sources" panel, including the app-wide yt-dlp pass). */
+         *  sources" panel, including the app-wide extraction passes). */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
     }
 

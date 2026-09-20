@@ -66,10 +66,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          *  needs several requests, so it's deliberately roomy). */
         private const val FALLBACK_CAP_MS = 20_000L
 
-        /** Budget for the yt-dlp last resort (cold CPython start + page
-         *  extraction; only spent on pages every other engine failed on). */
-        private const val YTDLP_CAP_MS = 45_000L
-
         /** Matches a provider payload whose stream URL came back empty
          *  (iStreamFlare: `{"id":"…","url": null}`) — the load() API lookup
          *  failed, so loadLinks has nothing to resolve. */
@@ -844,9 +840,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 if (!pluginJob.isCompleted) pluginJob.cancel()
                 if (!fallbackJob.isCompleted) fallbackJob.cancel()
                 if (!movieblastJob.isCompleted) movieblastJob.cancel()
-                var result = merged.values.toList()
-                if (result.isEmpty()) {
-                    result = ytdlpLastResort(fallbackTarget)
+                val result = merged.values.toList()
+                // Everything came up empty. The bundled yt-dlp engine used to
+                // get one last shot at the raw page URL from here; it was
+                // removed in 0.9.1 (see the CHANGELOG). Either way the player's
+                // panel must not go silent: if no engine left a reason behind,
+                // say that this extension found nothing.
+                if (result.isEmpty() && streamErrors[config.id].isNullOrBlank()) {
+                    streamErrors[config.id] = "No playable source found on this extension."
                 }
                 result
             } finally {
@@ -858,41 +859,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             result
         }
 
-    /** Runs only when every other engine came up empty: the bundled yt-dlp
-     *  universal extractor gets a shot at the raw page URL. It is a last
-     *  resort on purpose - working providers never wait for it, and it is
-     *  gated behind the "Universal extraction" setting. */
-    private suspend fun ytdlpLastResort(pageUrl: String): List<StreamSource> {
-        if (pageUrl.isBlank()) return emptyList()
-        val enabled = runCatching { HikariApp.instance.store.ytdlpEnabled() }.getOrDefault(true)
-        if (!enabled) return emptyList()
-        // Shown in the player error panel if the whole pass still fails, so
-        // the user sees that the universal engine actually ran.
-        streamErrors[config.id] = "Standard extractors found nothing - trying yt-dlp..."
-        var timedOut = false
-        val got = runCatching {
-            withTimeoutOrNull(YTDLP_CAP_MS) { YtDlpResolver.resolve(pageUrl) }
-                ?: run { timedOut = true; emptyList() }
-        }.getOrDefault(emptyList())
-        if (got.isEmpty()) {
-            val why = YtDlpResolver.initFailure
-            streamErrors[config.id] = when {
-                why != null -> "Universal extractor (yt-dlp) unavailable: $why"
-                timedOut -> "yt-dlp timed out after ${YTDLP_CAP_MS / 1000}s extracting this page."
-                else -> {
-                    val detail = YtDlpResolver.lastExtractError
-                    if (detail != null) {
-                        "yt-dlp couldn't extract a playable stream from this page: $detail"
-                    } else {
-                        "yt-dlp couldn't extract a playable stream from this page either."
-                    }
-                }
-            }
-        } else {
-            streamErrors.remove(config.id)
-        }
-        return got
-    }
+    // (The yt-dlp "last resort" that used to live here is gone — 0.9.1.)
+    //
+    // It handed the raw page URL to a bundled yt-dlp runtime: a full CPython
+    // 3.13 embedded through Chaquopy (~15 MB of the APK), arm64 only, 45 s of
+    // waiting, and — in the free build of that library — no TLS
+    // impersonation, so the sites that needed it failed anyway. It only ever
+    // ran on pages every other engine had already failed on, which is exactly
+    // where it was least likely to succeed. See the CHANGELOG.
 
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
