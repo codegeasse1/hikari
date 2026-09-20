@@ -1,7 +1,7 @@
 package com.hikari.app.data
 
 enum class ProviderType {
-    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI;
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, IPTV;
 
     /**
      * Which section of the player's server chooser a source from this engine
@@ -18,6 +18,7 @@ enum class ProviderType {
             CS3 -> "CloudStream"
             SKYSTREAM -> "SkyStream"
             ANIYOMI -> "Aniyomi"
+            IPTV -> "IPTV"
             HIKARI, UNIVERSAL -> "Hikari"
         }
 }

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -303,6 +304,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Uninstall task whose action reports how many installed things it actually
+     * removed. A zero is never dressed up as a success: the reported "I tap
+     * Uninstall and it says Uninstalled while the row still shows Uninstall"
+     * came from an uninstall that matched nothing (a second copy of the same
+     * extension under another URL spelling) and then said it was done. Saying
+     * what really happened is what lets the user tell us which of the two it is.
+     */
+    fun runUninstallCounted(what: String, successMsg: (Int) -> String, action: suspend () -> Int) {
+        startBackground {
+            _busyMsg.value = what
+            clearStatus()
+            try {
+                cancellableCatching { action() }
+                    .onSuccess { n ->
+                        if (n > 0) setSuccess(successMsg(n))
+                        else setError("Nothing to uninstall — that extension isn't installed any more.")
+                    }
+                    .onFailure { setError(it.message ?: "Failed") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            }
+        }
+    }
+
     /** Refreshes a repo's plugin list in the VM scope (survives tab switches —
      *  the old screen-scope launch died with the screen and left the repo
      *  stuck on "Loading plugins…" forever). */
@@ -381,6 +407,148 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         sites.value = store.sites()
     }
 
+    // ---------------------------------------------------------------------
+    //  IPTV
+    //
+    //  A playlist is added as a PROVIDER (not a repo): it has no plugin
+    //  listing to browse, it just IS the channel list. Everything downstream —
+    //  Home rows, the global search, the exception picker, the player's server
+    //  sections — already reads the provider contract, so an IPTV provider
+    //  shows up in all of them without a line of special-casing.
+    // ---------------------------------------------------------------------
+
+    /** Bumped whenever a playlist's channel count or failure text changes, so
+     *  open screens recompose and show the new count. */
+    val iptvTick = MutableStateFlow(0)
+
+    /** Copies a picked playlist file into the app's own storage (a SAF Uri is
+     *  not readable after a restart, and a playlist the user chose should keep
+     *  working). Calls [onPicked] with a display name and the stored path. */
+    fun pickIptvFile(uri: Uri, onPicked: (String, String) -> Unit) {
+        viewModelScope.launch {
+            val picked = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<Application>()
+                    val raw = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/')
+                    val name = raw?.trim().orEmpty().ifBlank { "playlist.m3u" }
+                    val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_").takeLast(80)
+                    val dir = File(ctx.filesDir, "iptv").apply { mkdirs() }
+                    val file = File(dir, safe)
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { out -> input.copyTo(out) }
+                    } ?: throw Exception("Could not read that file")
+                    if (file.length() == 0L) throw Exception("That file is empty")
+                    name to file.absolutePath
+                }.getOrElse {
+                    setError(it.message ?: "Could not read that file")
+                    null
+                }
+            }
+            if (picked != null) onPicked(picked.first, picked.second)
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? = runCatching {
+        getApplication<Application>().contentResolver
+            .query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()
+
+    /**
+     * Adds (or updates) a playlist. [link] is the pasted M3U/M3U8/Xtream URL and
+     * [localPath] the stored copy of a file the user picked — one of the two.
+     *
+     * The playlist is READ before it is saved, so a dead link or a file with no
+     * channels is reported as the error it is instead of becoming an empty
+     * extension the user has to work out for themselves. Adding the same link
+     * again updates the one entry rather than adding a second (the id is derived
+     * from the source), which is the same rule repos follow.
+     */
+    suspend fun addIptvPlaylist(
+        link: String,
+        localPath: String?,
+        name: String,
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        val url = when {
+            !localPath.isNullOrBlank() -> localPath
+            else -> link.trim().let {
+                if (it.startsWith("http://") || it.startsWith("https://")) it
+                else if (it.isBlank()) "" else "https://$it"
+            }
+        }
+        if (url.isBlank()) {
+            return@withContext Result.failure(
+                Exception("Paste an M3U/M3U8 link, or pick a playlist file"),
+            )
+        }
+        val count = com.hikari.app.providers.IptvProvider.preview(url).getOrElse {
+            return@withContext Result.failure(
+                Exception(it.message ?: "Could not read that playlist"),
+            )
+        }
+        val display = name.trim().ifBlank {
+            if (url.startsWith("http")) {
+                url.substringAfter("://").substringBefore('/').ifBlank { "IPTV" }
+            } else {
+                File(url).name.substringBeforeLast('.').ifBlank { "IPTV" }
+            }
+        }
+        val id = "iptv|" + url.hashCode()
+        store.addProvider(
+            ProviderConfig(
+                id = id,
+                name = display,
+                type = ProviderType.IPTV,
+                url = url,
+            )
+        )
+        manager.refresh()
+        reloadInstalled()
+        warmIptv()
+        Result.success(count)
+    }
+
+    /**
+     * Reads every installed playlist once so the Extensions rows can say how many
+     * channels each holds (and so a broken link is reported here rather than
+     * discovered later on Home). Bounded to a few at a time; failures are kept in
+     * [com.hikari.app.providers.IptvProvider.iptvErrors] and shown on the row.
+     */
+    fun warmIptv() {
+        viewModelScope.launch {
+            val iptv = manager.providers.value.filter { it.config.type == ProviderType.IPTV }
+            if (iptv.isEmpty()) return@launch
+            withContext(Dispatchers.IO) {
+                iptv.chunked(3).forEach { chunk ->
+                    coroutineScope {
+                        chunk.forEach { p ->
+                            launch {
+                                runCatching {
+                                    (p as? com.hikari.app.providers.IptvProvider)?.channels()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            iptvTick.value = iptvTick.value + 1
+        }
+    }
+
+    /** Re-reads one playlist on demand (the IPTV info dialog's Refresh). */
+    fun refreshIptv(id: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val p = manager.providers.value.firstOrNull { it.config.id == id }
+                    as? com.hikari.app.providers.IptvProvider ?: return@withContext
+                p.invalidate()
+                val n = runCatching { p.channels(force = true) }.getOrDefault(emptyList()).size
+                if (n > 0) setSuccess("Read $n channels from ${p.displayName}")
+            }
+            iptvTick.value = iptvTick.value + 1
+        }
+    }
+
     suspend fun addStremio(url: String): Result<String> = withContext(Dispatchers.IO) {
         var clean = url.trim().trimEnd('/')
         if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
@@ -441,6 +609,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val target = store.providers().firstOrNull { it.id == id }
         store.removeProvider(id)
         manager.refresh()
+        // An IPTV playlist that was imported from storage is the app's own copy
+        // of it — removing the provider removes the file too (a playlist the
+        // user pasted as a link has nothing local to clean up).
+        if (target != null && target.type == ProviderType.IPTV) {
+            val path = target.url
+            val base = getApplication<Application>().filesDir.absolutePath + "/iptv/"
+            if (path.startsWith(base) && store.providers().none { it.url == path }) {
+                withContext(Dispatchers.IO) { runCatching { File(path).delete() } }
+            }
+        }
         if (target != null && target.type == ProviderType.HIKARI &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
         ) {
@@ -502,8 +680,18 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (bytes.size > 10 * 1024 * 1024) {
             return Result.failure(Exception("File too large (max 10MB)"))
         }
-        val clean = rawName.substringAfterLast('/').ifBlank { "extension.hiki" }
-            .let { if (it.endsWith(".hiki", true)) it else "$it.hiki" }
+        val base = rawName.substringAfterLast('/').ifBlank { "extension" }
+            .let { if (it.endsWith(".hiki", true)) it.dropLast(5) else it }
+            .trim().ifBlank { "extension" }
+            .let { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
+        // Same rule as installCs3Bytes: the local FILE name decides the provider
+        // ids ("hiki|<name.hashCode>|i"), and .hiki files are almost always
+        // called `extension.hiki`, so two repos' extensions shared one file —
+        // the second install overwrote the first, and uninstalling either one
+        // deleted the file the other was still loaded from. Stamp the source
+        // URL into the name so a file has a per-source identity.
+        val clean = if (sourceUrl.isNullOrBlank()) "$base.hiki"
+        else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.hiki"
         val dir = File(getApplication<Application>().filesDir, "hiki").apply { mkdirs() }
         val file = File(dir, clean)
         file.setWritable(true)
@@ -541,6 +729,32 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         manager.refresh()
         reloadInstalled()
+        // One source URL must never leave two copies behind — same as the CS3
+        // path: a re-install that follows a name-only file left by an older
+        // build would otherwise keep that old copy (and its file) as a phantom
+        // second extension that no longer has an Install/Uninstall of its own.
+        if (!sourceUrl.isNullOrBlank()) {
+            val stale = store.providers().filter {
+                it.type == ProviderType.HIKARI && it.url != file.absolutePath &&
+                    sourceMatches(it, sourceUrl)
+            }
+            if (stale.isNotEmpty()) {
+                val staleIds = stale.map { it.id }.toSet()
+                val stalePaths = stale.map { it.url }.toSet()
+                store.updateProviders { list -> list.filterNot { it.id in staleIds } }
+                manager.refresh()
+                reloadInstalled()
+                withContext(Dispatchers.IO) {
+                    val keep = store.providers().map { it.url }.toSet()
+                    val root = getApplication<Application>().filesDir.absolutePath
+                    stalePaths.forEach { p ->
+                        if (p.startsWith(root) && p !in keep) {
+                            runCatching { File(p).delete() }
+                        }
+                    }
+                }
+            }
+        }
         return Result.success(added)
     }
 
@@ -700,8 +914,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             ).also { manager.refresh(); reloadInstalled() }
         }
 
-    /** Removes every NUVIO provider that came from [pluginUrl]. */
-    suspend fun uninstallNuvioPlugin(pluginUrl: String) {
+    /** Removes every NUVIO provider that came from [pluginUrl]. Returns how many
+     *  installed providers were actually removed (see the manager's
+     *  `uninstallScraper` for why the count matters). */
+    suspend fun uninstallNuvioPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
         // The manager removes by exact source URL, so hand it the spelling each
         // installed provider actually stored (they can differ from the repo's
@@ -713,10 +929,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
+        var removed = 0
         for (source in stored) {
-            com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
+            removed += com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
         }
         reloadInstalled()
+        return removed
     }
 
     /** Registers a SkyStream extension repository (`repo.json`). A bare
@@ -746,8 +964,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             ).also { manager.refresh(); reloadInstalled() }
         }
 
-    /** Removes every SKYSTREAM extension that came from [pluginUrl]. */
-    suspend fun uninstallSkyStreamPlugin(pluginUrl: String) {
+    /** Removes every SKYSTREAM extension that came from [pluginUrl]. Returns how
+     *  many installed extensions were actually removed. */
+    suspend fun uninstallSkyStreamPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
         val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
             p.type == ProviderType.SKYSTREAM && sourceMatches(p, s)
@@ -755,10 +974,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
+        var removed = 0
         for (source in stored) {
-            com.hikari.app.skystream.SkyStreamPluginManager.uninstall(app, source)
+            removed += com.hikari.app.skystream.SkyStreamPluginManager.uninstall(app, source)
         }
         reloadInstalled()
+        return removed
     }
 
     suspend fun installSkyStreamFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -819,11 +1040,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     description = "",
                     kind = RepoKind.ANIYOMI,
                 )
-                val key = SourceUrls.canonical(repo.url)
-                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
+                val key = SourceUrls.repoKey(repo.url)
+                duplicateRepoAdd = store.repos().any { SourceUrls.repoKey(it.url) == key }
                 store.addCs3Repo(repo)
                 repos.value = store.repos()
-                store.repos().firstOrNull { SourceUrls.canonical(it.url) == key } ?: repo
+                store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key } ?: repo
             }
         }
 
@@ -846,7 +1067,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Removes every ANIYOMI provider that came from [pluginUrl] (and the `.ext`
      *  itself once nothing references it). */
-    suspend fun uninstallAniyomiPlugin(pluginUrl: String) {
+    suspend fun uninstallAniyomiPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
         // The manager removes by exact source URL, so hand it the spelling each
         // installed provider actually stored — a repo build can move the file
@@ -857,11 +1078,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
+        var removed = 0
         for (source in stored) {
-            com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
+            removed += com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
         }
         manager.refresh()
         reloadInstalled()
+        return removed
     }
 
     suspend fun installAniyomiFromUrl(url: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -1219,8 +1442,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // kept working on Home. The store merges it into the one entry
                 // it belongs to; report which of the two happened so the dialog
                 // can say "already added" instead of "added".
-                val key = SourceUrls.canonical(repo.url)
-                val previous = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }
+                // Repo identity, not file identity: the SAME repository on
+                // another branch is still the same repository (see
+                // [SourceUrls.repoKey]) — that is the reported "I added the same
+                // repo link and it made a second folder".
+                val key = SourceUrls.repoKey(repo.url)
+                val previous = store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key }
                 duplicateRepoAdd = previous != null
                 store.addCs3Repo(repo)
                 // Adding a repo that is already there must leave its extensions
@@ -1230,7 +1457,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // the row's load state) over to the new key, or the repo the user
                 // just re-added reads as a brand-new one with every extension
                 // uninstalled-looking until it re-fetches.
-                val savedUrl = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }?.url
+                val savedUrl = store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key }?.url
                 if (previous != null && savedUrl != null && previous.url != savedUrl) {
                     pluginsByRepo.value[previous.url]?.let { list ->
                         pluginsByRepo.value = pluginsByRepo.value - previous.url + (savedUrl to list)
@@ -1248,7 +1475,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     markBundle(repo.url)
                     importMegaRepos()
                 }
-                val saved = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }
+                val saved = store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key }
                 repos.value = store.repos()
                 saved ?: repo
             }
@@ -1643,33 +1870,32 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The providers an uninstall of [pluginUrl] may remove: the ones that came
-     * from THAT file. The exact-name match is tried first and, when it finds
-     * anything, nothing else is ever considered — the looser [SourceUrls.fileKey]
-     * fallback (which ignores the path, so a repo that MOVED a file is still
-     * recognised) is only used when the exact spelling matches nothing at all.
-     * Without that order a plugin URL that folds onto a coarser key could take
-     * the whole repo's worth of installed extensions with it — the reported
-     * "I uninstalled one extension and every installed one in that repo went".
+     * The providers an uninstall of [pluginUrl] removes: every installed copy
+     * that came from THAT file, whatever either side's spelling is.
+     *
+     * [SourceUrls.matchKeys] already covers the loose cases deliberately — the
+     * jsDelivr mirror, `refs/heads/x` vs `x`, a `github.com` blob link, and the
+     * same file read from another BRANCH of the same repo (its file key ignores
+     * the branch). All of those are the same extension, so all of them go: an
+     * install made from the other branch used to survive the uninstall, and
+     * because both copies share that file key, every row for the extension kept
+     * reading "installed" — the reported "I tap Uninstall and it still shows
+     * Uninstall". (The old exact-match-first rule existed to stop ONE uninstall
+     * from taking a whole repo with it; that was a different bug — an identity
+     * that folded `github.com/o/r/blob/…` onto the repo root — and it is fixed
+     * in [SourceUrls], not here.)
      */
     private fun uninstallTargets(
         all: List<ProviderConfig>,
         pluginUrl: String,
         matches: (ProviderConfig, String) -> Boolean,
-    ): List<ProviderConfig> {
-        val exactKey = SourceUrls.canonical(pluginUrl)
-        val exact = all.filter { p ->
-            matches(p, pluginUrl) &&
-                p.extra?.let { SourceUrls.canonical(it.substringBeforeLast('|')) == exactKey } == true
-        }
-        return exact.ifEmpty { all.filter { matches(it, pluginUrl) } }
-    }
+    ): List<ProviderConfig> = all.filter { matches(it, pluginUrl) }
 
-    suspend fun uninstallCs3Plugin(pluginUrl: String) {
+    suspend fun uninstallCs3Plugin(pluginUrl: String): Int {
         val targets = uninstallTargets(store.providers(), pluginUrl) { p, s ->
             p.type == ProviderType.CS3 && sourceMatches(p, s)
         }
-        if (targets.isEmpty()) return
+        if (targets.isEmpty()) return 0
         val ids = targets.map { it.id }.toSet()
         val paths = targets.map { it.url }.toSet()
         // Locked read-modify-write: see [AppStore.updateProviders]. Removes the
@@ -1688,6 +1914,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        return targets.size
     }
 
     /** Installs a .hiki extension listed in a Hikari repo. */
@@ -1843,12 +2070,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Removes every HIKARI provider that came from [pluginUrl]. */
-    suspend fun uninstallHikiPlugin(pluginUrl: String) {
+    /** Removes every HIKARI provider that came from [pluginUrl]. Returns how
+     *  many installed extensions were actually removed. */
+    suspend fun uninstallHikiPlugin(pluginUrl: String): Int {
         fun fromPlugin(p: ProviderConfig) =
             p.type == ProviderType.HIKARI && sourceMatches(p, pluginUrl)
         val targets = uninstallTargets(store.providers(), pluginUrl) { p, s -> fromPlugin(p) }
-        if (targets.isEmpty()) return
+        if (targets.isEmpty()) return 0
         val ids = targets.map { it.id }.toSet()
         val paths = targets.map { it.url }.toSet()
         // Locked read-modify-write: see [AppStore.updateProviders].
@@ -1864,6 +2092,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        return targets.size
     }
 }
 
@@ -1908,6 +2137,12 @@ fun ExtensionsScreen() {
     var allReposOpen by remember { mutableStateOf(false) }
     var installedOpen by remember { mutableStateOf(false) }
     var showStremio by remember { mutableStateOf(false) }
+    var showIptv by remember { mutableStateOf(false) }
+    var iptvUrl by remember { mutableStateOf("") }
+    var iptvName by remember { mutableStateOf("") }
+    var iptvFileLabel by remember { mutableStateOf("") }
+    var iptvLocalPath by remember { mutableStateOf("") }
+    var iptvInfoId by remember { mutableStateOf<String?>(null) }
     var showScraper by remember { mutableStateOf(false) }
     var showCs3Url by remember { mutableStateOf(false) }
     var showRepoDialog by remember { mutableStateOf(false) }
@@ -1931,6 +2166,9 @@ fun ExtensionsScreen() {
     val pluginsByRepo by vm.pluginsByRepo.collectAsState()
     val installed by vm.installedUrls.collectAsState()
     val outdated by vm.outdatedUrls.collectAsState()
+    // Bumped when a playlist has been read (or re-read): the IPTV rows show their
+    // channel count from it, and collecting it here is what makes them repaint.
+    val iptvTick by vm.iptvTick.collectAsState()
     // Every outdated plugin together with the kind of repo it came from, so
     // "Update all" can re-install each one the same way its row would.
     val outdatedItems = remember(outdated, pluginsByRepo, repos) {
@@ -1957,6 +2195,9 @@ fun ExtensionsScreen() {
             // missing" over a healthy addon. Show what the addon is instead.
             ProviderType.STREMIO -> addonInfoProvider = p
             ProviderType.NUVIO -> settingsProvider = p
+            // A playlist has no settings either — what it has is a source and a
+            // channel count, plus a way to re-read it.
+            ProviderType.IPTV -> iptvInfoId = p.config.id
             // CS3 plugins have their own settings screen; nothing else has one.
             else -> openProviderSettingsSafely(p, context, scope) {}
         }
@@ -1998,6 +2239,19 @@ fun ExtensionsScreen() {
             }
         }
 
+    // A playlist is a text file, but plenty of providers serve it as
+    // `application/octet-stream` (or a MIME type Android has never heard of), so
+    // the picker accepts anything and the parser decides what it is.
+    val iptvPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                vm.pickIptvFile(uri) { label, path ->
+                    iptvFileLabel = label
+                    iptvLocalPath = path
+                }
+            }
+        }
+
     fun installPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
         vm.runInstall(
             "Installing ${p.name}…",
@@ -2014,7 +2268,10 @@ fun ExtensionsScreen() {
     }
 
     fun uninstallPlugin(p: Cs3RepoPlugin, kind: RepoKind) {
-        vm.runUninstall("Uninstalling ${p.name}…", "Uninstalled ${p.name}") {
+        vm.runUninstallCounted(
+            "Uninstalling ${p.name}…",
+            { n -> "Uninstalled ${p.name}" + if (n > 1) " ($n providers)" else "" },
+        ) {
             when (effectiveRepoKind(kind, p.url)) {
                 RepoKind.CS3 -> vm.uninstallCs3Plugin(p.url)
                 RepoKind.HIKARI -> vm.uninstallHikiPlugin(p.url)
@@ -2096,6 +2353,7 @@ fun ExtensionsScreen() {
             providers = providers,
             pluginsByRepo = pluginsByRepo,
             repoState = repoState,
+            iptvTick = iptvTick,
             busy = busy,
             busyMsg = busyMsg,
             successMsg = successMsg,
@@ -2118,6 +2376,8 @@ fun ExtensionsScreen() {
                 showRepoDialog = true
             },
             onAddStremio = { vm.clearStatus(); showStremio = true },
+            onAddIptv = { vm.clearStatus(); showIptv = true },
+            onWarmIptv = { vm.warmIptv() },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
             onRefreshRepo = { repo -> vm.clearStatus(); vm.refreshRepo(repo) },
@@ -2181,6 +2441,7 @@ fun ExtensionsScreen() {
             onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
             onAddAniyomiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANIYOMI; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
+            onAddIptv = { vm.clearStatus(); showIptv = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
             onRefreshRepo = { repo -> vm.clearStatus(); vm.refreshRepo(repo) },
@@ -2430,6 +2691,122 @@ fun ExtensionsScreen() {
                 TextButton(onClick = { showStremio = false }) { Text(tr("Cancel")) }
             }
         )
+    }
+
+    if (showIptv) {
+        AlertDialog(
+            onDismissRequest = { showIptv = false },
+            title = { Text(tr("Add IPTV playlist")) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        tr(
+                            "Paste an M3U/M3U8 link — an Xtream panel's " +
+                                "get.php?username=…&password=…&type=m3u_plus link works, and so " +
+                                "does a single m3u8 stream. Or pick a playlist file from storage."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = iptvUrl,
+                        onValueChange = { iptvUrl = it },
+                        placeholder = { Text(tr("https://…/playlist.m3u")) },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { iptvPicker.launch(arrayOf("*/*")) }) {
+                            Icon(
+                                Icons.Filled.FolderOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(tr("Pick a file"))
+                        }
+                        if (iptvFileLabel.isNotBlank()) {
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                iptvFileLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = iptvName,
+                        onValueChange = { iptvName = it },
+                        placeholder = { Text(tr("Name (optional)")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    errorMsg?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = iptvUrl.isNotBlank() || iptvLocalPath.isNotBlank(),
+                    onClick = {
+                        // Same rule as every other Add dialog: the work runs on
+                        // the ViewModel scope (so Cancel/back stay live) and the
+                        // result is reported on the screen behind the dialog.
+                        showIptv = false
+                        val link = iptvUrl
+                        val local = iptvLocalPath.takeIf { it.isNotBlank() }
+                        val name = iptvName
+                        iptvUrl = ""
+                        iptvName = ""
+                        iptvFileLabel = ""
+                        iptvLocalPath = ""
+                        vm.runTask(
+                            "Reading playlist…",
+                            { vm.addIptvPlaylist(link, local, name) },
+                            successMsg = null,
+                            onSuccess = { n ->
+                                vm.setSuccess(
+                                    "Added IPTV playlist ($n channel${if (n == 1) "" else "s"})"
+                                )
+                            },
+                        )
+                    }
+                ) { Text(tr("Add")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showIptv = false
+                    iptvUrl = ""
+                    iptvName = ""
+                    iptvFileLabel = ""
+                    iptvLocalPath = ""
+                }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
+    iptvInfoId?.let { id ->
+        val provider = providers.firstOrNull { it.config.id == id }
+        if (provider != null) {
+            IptvInfoDialog(
+                provider = provider,
+                onRefresh = { vm.refreshIptv(id) },
+                onDismiss = { iptvInfoId = null },
+            )
+        }
     }
 
     if (showScraper) {
@@ -3155,6 +3532,13 @@ private fun RepoBrowserView(
                         title = tr("Stremio addons"),
                         subtitle = tr("manifest.json · Stremio addons"),
                         onClick = { onOpenFolder(SourceFolder.STREMIO) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.LiveTv,
+                        title = tr("IPTV playlists"),
+                        subtitle = tr("M3U / M3U8 links and files · live channels"),
+                        onClick = { onOpenFolder(SourceFolder.IPTV) }
                     )
                     SourceDivider()
                     SourceActionRow(
@@ -4075,6 +4459,73 @@ private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> U
     )
 }
 
+/**
+ * What an IPTV playlist IS: where it was read from, how many channels it holds,
+ * and a way to read it again (a panel that added channels, or a link that was
+ * briefly down). A playlist has no settings of its own, so a Nuvio-style
+ * settings screen would only ever report a missing file — this is the honest
+ * version of that screen for a playlist.
+ */
+@Composable
+private fun IptvInfoDialog(
+    provider: ContentProvider,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val id = provider.config.id
+    val error = com.hikari.app.providers.IptvProvider.iptvErrors[id]
+    val count = com.hikari.app.providers.IptvProvider.channelCounts[id]
+    val local = !provider.config.url.startsWith("http")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(provider.config.name.ifBlank { tr("IPTV playlist") }) },
+        text = {
+            Column {
+                Text(
+                    tr("IPTV playlist"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    provider.config.url,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    when {
+                        error != null -> error
+                        count != null -> I18n.t(
+                            "Channels found: %s — they appear on Home, in search and in the " +
+                                "player's server list."
+                        ).replace("%s", count.toString())
+                        else -> tr("Reading this playlist…")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error != null) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (local) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        tr("Stored inside the app — removing this playlist deletes the file too."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onRefresh() }) { Text(tr("Refresh")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Close")) }
+        },
+    )
+}
+
 @Composable
 private fun SettingsElementRow(
     el: JSONObject,
@@ -4444,7 +4895,16 @@ private fun repoPluginSettingsTarget(
     }
 }
 
-private fun pluginStatus(p: ContentProvider): String? {
+private fun pluginStatus(p: ContentProvider, iptvTick: Int = 0): String? {
+    if (p.config.type == ProviderType.IPTV) {
+        val err = com.hikari.app.providers.IptvProvider.iptvErrors[p.config.id]
+        if (err != null) return err.take(200)
+        val n = com.hikari.app.providers.IptvProvider.channelCounts[p.config.id]
+        return when {
+            n != null && n > 0 -> "$n channels"
+            else -> "Reading playlist…"
+        }
+    }
     if (p.config.type == ProviderType.NUVIO) {
         if (com.hikari.app.nuvio.NuvioPluginManager.fileMissing(p.config)) {
             return "Provider file missing — reinstall this extension"
@@ -4623,7 +5083,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, STREMIO }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, STREMIO, IPTV }
 
 @Composable
 private fun SourceFolderView(
@@ -4632,6 +5092,7 @@ private fun SourceFolderView(
     providers: List<ContentProvider>,
     pluginsByRepo: Map<String, List<Cs3RepoPlugin>>,
     repoState: Map<String, RepoLoadState>,
+    iptvTick: Int = 0,
     busy: Boolean,
     busyMsg: String,
     successMsg: String?,
@@ -4640,6 +5101,8 @@ private fun SourceFolderView(
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
     onAddStremio: () -> Unit,
+    onAddIptv: () -> Unit,
+    onWarmIptv: () -> Unit = {},
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
@@ -4652,7 +5115,7 @@ private fun SourceFolderView(
         SourceFolder.NUVIO -> RepoKind.NUVIO
         SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
         SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
-        SourceFolder.STREMIO -> null
+        SourceFolder.STREMIO, SourceFolder.IPTV -> null
     }
     val (title, subtitle) = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream repos" to "repo.json · CloudStream extensions"
@@ -4661,6 +5124,7 @@ private fun SourceFolderView(
         SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
         SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
+        SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
     val kindLabel = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream"
@@ -4669,11 +5133,23 @@ private fun SourceFolderView(
         SourceFolder.SKYSTREAM -> "SkyStream"
         SourceFolder.ANIYOMI -> "Aniyomi"
         SourceFolder.STREMIO -> "Stremio"
+        SourceFolder.IPTV -> "IPTV"
     }
     val folderRepos = if (kind != null) repos.filter { it.kind == kind } else emptyList()
     val stremioProviders = if (folder == SourceFolder.STREMIO)
         providers.filter { it.config.type == ProviderType.STREMIO }
     else emptyList()
+    // IPTV playlists are not repos: each one IS a provider (the playlist), and
+    // its "add" action takes a link or a file rather than a repo URL.
+    val iptvProviders = if (folder == SourceFolder.IPTV)
+        providers.filter { it.config.type == ProviderType.IPTV }
+    else emptyList()
+
+    // Opening the IPTV folder reads each playlist once, so the rows can say how
+    // many channels they hold instead of waiting for Home to do it.
+    LaunchedEffect(folder, iptvProviders.map { it.config.id }) {
+        if (folder == SourceFolder.IPTV) onWarmIptv()
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -4701,10 +5177,17 @@ private fun SourceFolderView(
                 )
             }
             Text(
-                if (folder == SourceFolder.STREMIO)
-                    I18n.t(if (stremioProviders.size == 1) "%s addon" else "%s addons").replace("%s", stremioProviders.size.toString())
-                else
-                    I18n.t(if (folderRepos.size == 1) "%s repo" else "%s repos").replace("%s", folderRepos.size.toString()),
+                when (folder) {
+                    SourceFolder.STREMIO ->
+                        I18n.t(if (stremioProviders.size == 1) "%s addon" else "%s addons")
+                            .replace("%s", stremioProviders.size.toString())
+                    SourceFolder.IPTV ->
+                        I18n.t(if (iptvProviders.size == 1) "%s playlist" else "%s playlists")
+                            .replace("%s", iptvProviders.size.toString())
+                    else ->
+                        I18n.t(if (folderRepos.size == 1) "%s repo" else "%s repos")
+                            .replace("%s", folderRepos.size.toString())
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -4764,6 +5247,31 @@ private fun SourceFolderView(
                         onRemoveRepo = { onRemoveRepo(repo.url) }
                     )
                 }
+            } else if (folder == SourceFolder.IPTV) {
+                if (iptvProviders.isEmpty()) {
+                    item {
+                        EmptyState(
+                            title = tr("No IPTV playlists yet"),
+                            subtitle = tr(
+                                "Tap \"Add IPTV playlist\" below and paste an M3U/M3U8 link (an " +
+                                    "Xtream panel's get.php link works), or pick a playlist file " +
+                                    "from storage. Its channels then appear on Home, in search, " +
+                                    "and in the player's server list like any other extension."
+                            ),
+                            actionLabel = null,
+                            action = null
+                        )
+                    }
+                }
+                items(iptvProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
+                    ProviderCard(
+                        p = p,
+                        status = pluginStatus(p, iptvTick),
+                        onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
+                        onDelete = { onDeleteProvider(p.config.id) },
+                        onSettings = { onOpenSettings(p) }
+                    )
+                }
             } else {
                 if (stremioProviders.isEmpty()) {
                     item {
@@ -4789,8 +5297,16 @@ private fun SourceFolderView(
             }
         }
         AddRepoButton(
-            label = if (folder == SourceFolder.STREMIO) "Add Stremio addon" else "Add repo",
-            onClick = if (folder == SourceFolder.STREMIO) onAddStremio else onAddRepo
+            label = when (folder) {
+                SourceFolder.STREMIO -> "Add Stremio addon"
+                SourceFolder.IPTV -> "Add IPTV playlist"
+                else -> "Add repo"
+            },
+            onClick = when (folder) {
+                SourceFolder.STREMIO -> onAddStremio
+                SourceFolder.IPTV -> onAddIptv
+                else -> onAddRepo
+            }
         )
     }
 }
@@ -4813,6 +5329,7 @@ private fun SourcesOverviewView(
     onAddSkyStreamRepo: () -> Unit,
     onAddAniyomiRepo: () -> Unit,
     onAddStremio: () -> Unit,
+    onAddIptv: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
@@ -5007,6 +5524,10 @@ private fun SourcesOverviewView(
                     onDelete = { onDeleteProvider(p.config.id) },
                     onSettings = when {
                         p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
+                        // A playlist has no settings screen — the gear opens what
+                        // it IS instead: where it was read from, how many channels
+                        // it holds, and a way to read it again.
+                        p.config.type == ProviderType.IPTV -> { { onOpenSettings(p) } }
                         p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
                         else -> null
                     },

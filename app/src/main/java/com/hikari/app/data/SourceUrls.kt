@@ -81,6 +81,45 @@ object SourceUrls {
     }
 
     /**
+     * The identity of one *repository file*: which GitHub repo (or host+path) it
+     * belongs to, ignoring the branch it was fetched from.
+     *
+     * `owner/repo/builds/repo.json` and `owner/repo/main/repo.json` are the SAME
+     * repo (the same plugin list, published on two branches), and adding one
+     * after the other used to grow a second folder in the repo list with the same
+     * name — which read as "I added the same repo twice and it made a duplicate".
+     * Everything that compares repos as a whole (adding, removing, the stored
+     * list's own dedupe) keys on this; [canonical] stays the identity of the
+     * exact FILE, which is what extension matching needs.
+     */
+    fun repoKey(raw: String): String? {
+        val c = canonical(clean(raw))
+        if (c.isEmpty()) return null
+        RAW_GH.find(c)?.let { m ->
+            val rest = m.groupValues[3].split('/').filter { it.isNotBlank() }
+            // The segment right after owner/repo is the branch; the rest is the
+            // path inside the repo.
+            val path = if (rest.size > 1) rest.drop(1).joinToString("/") else rest.joinToString("/")
+            return "gh:${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$path"
+        }
+        GH_WEB.find(c)?.let { m ->
+            return "gh:${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/"
+        }
+        SCHEME_HOST.find(c)?.let { m ->
+            return (m.groupValues[1].lowercase() + "://" + m.groupValues[2].lowercase() +
+                m.groupValues[3]).trimEnd('/')
+        }
+        return c.trimEnd('/')
+    }
+
+    /** True when [raw] and [other] name the same repository file (see [repoKey]). */
+    fun sameRepo(raw: String, other: String): Boolean {
+        val a = repoKey(raw) ?: return false
+        val b = repoKey(other) ?: return false
+        return a == b
+    }
+
+    /**
      * The identity of one *file* inside a GitHub repo: `owner/repo/FileName`.
      * Used as a second chance when a repo moved the file (a new branch, a new
      * path) so an installed extension is still recognised, while keeping

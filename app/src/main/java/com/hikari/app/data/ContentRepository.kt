@@ -8,6 +8,7 @@ import com.hikari.app.nuvio.EpisodeTitles
 import com.hikari.app.nuvio.NuvioScraper
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.HikariProviderAdapter
+import com.hikari.app.providers.IptvProvider
 import com.hikari.app.providers.ProviderManager
 import com.hikari.app.providers.StremioAddon
 import com.hikari.app.providers.UniversalScraper
@@ -3598,6 +3599,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     // source can search by title), so they are asked exactly
                     // like the other site-scraper families.
                     ProviderType.ANIYOMI -> true
+                    // An IPTV playlist carries its whole channel list locally
+                    // once read, so "is this title on any of my channels?" costs
+                    // a string scan — and a VOD/24-7 playlist genuinely can hold
+                    // the title that is being looked for.
+                    ProviderType.IPTV -> true
                     ProviderType.STREMIO -> if (originIsStremio) {
                         noteSkipped("family(Stremio)")
                         false
@@ -4017,6 +4023,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
+        ProviderType.IPTV -> IptvProvider.iptvErrors[p.config.id]
     }
 
     /** Minimal head start for the repos of the origin's own family — extended
@@ -4422,6 +4429,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
             ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
             ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors
+            ProviderType.IPTV -> IptvProvider.iptvErrors
         }
         if (message == null) map.remove(id) else map[id] = message
         // Mirrored into the on-device log: a "why were this repo's servers
@@ -4587,7 +4595,8 @@ class ContentRepository(private val manager: ProviderManager) {
                         ProviderType.HIKARI,
                         ProviderType.UNIVERSAL,
                         ProviderType.SKYSTREAM,
-                        ProviderType.ANIYOMI -> true
+                        ProviderType.ANIYOMI,
+                        ProviderType.IPTV -> true
                         else -> false
                     }
             }

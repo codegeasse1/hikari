@@ -1,3 +1,18 @@
+## 0.9.5
+
+Your repo list stops growing duplicates, Uninstall tells the truth, a whole engine can be marked and then trimmed, and an IPTV playlist is a first-class extension.
+
+### Added
+
+- **IPTV playlists.** Extensions → IPTV playlists → Add IPTV playlist. Paste an M3U/M3U8 link — an Xtream panel's `get.php?username=…&password=…&type=m3u_plus` link works, and so does a single m3u8 stream — or pick a playlist file from storage, which is copied into the app's own storage so it keeps working after a restart. The playlist is READ before it is saved, so you are told how many channels it holds (or that the link is dead) instead of being left with an empty extension. A channel's stream is simply its own URL, so there is nothing to extract and no server to scrape: channels appear on **Home** (one "All channels" row plus the playlist's own groups, biggest first), in **search** by channel name or group, in the **player's server list** under an **IPTV** heading, and can be marked as exception extensions in Settings like any other engine. The folder shows how many channels each playlist holds, and Refresh re-reads one on demand.
+
+### Fixed
+
+- **Adding the same repo twice made a second folder.** A repo's identity was its exact URL, and the same repository is published on more than one branch (`…/builds/repo.json` and `…/main/repo.json`) — so pasting a link to a repo you already had grew a second folder with the same name and the same extensions in it. Repo identity now ignores which branch a manifest was read from, so one repository is ONE entry however it is spelled: re-adding it merges into the entry already there and says "Repo already added" instead of "Added", and the app collapses duplicates an older build had already stored the next time it starts.
+- **Uninstall said "Uninstalled" while the row still showed Uninstall.** The providers to remove were matched against the URL the repo lists TODAY, so a copy installed from the other branch (or the jsDelivr mirror) spelling did not match and stayed installed — gear and all — while the message claimed it was gone. An uninstall now removes every copy of that file whatever either side's spelling is, and it reports honestly: "Uninstalled X (3 providers)", or "Nothing to uninstall" when there genuinely was nothing left to remove.
+- **Hikari `.hiki` extensions had the same file-name collision CloudStream plugins had.** Almost every `.hiki` file is called `extension.hiki`, so two repos' extensions shared one file on disk — the second install overwrote the first, and uninstalling either deleted the file the other was still loaded from. The file now carries a short stamp of its source URL (so two repos' same-named extensions are two extensions), and a re-install cleans up the older name-only copy instead of leaving it as a second row.
+- **A whole engine could be marked as an exception, but not trimmed.** There was no way to say "all of CloudStream except these two". Tapping an engine chip now narrows the list to that engine's extensions *and* marks it, and any single row can then be switched off — the row reads "left out of its engine" — without unmarking the engine itself and without losing the extensions installed later.
+
 ## 0.9.4
 
 Extensions stop lying about each other, Stremio addons can be browsed and found, and no search can sit on "searching…" for ever.

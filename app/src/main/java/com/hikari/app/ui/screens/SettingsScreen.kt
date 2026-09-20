@@ -2586,9 +2586,14 @@ private fun ServerSearchCard(app: HikariApp) {
     // ticked, so what is on screen is what a search will actually ask.
     val exceptionTypesFlow = remember { app.store.searchExceptionTypesFlow() }
     val exceptionTypes by exceptionTypesFlow.collectAsState(initial = emptySet())
+    val exceptionExcludesFlow = remember { app.store.searchExceptionExcludesFlow() }
+    val exceptionExcludes by exceptionExcludesFlow.collectAsState(initial = emptySet())
     val effectiveFlow = remember { app.store.activeSearchExceptionsFlow() }
     val effectiveIds by effectiveFlow.collectAsState(initial = emptySet())
     var pickerOpen by remember { mutableStateOf(false) }
+    // Which engine the picker's list is narrowed to (null = all of them). Kept
+    // in the card so it survives closing and reopening the picker.
+    var engineFilter by remember { mutableStateOf<String?>(null) }
 
     // Every installed extension, so the picker can list them (and search them by
     // name or engine). Read live: an install/uninstall while Settings is open is
@@ -2601,11 +2606,6 @@ private fun ServerSearchCard(app: HikariApp) {
     // installed later, and several engines can be marked at once.
     val enginesHere = remember(installedEnabled) {
         installedEnabled.map { it.config.type }.distinct().sortedBy { it.groupLabel }
-    }
-    val engineCoveredIds = remember(installedEnabled, exceptionTypes) {
-        installedEnabled.filter { it.config.type.name in exceptionTypes }
-            .map { it.config.id }
-            .toSet()
     }
 
     Column(Modifier.padding(16.dp)) {
@@ -2672,6 +2672,11 @@ private fun ServerSearchCard(app: HikariApp) {
                     markedEngines.isNotEmpty() -> buildString {
                         append(tr("Whole engines: "))
                         append(markedEngines.joinToString(", ") { it.groupLabel })
+                        val leftOut = exceptionExcludes.size
+                        if (leftOut > 0) {
+                            append(" · ")
+                            append(leftOut.toString() + " " + tr("left out"))
+                        }
                         if (chosenHere.isNotEmpty()) {
                             append(" · ")
                             append(chosenHere.size.toString() + " " + tr("picked by name"))
@@ -2715,9 +2720,15 @@ private fun ServerSearchCard(app: HikariApp) {
     }
 
     if (pickerOpen) {
+        // Which engine the list is narrowed to ("All engines" = null). Tapping an
+        // engine chip both narrows the list to that engine AND marks the whole
+        // engine, so "all of CloudStream, except this one" is two taps rather
+        // than a hundred and fifty rows.
+        val listed = if (engineFilter == null) installedEnabled
+        else installedEnabled.filter { it.config.type.name == engineFilter }
         MultiChoiceDialog(
             title = tr("Exception extensions"),
-            items = installedEnabled
+            items = listed
                 .sortedWith(
                     compareBy(
                         { it.config.name.ifBlank { it.config.id }.lowercase() },
@@ -2725,25 +2736,56 @@ private fun ServerSearchCard(app: HikariApp) {
                     )
                 )
                 .map {
+                    val byEngine = it.config.type.name in exceptionTypes
+                    val optedOut = it.config.id in exceptionExcludes
                     ChoiceItem(
                         key = it.config.id,
                         label = it.config.name.ifBlank { it.config.id },
-                        supporting = it.config.type.groupLabel,
+                        supporting = buildString {
+                            append(it.config.type.groupLabel)
+                            if (byEngine) {
+                                append(" · ")
+                                append(if (optedOut) tr("left out of its engine") else tr("from its engine chip"))
+                            }
+                        },
                     )
                 },
             // What is actually in force: a tick here means "a search will ask
             // this one", whether it got there by name or through its engine.
             selectedKeys = effectiveIds,
             onToggle = { id ->
-                val next = exceptionIds.toMutableSet().apply { if (!add(id)) remove(id) }
-                scope.launch { runCatching { app.store.setSearchExceptionIds(next) } }
+                val type = installedEnabled.firstOrNull { it.config.id == id }?.config?.type
+                val byEngine = type != null && type.name in exceptionTypes
+                if (id in effectiveIds) {
+                    // Switching it OFF: an engine covers it, so say no to THIS
+                    // one instead of unmarking the whole engine.
+                    if (byEngine) {
+                        val next = exceptionExcludes + id
+                        scope.launch { runCatching { app.store.setSearchExceptionExcludes(next) } }
+                    } else {
+                        val next = exceptionIds.toMutableSet().apply { remove(id) }
+                        scope.launch { runCatching { app.store.setSearchExceptionIds(next) } }
+                    }
+                } else {
+                    // Switching it ON: if its engine is marked that is already
+                    // enough (drop the opt-out), otherwise name it explicitly.
+                    val nextExcludes = exceptionExcludes - id
+                    scope.launch {
+                        runCatching { app.store.setSearchExceptionExcludes(nextExcludes) }
+                        if (!byEngine) {
+                            runCatching {
+                                app.store.setSearchExceptionIds(exceptionIds + id)
+                            }
+                        }
+                    }
+                }
             },
             onDismiss = { pickerOpen = false },
             searchable = true,
             searchPlaceholder = "Search extensions",
-            footnote = "Tick whole engines (all of CloudStream, all of Hikari…) or single " +
-                "extensions. They are always searched for titles you open elsewhere, and never " +
-                "searched sideways when you are inside them.",
+            footnote = "Tap an engine to see only its extensions and mark all of them — then " +
+                "tap whichever ones you do NOT want. They are always searched for titles you " +
+                "open elsewhere, and never searched sideways when you are inside them.",
             headerContent = {
                 // One chip per installed engine plus "All". Engines can be mixed
                 // freely, and a marked engine covers extensions installed later
@@ -2758,35 +2800,55 @@ private fun ServerSearchCard(app: HikariApp) {
                         label = tr("All engines"),
                         selected = enginesHere.isNotEmpty() &&
                             enginesHere.all { it.name in exceptionTypes },
+                        listed = engineFilter == null,
                         onClick = {
+                            engineFilter = null
                             val all = enginesHere.map { it.name }.toSet()
                             val next = if (exceptionTypes.containsAll(all) && all.isNotEmpty()) {
                                 exceptionTypes - all
                             } else {
                                 exceptionTypes + all
                             }
-                            scope.launch { runCatching { app.store.setSearchExceptionTypes(next) } }
+                            scope.launch {
+                                runCatching { app.store.setSearchExceptionTypes(next) }
+                                // Marking an engine means "all of it": its old
+                                // opt-outs go, and unmarking it drops them too.
+                                runCatching { app.store.setSearchExceptionExcludes(emptySet()) }
+                            }
                         },
                     )
                     enginesHere.forEach { engine ->
                         val on = engine.name in exceptionTypes
+                        val listed = engineFilter == engine.name
                         ExceptionEngineChip(
                             label = engine.groupLabel,
                             selected = on,
+                            listed = listed,
                             onClick = {
+                                val marking = !listed || !on
+                                engineFilter = if (listed) null else engine.name
                                 val next = exceptionTypes.toMutableSet().apply {
-                                    if (!add(engine.name)) remove(engine.name)
+                                    if (marking) add(engine.name) else remove(engine.name)
                                 }
-                                scope.launch { runCatching { app.store.setSearchExceptionTypes(next) } }
+                                scope.launch {
+                                    runCatching { app.store.setSearchExceptionTypes(next) }
+                                    // A fresh mark covers the whole engine; an
+                                    // unmark makes its opt-outs meaningless.
+                                    val ids = installedEnabled
+                                        .filter { it.config.type.name == engine.name }
+                                        .map { it.config.id }
+                                        .toSet()
+                                    runCatching {
+                                        app.store.setSearchExceptionExcludes(
+                                            exceptionExcludes - ids
+                                        )
+                                    }
+                                }
                             },
                         )
                     }
                 }
             },
-            // Covered by an engine chip: shown ticked, but not switchable here —
-            // turning the chip off is the way to stop searching it.
-            disabledKeys = engineCoveredIds,
-            disabledNote = tr("from its engine chip"),
         )
     }
 }
@@ -2794,11 +2856,21 @@ private fun ServerSearchCard(app: HikariApp) {
 /** One engine pill in the exception picker (see [ServerSearchCard]). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ExceptionEngineChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun ExceptionEngineChip(
+    label: String,
+    selected: Boolean,
+    /** True when the list is currently narrowed to this engine — shown as a
+     *  bolder label, since [selected] already means "marked as an exception"
+     *  and the two are different things. */
+    listed: Boolean = false,
+    onClick: () -> Unit,
+) {
     FilterChip(
         selected = selected,
         onClick = onClick,
-        label = { Text(label) },
+        label = {
+            Text(label, fontWeight = if (listed) FontWeight.SemiBold else FontWeight.Normal)
+        },
         shape = RoundedCornerShape(50),
         colors = FilterChipDefaults.filterChipColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),

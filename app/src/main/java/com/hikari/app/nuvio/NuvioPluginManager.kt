@@ -139,12 +139,15 @@ object NuvioPluginManager {
         Result.success(1)
     }
 
-    /** Removes every NUVIO provider that came from [sourceUrl] (and its file). */
-    suspend fun uninstallScraper(context: Context, sourceUrl: String) {
+    /** Removes every NUVIO provider that came from [sourceUrl] (and its file).
+     *  Returns how many installed providers were actually removed — 0 when the
+     *  source was not installed — so the caller never reports a success for an
+     *  uninstall that removed nothing. */
+    suspend fun uninstallScraper(context: Context, sourceUrl: String): Int {
         val store = HikariApp.instance.store
         val all = store.providers()
-        val paths = all.filter { it.type == ProviderType.NUVIO && it.extra == sourceUrl }
-            .map { it.url }.toSet()
+        val targets = all.filter { it.type == ProviderType.NUVIO && it.extra == sourceUrl }
+        val paths = targets.map { it.url }.toSet()
         // Locked read-modify-write: see [AppStore.updateProviders]. A rebuild
         // from the snapshot read above would drop anything installed meanwhile.
         store.updateProviders { list ->
@@ -158,6 +161,7 @@ object NuvioPluginManager {
                 if (p.startsWith(base) && p !in remaining) runCatching { File(p).delete() }
             }
         }
+        return targets.size
     }
 
     /** Whether the provider's scraper file still exists on disk. */

@@ -412,6 +412,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ProviderType.ANIYOMI ->
                     com.hikari.app.aniyomi.AniyomiProvider.lastOutcome[item.providerId]
                         ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[item.providerId]
+                ProviderType.IPTV ->
+                    com.hikari.app.providers.IptvProvider.iptvErrors[item.providerId]
                 else -> null
             }
             // A Cloudflare wall is never surfaced here: the Home screen reports

@@ -345,12 +345,15 @@ object AniyomiExtensionManager {
     }
 
     /** Removes every ANIYOMI provider that came from [sourceUrl], plus the
-     *  `.ext` file once no provider references it any more. */
-    suspend fun uninstall(context: Context, sourceUrl: String) {
+     *  `.ext` file once no provider references it any more. Returns how many
+     *  installed providers were actually removed — 0 when the source was not
+     *  installed — so the caller never reports a success for an uninstall that
+     *  removed nothing. */
+    suspend fun uninstall(context: Context, sourceUrl: String): Int {
         val store = HikariApp.instance.store
         val all = store.providers()
         val mine = all.filter { it.type == ProviderType.ANIYOMI && it.extra == sourceUrl }
-        if (mine.isEmpty()) return
+        if (mine.isEmpty()) return 0
         // Locked read-modify-write: see [AppStore.updateProviders]. Rebuilding
         // from the snapshot read above would drop anything installed meanwhile.
         store.updateProviders { list ->
@@ -368,6 +371,7 @@ object AniyomiExtensionManager {
                 }
             }
         }
+        return mine.size
     }
 
     /** Whether the provider's `.ext` file is still on disk. */

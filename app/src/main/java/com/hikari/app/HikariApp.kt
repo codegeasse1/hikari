@@ -367,6 +367,11 @@ class HikariApp : Application() {
                     store.markReposSeeded()
                 }
             }
+            // Collapse any duplicate repo entries an older build stored (the same
+            // repository added twice — two branches or two URL spellings), so the
+            // repo list shows one folder per repo from the first launch after the
+            // update.
+            runCatching { store.dedupeStoredRepos() }
             // Apply vendored nuvio provider patches (see NuvioPluginManager's
             // PROVIDER_PATCHES) so already-installed broken providers get the
             // fixed JS in place without a manual reinstall.

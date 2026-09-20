@@ -3699,7 +3699,7 @@ class PlayerActivity : ComponentActivity() {
      *  the repository could not attribute last. */
     private val serverGroupOrder: List<String>
         get() {
-            val base = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "Other")
+            val base = listOf("CloudStream", "Hikari", "Nuvio", "Stremio", "IPTV", "Other")
             val originEngine = sources.firstOrNull { it.isFromOrigin() && it.provider.isNotBlank() }
                 ?.provider
                 ?: return base

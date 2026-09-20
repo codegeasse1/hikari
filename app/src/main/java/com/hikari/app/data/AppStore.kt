@@ -189,6 +189,9 @@ class AppStore(private val ctx: Context) {
         /** ENTIRE ENGINES marked as exceptions, by [ProviderType] name
          *  ("CS3", "HIKARI", …). See [searchExceptionTypesFlow]. */
         val SEARCH_EXCEPTION_TYPES = stringSetPreferencesKey("searchExceptionTypes")
+        /** Extensions left OUT of a marked engine ("all of CloudStream, except
+         *  these"). See [searchExceptionExcludesFlow]. */
+        val SEARCH_EXCEPTION_EXCLUDES = stringSetPreferencesKey("searchExceptionExcludes")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -715,7 +718,6 @@ class AppStore(private val ctx: Context) {
     /** The ids of the extensions chosen as exceptions (see [searchExceptionOnFlow]). */
     fun searchExceptionIdsFlow(): Flow<Set<String>> =
         store.data.map { it[K.SEARCH_EXCEPTION_IDS] ?: emptySet() }
-
     suspend fun searchExceptionIds(): Set<String> = searchExceptionIdsFlow().first()
 
     suspend fun setSearchExceptionIds(ids: kotlin.collections.Collection<String>) {
@@ -743,6 +745,24 @@ class AppStore(private val ctx: Context) {
     }
 
     /**
+     * Extensions explicitly LEFT OUT of a marked engine: "all of CloudStream,
+     * except these two".
+     *
+     * Marking an engine covers everything installed for it, including next
+     * week's install — but it also has to be possible to say no to one of them,
+     * or the only way to exclude a single CloudStream repo would be to unmark
+     * the whole engine and tick 150 rows by hand.
+     */
+    fun searchExceptionExcludesFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_EXCEPTION_EXCLUDES] ?: emptySet() }
+
+    suspend fun searchExceptionExcludes(): Set<String> = searchExceptionExcludesFlow().first()
+
+    suspend fun setSearchExceptionExcludes(ids: kotlin.collections.Collection<String>) {
+        write("SEARCH_EXCEPTION_EXCLUDES") { it[K.SEARCH_EXCEPTION_EXCLUDES] = ids.toSet() }
+    }
+
+    /**
      * The exception extensions that are actually IN FORCE: the chosen ids, the
      * extensions of every chosen ENGINE, or nothing when the switch is off. This
      * is the single value the search mirrors into
@@ -759,11 +779,12 @@ class AppStore(private val ctx: Context) {
             if (prefs[K.SEARCH_EXCEPTION_ON] != true) return@map emptySet<String>()
             val ids = prefs[K.SEARCH_EXCEPTION_IDS] ?: emptySet()
             val types = prefs[K.SEARCH_EXCEPTION_TYPES] ?: emptySet()
-            if (types.isEmpty()) return@map ids
+            val excluded = prefs[K.SEARCH_EXCEPTION_EXCLUDES] ?: emptySet()
+            if (types.isEmpty()) return@map ids - excluded
             val byEngine = parseProviders(prefs[K.PROVIDERS])
                 .filter { it.type.name in types }
                 .map { it.id }
-            ids + byEngine
+            (ids + byEngine) - excluded
         }
 
     // ---- Bottom navigation bar layout ----
@@ -1570,29 +1591,42 @@ class AppStore(private val ctx: Context) {
     suspend fun repos(): List<Cs3Repo> = reposFlow().first()
 
     suspend fun addCs3Repo(r: Cs3Repo) {
-        val key = SourceUrls.canonical(r.url)
-        val existing = repos().firstOrNull { SourceUrls.canonical(it.url) == key }
-        // The same repo under a different spelling (refs/heads vs plain branch,
-        // the jsDelivr mirror, a trailing slash) is the SAME repo: keep the one
-        // entry already there instead of storing a second copy. A second copy
-        // used to show every extension of that repo as uninstalled again, while
-        // the originals kept working on Home. The stored URL is upgraded to the
-        // origin spelling when the existing entry is only a mirror.
+        val key = SourceUrls.repoKey(r.url)
+        val existing = repos().firstOrNull { SourceUrls.repoKey(it.url) == key }
+        // The same REPOSITORY is one entry, however it was spelled and whichever
+        // branch the file was read from (see [SourceUrls.repoKey]): re-adding it
+        // — the same link, the jsDelivr mirror, `refs/heads/x` vs `x`, or the
+        // repo's other branch — updates the entry that is already there instead
+        // of growing a second folder with the same name. The stored URL is
+        // upgraded to the origin spelling when the existing entry is only a
+        // mirror, but an existing entry is otherwise left where it is: the
+        // extensions installed from it match THAT file's URL.
         val merged = if (existing == null || existing.url == r.url) r
         else existing.copy(
-            name = r.name.ifBlank { existing.name },
+            name = existing.name.ifBlank { r.name },
             description = r.description.ifBlank { existing.description },
             url = if (SourceUrls.isMirror(existing.url)) r.url else existing.url,
         )
-        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key } + merged)
+        saveRepos(repos().filter { SourceUrls.repoKey(it.url) != key } + merged)
     }
 
     suspend fun removeCs3Repo(url: String) {
         // Remove by identity, not by spelling: a repo stored twice under two
         // URL spellings (from an older build) would otherwise reappear as soon
         // as the list is read back.
-        val key = SourceUrls.canonical(url)
-        saveRepos(repos().filter { SourceUrls.canonical(it.url) != key })
+        val key = SourceUrls.repoKey(url)
+        saveRepos(repos().filter { SourceUrls.repoKey(it.url) != key })
+    }
+
+    /**
+     * Collapses duplicate repo entries an older build left behind — the same
+     * repository stored twice (two branches, two URL spellings) shows as one.
+     * Runs once at startup; a no-op when there is nothing to collapse.
+     */
+    suspend fun dedupeStoredRepos() {
+        val before = repos()
+        val after = dedupeRepos(before)
+        if (after != before) saveRepos(after)
     }
 
     private suspend fun saveRepos(list: List<Cs3Repo>) {
@@ -1610,13 +1644,15 @@ class AppStore(private val ctx: Context) {
         val index = HashMap<String, Int>()
         for (r in list) {
             if (r.url.isBlank()) continue
-            val key = SourceUrls.canonical(r.url)
+            val key = SourceUrls.repoKey(r.url)
             val at = index[key]
             if (at == null) {
                 index[key] = out.size
                 out.add(r)
             } else if (SourceUrls.isMirror(out[at].url) && !SourceUrls.isMirror(r.url)) {
                 out[at] = r
+            } else if (out[at].name.isBlank() && r.name.isNotBlank()) {
+                out[at] = out[at].copy(name = r.name, description = out[at].description.ifBlank { r.description })
             }
         }
         return out

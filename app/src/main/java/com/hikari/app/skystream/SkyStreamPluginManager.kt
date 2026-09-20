@@ -151,12 +151,15 @@ object SkyStreamPluginManager {
         }
     }
 
-    /** Removes every SKYSTREAM provider that came from [sourceUrl] (+ its dir). */
-    suspend fun uninstall(context: Context, sourceUrl: String) {
+    /** Removes every SKYSTREAM provider that came from [sourceUrl] (+ its dir).
+     *  Returns how many installed providers were actually removed — 0 when the
+     *  source was not installed — so the caller never reports a success for an
+     *  uninstall that removed nothing. */
+    suspend fun uninstall(context: Context, sourceUrl: String): Int {
         val store = HikariApp.instance.store
         val all = store.providers()
         val mine = all.filter { it.type == ProviderType.SKYSTREAM && it.extra == sourceUrl }
-        if (mine.isEmpty()) return
+        if (mine.isEmpty()) return 0
         // Locked read-modify-write: see [AppStore.updateProviders]. Rebuilding
         // from the snapshot read above would drop anything installed meanwhile.
         store.updateProviders { list ->
@@ -172,6 +175,7 @@ object SkyStreamPluginManager {
                 if (parent.absolutePath !in keep) runCatching { parent.deleteRecursively() }
             }
         }
+        return mine.size
     }
 
     /** Whether the provider's plugin.js still exists on disk. */
