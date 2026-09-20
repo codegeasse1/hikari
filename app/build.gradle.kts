@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 158
-        versionName = "0.9.2"
+        versionCode = 159
+        versionName = "0.9.3"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -335,4 +335,33 @@ dependencies {
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+// ---------------------------------------------------------------------------
+// org.json must never be on the runtime classpath.
+//
+// Android already provides org.json — it lives in
+// /apex/com.android.art/javalib/core-libart.jar — and the boot class loader is
+// consulted before ours, so a copy we ship is shadowed: the device runs the
+// platform's implementation whichever version we bundle.
+//
+// NiceHttp (com.github.Blatzar:NiceHttp, the client CloudStream plugins link
+// against) declares org.json:json at runtime scope, and that is a *modern*
+// org.json with APIs the platform does not have. Shipping it is what broke
+// 0.9.2. Our own code calls the platform-compatible `JSONObject(s)`; but with
+// shrinking on, R8 treated the bundled copy as the definition and inlined its
+// constructor body into our classes, which turned that call into a direct
+// `new JSONTokener(String, JSONParserConfiguration)` — a constructor that
+// exists only in the bundled copy. At runtime the name resolved to the
+// platform's JSONTokener, which has no such constructor, so the app died at
+// startup with NoSuchMethodError (0.9.2 / build 158, in AppStore.parseProviders).
+// Without shrinking the call stayed a call and went to the platform's
+// implementation, which is why 0.9.0 was fine.
+//
+// Excluding it here makes compile time, R8's view and the device agree on one
+// org.json: the platform's. app/proguard-rules.pro carries the matching
+// -neverinline guard so a copy cannot come back and do this again.
+// ---------------------------------------------------------------------------
+configurations.configureEach {
+    exclude(mapOf("group" to "org.json", "module" to "json"))
 }

@@ -245,6 +245,16 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn org.mozilla.javascript.**
+# org.json is the platform's (see the note above `configurations.configureEach`
+# in build.gradle.kts — the org.json:json that NiceHttp declares is excluded from
+# the runtime classpath). These two lines are the safety net: if a copy ever
+# comes back through some other dependency or a repackaged jar, the optimizer
+# must still never inline it, because inlining a shadowed copy is exactly what
+# killed 0.9.2 at startup — a working `JSONObject(text)` call became a direct
+# `new JSONTokener(String, JSONParserConfiguration)` call, and the constructor
+# only exists in the copy the device is not running.
+-dontwarn org.json.**
+-neverinline class org.json.** { *; }
 -dontwarn org.jsoup.**
 -dontwarn org.conscrypt.**
 -dontwarn com.fleeksoft.**
