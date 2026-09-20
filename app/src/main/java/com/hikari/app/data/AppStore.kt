@@ -516,7 +516,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun posterEffects(): Set<String> = posterEffectsFlow().first()
 
-    suspend fun setPosterEffects(keys: Collection<String>) {
+    suspend fun setPosterEffects(keys: kotlin.collections.Collection<String>) {
         // The legacy single key is CLEARED, not left behind: it is only ever read
         // as the first-run/upgrade value, and a stale copy would resurrect an
         // old choice if the new set were ever emptied by a restore.
@@ -627,7 +627,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun loadingEffects(): Set<String> = loadingEffectsFlow().first()
 
-    suspend fun setLoadingEffects(keys: Collection<String>) {
+    suspend fun setLoadingEffects(keys: kotlin.collections.Collection<String>) {
         write("LOADING_EFFECTS") {
             it[K.LOADING_EFFECTS] = com.hikari.app.ui.LoadingEffects.normalizeSet(keys)
             it.remove(K.LOADING_EFFECT)
@@ -679,7 +679,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun searchExceptionIds(): Set<String> = searchExceptionIdsFlow().first()
 
-    suspend fun setSearchExceptionIds(ids: Collection<String>) {
+    suspend fun setSearchExceptionIds(ids: kotlin.collections.Collection<String>) {
         write("SEARCH_EXCEPTION_IDS") { it[K.SEARCH_EXCEPTION_IDS] = ids.toSet() }
     }
 
