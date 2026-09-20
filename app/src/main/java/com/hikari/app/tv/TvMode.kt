@@ -114,39 +114,46 @@ object TvMode {
      */
     fun detect(context: Context): Boolean {
         val pm = context.packageManager
-        val has = { feature: String ->
-            runCatching { pm.hasSystemFeature(feature) }.getOrDefault(false)
-        }
-        val tvUiMode = runCatching {
-            (context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)
-                ?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
-        }.getOrDefault(false)
-
-        deviceIsTv = !has(FEATURE_TYPE_PC) && (
-            tvUiMode ||
-                has(PackageManager.FEATURE_LEANBACK) ||
-                has(FEATURE_FIRE_TV) ||
-                has(FEATURE_TYPE_TELEVISION) ||
-                !has(PackageManager.FEATURE_TOUCHSCREEN)
+        deviceIsTv = !hasFeature(pm, FEATURE_TYPE_PC) && (
+            tvUiMode(context) ||
+                hasFeature(pm, PackageManager.FEATURE_LEANBACK) ||
+                hasFeature(pm, FEATURE_FIRE_TV) ||
+                hasFeature(pm, FEATURE_TYPE_TELEVISION) ||
+                !hasFeature(pm, PackageManager.FEATURE_TOUCHSCREEN)
             )
         detected = true
         return deviceIsTv
     }
 
+    /** Every signal, spelled out — one log line that says why a device was
+     *  taken for a television (or not). */
     fun describe(context: Context): String {
         val pm = context.packageManager
-        val has = { feature: String ->
-            runCatching { pm.hasSystemFeature(feature) }.getOrDefault(false)
+        return "uiModeTv=" + tvUiMode(context) +
+            " leanback=" + hasFeature(pm, PackageManager.FEATURE_LEANBACK) +
+            " fireTv=" + hasFeature(pm, FEATURE_FIRE_TV) +
+            " typeTv=" + hasFeature(pm, FEATURE_TYPE_TELEVISION) +
+            " touch=" + hasFeature(pm, PackageManager.FEATURE_TOUCHSCREEN) +
+            " pc=" + hasFeature(pm, FEATURE_TYPE_PC)
+    }
+
+    /** A feature query that can never throw: on some boxes a PackageManager call
+     *  fails outright, and "we could not ask" must not become "the app
+     *  crashed". */
+    private fun hasFeature(pm: PackageManager, feature: String): Boolean =
+        try {
+            pm.hasSystemFeature(feature)
+        } catch (t: Throwable) {
+            false
         }
-        val tvUiMode = runCatching {
+
+    private fun tvUiMode(context: Context): Boolean =
+        try {
             (context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)
                 ?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
-        }.getOrDefault(false)
-        return "uiModeTv=$tvUiMode leanback=${has(PackageManager.FEATURE_LEANBACK)}" +
-            " fireTv=${has(FEATURE_FIRE_TV)} typeTv=${has(FEATURE_TYPE_TELEVISION)}" +
-            " touch=${has(PackageManager.FEATURE_TOUCHSCREEN)}" +
-            " pc=${has(FEATURE_TYPE_PC)}"
-    }
+        } catch (t: Throwable) {
+            false
+        }
 
     /** Compose-facing read: subscribes to the override, so flipping it in
      *  Settings re-draws the app as the other kind of device immediately. */

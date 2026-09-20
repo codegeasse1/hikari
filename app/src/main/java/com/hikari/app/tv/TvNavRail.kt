@@ -82,9 +82,16 @@ fun TvNavRail(
     LaunchedEffect(tabs, currentRoute) {
         if (!initialFocusPending) return@LaunchedEffect
         val index = tabs.indexOfFirst { it.route == currentRoute }.takeIf { it >= 0 } ?: 0
-        // One frame so the nodes are laid out before we point at one.
+        // One frame so the nodes are laid out before we point at one, and a
+        // requestFocus() that lands too early is an error rather than a no-op —
+        // so it is guarded, and the rail simply starts with no focus if it
+        // cannot take it (the first arrow press still enters the rail).
         withFrameNanos { }
-        runCatching { requesters.getOrNull(index)?.requestFocus() }
+        try {
+            requesters.getOrNull(index)?.requestFocus()
+        } catch (t: Throwable) {
+            // nothing to focus yet — see above
+        }
         initialFocusPending = false
     }
 
