@@ -84,7 +84,7 @@ object IptvPlaylist {
                         for (m in ATTR.findAll(head)) {
                             val key = m.groupValues[1].lowercase()
                             attrs[key] = m.groupValues[2].trim()
-                            lastAttrName = attrs[key].ifBlank { null }
+                            lastAttrName = m.groupValues[2].trim().ifBlank { null }
                         }
                         // Some playlists use `tvg-name` as the ONLY name and
                         // leave the comma-tag empty, and some put the name

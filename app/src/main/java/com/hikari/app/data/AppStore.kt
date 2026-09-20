@@ -1590,9 +1590,15 @@ class AppStore(private val ctx: Context) {
 
     suspend fun repos(): List<Cs3Repo> = reposFlow().first()
 
+    /** The identity of a repo URL, never null: [SourceUrls.repoKey] answers null
+     *  only for an input with nothing usable in it, and such an entry is better
+     *  compared by its own text than folded together with every other one. */
+    private fun repoId(url: String): String =
+        SourceUrls.repoKey(url) ?: SourceUrls.canonical(url).ifBlank { url.trim() }
+
     suspend fun addCs3Repo(r: Cs3Repo) {
-        val key = SourceUrls.repoKey(r.url)
-        val existing = repos().firstOrNull { SourceUrls.repoKey(it.url) == key }
+        val key = repoId(r.url)
+        val existing = repos().firstOrNull { repoId(it.url) == key }
         // The same REPOSITORY is one entry, however it was spelled and whichever
         // branch the file was read from (see [SourceUrls.repoKey]): re-adding it
         // — the same link, the jsDelivr mirror, `refs/heads/x` vs `x`, or the
@@ -1607,15 +1613,15 @@ class AppStore(private val ctx: Context) {
             description = r.description.ifBlank { existing.description },
             url = if (SourceUrls.isMirror(existing.url)) r.url else existing.url,
         )
-        saveRepos(repos().filter { SourceUrls.repoKey(it.url) != key } + merged)
+        saveRepos(repos().filter { repoId(it.url) != key } + merged)
     }
 
     suspend fun removeCs3Repo(url: String) {
         // Remove by identity, not by spelling: a repo stored twice under two
         // URL spellings (from an older build) would otherwise reappear as soon
         // as the list is read back.
-        val key = SourceUrls.repoKey(url)
-        saveRepos(repos().filter { SourceUrls.repoKey(it.url) != key })
+        val key = repoId(url)
+        saveRepos(repos().filter { repoId(it.url) != key })
     }
 
     /**
@@ -1644,7 +1650,7 @@ class AppStore(private val ctx: Context) {
         val index = HashMap<String, Int>()
         for (r in list) {
             if (r.url.isBlank()) continue
-            val key = SourceUrls.repoKey(r.url)
+            val key = repoId(r.url)
             val at = index[key]
             if (at == null) {
                 index[key] = out.size
