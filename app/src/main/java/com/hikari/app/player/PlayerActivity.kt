@@ -2797,10 +2797,16 @@ class PlayerActivity : ComponentActivity() {
         val chevron: Boolean = false,
         val selected: Boolean = false,
         val marker: RowMarker = RowMarker.RADIO,
+        /** How many lines the label may use. One for a menu row (every row in a
+         *  list of settings/qualities must read as the same capsule); two for a
+         *  server row, where the name is the thing being chosen and a long
+         *  "Provider (Repo) · Plugin" was being cut off mid-word. The capsule
+         *  grows with the label rather than the text being ellipsised. */
+        val labelMaxLines: Int = 1,
     ) {
         /** The same row with a different selection state. */
         fun withSelected(value: Boolean): GlassOption = GlassOption(
-            label, sub, badge, iconRes, chevron, value, marker
+            label, sub, badge, iconRes, chevron, value, marker, labelMaxLines
         )
     }
 
@@ -3041,14 +3047,14 @@ class PlayerActivity : ComponentActivity() {
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
                 dpText(11.5f)
-                // One line, always. A row is a capsule, so its HEIGHT decides how
-                // round it reads (the corner radius is clamped to half of it), and
-                // a label that wrapped to a second line made those rows a visibly
-                // fatter, rounder pill than the rows beside them — the long
-                // "Provider (Repo) · Plugin" server names sat next to the short
-                // CloudStream ones and looked like a different component. The tail
-                // is ellipsised instead of pushing the capsule taller.
-                maxLines = 1
+                // One line by default: a row is a capsule, so its HEIGHT decides
+                // how round it reads (the corner radius is clamped to half of
+                // it), and a label that wrapped to a second line made those rows
+                // a visibly fatter, rounder pill than the rows beside them. The
+                // server list is the exception (see [serverOption]): there the
+                // name is the choice being made, so it wraps to two lines and
+                // the capsule grows with it.
+                maxLines = option.labelMaxLines
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -3796,6 +3802,10 @@ class PlayerActivity : ComponentActivity() {
         // Only mark a row as current once playback has actually been committed
         // to a server — see [playbackCommitted].
         selected = playbackCommitted && index == currentIndex,
+        // Server names run long ("Provider (Repo) · Plugin · 1080p") and they are
+        // what the user is choosing between, so the row's capsule fits TWO lines
+        // of it instead of cutting the name off — the box grows with the name.
+        labelMaxLines = 2,
     )
 
     /**

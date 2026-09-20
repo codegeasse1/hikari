@@ -331,14 +331,16 @@ fun HomeScreen(nav: NavHostController) {
     val loading by vm.loading.collectAsState()
     val selected by vm.selectedProvider.collectAsState()
     val providers by vm.providers.collectAsState()
-    // Stream-only Stremio addons (Torrentio, NovaStream…) have no catalog to
-    // browse, so like in Stremio they don't appear here at all — only addons
-    // that can fill the home screen do. CS3 plugins / universal scrapers are
-    // always shown (their catalogs are dynamic).
-    val activeProviders = providers.filter {
-        it.config.enabled && (it.config.type != com.hikari.app.data.ProviderType.STREMIO ||
-            com.hikari.app.providers.StremioAddon.streamOnlyAddons[it.config.id] != true)
-    }
+    // Every ENABLED provider is offered here, including Stremio addons whose
+    // manifest declares no catalogs of its own. Those used to be filtered out
+    // ("like in Stremio, they don't appear here at all"), which meant an addon
+    // the user had just installed was missing from the picker, could not be
+    // found by name, and left the picker without a "Stremio" chip at all — the
+    // reported "I installed HdHub but there is no Stremio category and
+    // searching hdHub finds nothing". Such an addon browses TMDB (see
+    // com.hikari.app.data.TmdbBrowse), so it has rows to show like any other
+    // extension; if TMDB is unreachable it says so in its own empty state.
+    val activeProviders = providers.filter { it.config.enabled }
     // The picker's engine filter ("All", "CloudStream", "Hikari", "Nuvio",
     // "Stremio"). Purely a narrowing device: it never changes what Home shows.
     var providerFilter by remember { mutableStateOf<com.hikari.app.data.ProviderType?>(null) }
@@ -673,10 +675,12 @@ fun HomeScreen(nav: NavHostController) {
                         if (streamOnly) {
                             EmptyState(
                                 title = I18n.t("No catalog from %s").replace("%s", selectedName ?: "this addon"),
-                                subtitle = tr("This addon doesn't provide a catalog to browse — it only " + "adds playback sources to titles opened from other addons. ") +
-                                    "Pick any movie or series and its streams will show up.",
-                                actionLabel = tr("Browse all"),
-                                action = { vm.selectProvider(null) }
+                                subtitle = tr(
+                                    "This addon has no catalog of its own, so Home shows TMDB for it — " +
+                                        "and that came back empty just now. Retry, or check your connection."
+                                ),
+                                actionLabel = tr("Retry"),
+                                action = vm::refresh,
                             )
                         } else {
                             EmptyState(
@@ -1016,7 +1020,22 @@ private fun ProviderPickerSheet(
                     }
                 }
                 items(filtered.distinctBy { it.config.id }, key = { it.config.id }) { p ->
-                    PickerRow(p.config.name, isSelected = selectedId == p.config.id) {
+                    // A stream-only addon is named with its engine so the row
+                    // explains itself: it adds servers, its browsing comes from
+                    // TMDB (see TmdbBrowse).
+                    val streamOnly =
+                        com.hikari.app.providers.StremioAddon.streamOnlyAddons[p.config.id] == true
+                    PickerRow(
+                        label = p.config.name,
+                        isSelected = selectedId == p.config.id,
+                        supporting = when {
+                            streamOnly -> I18n.t("%s addon · browses TMDB").replace(
+                                "%s",
+                                p.config.type.groupLabel,
+                            )
+                            else -> null
+                        },
+                    ) {
                         onPick(p.config.id)
                     }
                 }

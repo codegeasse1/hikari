@@ -169,6 +169,16 @@ fun MultiChoiceDialog(
     searchPlaceholder: String = "Search",
     /** Text under the title, for the two lines of "how this works". */
     footnote: String? = null,
+    /** Drawn between the footnote and the search field — a caller's own
+     *  controls over the list (the exception picker's engine chips). */
+    headerContent: (@Composable () -> Unit)? = null,
+    /** Rows that are ON but not the user's to switch off here: they are covered
+     *  by something else in [headerContent] (a whole engine). They keep their
+     *  tick and their colour, and a tap on one does nothing instead of silently
+     *  doing nothing to the setting it appears to control. */
+    disabledKeys: Set<String> = emptySet(),
+    /** Text on a [disabledKeys] row, after its supporting line. */
+    disabledNote: String? = null,
     maxHeight: Dp = 440.dp,
 ) {
     val options = items
@@ -189,6 +199,10 @@ fun MultiChoiceDialog(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(8.dp))
+        }
+        headerContent?.let {
+            it()
             Spacer(Modifier.height(8.dp))
         }
         if (searchable) {
@@ -237,6 +251,7 @@ fun MultiChoiceDialog(
             items(shown.size, key = { shown[it].key }) { index ->
                 val item = shown[index]
                 val isOn = item.key in selectedKeys
+                val locked = item.key in disabledKeys
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -245,7 +260,7 @@ fun MultiChoiceDialog(
                             if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                             else Color.Transparent
                         )
-                        .clickable { onToggle(item.key) }
+                        .clickable(enabled = !locked) { onToggle(item.key) }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -255,6 +270,7 @@ fun MultiChoiceDialog(
                         // ROW toggles (otherwise a tap on the box itself could
                         // toggle twice).
                         onCheckedChange = null,
+                        enabled = !locked,
                     )
                     if (!item.leading.isNullOrBlank()) {
                         Text(
@@ -270,9 +286,12 @@ fun MultiChoiceDialog(
                             color = if (isOn) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurface,
                         )
-                        if (!item.supporting.isNullOrBlank()) {
+                        if (!item.supporting.isNullOrBlank() || (locked && !disabledNote.isNullOrBlank())) {
                             Text(
-                                item.supporting,
+                                listOfNotNull(
+                                    item.supporting?.takeIf { it.isNotBlank() },
+                                    if (locked) disabledNote else null,
+                                ).joinToString(" · "),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

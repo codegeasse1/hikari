@@ -7,7 +7,13 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.data.TmdbBrowse
 import com.hikari.app.net.Http
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -48,9 +54,56 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  just contributes playback sources, never home rows. */
         val streamOnlyAddons = ConcurrentHashMap<String, Boolean>()
 
+        /** What a loaded manifest says it can do ("streams, metadata"), for the
+         *  addon's info dialog — an addon has no settings screen to open, so the
+         *  gear shows this instead (see [Extras]). */
+        val resourceSummary = ConcurrentHashMap<String, String>()
+
         /** Per-provider reason why source lookup came back empty. Displayed in
          *  the playback sheet so "no playable sources found" is explainable. */
         val streamErrors = ConcurrentHashMap<String, String>()
+
+        /** How long a caller waits for a manifest before giving up on it (the
+         *  fetch itself keeps running and still fills the cache if it lands). */
+        private const val MANIFEST_TIMEOUT_MS = 15_000L
+
+        /** How long a FAILED manifest fetch is remembered, so a dead host is not
+         *  re-probed by every search/meta/episode/stream call in between. */
+        private const val MANIFEST_RETRY_MS = 45_000L
+
+        /** "3 catalogs, streams, metadata" — the manifest's `resources` list in
+         *  plain words, for the addon's info dialog. */
+        private fun summarize(m: JSONObject, catalogCount: Int): String {
+            val parts = ArrayList<String>()
+            if (catalogCount > 0) {
+                parts += "$catalogCount catalog" + (if (catalogCount == 1) "" else "s")
+            }
+            val arr = m.optJSONArray("resources")
+            if (arr == null) {
+                // A manifest that declares no resources at all is assumed to do
+                // the usual addon job (that is the protocol's default).
+                parts += "streams"
+            } else {
+                for (i in 0 until arr.length()) {
+                    val r = arr.opt(i)
+                    val name = when (r) {
+                        is String -> r
+                        is JSONObject -> r.optString("name")
+                        else -> null
+                    }
+                    val label = when (name?.lowercase()) {
+                        "stream" -> "streams"
+                        "meta" -> "metadata"
+                        "subtitles" -> "subtitles"
+                        "catalog" -> "catalogs"
+                        null -> null
+                        else -> name
+                    }
+                    if (label != null && !parts.contains(label)) parts += label
+                }
+            }
+            return parts.joinToString(", ").ifBlank { "nothing declared" }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -81,7 +134,16 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     private fun encode(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
 
+    @Volatile
     private var manifest: JSONObject? = null
+
+    /** When a manifest fetch last failed — see [loadManifest]. */
+    @Volatile
+    private var manifestFailedAt = 0L
+
+    /** The manifest fetch currently in flight, shared by parallel callers. */
+    @Volatile
+    private var manifestFetch: kotlinx.coroutines.Deferred<JSONObject?>? = null
 
     /** `/meta/{type}/{id}` responses keyed by request URL. The detail screen
      *  asks for meta (backdrop/overview/type correction) and then for episodes,
@@ -120,10 +182,36 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return null
     }
 
+    /**
+     * The manifest, fetched at most once per addon (and never re-fetched while
+     * one fetch is already in flight or has just failed).
+     *
+     * A fetch here can cost a long time: the shared client connects with a 20s
+     * timeout and reads with a 30s one, and [getJson] tries two URL spellings
+     * twice each — so a dead or blocking host is up to two minutes per attempt,
+     * and this call sits on the path of EVERY search, meta, episode and stream
+     * lookup (`usesTmdbBrowse`). Re-fetching a manifest that already failed is
+     * what made a dead addon read as a search that never finishes; the failure
+     * is remembered for [MANIFEST_RETRY_MS] instead. The fetch itself is moved
+     * off the caller's thread and only WAITED on for [MANIFEST_TIMEOUT_MS], so
+     * one slow host costs a pass at most that — a late answer still lands in
+     * [manifest] for every later call.
+     */
     private suspend fun loadManifest(): JSONObject? {
         manifest?.let { return it }
-        val m = getJson("$base/manifest.json")
-        manifest = m
+        if (System.currentTimeMillis() - manifestFailedAt < MANIFEST_RETRY_MS) return null
+        // One fetch in flight at a time: a search pass fans out over several
+        // addons and can ask this addon for meta, episodes and streams at the
+        // same moment.
+        val flight = manifestFetch?.takeIf { it.isActive } ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            .async {
+                runCatching { getJson("$base/manifest.json") }.getOrNull().also {
+                    if (it != null) manifest = it
+                }
+            }
+            .also { manifestFetch = it }
+        val m = withTimeoutOrNull(MANIFEST_TIMEOUT_MS) { flight.await() }
+        if (m == null) manifestFailedAt = System.currentTimeMillis()
         return m
     }
 
@@ -160,12 +248,26 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return false
     }
 
+    /** The TMDB rows this addon browses (see [TmdbBrowse]). Computed once per
+     *  instance, like NuvioScraper's rows — the offset needs one read of the
+     *  provider list, not one per catalog call. */
+    @Volatile
+    private var tmdbRefsCache: List<CatalogRef>? = null
+
+    private suspend fun tmdbRefs(): List<CatalogRef> {
+        tmdbRefsCache?.let { return it }
+        val refs = TmdbBrowse.catalogRefs(config.name, config.id, tmdbOffset())
+        tmdbRefsCache = refs
+        return refs
+    }
+
     override suspend fun catalogs(): List<CatalogRef> {
         val m = loadManifest() ?: run {
             catalogErrors[config.id] =
                 "Could not load manifest from $base/manifest.json — the host may be down, " +
                     "or blocking non-browser requests."
             streamOnlyAddons.remove(config.id)
+            resourceSummary.remove(config.id)
             return emptyList()
         }
         val out = LinkedHashMap<String, CatalogRef>()
@@ -177,12 +279,24 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             val raw = c.optString("type").lowercase()
             out["$t|$id"] = CatalogRef(config.id, t, id, name, raw)
         }
+        resourceSummary[config.id] = summarize(m, out.size)
         if (out.isEmpty()) {
             // Zero catalogs is NOT an error — stream-only addons (Torrentio,
-            // Comet, Novastream…) are valid and common. They simply add
-            // playback sources to titles opened from other addons.
+            // Comet, Novastream, HdHub…) are valid and common. Instead of
+            // leaving Home empty for one (and hiding it from the picker), it
+            // browses TMDB the same way a Nuvio provider does: the rows below
+            // are real, and the addon's own /stream answers for every title
+            // opened from them. That is what lets a user with ONLY stream
+            // addons browse and play without also installing a catalog addon
+            // (Cinemeta-style) just to have something to look at.
             catalogErrors.remove(config.id)
             streamOnlyAddons[config.id] = true
+            return tmdbRefs().ifEmpty {
+                // No TMDB rows to offer (not configured): keep the old, honest
+                // "streams only" behaviour rather than inventing a catalog.
+                streamOnlyAddons[config.id] = true
+                emptyList()
+            }
         } else {
             catalogErrors.remove(config.id)
             streamOnlyAddons.remove(config.id)
@@ -190,7 +304,38 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return out.values.toList()
     }
 
+    /**
+     * Which slice of the TMDB row pool this addon shows. The addon's ordinal
+     * among the installed Stremio addons, so two stream-only addons never present
+     * the same Home screen (the same rule NuvioScraper uses per niche).
+     */
+    private suspend fun tmdbOffset(): Int {
+        val here = runCatching {
+            com.hikari.app.HikariApp.instance.store.providers()
+                .filter { it.type == com.hikari.app.data.ProviderType.STREMIO }
+                .sortedBy { it.name.lowercase() }
+                .indexOfFirst { it.id == config.id }
+        }.getOrDefault(-1)
+        return if (here >= 0) here else kotlin.math.abs(config.id.hashCode())
+    }
+
+    /** True when this addon's browsing/search is served by TMDB (its manifest
+     *  declares no catalogs of its own). */
+    private suspend fun usesTmdbBrowse(): Boolean {
+        val m = loadManifest() ?: return false
+        return catalogsOf(m).isEmpty()
+    }
+
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
+        if (TmdbBrowse.isOurCatalog(ref.id)) {
+            val items = TmdbBrowse.items(config.id, ref.id, page)
+            if (items.isEmpty()) {
+                catalogErrors[config.id] = "TMDB returned nothing for '${ref.name}' — check your connection."
+            } else {
+                catalogErrors.remove(config.id)
+            }
+            return items
+        }
         val extra = if (page > 1) "skip=${(page - 1) * 100}" else null
         val url = resUrl("catalog", typeSegment(ref.rawType, ref.type), ref.id, extra)
         val items = parseMetas(getJson(url), ref.rawType)
@@ -206,12 +351,17 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override suspend fun search(query: String, page: Int): List<MediaItem> {
         val out = mutableListOf<MediaItem>()
         for (c in catalogs().distinctBy { it.id }) {
+            if (TmdbBrowse.isOurCatalog(c.id)) continue
             val extra = "search=${encode(query)}" + if (page > 1) "&skip=${(page - 1) * 100}" else ""
             out += parseMetas(
                 getJson(resUrl("catalog", typeSegment(c.rawType, c.type), c.id, extra)),
                 c.rawType,
             )
         }
+        // An addon with no catalog of its own is searched through TMDB, so
+        // "find this title in my Stremio addon" works from the global search and
+        // from the cross-extension pass (the addon then supplies the streams).
+        if (usesTmdbBrowse()) out += TmdbBrowse.search(config.id, query, page)
         return out.distinctBy { it.uniqueId }
     }
 
@@ -260,6 +410,9 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         } ?: emptyList()
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
+        // An item from our own TMDB rows/searches: its id is a TMDB id, so the
+        // addon's /meta would answer nothing. TMDB is asked instead.
+        if (usesTmdbBrowse() && isTmdbId(item.id)) return TmdbBrowse.meta(item)
         val url = resUrl("meta", typeSegment(item.rawType, item.type), item.id)
         val json = getMetaJson(url) ?: return item
         val m = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0) ?: return item
@@ -281,6 +434,9 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
+        // A TMDB item's episode list comes from TMDB (the addon has no catalog
+        // and would answer nothing for a TMDB id).
+        if (usesTmdbBrowse() && isTmdbId(item.id)) return TmdbBrowse.episodes(item)
         // No hard type gate: a series is often served from a catalog the addon
         // typed as "movie" (or an unknown custom type), and the meta document
         // is the ground truth. getMetaJson shares the cache with getMeta, so
@@ -341,7 +497,35 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val m = loadManifest()
         val typeRaw = typeSegment(item.rawType, item.type)
-        val idPart = episode?.id ?: item.id
+        var idPart = episode?.id ?: item.id
+
+        // Resolve the id this addon can actually answer. A stream addon declares
+        // `idPrefixes: ["tt"]` and the real client only ever asks it about `tt…`
+        // ids, so two ordinary cases have to be translated first:
+        //   (a) an item from our own TMDB browse carries a TMDB id (see
+        //       TmdbBrowse) — TMDB knows the IMDb id behind it;
+        //   (b) a title opened from a CloudStream/Aniyomi/etc. extension carries
+        //       THAT extension's id, which this addon has never heard of — the
+        //       title resolves to a TMDB id, and then to an IMDb one.
+        // Without this the addon was asked about ids it does not recognise and
+        // returned nothing, which is why a stream addon installed next to other
+        // extensions never added a single server to the list.
+        if (m != null) {
+            val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
+            val idDigits = idPart.takeWhile { it.isDigit() }
+            val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
+            val imdb = when {
+                idDigits.isNotEmpty() && (usesTmdbBrowse() || !acceptsId(idPart)) ->
+                    TmdbBrowse.imdbId(idDigits, kind)
+                !acceptsId(idPart) &&
+                    com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item) ->
+                    com.hikari.app.nuvio.TmdbResolver.resolve(item)?.let { resolved ->
+                        TmdbBrowse.imdbId(resolved.tmdbId, resolved.mediaType)
+                    }
+                else -> null
+            }
+            if (imdb != null) idPart = imdb + epSuffix
+        }
 
         // Metadata-only addons (Cinemeta/Streaming-Catalogs style: catalogs +
         // meta but no stream resource) never answer /stream — exactly like the
@@ -386,6 +570,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             .ifBlank { "Addon returned no playable streams." }
         return emptyList()
     }
+
+    /** True when [id] is a TMDB id (all digits) rather than an addon id (a
+     *  Stremio id is normally `tt…`, `kitsu:…`, a slug, …). */
+    private fun isTmdbId(id: String): Boolean = id.isNotBlank() && id.all { it.isDigit() }
 
     /** Strips a trailing season:episode (or season-episode) suffix from a video
      *  id so we can also try the bare movie/base id. */

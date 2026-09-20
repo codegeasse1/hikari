@@ -29,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.ConnectionPool
@@ -283,11 +284,12 @@ class HikariApp : Application() {
             }
         }
         appScope.launch {
-            // Seeded through the plain getters (rather than the flow's first
-            // value) so a search started before the first emission already sees
-            // the right set, exactly like the flag above.
+            // Seeded through a first read of the EFFECTIVE flow (rather than the
+            // raw id flow) so a search started before the first emission already
+            // sees the right set — engine exceptions included, exactly like the
+            // flag above.
             com.hikari.app.data.SearchScope.exceptions =
-                if (store.searchExceptionOn()) store.searchExceptionIds() else emptySet()
+                runCatching { store.activeSearchExceptionsFlow().first() }.getOrDefault(emptySet())
             store.activeSearchExceptionsFlow().collect {
                 com.hikari.app.data.SearchScope.exceptions = it
             }

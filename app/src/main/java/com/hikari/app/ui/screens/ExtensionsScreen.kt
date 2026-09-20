@@ -316,15 +316,30 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  found already-installed providers, never the installable repo entries. */
     fun loadReposIfNeeded() {
         viewModelScope.launch {
-            for (repo in repos.value) {
-                if (pluginsByRepo.value[repo.url] != null) continue
-                if (repoState.value[repo.url]?.loading == true) continue
-                if (repo.url in reposLoading) continue
-                reposLoading.add(repo.url)
-                try {
-                    refreshRepoPlugins(repo)
-                } finally {
-                    reposLoading.remove(repo.url)
+            val pending = repos.value.filter { repo ->
+                pluginsByRepo.value[repo.url] == null &&
+                    repoState.value[repo.url]?.loading != true &&
+                    repo.url !in reposLoading
+            }
+            if (pending.isEmpty()) return@launch
+            // A few repos at a time, not one after another. The sequential loop
+            // spent the whole of a big (Mega-imported) list waiting on its
+            // slowest hosts one by one — minutes during which the extension
+            // search only knew about the repos already read and sat on
+            // "Searching…", which is the reported "stuck while searching
+            // extensions". [refreshRepoPlugins] bounds each fetch, so a dead
+            // host cannot hold a slot for long.
+            val gate = kotlinx.coroutines.sync.Semaphore(4)
+            kotlinx.coroutines.coroutineScope {
+                for (repo in pending) {
+                    reposLoading.add(repo.url)
+                    launch {
+                        try {
+                            gate.withPermit { refreshRepoPlugins(repo) }
+                        } finally {
+                            reposLoading.remove(repo.url)
+                        }
+                    }
                 }
             }
         }
@@ -554,8 +569,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (bytes.size > 10 * 1024 * 1024) {
             return Result.failure(Exception("File too large (max 10MB)"))
         }
-        val clean = rawName.substringAfterLast('/').ifBlank { "plugin.cs3" }
-            .let { if (it.endsWith(".cs3", true)) it else "$it.cs3" }
+        val base = rawName.substringAfterLast('/').ifBlank { "plugin" }
+            .let { if (it.endsWith(".cs3", true)) it.dropLast(4) else it }
+            .trim().ifBlank { "plugin" }
+            .let { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
+        // The local FILE name decides the provider ids ("cs3|<name.hashCode>|i"),
+        // so two repos publishing different plugins under the same name shared
+        // one file: the second install overwrote the first, and uninstalling
+        // either deleted the file the other was loaded from — which is the
+        // reported "I uninstalled one extension in a repo and the rest of them
+        // showed Install again". The source URL is therefore stamped into the
+        // name, exactly like the id scheme already assumed it was unique.
+        val clean = if (sourceUrl.isNullOrBlank()) "$base.cs3"
+        else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.cs3"
         val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
         val file = File(dir, clean)
         file.setWritable(true)
@@ -577,7 +603,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         var added = 0
         apis.forEachIndexed { i, api ->
-            val name = api.name.ifBlank { clean.removeSuffix(".cs3") }
+            val name = api.name.ifBlank { base }
             val id = "cs3|" + clean.hashCode() + "|" + i
             store.addProvider(
                 ProviderConfig(
@@ -593,6 +619,34 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         manager.refresh()
         reloadInstalled()
+        // One source URL must never leave two copies behind. Re-installing an
+        // extension used to add a second config pointing at the SAME file; with
+        // the name now stamped per source URL, an install that follows an older
+        // build's name-only file would likewise leave the old copy (and its
+        // file) sitting there as a phantom second row. Drop every other CS3
+        // config that came from this exact source, plus its file once nothing
+        // references it.
+        if (!sourceUrl.isNullOrBlank()) {
+            val stale = store.providers().filter {
+                it.type == ProviderType.CS3 && it.url != file.absolutePath &&
+                    sourceKeyMatches(it.extra, sourceUrl)
+            }
+            if (stale.isNotEmpty()) {
+                val stalePaths = stale.map { it.url }.toSet()
+                store.updateProviders { list ->
+                    list.filterNot { it.type == ProviderType.CS3 && it.url in stalePaths }
+                }
+                withContext(Dispatchers.IO) {
+                    val keep = store.providers().map { it.url }.toSet()
+                    val root = getApplication<Application>().filesDir.absolutePath
+                    stalePaths.forEach { p ->
+                        if (p.startsWith(root) && p !in keep) {
+                            runCatching { File(p).delete() }
+                        }
+                    }
+                }
+            }
+        }
         return Result.success(added)
     }
 
@@ -651,8 +705,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // installed provider actually stored (they can differ from the repo's
         // current listing) — otherwise "Uninstalled" would leave the provider
         // in place when the repo moved the file.
-        val stored = store.providers()
-            .filter { it.type == ProviderType.NUVIO && sourceMatches(it, pluginUrl) }
+        val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
+            p.type == ProviderType.NUVIO && sourceMatches(p, s)
+        }
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
@@ -692,8 +747,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Removes every SKYSTREAM extension that came from [pluginUrl]. */
     suspend fun uninstallSkyStreamPlugin(pluginUrl: String) {
         val app = getApplication<Application>()
-        val stored = store.providers()
-            .filter { it.type == ProviderType.SKYSTREAM && sourceMatches(it, pluginUrl) }
+        val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
+            p.type == ProviderType.SKYSTREAM && sourceMatches(p, s)
+        }
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
@@ -793,8 +849,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // The manager removes by exact source URL, so hand it the spelling each
         // installed provider actually stored — a repo build can move the file
         // (a new branch, the jsDelivr mirror) between listing and uninstall.
-        val stored = store.providers()
-            .filter { it.type == ProviderType.ANIYOMI && sourceMatches(it, pluginUrl) }
+        val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
+            p.type == ProviderType.ANIYOMI && sourceMatches(p, s)
+        }
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
@@ -843,8 +900,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Fetches a repo manifest — repo.json for CloudStream/Hikari repos,
      *  manifest.json for Nuvio repos — trying the pasted URL first and then the
      *  raw-GitHub variants for `github.com/o/r` links users commonly paste (the
-     *  HTML page would never parse as JSON). Remembers which variant succeeded. */
-    private fun fetchRepoRaw(url: String, file: String = "repo.json", ua: String? = null): Result<String> {
+     *  HTML page would never parse as JSON). Remembers which variant succeeded.
+     *
+     *  [remember] is false for the callers that run SEVERAL fetches at once
+     *  (the repo-list loader, the Mega import's name lookups): they only need
+     *  the body, and writing the shared [lastGoodRepoUrl] from parallel
+     *  coroutines could hand an add-repo the URL some other repo happened to
+     *  resolve to. */
+    private fun fetchRepoRaw(
+        url: String,
+        file: String = "repo.json",
+        ua: String? = null,
+        remember: Boolean = true,
+    ): Result<String> {
         // Nuvio manifests/scrapers live on Codeberg, which 403s the shared
         // desktop-Chrome UA but serves the nuvio app's own UA fine — override
         // for nuvio repos (mirrors the real nuvio app's client).
@@ -875,7 +943,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 lastError = friendlyRepoError(file)
                 continue
             }
-            lastGoodRepoUrl = candidate
+            if (remember) lastGoodRepoUrl = candidate
             return Result.success(text)
         }
         return Result.failure(lastError ?: friendlyRepoError(file))
@@ -1150,8 +1218,25 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // it belongs to; report which of the two happened so the dialog
                 // can say "already added" instead of "added".
                 val key = SourceUrls.canonical(repo.url)
-                duplicateRepoAdd = store.repos().any { SourceUrls.canonical(it.url) == key }
+                val previous = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }
+                duplicateRepoAdd = previous != null
                 store.addCs3Repo(repo)
+                // Adding a repo that is already there must leave its extensions
+                // showing the state they have. The stored spelling can be
+                // UPGRADED by the merge (a jsDelivr mirror → the origin URL), and
+                // the fetched plugin list is keyed by the repo's URL: carry it (and
+                // the row's load state) over to the new key, or the repo the user
+                // just re-added reads as a brand-new one with every extension
+                // uninstalled-looking until it re-fetches.
+                val savedUrl = store.repos().firstOrNull { SourceUrls.canonical(it.url) == key }?.url
+                if (previous != null && savedUrl != null && previous.url != savedUrl) {
+                    pluginsByRepo.value[previous.url]?.let { list ->
+                        pluginsByRepo.value = pluginsByRepo.value - previous.url + (savedUrl to list)
+                    }
+                    repoState.value[previous.url]?.let { st ->
+                        repoState.value = repoState.value - previous.url + (savedUrl to st)
+                    }
+                }
                 // A "Mega"-style bundle repo isn't a plugin repo — its single
                 // plugin only exists to add every CloudStream repo from the
                 // canonical repos-db.json (and relies on the real CloudStream
@@ -1178,7 +1263,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refreshRepoPlugins(repo: Cs3Repo) {
         repoState.value = repoState.value + (repo.url to RepoLoadState(loading = true, error = null))
         try {
-            val (plugins, meta) = withContext(Dispatchers.IO) { fetchRepoPlugins(repo) }
+            // A hard ceiling on ONE repo. The fetch itself already bounds every
+            // individual request, but a repo whose manifest lists twenty dead
+            // sub-lists can still spend minutes inside it — and a loader that
+            // never reports back leaves its row (and the extensions search)
+            // saying "loading" forever, which is the "stuck searching
+            // extensions" the user kept seeing. Timing out turns it into the
+            // row's normal error + Retry instead.
+            val (plugins, meta) = withTimeoutOrNull(REPO_LOAD_CEILING_MS) {
+                withContext(Dispatchers.IO) { fetchRepoPlugins(repo) }
+            } ?: throw Exception("This repo took too long to load — tap refresh to try again")
             // Repos imported from a mega-bundle land with a URL-ish name; once
             // its repo.json is actually fetched, replace that with the real
             // name/description so the list shows "owner/repo" instead of a URL.
@@ -1216,7 +1310,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             else -> "repo.json"
         }
         val text = fetchRepoRaw(
-            repo.url, file, ua = if (repo.kind == RepoKind.NUVIO) Http.NUVIO_UA else null
+            repo.url, file,
+            ua = if (repo.kind == RepoKind.NUVIO) Http.NUVIO_UA else null,
+            // Several of these run at once (see loadReposIfNeeded) — this fetch
+            // is only after the body.
+            remember = false,
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         if (repo.kind == RepoKind.ANIYOMI) {
@@ -1459,7 +1557,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** The repo.json's own name, else an owner/repo label derived from the URL. */
     private suspend fun fetchRepoDisplayName(url: String): String = withTimeoutOrNull(8_000) {
         withContext(Dispatchers.IO) {
-            fetchRepoRaw(url).getOrNull()?.let { text ->
+            fetchRepoRaw(url, remember = false).getOrNull()?.let { text ->
                 runCatching { JSONObject(text).optString("name").ifBlank { null } }.getOrNull()
             }
         }
@@ -1512,25 +1610,71 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
+    /** A short, stable, filename-safe digest of [s] — the stamp that gives an
+     *  installed file (and the provider ids derived from its name) a per-SOURCE
+     *  identity. */
+    private fun shortHash(s: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        return md.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
+    }
+
+    /** True when a provider's stored [extra] and [source] name the same source
+     *  file, however either is spelled (see [SourceUrls.matchKeys]). */
+    private fun sourceKeyMatches(extra: String?, source: String?): Boolean {
+        if (extra == null || source == null) return false
+        if (!extra.startsWith("http") || !source.startsWith("http")) return false
+        val wanted = SourceUrls.matchKeys(source)
+        return SourceUrls.matchKeys(extra).any { it in wanted }
+    }
+
     /**
      * True when [p]'s stored source URL is the same file as [source] — however
      * either side spells it (refs/heads vs a plain branch, the jsDelivr mirror,
-     * %20 vs a space). Install, uninstall and the update check all key on the
-     * source URL, so they all have to agree on what "the same file" means.
+     * a github.com blob link, %20 vs a space). Install, uninstall and the
+     * update check all key on the source URL, so they all have to agree on what
+     * "the same file" means.
      */
     private fun sourceMatches(p: ProviderConfig, source: String): Boolean {
         val extra = p.extra ?: return false
-        if (!extra.startsWith("http")) return false
         val raw = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-        val wanted = SourceUrls.matchKeys(source)
-        return SourceUrls.matchKeys(raw).any { it in wanted }
+        return sourceKeyMatches(raw, source)
+    }
+
+    /**
+     * The providers an uninstall of [pluginUrl] may remove: the ones that came
+     * from THAT file. The exact-name match is tried first and, when it finds
+     * anything, nothing else is ever considered — the looser [SourceUrls.fileKey]
+     * fallback (which ignores the path, so a repo that MOVED a file is still
+     * recognised) is only used when the exact spelling matches nothing at all.
+     * Without that order a plugin URL that folds onto a coarser key could take
+     * the whole repo's worth of installed extensions with it — the reported
+     * "I uninstalled one extension and every installed one in that repo went".
+     */
+    private fun uninstallTargets(
+        all: List<ProviderConfig>,
+        pluginUrl: String,
+        matches: (ProviderConfig, String) -> Boolean,
+    ): List<ProviderConfig> {
+        val exactKey = SourceUrls.canonical(pluginUrl)
+        val exact = all.filter { p ->
+            matches(p, pluginUrl) &&
+                p.extra?.let { SourceUrls.canonical(it.substringBeforeLast('|')) == exactKey } == true
+        }
+        return exact.ifEmpty { all.filter { matches(it, pluginUrl) } }
     }
 
     suspend fun uninstallCs3Plugin(pluginUrl: String) {
-        val all = store.providers()
-        val paths = all.filter { sourceMatches(it, pluginUrl) }.map { it.url }.toSet()
-        // Locked read-modify-write: see [AppStore.updateProviders].
-        store.updateProviders { list -> list.filterNot { sourceMatches(it, pluginUrl) } }
+        val targets = uninstallTargets(store.providers(), pluginUrl) { p, s ->
+            p.type == ProviderType.CS3 && sourceMatches(p, s)
+        }
+        if (targets.isEmpty()) return
+        val ids = targets.map { it.id }.toSet()
+        val paths = targets.map { it.url }.toSet()
+        // Locked read-modify-write: see [AppStore.updateProviders]. Removes the
+        // ids resolved above and nothing else — re-running the predicate against
+        // the list at write time could match more than the file the user
+        // uninstalled.
+        store.updateProviders { list -> list.filterNot { it.id in ids } }
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {
@@ -1575,7 +1719,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             RepoKind.ANIYOMI -> "extension"
             RepoKind.CS3 -> "plugin"
         }
-        val pending = plugins.filter { it.url !in installedUrls }
+        val pending = plugins.filterNot { SourceUrls.anyKeyIn(it.url, installedUrls) }
         if (pending.isEmpty()) {
             val n = plugins.size
             setSuccess("All $n $unit${if (n == 1) "" else "s"} already installed")
@@ -1701,10 +1845,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun uninstallHikiPlugin(pluginUrl: String) {
         fun fromPlugin(p: ProviderConfig) =
             p.type == ProviderType.HIKARI && sourceMatches(p, pluginUrl)
-        val all = store.providers()
-        val paths = all.filter { fromPlugin(it) }.map { it.url }.toSet()
+        val targets = uninstallTargets(store.providers(), pluginUrl) { p, s -> fromPlugin(p) }
+        if (targets.isEmpty()) return
+        val ids = targets.map { it.id }.toSet()
+        val paths = targets.map { it.url }.toSet()
         // Locked read-modify-write: see [AppStore.updateProviders].
-        store.updateProviders { list -> list.filter { !fromPlugin(it) } }
+        store.updateProviders { list -> list.filterNot { it.id in ids } }
         manager.refresh()
         reloadInstalled()
         withContext(Dispatchers.IO) {
@@ -1738,6 +1884,15 @@ private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
 
 /** The file an Aniyomi extension repo publishes (a bare JSON array). */
 private const val ANIYOMI_INDEX = "index.min.json"
+
+/**
+ * How long ONE repo's manifest (and any sub-list it points at) may take before
+ * the row is marked failed instead of loading forever. Generous — a repo with a
+ * dozen pluginLists on slow mirrors needs a while — but bounded, because a repo
+ * that never answers used to hold its own row on "loading" and keep the
+ * Extensions search saying "Searching…" for as long as the screen was open.
+ */
+private const val REPO_LOAD_CEILING_MS = 75_000L
 
 @Composable
 fun ExtensionsScreen() {
@@ -1779,7 +1934,7 @@ fun ExtensionsScreen() {
     val outdatedItems = remember(outdated, pluginsByRepo, repos) {
         repos.flatMap { repo ->
             (pluginsByRepo[repo.url] ?: emptyList()).map { repo.kind to it }
-        }.filter { (_, p) -> p.url in outdated }
+        }.filter { (_, p) -> SourceUrls.anyKeyIn(p.url, outdated) }
     }
     val repoState by vm.repoState.collectAsState()
     val bundleRepos by vm.bundleRepos.collectAsState()
@@ -1791,9 +1946,18 @@ fun ExtensionsScreen() {
     var siteName by remember { mutableStateOf("") }
     var siteUrl by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
+    var addonInfoProvider by remember { mutableStateOf<ContentProvider?>(null) }
 
     fun openProviderSettings(p: ContentProvider) {
-        openProviderSettingsSafely(p, context, scope) { settingsProvider = p }
+        when (p.config.type) {
+            // An addon is a remote manifest, not a file: the nuvio settings
+            // dialog (which reads the provider FILE) answered "Provider file
+            // missing" over a healthy addon. Show what the addon is instead.
+            ProviderType.STREMIO -> addonInfoProvider = p
+            ProviderType.NUVIO -> settingsProvider = p
+            // CS3 plugins have their own settings screen; nothing else has one.
+            else -> openProviderSettingsSafely(p, context, scope) {}
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -2103,7 +2267,7 @@ fun ExtensionsScreen() {
         val isSky = repoDialogKind == RepoKind.SKYSTREAM
         val isAniyomi = repoDialogKind == RepoKind.ANIYOMI
         AlertDialog(
-            onDismissRequest = { if (!busy) showRepoDialog = false },
+            onDismissRequest = { showRepoDialog = false },
             title = {
                 Text(
                     when (repoDialogKind) {
@@ -2177,8 +2341,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = repoUrl.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showRepoDialog = false
                         vm.runTask(
                             "Fetching repo…",
                             {
@@ -2204,14 +2373,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showRepoDialog = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showRepoDialog = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showStremio) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showStremio = false },
+            onDismissRequest = { showStremio = false },
             title = { Text(tr("Add Stremio addon")) },
             text = {
                 Column {
@@ -2236,8 +2405,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = stremioUrl.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showStremio = false
                         vm.runTask(
                             "Fetching addon manifest…",
                             { vm.addStremio(stremioUrl) },
@@ -2251,14 +2425,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showStremio = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showStremio = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showScraper) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showScraper = false },
+            onDismissRequest = { showScraper = false },
             title = { Text(tr("Add universal scraper")) },
             text = {
                 Column {
@@ -2284,8 +2458,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = scraperJson.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showScraper = false
                         vm.runTask(
                             "Adding scraper…",
                             { vm.addUniversal(scraperJson) },
@@ -2299,14 +2478,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showScraper = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showScraper = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showCs3Url) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showCs3Url = false },
+            onDismissRequest = { showCs3Url = false },
             title = { Text(tr("Install .cs3 plugin")) },
             text = {
                 Column {
@@ -2331,8 +2510,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = cs3Url.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showCs3Url = false
                         vm.runInstall(
                             "Downloading and installing…",
                             onSuccess = {
@@ -2344,14 +2528,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showCs3Url = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showCs3Url = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showHikiUrl) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showHikiUrl = false },
+            onDismissRequest = { showHikiUrl = false },
             title = { Text(tr("Install .hiki extension")) },
             text = {
                 Column {
@@ -2383,8 +2567,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = hikiUrl.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showHikiUrl = false
                         vm.runInstall(
                             "Downloading and installing…",
                             onSuccess = {
@@ -2396,14 +2585,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showHikiUrl = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showHikiUrl = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showSkyUrl) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showSkyUrl = false },
+            onDismissRequest = { showSkyUrl = false },
             title = { Text(tr("Install .sky extension")) },
             text = {
                 Column {
@@ -2435,8 +2624,13 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = skyUrl.isNotBlank(),
                     onClick = {
+                        // Close at once: the task runs on the ViewModel scope
+                        // and reports on the screen, so nothing here waits for
+                        // a download (the old "disabled while busy" made Add,
+                        // Cancel and back all dead during a mass install).
+                        showSkyUrl = false
                         vm.runInstall(
                             "Downloading and installing…",
                             onSuccess = {
@@ -2448,14 +2642,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showSkyUrl = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showSkyUrl = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showAniyomiUrl) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showAniyomiUrl = false },
+            onDismissRequest = { showAniyomiUrl = false },
             title = { Text(tr("Install Aniyomi extension (.apk)")) },
             text = {
                 Column {
@@ -2493,8 +2687,9 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = aniyomiUrl.isNotBlank(),
                     onClick = {
+                        showAniyomiUrl = false
                         vm.runInstall(
                             "Downloading and installing…",
                             onSuccess = {
@@ -2506,14 +2701,14 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Install")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showAniyomiUrl = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showAniyomiUrl = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
     if (showSite) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showSite = false },
+            onDismissRequest = { showSite = false },
             title = { Text(tr("Add website")) },
             text = {
                 Column {
@@ -2552,8 +2747,9 @@ fun ExtensionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !busy,
+                    enabled = siteUrl.isNotBlank() || siteName.isNotBlank(),
                     onClick = {
+                        showSite = false
                         val clean = siteUrl.trim()
                         val withScheme = if (clean.startsWith("http://") || clean.startsWith("https://"))
                             clean
@@ -2577,15 +2773,22 @@ fun ExtensionsScreen() {
                 ) { Text(tr("Add")) }
             },
             dismissButton = {
-                TextButton(onClick = { if (!busy) showSite = false }) { Text(tr("Cancel")) }
+                TextButton(onClick = { showSite = false }) { Text(tr("Cancel")) }
             }
         )
     }
 
-    settingsProvider?.let { provider ->
+    settingsProvider?.takeIf { it.config.type == ProviderType.NUVIO }?.let { provider ->
         NuvioSettingsDialog(
             provider = provider,
             onDismiss = { settingsProvider = null },
+        )
+    }
+
+    addonInfoProvider?.let { provider ->
+        StremioAddonInfoDialog(
+            provider = provider,
+            onDismiss = { addonInfoProvider = null },
         )
     }
 }
@@ -3066,8 +3269,14 @@ private fun LazyListScope.extensionsSearchItems(
     // Repos we added but whose plugin list hasn't arrived yet (still loading, or
     // the fetch failed). Surfaced below so a search never silently hides the
     // installable entries of a repo that's slow/failing.
-    val pendingRepos = repos.filter { pluginsByRepo[it.url] == null }
-    val failedRepos = pendingRepos.filter { repoState[it.url]?.error != null }
+    val awaiting = repos.filter { pluginsByRepo[it.url] == null }
+    val failedRepos = awaiting.filter { repoState[it.url]?.error != null }
+    // "still loading" counts ONLY repos that have neither data nor an error: a
+    // repo whose fetch already failed was counted as loading too, so a search
+    // with one dead repo in the list sat on "Searching…" forever — the reported
+    // "stuck on searching extensions". A failed repo is reported as failed (its
+    // row with Retry, and the button below) and no longer pretends to be coming.
+    val pendingRepos = awaiting.filter { repoState[it.url]?.error == null }
     val stillLoading = pendingRepos.isNotEmpty()
 
     if (installedMatches.isEmpty() && pluginMatches.isEmpty()) {
@@ -3084,7 +3293,7 @@ private fun LazyListScope.extensionsSearchItems(
                 } else null
             )
         }
-        if (pendingRepos.isNotEmpty()) repoStatusItems(pendingRepos, repoState, onRefreshRepo)
+        if (awaiting.isNotEmpty()) repoStatusItems(awaiting, repoState, onRefreshRepo)
         return
     }
 
@@ -3129,12 +3338,12 @@ private fun LazyListScope.extensionsSearchItems(
                 }
                 PluginRow(
                     p = p,
-                    installed = p.url in installedUrls,
+                    installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                     onInstall = { onInstallPlugin(p, repo.kind) },
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
                     onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                         ?.let { target -> { onOpenSettings(target) } },
-                    updateAvailable = p.url in outdatedUrls,
+                    updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
                     onUpdate = { onUpdatePlugin(p, repo.kind) },
                     kind = repo.kind,
                     repoUrl = repo.url,
@@ -3143,7 +3352,7 @@ private fun LazyListScope.extensionsSearchItems(
         }
     }
 
-    if (pendingRepos.isNotEmpty()) repoStatusItems(pendingRepos, repoState, onRefreshRepo)
+    if (awaiting.isNotEmpty()) repoStatusItems(awaiting, repoState, onRefreshRepo)
 }
 
 /** Rows for repos whose plugin list isn't loaded yet — a spinner while it's on
@@ -3303,7 +3512,7 @@ private fun RepoPluginsView(
                 bottom = LocalTaskbarInset.current + 24.dp,
             )
         ) {
-            val uninstalled = plugins.count { it.url !in installedUrls }
+            val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) }
             if (plugins.isNotEmpty() && uninstalled > 0) {
                 item {
                     Button(
@@ -3367,12 +3576,12 @@ private fun RepoPluginsView(
                 else -> items(plugins, key = { it.url }) { p ->
                     PluginRow(
                         p = p,
-                        installed = p.url in installedUrls,
+                        installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                         onInstall = { onInstall(p) },
                         onUninstall = { onUninstall(p) },
                         onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                             ?.let { target -> { onOpenSettings(target) } },
-                        updateAvailable = p.url in outdatedUrls,
+                        updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
                         onUpdate = { onUpdate(p) },
                         kind = repo.kind,
                         repoUrl = repo.url,
@@ -3802,6 +4011,65 @@ private fun NuvioSettingsDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
         }
+    )
+}
+
+/**
+ * What a Stremio addon IS.
+ *
+ * The gear on an addon used to open [NuvioSettingsDialog], which reads the
+ * provider's FILE (`File(provider.config.url)`) — an addon is a remote manifest
+ * URL, so it read nothing and answered "Provider file missing — reinstall this
+ * extension" over a perfectly healthy addon (the reported gear-on-HdHub error).
+ * A Stremio addon has no settings to edit; it has a manifest URL and a list of
+ * what it can serve, so that is what this shows.
+ */
+@Composable
+private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
+    val id = provider.config.id
+    val summary = com.hikari.app.providers.StremioAddon.resourceSummary[id]
+    val streamOnly = com.hikari.app.providers.StremioAddon.streamOnlyAddons[id] == true
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(provider.config.name.ifBlank { tr("Stremio addon") }) },
+        text = {
+            Column {
+                Text(
+                    tr("Stremio addon"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    provider.config.url,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    tr(
+                        when {
+                            summary != null -> "What it provides: %s".replace("%s", summary)
+                            streamOnly -> "It has no catalog of its own — it adds playback servers to titles you open from any extension."
+                            else -> "It adds playback servers to titles you open anywhere in the app."
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    tr(
+                        "Addons have no settings of their own — use the switch to turn this one off " +
+                            "without uninstalling it."
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Close")) }
+        },
     )
 }
 
@@ -5029,14 +5297,14 @@ private fun InstalledExtensionsView(
                         p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
                         else -> null
                     },
-                    updateAvailable = providerSource(p) in outdatedUrls,
+                    updateAvailable = providerSource(p)?.let { SourceUrls.anyKeyIn(it, outdatedUrls) } == true,
                     onUpdate = { onUpdateProvider(p) },
                 )
             }
         }
     }
 
-    settingsProvider?.let { provider ->
+    settingsProvider?.takeIf { it.config.type == ProviderType.NUVIO }?.let { provider ->
         NuvioSettingsDialog(
             provider = provider,
             onDismiss = { settingsProvider = null },

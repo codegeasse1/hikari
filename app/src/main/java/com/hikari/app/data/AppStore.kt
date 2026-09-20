@@ -186,6 +186,9 @@ class AppStore(private val ctx: Context) {
          *  extension alone. */
         val SEARCH_EXCEPTION_ON = booleanPreferencesKey("searchExceptionOn")
         val SEARCH_EXCEPTION_IDS = stringSetPreferencesKey("searchExceptionIds")
+        /** ENTIRE ENGINES marked as exceptions, by [ProviderType] name
+         *  ("CS3", "HIKARI", …). See [searchExceptionTypesFlow]. */
+        val SEARCH_EXCEPTION_TYPES = stringSetPreferencesKey("searchExceptionTypes")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -719,17 +722,48 @@ class AppStore(private val ctx: Context) {
         write("SEARCH_EXCEPTION_IDS") { it[K.SEARCH_EXCEPTION_IDS] = ids.toSet() }
     }
 
-    /** The exception extensions that are actually IN FORCE: the chosen ids when
-     *  the switch is on, nothing when it is off. This is the single value the
-     *  search mirrors into [com.hikari.app.data.SearchScope.exceptions], so the
-     *  switch and the list can never disagree mid-lookup. */
+    /**
+     * WHOLE ENGINES marked as exceptions, by [ProviderType] name ("CS3",
+     * "HIKARI", "STREMIO", …).
+     *
+     * A user who wants "every CloudStream repo, always" should not have to tick
+     * a hundred and fifty rows — and, worse, a repo they install NEXT WEEK was
+     * not in the ticked list, so the choice silently went stale. An engine
+     * choice keeps applying to whatever of that engine is installed later, and
+     * several engines can be marked at once (CloudStream *and* Hikari), which
+     * the row-by-row picker could not express either.
+     */
+    fun searchExceptionTypesFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_EXCEPTION_TYPES] ?: emptySet() }
+
+    suspend fun searchExceptionTypes(): Set<String> = searchExceptionTypesFlow().first()
+
+    suspend fun setSearchExceptionTypes(types: kotlin.collections.Collection<String>) {
+        write("SEARCH_EXCEPTION_TYPES") { it[K.SEARCH_EXCEPTION_TYPES] = types.toSet() }
+    }
+
+    /**
+     * The exception extensions that are actually IN FORCE: the chosen ids, the
+     * extensions of every chosen ENGINE, or nothing when the switch is off. This
+     * is the single value the search mirrors into
+     * [com.hikari.app.data.SearchScope.exceptions], so the switch, the engine
+     * chips and the list can never disagree mid-lookup.
+     *
+     * Engine exceptions are resolved against the provider list HERE, on every
+     * emission, so an extension installed after the engine was marked is an
+     * exception from the moment it exists (no stale list of ids to maintain),
+     * and uninstalling one simply drops it.
+     */
     fun activeSearchExceptionsFlow(): Flow<Set<String>> =
         store.data.map { prefs ->
-            if (prefs[K.SEARCH_EXCEPTION_ON] == true) {
-                prefs[K.SEARCH_EXCEPTION_IDS] ?: emptySet()
-            } else {
-                emptySet()
-            }
+            if (prefs[K.SEARCH_EXCEPTION_ON] != true) return@map emptySet<String>()
+            val ids = prefs[K.SEARCH_EXCEPTION_IDS] ?: emptySet()
+            val types = prefs[K.SEARCH_EXCEPTION_TYPES] ?: emptySet()
+            if (types.isEmpty()) return@map ids
+            val byEngine = parseProviders(prefs[K.PROVIDERS])
+                .filter { it.type.name in types }
+                .map { it.id }
+            ids + byEngine
         }
 
     // ---- Bottom navigation bar layout ----

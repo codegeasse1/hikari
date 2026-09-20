@@ -28,6 +28,16 @@ object SourceUrls {
         "^https?://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/(.+)$",
         RegexOption.IGNORE_CASE,
     )
+    /** A github.com FILE link (`github.com/o/r/blob/<ref>/<path>`, `raw/…`,
+     *  `resolve/…`) — the web spelling of a raw file. It must be folded onto
+     *  its raw.githubusercontent.com form, NOT onto the repo root: collapsing
+     *  these to `github.com/o/r` gave every plugin of such a repo the SAME
+     *  identity, so uninstalling one extension removed the whole repo's worth
+     *  (and a re-added repo handed out Install buttons again). */
+    private val GH_FILE = Regex(
+        "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/(?:blob|raw|resolve)/(.+)$",
+        RegexOption.IGNORE_CASE,
+    )
     private val GH_WEB = Regex(
         "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/?.*$",
         RegexOption.IGNORE_CASE,
@@ -49,6 +59,10 @@ object SourceUrls {
                 "${m.groupValues[2].lowercase()}/${m.groupValues[3]}/${dropRefPrefix(m.groupValues[4])}"
         }
         RAW_GH.find(t)?.let { m ->
+            return "https://raw.githubusercontent.com/${m.groupValues[1].lowercase()}/" +
+                "${m.groupValues[2].lowercase()}/${dropRefPrefix(m.groupValues[3])}"
+        }
+        GH_FILE.find(t)?.let { m ->
             return "https://raw.githubusercontent.com/${m.groupValues[1].lowercase()}/" +
                 "${m.groupValues[2].lowercase()}/${dropRefPrefix(m.groupValues[3])}"
         }
@@ -90,6 +104,24 @@ object SourceUrls {
         if (c.isEmpty()) return emptyList()
         val canon = canonical(c)
         return listOfNotNull(c, canon.takeIf { it != c }, fileKey(c))
+    }
+
+    /**
+     * True when [raw] is one of the file URLs in [keys] — however either side
+     * spells it (refs/heads vs a plain branch, the jsDelivr mirror, a
+     * github.com blob link, %20 vs a space).
+     *
+     * The repo listing and the installed set disagree about spelling far more
+     * often than they used to: a repo rewrites its file URLs between builds
+     * (a new branch name, a different mirror), and a github.com blob link is
+     * now recognised as the file it points at. Every "is this installed?"
+     * test goes through this instead of a literal `url in installedUrls`,
+     * which showed an Install button for an extension that was already there.
+     */
+    fun anyKeyIn(raw: String, keys: Set<String>): Boolean {
+        if (raw.isBlank() || keys.isEmpty()) return false
+        if (raw in keys) return true
+        return matchKeys(raw).any { it in keys }
     }
 
     /** True when [raw] is served through the jsDelivr mirror rather than the
