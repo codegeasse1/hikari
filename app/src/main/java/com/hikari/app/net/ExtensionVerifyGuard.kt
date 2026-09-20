@@ -96,6 +96,57 @@ object ExtensionVerifyGuard {
     private val WEBVIEW_WORD =
         Regex("WEBVIEW|BYPASS|VERIFY|CHALLENGE|CAPTCHA|TURNSTILE|SOLVE", RegexOption.IGNORE_CASE)
 
+    /** The user's current choice, readable by the popup guard: [true] when an
+     *  extension's own verification pages are allowed through (Settings →
+     *  Sources & Extensions → "Open their verification pages"). */
+    val pagesAllowed: Boolean get() = allowed
+
+    /**
+     * Words that make a popup an EXTENSION puts on one of Hikari's screens its
+     * own verification screen or its funding screen — the two kinds of popup a
+     * user never asks for and never wants over a loading episode.
+     *
+     * This exists because forcing pref keys off ([apply], [forcesOff]) is not
+     * enough for every extension. Forcing a key can only work when the popup is
+     * gated by a preference at all, and several are not: Anichi (Phisher repo,
+     * `Anichi.cs3` — verified by reading its dex strings) ships
+     * `com.Anichi.AnichiTurnstileDialog`, a DialogFragment it shows by itself in
+     * the middle of resolving links, with the heading "Anichi Security Check",
+     * the line "Solve the security check if prompted. Dialog closes
+     * automatically once the episode loads.", and an injected
+     * `window.AnichiApiBridge` that reports `onSecurityCheckDetected` out of the
+     * page it loads. There is no key to force off — the dialog IS the flow.
+     * Hikari's rule stays what it always was: a challenge page opens only when
+     * the user taps the app's own verify (globe) button.
+     *
+     * Matched against the popup's CLASS NAME *and* its fragment TAG, because a
+     * plugin that obfuscates its classes still names the tag it shows them with
+     * (Anichi's own tag is `anichi_turnstile`).
+     *
+     * Nothing here matches a plugin's settings sheet: those are named after the
+     * plugin (`com.cncverse.Settings`, SK Tech's sub-provider picker, …), which
+     * is exactly why the close-button/scroll fix in MainActivity keeps working.
+     */
+    private val POPUP_BLOCK_WORDS = Regex(
+        "TURNSTILE|CLOUDFLARE|CAPTCHA|CHALLENGE|VERIF|SOLVER|SECURITY" +
+            "|DONATION|DONATE|PROMO|FUNDING|SUPPORT_US|MEMBERSHIP",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * True when a popup an extension opened on its own has to be closed the
+     * moment it appears: a verification screen (Turnstile / Cloudflare / captcha
+     * / "security check" dance) or a funding/donation screen. False while the
+     * user has allowed extensions' verification pages through — that switch is
+     * the one escape hatch for an extension that only works via its own bypass
+     * screen.
+     */
+    fun blocksPopup(className: String?, tag: String?): Boolean {
+        if (allowed) return false
+        return POPUP_BLOCK_WORDS.containsMatchIn(className.orEmpty()) ||
+            POPUP_BLOCK_WORDS.containsMatchIn(tag.orEmpty())
+    }
+
     /** True for a key [apply] would force off (the same rule [discoveredToggles]
      *  uses), so a key that doesn't exist in any file yet is covered too. */
     private fun looksLikeVerifyToggle(key: String): Boolean =

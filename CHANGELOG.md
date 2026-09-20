@@ -1,3 +1,13 @@
+## 0.9.8
+
+Playback is silent the moment you leave the player, and no extension can open a Cloudflare/Turnstile verification page over the app on its own.
+
+### Fixed
+
+- **The video's sound kept playing for a second or two after Back.** Leaving the player called `finish()` and nothing else — the ExoPlayer was only released in `onDestroy`, which lands after the back animation and after the detail screen has resumed, so the audio kept coming out of the speaker over the screen behind it. The player is now silenced on the way out: the Back button pauses and mutes before it finishes, and `onPause` does the same for every other way the activity can end (the system back gesture, a closed PiP window, the failure/downgrade paths that call `finish()`). Backgrounding the app with the Home button is unchanged — PiP and background audio still work.
+
+- **An extension's own \"Security Check\" page opened by itself over a loading episode.** Some extensions don't ask, and don't have a switch to ask with: Anichi (Phisher repo, `Anichi.cs3` — checked by reading its dex strings) ships `AnichiTurnstileDialog`, a dialog it shows on its own in the middle of resolving links, headed **\"Anichi Security Check\"** with the line *\"Solve the security check if prompted. Dialog closes automatically once the episode loads.\"*, plus an injected `window.AnichiApiBridge` that reports the challenge it finds in the page. Its funding dialog (`DonationDialogFragment`) rides the same path. Forcing extension preference keys off could never stop these — the dialog *is* the flow, with no key to force. Hikari now closes such a popup the moment it reaches one of its own screens: a fragment from a plugin's class loader whose class name or show tag names a verification/Turnstile/Cloudflare/captcha dance (or a donation/funding screen) is dismissed before it can draw, and the reason is written to the app log. A plugin's own settings sheet never matches, so those are untouched. Settings → Sources & Extensions → \"Open their verification pages\" remains the way to let an extension through when a source only works via its own bypass screen.
+
 ## 0.9.7
 
 Episodes show up right away, the score strip and the Related row load beside them instead of after them, and the funding cards some repos bolt onto their pages are gone.

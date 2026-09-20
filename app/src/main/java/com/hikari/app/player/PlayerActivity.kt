@@ -892,7 +892,11 @@ class PlayerActivity : ComponentActivity() {
         }
         subtitle.visibility = if (subtitle.text.isBlank()) View.GONE else View.VISIBLE
 
-        findViewById<View>(R.id.back_btn).setOnClickListener { finish() }
+        findViewById<View>(R.id.back_btn).setOnClickListener {
+            // Silence first, then leave: see silencePlaybackForExit.
+            silencePlaybackForExit()
+            finish()
+        }
 
         loadingBanner = findViewById(R.id.loading_banner)
         loadingSpinner = findViewById(R.id.loading_spinner)
@@ -8345,6 +8349,34 @@ class PlayerActivity : ComponentActivity() {
         // The CloudStream Torrent engine resolves its cache dir from the
         // activity reference (throws "No activity" otherwise).
         com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
+    }
+
+    /**
+     * Silences playback the instant the player is left.
+     *
+     * Back (the button and the system gesture), the failure/downgrade paths and
+     * a closed PiP window all end in `finish()`, and the player was only ever
+     * released in [onDestroy] — which lands AFTER the back animation and after
+     * the detail screen has resumed, so the video's audio kept coming out of the
+     * speaker for a second or two over the screen behind it (the reported "the
+     * sound still comes for 1-2 seconds after I press back"). Pausing here stops
+     * the decoder immediately, and zeroing the volume covers whatever is already
+     * buffered between the tap and the pause taking effect.
+     *
+     * Deliberately NOT called when the app is merely backgrounded: PiP and
+     * background audio are features of this player (see [onUserLeaveHint] and
+     * the C.WAKE_MODE_NETWORK above), so only a finishing activity is silenced.
+     */
+    private fun silencePlaybackForExit() {
+        val p = player ?: return
+        runCatching { p.volume = 0f }
+        runCatching { p.playWhenReady = false }
+        runCatching { p.pause() }
+    }
+
+    override fun onPause() {
+        if (isFinishing) silencePlaybackForExit()
+        super.onPause()
     }
 
     override fun onStop() {

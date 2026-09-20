@@ -87,10 +87,24 @@ class MainActivity : AppCompatActivity() {
         // next to the plugin's own Save button (see addSettingsCloseButton).
         supportFragmentManager.registerFragmentLifecycleCallbacks(
             object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
+                override fun onFragmentCreated(
+                    fm: androidx.fragment.app.FragmentManager,
+                    f: androidx.fragment.app.Fragment,
+                    savedInstanceState: android.os.Bundle?,
+                ) {
+                    // Dismissed BEFORE the dialog is built, so a verification
+                    // page an extension opens by itself never gets a frame on
+                    // screen (see dismissExtensionPopup).
+                    dismissExtensionPopup(f)
+                }
+
                 override fun onFragmentStarted(
                     fm: androidx.fragment.app.FragmentManager,
                     f: androidx.fragment.app.Fragment,
                 ) {
+                    // Second net: a popup that was already showing when this
+                    // activity started is closed here.
+                    dismissExtensionPopup(f)
                     fixPluginSheetScrolling(f)
                 }
             },
@@ -432,6 +446,41 @@ class MainActivity : AppCompatActivity() {
      * plugin-supplied sheets are touched — their classes are loaded by the
      * plugin's own PathClassLoader, never this activity's.
      */
+    /**
+     * Closes an extension's own popup the moment it appears.
+     *
+     * Hikari's rule is that a Cloudflare/Turnstile verification page opens only
+     * when the user taps the app's own verify (globe) button. Extensions cannot
+     * be made to follow that rule by their preferences alone (see
+     * [com.hikari.app.net.ExtensionVerifyGuard.blocksPopup] for the disassembled
+     * proof — Anichi ships `AnichiTurnstileDialog` and shows it by itself while
+     * it resolves links), so this is the enforcement point: every fragment that
+     * reaches this activity is offered to the guard, and one that looks like an
+     * extension's verification or funding screen is dismissed before it can
+     * draw.
+     *
+     * A fragment from another class loader is an extension's (our own screens
+     * are compiled into this APK) — the same test [fixPluginSheetScrolling]
+     * uses. A plugin's settings sheet never matches, so that fix is unaffected.
+     */
+    private fun dismissExtensionPopup(fragment: androidx.fragment.app.Fragment) {
+        if (fragment.javaClass.classLoader === javaClass.classLoader) return
+        val popup = fragment as? androidx.fragment.app.DialogFragment ?: return
+        if (!com.hikari.app.net.ExtensionVerifyGuard.blocksPopup(
+                fragment.javaClass.name,
+                fragment.tag,
+            )
+        ) {
+            return
+        }
+        com.hikari.app.data.Logs.log(
+            "Extensions",
+            "closed a popup an extension opened on its own: " +
+                fragment.javaClass.name + " (tag=" + fragment.tag + ")",
+        )
+        runCatching { popup.dismissAllowingStateLoss() }
+    }
+
     private fun fixPluginSheetScrolling(fragment: androidx.fragment.app.Fragment) {
         val dialog = (fragment as? androidx.fragment.app.DialogFragment)?.dialog ?: return
         if (fragment.javaClass.classLoader === javaClass.classLoader) return
