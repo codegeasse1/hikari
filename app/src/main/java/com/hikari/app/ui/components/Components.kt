@@ -129,17 +129,27 @@ fun MediaRow(
                 }
             }
         }
+        // The style is read ONCE for the row and handed to every cell. Read per
+        // cell it opened one DataStore collection per poster on screen, so a
+        // Home feed with three rows of twelve visible cards had ~36 live
+        // subscriptions to the same preferences, all re-mapping on every
+        // settings write and all allocating inside the scroll path. One read per
+        // row is the same look with a fraction of the work.
+        val style = rememberPosterStyle()
+        // A row's items come from an extension, and an extension is free to
+        // list the same title twice (or to hand back two entries that share an
+        // id). Compose does not warn about a duplicated key — it throws, taking
+        // the whole screen with it — so the key is the item's own identity, with
+        // literal repeats dropped before they are drawn. Deduped ONCE per row
+        // rather than on every recomposition of it (a row recomposes on every
+        // scroll step): this is a fresh list otherwise.
+        val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // A row's items come from an extension, and an extension is free to
-            // list the same title twice (or to hand back two entries that share
-            // an id). Compose does not warn about a duplicated key — it throws,
-            // taking the whole screen with it — so the key is the item's own
-            // identity, with literal repeats dropped before they are drawn.
-            items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
-                PosterCard(item, onClick = { onClick(item) })
+            items(uniqueItems, key = { it.uniqueId }) { item ->
+                PosterCard(item, style, onClick = { onClick(item) })
             }
         }
     }
@@ -247,8 +257,11 @@ fun HeroArtwork(
 }
 
 @Composable
-fun PosterCard(item: MediaItem, onClick: () -> Unit) {
-    val style = rememberPosterStyle()
+fun PosterCard(
+    item: MediaItem,
+    style: PosterStyle,
+    onClick: () -> Unit,
+) {
     // With the score badge switched on this warms the ratings cache for the
     // title and repaints the cell when the answer lands (see
     // rememberPosterScore). Off, it costs nothing at all.

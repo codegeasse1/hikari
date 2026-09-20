@@ -549,11 +549,12 @@ class PlayerActivity : ComponentActivity() {
      *  [com.hikari.app.ui.LoadingStyles]. */
     private var loadingStyle = com.hikari.app.ui.LoadingStyles.CINEMATIC
 
-    /** Which treatment is drawn over that cover (Settings → App Layout →
-     *  Loading screen → Effect) — one of
+    /** Which treatments are drawn over that cover (Settings → App Layout →
+     *  Loading screen → Effect) — a set of
      *  [com.hikari.app.ui.LoadingEffects], handed over by the detail screen so
-     *  the two covers stay identical through the hand-off. */
-    private var loadingEffect = com.hikari.app.ui.LoadingEffects.NONE
+     *  the two covers stay identical through the hand-off. More than one can be
+     *  on at once; the extra carries them as a comma-joined list. */
+    private var loadingEffects: Set<String> = emptySet()
 
     private var speedIndex = 2
 
@@ -898,10 +899,11 @@ class PlayerActivity : ComponentActivity() {
         loadingStyle = com.hikari.app.ui.LoadingStyles.normalize(
             intent.getStringExtra("loadingStyle")
         )
-        // The treatment over that card — same hand-off, same look (see
-        // [com.hikari.app.ui.LoadingEffects]). Falls back to the default when an
-        // older screen launched this player without the extra.
-        loadingEffect = com.hikari.app.ui.LoadingEffects.normalize(
+        // The treatments over that card — same hand-off, same look (see
+        // [com.hikari.app.ui.LoadingEffects]). Several can be on at once, so the
+        // extra is a comma-joined list; a single key from an older screen, or no
+        // extra at all, is read the same way.
+        loadingEffects = com.hikari.app.ui.LoadingEffects.parse(
             intent.getStringExtra("loadingEffect")
         )
         // A Download tap from outside the player opens the server chooser first
@@ -7362,24 +7364,26 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        // ---- The loading EFFECT (Settings → App Layout → Loading screen →
+        // ---- The loading EFFECTs (Settings → App Layout → Loading screen →
         // Effect) ----
         //
         // Drawn over whichever style was chosen, so all four styles offer the
         // same treatments (see [com.hikari.app.ui.LoadingEffects]). Applied here
-        // rather than inside the style branches above: the effect is independent
-        // of the style by design ("Minimal + gallery frame" is one setting each).
-        val effect = com.hikari.app.ui.LoadingEffects.normalize(loadingEffect)
+        // rather than inside the style branches above: the treatments are
+        // independent of the style by design ("Minimal + gallery frame" is one
+        // setting each), and MORE THAN ONE can be on at once — each is its own
+        // view, so a sheen and an aura ring simply both show.
+        val effects = com.hikari.app.ui.LoadingEffects.normalizeSet(loadingEffects)
         loadingEffectRing?.visibility =
-            if (effect == com.hikari.app.ui.LoadingEffects.AURA) View.VISIBLE else View.GONE
+            if (com.hikari.app.ui.LoadingEffects.AURA in effects) View.VISIBLE else View.GONE
         loadingEffectSheen?.visibility =
-            if (effect == com.hikari.app.ui.LoadingEffects.SHEEN) View.VISIBLE else View.GONE
+            if (com.hikari.app.ui.LoadingEffects.SHEEN in effects) View.VISIBLE else View.GONE
         loadingEffectFrame?.visibility =
-            if (effect == com.hikari.app.ui.LoadingEffects.FRAME) View.VISIBLE else View.GONE
+            if (com.hikari.app.ui.LoadingEffects.FRAME in effects) View.VISIBLE else View.GONE
         // The accent bloom behind the title is drawn for two reasons — the
-        // SPOTLIGHT style (above) and the "Accent glow" effect — so an effect
-        // can only ever switch it ON, never off.
-        if (com.hikari.app.ui.LoadingEffects.usesGlow(effect)) {
+        // SPOTLIGHT style (above) and the "Accent glow" treatment — so a
+        // treatment can only ever switch it ON, never off.
+        if (com.hikari.app.ui.LoadingEffects.usesGlow(effects)) {
             loadingGlow?.visibility = View.VISIBLE
         }
 
@@ -7473,13 +7477,14 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        // AURA: the ring breathes — brighter and a little larger, then back.
+        // AURA: the ring around the card breathes — brighter, then back. Only
+        // the ALPHA moves: the ring wraps the title card (see
+        // activity_player.xml), so scaling it would pull it off the card's own
+        // edges, which is the whole thing the ring is for.
         val auraRing = loadingEffectRing?.takeIf { it.visibility == View.VISIBLE }?.let { v ->
             ObjectAnimator.ofPropertyValuesHolder(
                 v,
                 PropertyValuesHolder.ofFloat(View.ALPHA, 0.35f, 1f, 0.35f),
-                PropertyValuesHolder.ofFloat(View.SCALE_X, 0.92f, 1.06f, 0.92f),
-                PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.92f, 1.06f, 0.92f),
             ).apply {
                 duration = 3400L
                 interpolator = android.view.animation.AccelerateDecelerateInterpolator()

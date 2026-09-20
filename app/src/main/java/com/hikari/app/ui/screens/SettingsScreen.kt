@@ -152,6 +152,7 @@ import com.hikari.app.ui.components.ChoiceRow
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.HeroStyles
+import com.hikari.app.ui.components.MultiChoiceDialog
 import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.LanguageManager
@@ -1507,9 +1508,14 @@ private fun PosterStyleCard(app: HikariApp) {
     val ratings by ratingsFlow.collectAsState(initial = false)
     val glassFlow = remember { app.store.posterGlassFlow() }
     val glass by glassFlow.collectAsState(initial = true)
-    val effectFlow = remember { app.store.posterEffectFlow() }
-    val effect by effectFlow.collectAsState(initial = PosterEffects.NONE)
+    val effectsFlow = remember { app.store.posterEffectsFlow() }
+    val effects by effectsFlow.collectAsState(initial = emptySet())
     var effectPicker by remember { mutableStateOf(false) }
+    // The chosen treatments, translated PART BY PART (a combination read back as
+    // one English sentence could not be translated).
+    val effectNames = PosterEffects.ALL
+        .filter { it != PosterEffects.NONE && it in effects }
+        .map { tr(PosterEffects.label(it)) }
 
     var blurSlider by remember { mutableStateOf(blur.toFloat()) }
     var cornerSlider by remember { mutableStateOf(corner.toFloat()) }
@@ -1524,12 +1530,24 @@ private fun PosterStyleCard(app: HikariApp) {
             " · " + tr("Corners") + " " + corner,
     ) {
         // The motion/decoration layer: static looks (a glow, a spotlight, a
-        // framed print) and the animated ones (the light sweep, the breathing
-        // aura). Off by default — the animation costs a frame callback per
-        // poster, so it stays a choice rather than a default.
+        // framed print, a 3D lean) and the animated ones (the light sweep, the
+        // breathing aura). Any combination of them can be on at once — several
+        // is how the reference look is actually built (a gallery frame WITH a
+        // sheen, a 3D lean WITH an aura ring).
         ChoiceRow(
-            value = tr(PosterEffects.label(effect)),
-            supporting = tr(PosterEffects.description(effect)),
+            value = if (effectNames.isEmpty()) {
+                tr(PosterEffects.label(PosterEffects.NONE))
+            } else {
+                effectNames.joinToString(" + ")
+            },
+            supporting = if (effectNames.isEmpty()) {
+                tr(PosterEffects.description(PosterEffects.NONE))
+            } else if (effectNames.size == 1) {
+                tr(PosterEffects.description(effects.first()))
+            } else {
+                tr(PosterEffects.description(effects.first())) + " · +" +
+                    (effectNames.size - 1).toString() + " " + tr("more")
+            },
             leadingIcon = Icons.Filled.AutoAwesome,
             onClick = { effectPicker = true },
         )
@@ -1586,17 +1604,23 @@ private fun PosterStyleCard(app: HikariApp) {
     }
 
     if (effectPicker) {
-        ChoiceDialog(
-            title = tr("Poster effect"),
+        MultiChoiceDialog(
+            title = tr("Poster effects"),
             items = PosterEffects.ALL.map {
                 ChoiceItem(it, tr(PosterEffects.label(it)), tr(PosterEffects.description(it)))
             },
-            selectedKey = effect,
-            onPick = { pick ->
-                effectPicker = false
-                scope.launch { runCatching { app.store.setPosterEffect(pick) } }
+            selectedKeys = effects,
+            onToggle = { pick ->
+                val next: Set<String> = if (pick == PosterEffects.NONE) {
+                    emptySet()
+                } else {
+                    effects.toMutableSet().apply { if (!add(pick)) remove(pick) }
+                }
+                scope.launch { runCatching { app.store.setPosterEffects(next) } }
             },
             onDismiss = { effectPicker = false },
+            footnote = "Tick as many as you like. They are drawn together on every poster, " +
+                "and \"None\" clears them all.",
         )
     }
 }
@@ -2518,15 +2542,34 @@ private fun PlaybackStartCard(app: HikariApp) {
  * may well prefer: a definite source, no minute-long cross-search, no servers
  * from repos they did not ask.
  *
+ * "Exception extensions" sits between the two: with "search all" off, the repos
+ * picked here are STILL asked for every title played anywhere else, so a couple
+ * of favourite repos stay in play without turning the whole cross-search back on.
+ * The one rule that goes with it — a title opened FROM an exception repo plays
+ * from that repo alone — is spelled out in the two lines under the picker and
+ * implemented in [com.hikari.app.data.SearchScope].
+ *
  * This is not only the cross pass: the background sweep and the "borrow another
  * site's episode list" fallback are part of the same behaviour and are switched
- * off with it (see [com.hikari.app.data.SearchScope]).
+ * off with it — except for the exception repos, which are part of both.
  */
 @Composable
 private fun ServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.searchAllExtensionsFlow() }
     val all by flow.collectAsState(initial = true)
+    val exceptionOnFlow = remember { app.store.searchExceptionOnFlow() }
+    val exceptionOn by exceptionOnFlow.collectAsState(initial = false)
+    val exceptionIdsFlow = remember { app.store.searchExceptionIdsFlow() }
+    val exceptionIds by exceptionIdsFlow.collectAsState(initial = emptySet())
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    // Every installed extension, so the picker can list them (and search them by
+    // name or engine). Read live: an install/uninstall while Settings is open is
+    // reflected without a reload.
+    val installed by app.providers.providers.collectAsState()
+    val installedEnabled = installed.filter { it.config.enabled }
+    val chosenHere = installedEnabled.filter { it.config.id in exceptionIds }
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Extension, tr("Server search"))
@@ -2561,11 +2604,97 @@ private fun ServerSearchCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(14.dp))
+
+        // ---- Exception extensions ----
+        // The middle ground between the two models above: keep "only this
+        // extension" on almost everywhere, but name a couple of repos that are
+        // always asked. See com.hikari.app.data.SearchScope for the pass this
+        // drives.
+        SettingsToggle(
+            label = tr("Exception extensions"),
+            supporting = tr("These repos are always searched, whichever extension you opened"),
+            checked = exceptionOn,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setSearchExceptionOn(on) } }
+            },
+        )
+        if (exceptionOn) {
+            Spacer(Modifier.height(10.dp))
+            ChoiceRow(
+                value = when {
+                    chosenHere.isEmpty() -> tr("Choose extensions")
+                    chosenHere.size == 1 -> chosenHere.first().config.name.ifBlank {
+                        chosenHere.first().config.id
+                    }
+                    else -> chosenHere.size.toString() + " " + tr("extensions chosen")
+                },
+                supporting = if (chosenHere.isEmpty()) {
+                    tr("Tap to pick one or more, or search the list")
+                } else {
+                    chosenHere.joinToString(" · ") { it.config.name.ifBlank { it.config.id } }
+                },
+                leadingIcon = Icons.Filled.Extension,
+                onClick = { pickerOpen = true },
+            )
+            Spacer(Modifier.height(8.dp))
+            // The two lines the user asked for: what the setting does, in the
+            // order it happens.
+            Text(
+                tr(
+                    "Any title you play from another extension is also searched through the repos " +
+                        "you pick here — even with the switch above off — and their servers join " +
+                        "the same list."
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                tr(
+                    "A title you open INSIDE one of those repos plays from that repo alone: it is " +
+                        "never mixed with anything else."
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Spacer(Modifier.height(6.dp))
         Text(
             tr("Applies from the next search you start."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (pickerOpen) {
+        MultiChoiceDialog(
+            title = tr("Exception extensions"),
+            items = installedEnabled
+                .sortedWith(
+                    compareBy(
+                        { it.config.name.ifBlank { it.config.id }.lowercase() },
+                        { it.config.id },
+                    )
+                )
+                .map {
+                    ChoiceItem(
+                        key = it.config.id,
+                        label = it.config.name.ifBlank { it.config.id },
+                        supporting = it.config.type.groupLabel,
+                    )
+                },
+            selectedKeys = exceptionIds,
+            onToggle = { id ->
+                val next = exceptionIds.toMutableSet().apply { if (!add(id)) remove(id) }
+                scope.launch { runCatching { app.store.setSearchExceptionIds(next) } }
+            },
+            onDismiss = { pickerOpen = false },
+            searchable = true,
+            searchPlaceholder = "Search extensions",
+            footnote = "Search by repo name or engine, then tick the extensions to add. " +
+                "They are always searched for titles you open elsewhere, and never " +
+                "searched sideways when you are inside them.",
         )
     }
 }
@@ -2575,11 +2704,16 @@ private fun LoadingBannerCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(true) }
     val styleFlow = remember { app.store.loadingStyleFlow() }
-    val style by styleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
-    val effectFlow = remember { app.store.loadingEffectFlow() }
-    val effect by effectFlow.collectAsState(initial = LoadingEffects.NONE)
+    val style by styleFlow.collectAsState(initial = LoadingStyles.POSTER)
+    val effectsFlow = remember { app.store.loadingEffectsFlow() }
+    val effects by effectsFlow.collectAsState(initial = setOf(LoadingEffects.SHEEN))
     var pickerOpen by remember { mutableStateOf(false) }
     var effectPickerOpen by remember { mutableStateOf(false) }
+    // Translated one treatment at a time — a combination read back as one
+    // English sentence could not be translated (see PosterStyleCard).
+    val effectNames = LoadingEffects.ALL
+        .filter { it != LoadingEffects.NONE && it in effects }
+        .map { tr(LoadingEffects.label(it)) }
 
     LaunchedEffect(Unit) {
         enabled = app.store.showLoadingBanner()
@@ -2610,13 +2744,25 @@ private fun LoadingBannerCard(app: HikariApp) {
                 onClick = { pickerOpen = true },
             )
             Spacer(Modifier.height(10.dp))
-            // The signature treatment over that card: the loading screen's half
+            // The signature treatments over that card: the loading screen's half
             // of Poster styling's effects (sheen, aura ring, gallery frame,
             // accent glow). Works with every style, so the quietest card can
-            // wear the same kind of detail a poster card does.
+            // wear the same kind of detail a poster card does — and any
+            // combination of them can be on at once.
             ChoiceRow(
-                value = tr(LoadingEffects.label(effect)),
-                supporting = tr(LoadingEffects.description(effect)),
+                value = if (effectNames.isEmpty()) {
+                    tr(LoadingEffects.label(LoadingEffects.NONE))
+                } else {
+                    effectNames.joinToString(" + ")
+                },
+                supporting = if (effectNames.isEmpty()) {
+                    tr(LoadingEffects.description(LoadingEffects.NONE))
+                } else if (effectNames.size == 1) {
+                    tr(LoadingEffects.description(effects.first()))
+                } else {
+                    tr(LoadingEffects.description(effects.first())) + " · +" +
+                        (effectNames.size - 1).toString() + " " + tr("more")
+                },
                 leadingIcon = Icons.Filled.AutoAwesome,
                 onClick = { effectPickerOpen = true },
             )
@@ -2645,17 +2791,23 @@ private fun LoadingBannerCard(app: HikariApp) {
     }
 
     if (effectPickerOpen) {
-        ChoiceDialog(
-            title = tr("Loading effect"),
+        MultiChoiceDialog(
+            title = tr("Loading effects"),
             items = LoadingEffects.ALL.map {
                 ChoiceItem(it, tr(LoadingEffects.label(it)), tr(LoadingEffects.description(it)))
             },
-            selectedKey = effect,
-            onPick = { pick ->
-                effectPickerOpen = false
-                scope.launch { runCatching { app.store.setLoadingEffect(pick) } }
+            selectedKeys = effects,
+            onToggle = { pick ->
+                val next: Set<String> = if (pick == LoadingEffects.NONE) {
+                    emptySet()
+                } else {
+                    effects.toMutableSet().apply { if (!add(pick)) remove(pick) }
+                }
+                scope.launch { runCatching { app.store.setLoadingEffects(next) } }
             },
             onDismiss = { effectPickerOpen = false },
+            footnote = "Tick as many as you like — a sheen AND an aura ring is one choice, " +
+                "and \"None\" clears them all.",
         )
     }
 }

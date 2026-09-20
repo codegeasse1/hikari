@@ -17,6 +17,8 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
    addons, no nuvio engines, no cross pass, no sweep, and no episode list
    borrowed from another site. The switch is read once at the top of
    `streamsForInner` into a local, so one lookup can never be half-scoped.
+   **Exception extensions** (`SearchScope.exceptions`) are the one thing that
+   widens that, and they carry a rule of their own — see invariant 6.
 2. **Same-engine family** — the other repos of the origin's own engine, queued
    first in the cross pass.
 3. **Cross pass** — every other installed extension asked *by title*:
@@ -170,3 +172,35 @@ results are never filtered):
 `matchCrossEpisode` then maps the played episode onto the repo's own numbering
 (same season/number, single-season repos, season-by-position, flat numbering, and
 finally the number written in the row's own name).
+
+### 6. An exception extension is one-directional
+
+The user's report: *"if i select mrds and 51cg server, so now if i am on 1show
+server and play video it search all server also mrds and 51cg, but if i open mrds
+or cg51 extension and trying to play video from these extension it wont search any
+other extension for server and only play with its own server."*
+
+- **In force only when the switch is on.** `SearchScope.exceptions` is the CHOSEN
+  ids while "Exception extensions" is on and the EMPTY SET while it is off
+  (`AppStore.activeSearchExceptionsFlow` is the one place that combines the two,
+  and HikariApp mirrors it), so the switch and the list can never disagree
+  mid-lookup.
+- **Origin is the exception's own repo ⇒ the pass collapses to "only this
+  extension".** `originIsException` in `streamsForInner` forces `scopeAll = false`
+  and clears `exceptions` for that lookups, whatever the two switches say. This is
+  the second half of the report and it is deliberate: a repo the user marked keeps
+  its own catalogue to itself.
+- **Everywhere else they are ADDED, never a replacement.** With `scopeAll` false
+  but exceptions present, the pass asks the origin (as always) plus the exception
+  repos: nuvio exception ids go through the nuvio (by-TMDB-id) path, and every
+  other engine's exception id goes through `crossExtensionTargets(…, onlyIds =
+  exceptions)` — so the same title-search, trust order, filters and tally apply,
+  over the marked ids instead of over everything.
+- **The episode-list fallback follows the same rule**: `episodesFromExtensions`
+  may borrow from exception repos when the switch is off, and returns null (as
+  before) when there are none. A lookup started inside an exception repo still
+  never reaches it.
+- **Anything that says how wide the search is must count them** — the detail
+  screen's status line ("Searching your extension + N more…") and the "no
+  playable server" note (which may only claim a single-repo verdict when there are
+  no exceptions in play).

@@ -58,6 +58,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
@@ -236,6 +237,14 @@ fun CatalogScreen(
                 )
             }
         } else {
+            // Extension catalogs repeat themselves (a scraped page can list the
+            // same title twice): keying on the identity WITHOUT dropping repeats
+            // crashes the screen, because Compose throws on a duplicated key.
+            // Deduped and styled once for the whole grid rather than once per
+            // cell — a cell doing its own read opened one DataStore collection
+            // per poster on screen (see MediaRow).
+            val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
+            val style = rememberPosterStyle()
             LazyVerticalGrid(
                 // Same small-tile, clearly-gapped look as the search results
                 // grid: smaller posters than before, each in its own cell with
@@ -248,12 +257,8 @@ fun CatalogScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // Extension catalogs repeat themselves (a scraped page can list
-                // the same title twice): keying on the identity WITHOUT dropping
-                // repeats crashes the screen, because Compose throws on a
-                // duplicated key.
-                items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
-                    CatalogCard(item) {
+                items(uniqueItems, key = { it.uniqueId }) { item ->
+                    CatalogCard(item, style) {
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(
@@ -286,8 +291,7 @@ fun CatalogScreen(
 }
 
 @Composable
-private fun CatalogCard(item: MediaItem, onClick: () -> Unit) {
-    val style = rememberPosterStyle()
+private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
     // The score badge, when Settings → App Layout has it on: warm the ratings
     // cache for this title and print whatever is known (see
     // rememberPosterScore). Null when the switch is off, so an old device that

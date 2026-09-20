@@ -55,80 +55,96 @@
             android:background="@drawable/player_banner_glow"
             android:visibility="gone" />
 
-        <!-- Loading EFFECT "Aura ring" (Settings → App Layout → Loading screen
-             → Effect): a ring of accent light behind the title. GONE unless
-             that effect is chosen. Declared here, before the title block, so the
-             name is drawn ON TOP of the ring rather than under its stroke. -->
-        <View
-            android:id="@+id/loading_effect_ring"
-            android:layout_width="300dp"
-            android:layout_height="300dp"
-            android:layout_gravity="center"
-            android:background="@drawable/player_banner_effect_ring"
-            android:visibility="gone" />
+        <!-- The title block, wrapped in the "Aura ring" treatment (Settings → App
+             Layout → Loading screen → Effect). The ring is a ROUNDED RECTANGLE
+             hugging the card, exactly like the ring a poster card wears — it
+             used to be a fixed 300dp CIRCLE, which crossed a rectangular card at
+             four points and read as a stray outline rather than as the card's
+             aura.
 
-        <LinearLayout
-            android:id="@+id/loading_title_box"
+             The wrapper is what makes it hug: the ring view matches the frame's
+             own size, and the frame is sized by the title block inside it, so
+             the ring fits the poster card, the big Cinematic title or the small
+             Minimal one without a single measurement in code. The frame is
+             always laid out (it is the title's parent); only the ring itself is
+             toggled. -->
+        <FrameLayout
+            android:id="@+id/loading_ring_frame"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:paddingStart="28dp"
-            android:paddingEnd="28dp">
+            android:padding="18dp">
 
-            <!-- POSTER style only: the title's own poster on a glass card, so a
-                 portrait poster is shown whole rather than cropped into a
-                 backdrop. GONE for the other styles. -->
-            <ImageView
-                android:id="@+id/loading_card_poster"
-                android:layout_width="120dp"
-                android:layout_height="180dp"
-                android:layout_marginBottom="16dp"
-                android:background="@drawable/player_banner_card"
-                android:padding="6dp"
-                android:scaleType="centerCrop"
+            <View
+                android:id="@+id/loading_effect_ring"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/player_banner_effect_ring"
                 android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/loading_title"
+            <LinearLayout
+                android:id="@+id/loading_title_box"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:gravity="center"
-                android:maxLines="3"
-                android:ellipsize="end"
-                android:textColor="#FFFFFF"
-                android:textSize="32sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.10"
-                android:shadowColor="#CC000000"
-                android:shadowRadius="18"
-                android:shadowDx="0"
-                android:shadowDy="3" />
+                android:layout_gravity="center"
+                android:orientation="vertical"
+                android:gravity="center_horizontal"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp">
 
-            <TextView
-                android:id="@+id/loading_episode"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="center"
-                android:textColor="@color/hikari_accent_mid"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
+                <!-- POSTER style only: the title's own poster on a glass card, so a
+                     portrait poster is shown whole rather than cropped into a
+                     backdrop. GONE for the other styles. -->
+                <ImageView
+                    android:id="@+id/loading_card_poster"
+                    android:layout_width="120dp"
+                    android:layout_height="180dp"
+                    android:layout_marginBottom="16dp"
+                    android:background="@drawable/player_banner_card"
+                    android:padding="6dp"
+                    android:scaleType="centerCrop"
+                    android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/loading_detail"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:gravity="center"
-                android:maxLines="2"
-                android:ellipsize="end"
-                android:textColor="#CCFFFFFF"
-                android:textSize="13sp"
-                android:visibility="gone" />
-        </LinearLayout>
+                <TextView
+                    android:id="@+id/loading_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:maxLines="3"
+                    android:ellipsize="end"
+                    android:textColor="#FFFFFF"
+                    android:textSize="32sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.10"
+                    android:shadowColor="#CC000000"
+                    android:shadowRadius="18"
+                    android:shadowDx="0"
+                    android:shadowDy="3" />
+
+                <TextView
+                    android:id="@+id/loading_episode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:gravity="center"
+                    android:textColor="@color/hikari_accent_mid"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/loading_detail"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -159,7 +175,8 @@
              Loading screen → Effect). Both cover the whole card and are drawn
              LAST, so the light sweeps over everything the style drew and the
              frame sits on top of it, exactly as they do on the detail screen's
-             cover. GONE unless that effect is chosen. -->
+             cover. GONE unless that treatment is chosen, and either/both can be
+             shown at once. -->
         <View
             android:id="@+id/loading_effect_sheen"
             android:layout_width="match_parent"
@@ -167,11 +184,14 @@
             android:background="@drawable/player_banner_effect_sheen"
             android:visibility="gone" />
 
+        <!-- Inset further than it used to be (14dp read as an edge ON the card;
+             at 22dp the line sits clearly OUTSIDE it, which is what makes it a
+             frame around the cover rather than a border on it). -->
         <View
             android:id="@+id/loading_effect_frame"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_margin="14dp"
+            android:layout_margin="22dp"
             android:background="@drawable/player_banner_effect_frame"
             android:visibility="gone" />
     </FrameLayout>

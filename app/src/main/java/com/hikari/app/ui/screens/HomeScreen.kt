@@ -503,6 +503,17 @@ fun HomeScreen(nav: NavHostController) {
         null
     }
 
+    // Two rows can carry the same key when an extension offers the same catalog
+    // twice (or two catalogs under one name): a duplicated Lazy key is a crash
+    // in Compose, not a warning, so repeats are dropped before the feed is
+    // built. Done ONCE per change of [rows] rather than inline in the
+    // LazyColumn's scope — that built a fresh list and a fresh key string for
+    // every row on every recomposition of the feed, i.e. during every scroll
+    // step.
+    val uniqueRows = remember(rows) {
+        rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -583,9 +594,16 @@ fun HomeScreen(nav: NavHostController) {
             // Two rows can carry the same key when an extension offers the same
             // catalog twice (or two catalogs under one name): a duplicated Lazy
             // key is a crash in Compose, not a warning, so repeats are dropped
-            // before the feed is built.
-            rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }.forEach { row ->
-                item(key = row.key.ifBlank { "${row.providerName}|${row.title}" }) {
+            // before the feed is built (see [uniqueRows]).
+            uniqueRows.forEach { row ->
+                item(
+                    key = row.key.ifBlank { "${row.providerName}|${row.title}" },
+                    // One content type for every shelf, so the LazyColumn can
+                    // REUSE the subtree (and its remembered poster style) between
+                    // rows instead of composing a fresh one when a row scrolls
+                    // off and another on.
+                    contentType = "media-row",
+                ) {
                     MediaRow(
                         title = row.title,
                         providerName = row.providerName,

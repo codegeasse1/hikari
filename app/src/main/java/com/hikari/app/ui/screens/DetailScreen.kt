@@ -1383,9 +1383,9 @@ fun DetailScreen(
     // The treatment drawn over that card — handed over the same way, so the
     // detail page's cover and the player's cover stay identical through the
     // hand-off (see [com.hikari.app.ui.LoadingEffects]).
-    val loadingEffectFlow = remember { app.store.loadingEffectFlow() }
-    val loadingEffectSetting by loadingEffectFlow
-        .collectAsState(initial = com.hikari.app.ui.LoadingEffects.NONE)
+    val loadingEffectsFlow = remember { app.store.loadingEffectsFlow() }
+    val loadingEffectsSetting by loadingEffectsFlow
+        .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN))
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1486,7 +1486,7 @@ fun DetailScreen(
                 )
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
-                putExtra("loadingEffect", loadingEffectSetting)
+                putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
                 putExtra("startAfterServers", startAfterServers)
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
@@ -1682,17 +1682,25 @@ fun DetailScreen(
                 // only thing on screen saying that anything is happening at
                 // all (and, in the log, the only record of it).
                 val searchable = providers.count { it.config.enabled }
+                // "Search all installed extensions" off (Settings → Playback
+                // & Servers → Server search) means exactly ONE extension is
+                // being asked, and saying "Searching 257 extensions…" over a
+                // single-repo lookup would be a plain lie on the only line
+                // the user can see. With exception extensions in force more than
+                // one repo IS asked, so the line counts them honestly.
+                val exceptionN = if (com.hikari.app.data.SearchScope.allExtensions) 0
+                else com.hikari.app.data.SearchScope.exceptions.count { id ->
+                    providers.any { it.config.id == id && it.config.enabled }
+                }
                 StreamsLive.setStatus(
                     sid,
-                    // "Search all installed extensions" off (Settings → Playback
-                    // & Servers → Server search) means exactly ONE extension is
-                    // being asked, and saying "Searching 257 extensions…" over a
-                    // single-repo lookup would be a plain lie on the only line
-                    // the user can see.
-                    if (!com.hikari.app.data.SearchScope.allExtensions) {
-                        "Searching your extension for servers…"
-                    } else {
-                        "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…"
+                    when {
+                        exceptionN > 0 ->
+                            "Searching your extension + $exceptionN more…"
+                        !com.hikari.app.data.SearchScope.allExtensions ->
+                            "Searching your extension for servers…"
+                        else ->
+                            "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…"
                     },
                 )
                 // Which episode the search runs for: the tapped one, or episode 1
@@ -2004,7 +2012,10 @@ fun DetailScreen(
                 // a lambda so the sweep's own watcher below can use the very same
                 // wording if the sweep comes back empty a minute later.
                 val noResultNote = {
-                    val scoped = !com.hikari.app.data.SearchScope.allExtensions
+                    // Truly scoped only when "only this extension" is on AND no
+                    // exception repos are being searched (see [SearchScope]).
+                    val scoped = !com.hikari.app.data.SearchScope.allExtensions &&
+                        com.hikari.app.data.SearchScope.exceptions.isEmpty()
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
@@ -3023,12 +3034,12 @@ private fun PlayLoadingBanner(
     image: String?,
 ) {
     val style = rememberLoadingStyle()
-    val effect = rememberLoadingEffect()
+    val effects = rememberLoadingEffect()
     when (LoadingStyles.normalize(style)) {
-        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, effect)
-        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, effect)
-        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image, effect)
-        else -> CinematicLoadingCard(title, episodeLabel, detail, image, effect)
+        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, effects)
+        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, effects)
+        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image, effects)
+        else -> CinematicLoadingCard(title, episodeLabel, detail, image, effects)
     }
 }
 
@@ -3039,17 +3050,17 @@ private fun PlayLoadingBanner(
 private fun rememberLoadingStyle(): String {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
     val flow = remember(app) { app.store.loadingStyleFlow() }
-    return remember(flow) { flow }.collectAsState(initial = LoadingStyles.CINEMATIC).value
+    return remember(flow) { flow }.collectAsState(initial = LoadingStyles.POSTER).value
 }
 
-/** The treatment drawn over that card (Settings → App Layout → Loading screen →
- *  Effect), read the same way — see [com.hikari.app.ui.LoadingEffects]. */
+/** The treatment(s) drawn over that card (Settings → App Layout → Loading screen
+ *  → Effect), read the same way — see [com.hikari.app.ui.LoadingEffects]. */
 @Composable
-private fun rememberLoadingEffect(): String {
+private fun rememberLoadingEffect(): Set<String> {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
-    val flow = remember(app) { app.store.loadingEffectFlow() }
+    val flow = remember(app) { app.store.loadingEffectsFlow() }
     return remember(flow) { flow }
-        .collectAsState(initial = com.hikari.app.ui.LoadingEffects.NONE).value
+        .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN)).value
 }
 
 /**
@@ -3117,14 +3128,20 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
 }
 
 /**
- * The chosen loading treatment, drawn over whichever card the user picked —
+ * The chosen loading treatment(s), drawn over whichever card the user picked —
  * Settings → App Layout → Loading screen → Effect (see [LoadingEffects]).
  *
  * One implementation for all four styles, so "Minimal + gallery frame" and
- * "Spotlight + sheen" are exactly the same drawing code. Every effect is pure
- * paint on top of the cover the style already draws: no extra image load, no
- * extra network request, and the style's own motion (the breathing title, the
- * drifting backdrop) keeps running underneath.
+ * "Spotlight + sheen" are exactly the same drawing code, and SEVERAL treatments
+ * can be on at once (the sheen here, the aura ring around the card, the frame
+ * around the cover): each one draws its own layer rather than replacing the
+ * others. Every treatment is pure paint on top of the cover the style already
+ * draws: no extra image load, no extra network request, and the style's own
+ * motion (the breathing title, the drifting backdrop) keeps running underneath.
+ *
+ * The aura ring is NOT drawn here — it hugs the card, so it is drawn by
+ * [AuraRingBox] around whichever card this style put up. Everything else covers
+ * the whole screen and belongs here.
  *
  * The two quiet styles were reported as too plain — "minimal and spotlight is so
  * simple, it just shows the title zooming in and out" — and this is the answer:
@@ -3135,117 +3152,151 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
  * belongs to the card it is drawn over instead of fighting it.
  */
 @Composable
-private fun LoadingCoverEffect(effect: String, accent: Color) {
-    when (com.hikari.app.ui.LoadingEffects.normalize(effect)) {
-        com.hikari.app.ui.LoadingEffects.SHEEN -> {
-            // A band of light crossing the cover, the way a glossy print does
-            // when the light catches it.
-            val clock = rememberInfiniteTransition(label = "loading-sheen")
-            val sweep by clock.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(2800, easing = LinearEasing)),
-                label = "sweep",
-            )
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        // Read INSIDE the layer: a moving sheen invalidates this
-                        // drawing layer only, never the composition.
-                        translationX = -size.width + sweep * size.width * 2f
-                        rotationZ = 16f
-                    }
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = 0.16f),
-                                Color.Transparent,
-                            )
+private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
+    val chosen = com.hikari.app.ui.LoadingEffects.normalizeSet(effects)
+    if (com.hikari.app.ui.LoadingEffects.SHEEN in chosen) {
+        // A band of light crossing the cover, the way a glossy print does when
+        // the light catches it.
+        val clock = rememberInfiniteTransition(label = "loading-sheen")
+        val sweep by clock.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2800, easing = LinearEasing)),
+            label = "sweep",
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    // Read INSIDE the layer: a moving sheen invalidates this
+                    // drawing layer only, never the composition.
+                    translationX = -size.width + sweep * size.width * 2f
+                    rotationZ = 16f
+                }
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.16f),
+                            Color.Transparent,
                         )
                     )
-            )
-        }
+                )
+        )
+    }
 
-        com.hikari.app.ui.LoadingEffects.AURA -> {
-            // A ring of accent light behind the title that breathes.
-            val clock = rememberInfiniteTransition(label = "loading-aura")
-            val breathe by clock.animateFloat(
-                initialValue = 0.25f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(1700, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "breathe",
-            )
-            Canvas(Modifier.fillMaxSize()) {
-                val r = kotlin.math.min(size.width, size.height) * 0.30f
-                val center = Offset(size.width / 2f, size.height * 0.42f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(accent.copy(alpha = 0.22f * breathe), Color.Transparent),
-                        center = center,
-                        radius = r,
+    if (com.hikari.app.ui.LoadingEffects.FRAME in chosen) {
+        // A gallery mat: the card sits inside a hairline mount, the way a print
+        // does in a frame. Inset a touch FURTHER than it used to be, so the line
+        // reads as a frame around the card rather than as an edge on it.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(22.dp)
+                .border(
+                    1.dp,
+                    Color.White.copy(alpha = 0.22f),
+                    RoundedCornerShape(20.dp),
+                )
+        )
+    }
+
+    if (com.hikari.app.ui.LoadingEffects.GLOW in chosen) {
+        // The accent bloom behind the title, swelling and fading.
+        val clock = rememberInfiniteTransition(label = "loading-glow")
+        val pool by clock.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(3200, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "pool",
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val r = kotlin.math.min(size.width, size.height) * (0.34f + pool * 0.10f)
+            val center = Offset(size.width / 2f, size.height * 0.42f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accent.copy(alpha = 0.18f + 0.22f * pool),
+                        accent.copy(alpha = 0.10f * pool),
+                        Color.Transparent,
                     ),
-                    radius = r,
                     center = center,
-                )
-                drawCircle(
-                    color = accent.copy(alpha = 0.16f + 0.38f * breathe),
                     radius = r,
-                    center = center,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
-                )
-            }
-        }
-
-        com.hikari.app.ui.LoadingEffects.FRAME -> {
-            // A gallery mat: the card sits inside a hairline mount, the way a
-            // print does in a frame.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(14.dp)
-                    .border(
-                        1.dp,
-                        Color.White.copy(alpha = 0.22f),
-                        RoundedCornerShape(20.dp),
-                    )
-            )
-        }
-
-        com.hikari.app.ui.LoadingEffects.GLOW -> {
-            // The accent bloom behind the title, swelling and fading.
-            val clock = rememberInfiniteTransition(label = "loading-glow")
-            val pool by clock.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(3200, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse,
                 ),
-                label = "pool",
+                radius = r,
+                center = center,
             )
-            Canvas(Modifier.fillMaxSize()) {
-                val r = kotlin.math.min(size.width, size.height) * (0.34f + pool * 0.10f)
-                val center = Offset(size.width / 2f, size.height * 0.42f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            accent.copy(alpha = 0.18f + 0.22f * pool),
-                            accent.copy(alpha = 0.10f * pool),
-                            Color.Transparent,
-                        ),
-                        center = center,
-                        radius = r,
-                    ),
-                    radius = r,
-                    center = center,
-                )
-            }
         }
+    }
+}
+
+/**
+ * The aura ring, wrapped around whichever card the style drew — Settings → App
+ * Layout → Loading screen → Effect → "Aura ring".
+ *
+ * A ROUNDED RECTANGLE hugging the card, exactly like the ring a poster card
+ * wears ([com.hikari.app.ui.PosterEffects.AURA]), not the circle it used to be.
+ * That matters because the card is a card: a circle drawn around a rectangular
+ * one crosses it at four points and reads as a stray outline, while a rounded
+ * rectangle follows the same corner curve the card does and reads as its aura.
+ *
+ * Drawn around the CONTENT rather than over the whole screen, so it fits whatever
+ * the style put there — the poster on its glass card, the big Cinematic title,
+ * the small Minimal one — instead of being a fixed 300dp shape that fits none of
+ * them. Only the alpha moves; the card's own breathing stays the card's.
+ *
+ * A no-op when the treatment is not chosen, so the call sites read as one line.
+ */
+@Composable
+private fun AuraRingBox(
+    effects: Set<String>,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    if (com.hikari.app.ui.LoadingEffects.AURA !in com.hikari.app.ui.LoadingEffects.normalizeSet(effects)) {
+        Box(modifier) { content() }
+        return
+    }
+    val accentAlt = MaterialTheme.colorScheme.tertiary
+    val clock = rememberInfiniteTransition(label = "loading-aura")
+    val breathe by clock.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "breathe",
+    )
+    Box(modifier) {
+        // The light the ring stands in, breathing with it: without this the ring
+        // is a drawn outline, with it the card looks lit from behind.
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = breathe * 0.5f }
+                .background(
+                    Brush.verticalGradient(
+                        listOf(accent.copy(alpha = 0.22f), Color.Transparent, accentAlt.copy(alpha = 0.16f))
+                    ),
+                    RoundedCornerShape(28.dp),
+                )
+        )
+        Box(Modifier.padding(9.dp)) { content() }
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = 0.32f + 0.68f * breathe }
+                .border(
+                    2.dp,
+                    Brush.linearGradient(listOf(accent, accentAlt, accent)),
+                    RoundedCornerShape(28.dp),
+                )
+        )
     }
 }
 
@@ -3257,7 +3308,7 @@ private fun CinematicLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
-    effect: String,
+    effects: Set<String>,
 ) {
     val transition = rememberInfiniteTransition()
     val breath by transition.animateFloat(
@@ -3312,24 +3363,25 @@ private fun CinematicLoadingCard(
                     }
                 )
         )
-        Column(
-            Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 32.dp)
-                .graphicsLayer {
-                    scaleX = breath
-                    scaleY = breath
-                },
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
+        AuraRingBox(effects, Color(0xFFF5C569), Modifier.align(Alignment.Center)) {
+            Column(
+                Modifier
+                    .padding(horizontal = 32.dp)
+                    .graphicsLayer {
+                        scaleX = breath
+                        scaleY = breath
+                    },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
+            }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
         }
-        // The chosen loading treatment, over everything the style just drew
+        // The chosen loading treatments, over everything the style just drew
         // (Settings → App Layout → Loading screen → Effect).
-        LoadingCoverEffect(effect, Color(0xFFF5C569))
+        LoadingCoverEffect(effects, Color(0xFFF5C569))
     }
 }
 
@@ -3378,7 +3430,7 @@ private fun SpotlightLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
-    effect: String,
+    effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val glowStart = MaterialTheme.colorScheme.tertiary
@@ -3418,24 +3470,25 @@ private fun SpotlightLoadingCard(
                 center = Offset(size.width / 2f, size.height * 0.42f),
             )
         }
-        Column(
-            Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 32.dp)
-                .graphicsLayer {
-                    scaleX = breath
-                    scaleY = breath
-                },
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            LoadingTitleBlock(title, episodeLabel, detail) { accent }
+        AuraRingBox(effects, accent, Modifier.align(Alignment.Center)) {
+            Column(
+                Modifier
+                    .padding(horizontal = 32.dp)
+                    .graphicsLayer {
+                        scaleX = breath
+                        scaleY = breath
+                    },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                LoadingTitleBlock(title, episodeLabel, detail) { accent }
+            }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(accent, Color(0xCCFFFFFF))
         }
-        // The chosen loading treatment — on this style the accent blooms are
+        // The chosen loading treatments — on this style the accent blooms are
         // drawn over the title's own pool of light.
-        LoadingCoverEffect(effect, accent)
+        LoadingCoverEffect(effects, accent)
     }
 }
 
@@ -3448,7 +3501,7 @@ private fun PosterLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
-    effect: String,
+    effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val transition = rememberInfiniteTransition()
@@ -3488,44 +3541,44 @@ private fun PosterLoadingCard(
                         .copy(alpha = if (model != null) 0.55f else 0f)
                 )
         )
-        Column(
-            Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 40.dp)
-                .graphicsLayer { translationY = lift }
-                .clip(GlassShape)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
-                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), GlassShape)
-                .padding(18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            if (model != null) {
-                AsyncImage(
-                    model = model,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(width = 128.dp, height = 192.dp)
-                        .clip(RoundedCornerShape(10.dp)),
-                )
+        AuraRingBox(effects, accent, Modifier.align(Alignment.Center).padding(horizontal = 30.dp)) {
+            Column(
+                Modifier
+                    .graphicsLayer { translationY = lift }
+                    .clip(GlassShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), GlassShape)
+                    .padding(18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (model != null) {
+                    AsyncImage(
+                        model = model,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(width = 128.dp, height = 192.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
+                    Spacer(Modifier.height(14.dp))
+                }
+                LoadingTitleBlock(title, episodeLabel, detail) { accent }
                 Spacer(Modifier.height(14.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = accent,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    tr("Finding the best server…"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            LoadingTitleBlock(title, episodeLabel, detail) { accent }
-            Spacer(Modifier.height(14.dp))
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
-                color = accent,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                tr("Finding the best server…"),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
-        // The chosen loading treatment, over the glass card and its poster.
-        LoadingCoverEffect(effect, accent)
+        // The chosen loading treatments, over the glass card and its poster.
+        LoadingCoverEffect(effects, accent)
     }
 }
 
@@ -3536,7 +3589,7 @@ private fun MinimalLoadingCard(
     title: String,
     episodeLabel: String?,
     detail: String?,
-    effect: String,
+    effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     Box(
@@ -3544,40 +3597,40 @@ private fun MinimalLoadingCard(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        Column(
-            Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                title.uppercase(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val sub = listOfNotNull(
-                episodeLabel?.takeIf { it.isNotBlank() },
-                detail?.takeIf { it.isNotBlank() },
-            ).joinToString("  ·  ")
-            if (sub.isNotBlank()) {
+        AuraRingBox(effects, accent, Modifier.align(Alignment.Center).padding(horizontal = 20.dp)) {
+            Column(
+                Modifier.padding(horizontal = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
-                    sub,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    title.uppercase(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                val sub = listOfNotNull(
+                    episodeLabel?.takeIf { it.isNotBlank() },
+                    detail?.takeIf { it.isNotBlank() },
+                ).joinToString("  ·  ")
+                if (sub.isNotBlank()) {
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Spacer(Modifier.height(26.dp))
+                LoadingStatusLine(accent, MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Spacer(Modifier.height(26.dp))
-            LoadingStatusLine(accent, MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        // The chosen loading treatment. On this style it is the whole point:
-        // without it the card is a title and a spinner and nothing else.
-        LoadingCoverEffect(effect, accent)
+        // The chosen loading treatments. On this style they are the whole point:
+        // without them the card is a title and a spinner and nothing else.
+        LoadingCoverEffect(effects, accent)
     }
 }
 

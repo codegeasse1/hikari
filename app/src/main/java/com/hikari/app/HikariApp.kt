@@ -268,10 +268,24 @@ class HikariApp : Application() {
         // Read synchronously mid-pass by the target builder, the sweeps and the
         // episode fallback, so it lives in a plain flag (see [SearchScope])
         // mirrored here — a search must never have to await DataStore.
+        //
+        // Two settings become the one flag the pass reads: the "search all
+        // installed extensions" switch, and the exception extensions the user
+        // marked (which the pass honours even with that switch off).
         appScope.launch {
             com.hikari.app.data.SearchScope.allExtensions = store.searchAllExtensions()
             store.searchAllExtensionsFlow().collect {
                 com.hikari.app.data.SearchScope.allExtensions = it
+            }
+        }
+        appScope.launch {
+            // Seeded through the plain getters (rather than the flow's first
+            // value) so a search started before the first emission already sees
+            // the right set, exactly like the flag above.
+            com.hikari.app.data.SearchScope.exceptions =
+                if (store.searchExceptionOn()) store.searchExceptionIds() else emptySet()
+            store.activeSearchExceptionsFlow().collect {
+                com.hikari.app.data.SearchScope.exceptions = it
             }
         }
         // Player UI skin (Settings → Player → Player UI): mirrored into

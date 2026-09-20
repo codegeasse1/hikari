@@ -503,6 +503,17 @@ fun SearchScreen(
                         )
                     }
                 }
+                // Two providers can answer with the same title and the same id
+                // (and one provider can answer twice): a repeated Lazy key is a
+                // hard crash, so repeats are dropped before the grid is built.
+                //
+                // Both the dedupe and the poster style are hoisted out of the
+                // CELL: per cell this allocated a fresh list on every
+                // recomposition and opened a DataStore collection per poster on
+                // screen, which is a lot of subscriptions for one grid (see
+                // [com.hikari.app.ui.components.MediaRow]).
+                val gridItems = remember(results) { results.distinctBy { it.uniqueId } }
+                val style = rememberPosterStyle()
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(4),
                     modifier = Modifier
@@ -518,11 +529,7 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Two providers can answer with the same title and the same id
-                // (and one provider can answer twice): a repeated Lazy key is a
-                // hard crash, so repeats are dropped before the grid is built.
-                items(results.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
-                    val style = rememberPosterStyle()
+                items(gridItems, key = { it.uniqueId }) { item ->
                     // Show scores (Settings → App Layout) draws here too — the
                     // badge warms the ratings cache for the title and prints
                     // whatever is known. Null when the switch is off.

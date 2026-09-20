@@ -135,8 +135,11 @@ class AppStore(private val ctx: Context) {
         val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
         val POSTER_GLASS = booleanPreferencesKey("posterGlass")
         /** The animated/visual treatment drawn over every poster card — see
-         *  [com.hikari.app.ui.PosterEffects]. Stored as its key, so an unknown
-         *  value (a save from a newer build) reads back as "none". */
+         *  [com.hikari.app.ui.PosterEffects]. A SET, so a card can wear several
+         *  treatments at once. The old single-key preference ([POSTER_EFFECT])
+         *  is still read as the starting set, so nobody's choice is lost. */
+        val POSTER_EFFECTS = stringSetPreferencesKey("posterEffects")
+        /** A single treatment stored by a build before multi-select existed. */
         val POSTER_EFFECT = stringPreferencesKey("posterEffect")
         /** Shape of Home's featured banner — see
          *  [com.hikari.app.ui.components.HeroStyles]. */
@@ -156,8 +159,11 @@ class AppStore(private val ctx: Context) {
         val LOADING_STYLE = stringPreferencesKey("loadingStyle")
         /** The treatment drawn over the loading card (a sheen, an aura ring, a
          *  gallery frame, an accent bloom) — see
-         *  [com.hikari.app.ui.LoadingEffects]. Stored as its key, so an unknown
-         *  value (a save from a newer build) reads back as "none". */
+         *  [com.hikari.app.ui.LoadingEffects]. A SET, so several treatments can
+         *  be on at once. The old single-key preference ([LOADING_EFFECT]) is
+         *  still read as the starting set. */
+        val LOADING_EFFECTS = stringSetPreferencesKey("loadingEffects")
+        /** A single treatment stored by a build before multi-select existed. */
         val LOADING_EFFECT = stringPreferencesKey("loadingEffect")
         /** "Search every installed extension" (Settings → Playback → Server
          *  search). On by default: a title is searched across every installed
@@ -166,6 +172,14 @@ class AppStore(private val ctx: Context) {
          *  film plays from the repo you picked and nowhere else. See
          *  [com.hikari.app.data.SearchScope]. */
         val SEARCH_ALL_EXTENSIONS = booleanPreferencesKey("searchAllExtensions")
+        /** "Exception extensions" (Settings → Playback & Servers → Server
+         *  search): extensions that are asked for servers for EVERY title, even
+         *  when [SEARCH_ALL_EXTENSIONS] is off. See
+         *  [com.hikari.app.data.SearchScope] for the one rule that goes with it
+         *  — a title opened FROM an exception extension plays from that
+         *  extension alone. */
+        val SEARCH_EXCEPTION_ON = booleanPreferencesKey("searchExceptionOn")
+        val SEARCH_EXCEPTION_IDS = stringSetPreferencesKey("searchExceptionIds")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -411,7 +425,11 @@ class AppStore(private val ctx: Context) {
         const val DEFAULT_POSTER_CORNER = 28
 
         /** The signature card treatment ([com.hikari.app.ui.PosterEffects]). */
-        const val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.FRAME
+        val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.FRAME
+
+        /** The signature card treatmentS — a first-run poster wears the same
+         *  gallery frame as before. */
+        val DEFAULT_POSTER_EFFECTS: Set<String> = setOf(DEFAULT_POSTER_EFFECT)
 
         /** Home's featured banner shape ([HeroStyles]). */
         const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
@@ -421,6 +439,17 @@ class AppStore(private val ctx: Context) {
 
         /** The player's control shell ([PlayerSkins]). */
         const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.NEON
+
+        /** The look of the "finding your server" card ([LoadingStyles]). Poster
+         *  card: the title's own poster on a glass card, so the first thing a
+         *  new user sees while a server is found is the film's artwork. */
+        const val DEFAULT_LOADING_STYLE = com.hikari.app.ui.LoadingStyles.POSTER
+
+        /** The treatments over that card ([LoadingEffects]) — a single sweep of
+         *  light, which is the least busy of them and reads well on every
+         *  style. */
+        val DEFAULT_LOADING_EFFECTS: Set<String> =
+            setOf(com.hikari.app.ui.LoadingEffects.SHEEN)
     }
 
     // ---- Poster & icon styling ----
@@ -473,18 +502,28 @@ class AppStore(private val ctx: Context) {
         write("POSTER_GLASS") { it[K.POSTER_GLASS] = on }
     }
 
-    /** The visual effect drawn over every poster card. */
-    fun posterEffectFlow(): Flow<String> =
-        store.data.map {
-            com.hikari.app.ui.PosterEffects.normalize(
-                it[K.POSTER_EFFECT] ?: DEFAULT_POSTER_EFFECT,
+    /** The visual treatment(s) drawn over every poster card. */
+    fun posterEffectsFlow(): Flow<Set<String>> =
+        store.data.map { prefs ->
+            com.hikari.app.ui.PosterEffects.normalizeSet(
+                prefs[K.POSTER_EFFECTS]
+                    // A choice made before multi-select: the single stored key
+                    // becomes a one-member set, so nobody's setting is lost.
+                    ?: com.hikari.app.ui.PosterEffects.parse(prefs[K.POSTER_EFFECT])
+                        .ifEmpty { DEFAULT_POSTER_EFFECTS },
             )
         }
 
-    suspend fun posterEffect(): String = posterEffectFlow().first()
+    suspend fun posterEffects(): Set<String> = posterEffectsFlow().first()
 
-    suspend fun setPosterEffect(key: String) {
-        write("POSTER_EFFECT") { it[K.POSTER_EFFECT] = com.hikari.app.ui.PosterEffects.normalize(key) }
+    suspend fun setPosterEffects(keys: Collection<String>) {
+        // The legacy single key is CLEARED, not left behind: it is only ever read
+        // as the first-run/upgrade value, and a stale copy would resurrect an
+        // old choice if the new set were ever emptied by a restore.
+        write("POSTER_EFFECTS") {
+            it[K.POSTER_EFFECTS] = com.hikari.app.ui.PosterEffects.normalizeSet(keys)
+            it.remove(K.POSTER_EFFECT)
+        }
     }
 
     // ---- Home's featured banner ----
@@ -563,7 +602,9 @@ class AppStore(private val ctx: Context) {
      *  page shows the card from the tap, and the player continues with the same
      *  look until the video is on screen. */
     fun loadingStyleFlow(): Flow<String> =
-        store.data.map { com.hikari.app.ui.LoadingStyles.normalize(it[K.LOADING_STYLE]) }
+        store.data.map {
+            com.hikari.app.ui.LoadingStyles.normalize(it[K.LOADING_STYLE] ?: DEFAULT_LOADING_STYLE)
+        }
 
     suspend fun loadingStyle(): String = loadingStyleFlow().first()
 
@@ -571,16 +612,26 @@ class AppStore(private val ctx: Context) {
         write("LOADING_STYLE") { it[K.LOADING_STYLE] = com.hikari.app.ui.LoadingStyles.normalize(key) }
     }
 
-    /** The treatment drawn over the loading card — see
+    /** The treatment(s) drawn over the loading card — see
      *  [com.hikari.app.ui.LoadingEffects]. Works with every style, so the
-     *  quietest card can wear the same kind of signature detail a poster does. */
-    fun loadingEffectFlow(): Flow<String> =
-        store.data.map { com.hikari.app.ui.LoadingEffects.normalize(it[K.LOADING_EFFECT]) }
+     *  quietest card can wear the same kind of signature detail a poster does,
+     *  and several treatments can be on at once. */
+    fun loadingEffectsFlow(): Flow<Set<String>> =
+        store.data.map { prefs ->
+            com.hikari.app.ui.LoadingEffects.normalizeSet(
+                prefs[K.LOADING_EFFECTS]
+                    ?: com.hikari.app.ui.LoadingEffects.parse(prefs[K.LOADING_EFFECT])
+                        .ifEmpty { DEFAULT_LOADING_EFFECTS },
+            )
+        }
 
-    suspend fun loadingEffect(): String = loadingEffectFlow().first()
+    suspend fun loadingEffects(): Set<String> = loadingEffectsFlow().first()
 
-    suspend fun setLoadingEffect(key: String) {
-        write("LOADING_EFFECT") { it[K.LOADING_EFFECT] = com.hikari.app.ui.LoadingEffects.normalize(key) }
+    suspend fun setLoadingEffects(keys: Collection<String>) {
+        write("LOADING_EFFECTS") {
+            it[K.LOADING_EFFECTS] = com.hikari.app.ui.LoadingEffects.normalizeSet(keys)
+            it.remove(K.LOADING_EFFECT)
+        }
     }
 
     // ---- Server search (Settings → Playback) ----
@@ -604,6 +655,46 @@ class AppStore(private val ctx: Context) {
     suspend fun setSearchAllExtensions(all: Boolean) {
         write("SEARCH_ALL_EXTENSIONS") { it[K.SEARCH_ALL_EXTENSIONS] = all }
     }
+
+    /**
+     * Are the "exception extensions" in force?
+     *
+     * On, the extensions picked in Settings (see [searchExceptionIds]) are asked
+     * for servers for EVERY title — even with [searchAllExtensions] off — while
+     * a title opened FROM one of them plays from that extension alone. Off (the
+     * default), they change nothing at all.
+     */
+    fun searchExceptionOnFlow(): Flow<Boolean> =
+        store.data.map { it[K.SEARCH_EXCEPTION_ON] ?: false }
+
+    suspend fun searchExceptionOn(): Boolean = searchExceptionOnFlow().first()
+
+    suspend fun setSearchExceptionOn(on: Boolean) {
+        write("SEARCH_EXCEPTION_ON") { it[K.SEARCH_EXCEPTION_ON] = on }
+    }
+
+    /** The ids of the extensions chosen as exceptions (see [searchExceptionOnFlow]). */
+    fun searchExceptionIdsFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_EXCEPTION_IDS] ?: emptySet() }
+
+    suspend fun searchExceptionIds(): Set<String> = searchExceptionIdsFlow().first()
+
+    suspend fun setSearchExceptionIds(ids: Collection<String>) {
+        write("SEARCH_EXCEPTION_IDS") { it[K.SEARCH_EXCEPTION_IDS] = ids.toSet() }
+    }
+
+    /** The exception extensions that are actually IN FORCE: the chosen ids when
+     *  the switch is on, nothing when it is off. This is the single value the
+     *  search mirrors into [com.hikari.app.data.SearchScope.exceptions], so the
+     *  switch and the list can never disagree mid-lookup. */
+    fun activeSearchExceptionsFlow(): Flow<Set<String>> =
+        store.data.map { prefs ->
+            if (prefs[K.SEARCH_EXCEPTION_ON] == true) {
+                prefs[K.SEARCH_EXCEPTION_IDS] ?: emptySet()
+            } else {
+                emptySet()
+            }
+        }
 
     // ---- Bottom navigation bar layout ----
 

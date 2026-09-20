@@ -56,10 +56,31 @@ import java.util.concurrent.atomic.AtomicInteger
  * one lookup, and only the store knows the user's choice. Mirrored from the
  * store at startup and on every change (see HikariApp), so the search never has
  * to await DataStore mid-pass.
+ *
+ * [exceptions] is the third state between those two, for the person who wants
+ * "only this extension" almost all of the time but one or two repos always
+ * asked. It holds the ids of the extensions picked as exceptions (empty when the
+ * switch is off), and the rule is:
+ *
+ *  - a title opened anywhere ELSE is searched through its own extension AND the
+ *    exception extensions, even though [allExtensions] is off. So playing a film
+ *    from 1Shows also asks the two repos the user marked, and their servers
+ *    appear in the same list;
+ *  - a title opened FROM an exception extension plays from THAT extension alone,
+ *    even though it is an exception. This is the point of marking it: the repo
+ *    keeps its own catalogue to itself and is never mixed into a search started
+ *    inside it.
  */
 object SearchScope {
     @Volatile
     var allExtensions: Boolean = true
+
+    /** Extension ids that are always asked for servers (see the class note). */
+    @Volatile
+    var exceptions: Set<String> = emptySet()
+
+    /** True when [id] is one of the extension ids marked as an exception. */
+    fun isException(id: String?): Boolean = id != null && id in exceptions
 }
 
 class ContentRepository(private val manager: ProviderManager) {
@@ -1916,7 +1937,20 @@ class ContentRepository(private val manager: ProviderManager) {
             // title was opened from: no sibling repos of the same engine, no
             // stremio addons, no nuvio engines, no cross pass, no sweep. The
             // origin is the only thing asked — see [SearchScope].
-            val scopeAll = SearchScope.allExtensions
+            //
+            // "Exception extensions" (see [SearchScope]) is the one thing that
+            // widens that: a title opened anywhere else is ALSO searched through
+            // the repos the user marked. A title opened FROM a marked repo is the
+            // exception to the exception: that repo keeps its own catalogue to
+            // itself, so the pass collapses to "only this extension" whatever
+            // the two switches say.
+            val originIsException = SearchScope.isException(item.providerId)
+            val scopeAll = if (originIsException) false else SearchScope.allExtensions
+            val exceptions = if (originIsException) {
+                emptySet()
+            } else {
+                SearchScope.exceptions
+            }
             val primaryTargets = if (!scopeAll) {
                 // The title's own extension, and nothing else. It is still asked
                 // FIRST (and re-asked in the background if it does not answer),
@@ -1940,8 +1974,12 @@ class ContentRepository(private val manager: ProviderManager) {
             val nuvioTargets = if (!scopeAll) {
                 // "Only this extension": a nuvio engine is another source, so
                 // none of them are asked (the origin, if it IS one, is already
-                // in [primaryTargets]).
-                emptyList()
+                // in [primaryTargets]) — except the ones marked as exceptions,
+                // which the user asked to always include.
+                if (exceptions.isEmpty()) emptyList()
+                else all.filter {
+                    it.config.type == ProviderType.NUVIO && it.config.id in exceptions
+                }
             } else if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
                     .sortedWith(
@@ -1997,11 +2035,18 @@ class ContentRepository(private val manager: ProviderManager) {
             // be left out of a pass by a list that moved under it.
             val crossTargets = if (scopeAll) {
                 crossExtensionTargets(item, origin, all, tally)
-            } else {
+            } else if (exceptions.isEmpty()) {
                 // "Server search: only this extension" — there is nothing else
                 // to search, so the cross pass and every sweep below are skipped
                 // rather than launched and left to find nothing.
                 emptyList()
+            } else {
+                // Exception extensions: these ARE the only other repos this pass
+                // may ask, and they go through the same title-search → extract
+                // machinery as any cross extension (their ids mean nothing to
+                // each other). Restricted by id, which keeps every filter, the
+                // trust order and the tally identical to the normal pass.
+                crossExtensionTargets(item, origin, all, tally, onlyIds = exceptions)
             }
             // Other repos of the SAME engine as the origin (e.g. the user's other
             // CloudStream repos when the title was opened from one) are pulled out
@@ -3446,6 +3491,12 @@ class ContentRepository(private val manager: ProviderManager) {
         all: List<ContentProvider>,
         /** The pass's tally, which receives [CrossTally.filterReasons]. */
         tally: CrossTally,
+        /** When non-null, ONLY extensions whose id is in this set are eligible —
+         *  the "exception extensions" pass (see [SearchScope]), where the user
+         *  named the exact repos that may be asked. Every other filter below
+         *  still applies, so an exception that is blocked, hung or of a family
+         *  that cannot be searched by title is still left out. */
+        onlyIds: Set<String>? = null,
     ): List<ContentProvider> {
         val originType = origin?.config?.type
         val originIsStremio = originType == ProviderType.STREMIO
@@ -3484,6 +3535,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
                 if (p.config.id == item.providerId) {
                     noteSkipped("origin")
+                    return@filter false
+                }
+                if (onlyIds != null && p.config.id !in onlyIds) {
+                    noteSkipped("not-an-exception")
                     return@filter false
                 }
                 // An extension that answered with a Cloudflare verification wall
@@ -4545,13 +4600,21 @@ class ContentRepository(private val manager: ProviderManager) {
         // that switch turns off — and asking for it here would have made the
         // option leak anyway (the detail page would quietly scrape every other
         // extension the moment the origin's own list came back thin).
-        if (!SearchScope.allExtensions) return null
+        //
+        // Exception extensions are the exception: they are already searched for
+        // servers on every lookup, so their episode list may be borrowed too.
+        // (A title opened FROM such an extension never reaches this code — the
+        // origin answers its own episode list first; see [SearchScope].)
+        val exceptionIds = if (SearchScope.isException(item.providerId)) emptySet()
+        else SearchScope.exceptions
+        if (!SearchScope.allExtensions && exceptionIds.isEmpty()) return null
         val originType = manager.byId(item.providerId)?.config?.type
         val candidates = manager.providers.value
             .filter { p ->
                 p.config.enabled &&
                     p.config.id != item.providerId &&
                     !isCfSkipped(p.config.id) &&
+                    (SearchScope.allExtensions || p.config.id in exceptionIds) &&
                     when (p.config.type) {
                         ProviderType.CS3,
                         ProviderType.HIKARI,

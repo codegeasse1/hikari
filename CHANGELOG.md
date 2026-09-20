@@ -1,3 +1,26 @@
+## 0.8.0
+
+The aura ring is a ring around the card instead of a circle over it, every visual effect can be combined with any other, the server search has exception extensions, the 3D tilt actually looks 3D, and the app scrolls and taps more smoothly.
+
+### Added
+
+- **More than one effect at a time.** Poster effects and loading-screen effects are now multi-select: tick **Sheen** and **Aura ring** together, or **Gallery frame** and **3D tilt**, and every one of them is drawn on the same card. The list you pick from works like before — tap a row to add or remove it — and **None** clears the whole selection. Existing choices were kept: whatever you had picked is still what is on.
+- **Exception extensions (Settings → Playback & Servers → Server search).** A middle ground between "search everything" and "only the extension I opened". Pick one or more extensions and they are asked for servers for *every* title you play anywhere else — even with "Search all installed extensions" switched off — and their servers appear in the same list as the rest. The one rule that goes with it: a title you open **inside** one of those extensions plays from that extension alone, and is never mixed with anything else. The picker lists every installed extension with a search box (match by repo name or by engine) and scrolls, so it stays usable with a couple of hundred installed. The card spells both rules out in two lines.
+
+### Fixed
+
+- **The loading screen's aura ring being a circle.** It was a fixed 300dp *oval* drawn over a rectangular card, so it crossed the card at four points and read as a stray outline. It is now a rounded rectangle that wraps whatever card the chosen style put up — the same ring a poster card wears — so with the poster card it rings the poster, and with Minimal it rings the title. The gallery frame also sits further out (22dp instead of 14dp), so the line reads as a frame *around* the cover instead of an edge *on* it.
+- **The 3D tilt effect not looking 3D.** The tilt set the camera distance to `14 × screen density`, which on a normal phone put the camera roughly five times *further* from the card than Android's default — almost no perspective at all, which is exactly why it looked like a flat, slightly slanted picture. The camera is now close to the card and the angles are larger, and the leaning edge catches a highlight while the far edge falls into shade, so the two sides visibly sit at different depths.
+
+### Changed
+
+- **A new default loading screen.** A fresh install now shows the title's **poster card** with a **sheen** sweeping across it while a server is found (it used to be the plain Cinematic backdrop with no treatment). Both are ordinary settings, so anything you pick yourself still wins.
+- **Smoother scrolling, tapping and settings.** Several pieces of the drawing path were doing repeated work per poster per frame:
+  - the soft halo behind each poster was also running Android's blur filter, which builds a separate offscreen render layer for **every** poster on screen — the single most expensive thing a scrolling grid did. It is gone; the halo is the same tiny, already-soft decode, so it looks the same and costs a fraction.
+  - every poster cell read its own copy of the poster styling out of settings — a Home feed with three rows of twelve visible posters held about thirty-six live settings subscriptions and re-mapped all of them on every settings write. Styling is now read once per row (or per grid) and handed down.
+  - the Home feed rebuilt its row list — and a fresh key string for every row — on every recomposition, i.e. on every scroll step. It is built once per change now, and the shelves share a content type so Compose can reuse them as they scroll off and on.
+  - the same for the Search results and a "Show all" catalog grid, which both rebuilt their deduplicated item list per cell.
+
 ## 0.7.0
 
 Playback starts the moment there is something to play, a title can now be searched through the extension you opened it from and no other, the loading screen has real effect options, and the poster halo shows on every phone.

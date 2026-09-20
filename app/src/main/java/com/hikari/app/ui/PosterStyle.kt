@@ -31,10 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -87,6 +86,27 @@ object PosterEffects {
 
     fun normalize(key: String?): String = if (key != null && key in ALL) key else NONE
 
+    /** The treatments named by [keys], in [ALL] order and without [NONE].
+     *
+     *  A card can wear SEVERAL at once — the choice is a set in Settings, so
+     *  "sheen and aura ring" or "gallery frame and 3D tilt" are each one
+     *  selection, and each treatment draws its own layer (see [PosterArt]). */
+    fun normalizeSet(keys: Collection<String>?): Set<String> =
+        if (keys.isNullOrEmpty()) emptySet()
+        else ALL.filter { it != NONE && it in keys }.toSet()
+
+    /** A single stored key from an older build, or a comma-joined list, read back
+     *  as the treatments it names. */
+    fun parse(stored: String?): Set<String> {
+        val s = stored?.trim().orEmpty()
+        if (s.isEmpty()) return emptySet()
+        return normalizeSet(s.split(',').map { it.trim() })
+    }
+
+    /** The chosen treatments as ONE preference value (see [parse]). */
+    fun encode(keys: Collection<String>): String =
+        ALL.filter { it in keys }.joinToString(",")
+
     fun label(key: String): String = when (normalize(key)) {
         GLOW -> "Glow"
         TILT -> "3D tilt"
@@ -95,6 +115,12 @@ object PosterEffects {
         SPOTLIGHT -> "Spotlight"
         FRAME -> "Gallery frame"
         else -> "None"
+    }
+
+    /** The chosen treatments as one line: "Sheen + Aura ring". */
+    fun label(keys: Collection<String>): String {
+        val names = ALL.filter { it != NONE && it in keys }.map { label(it) }
+        return if (names.isEmpty()) label(NONE) else names.joinToString(" + ")
     }
 
     /** One line on what the effect does, shown under its name in Settings. */
@@ -108,11 +134,30 @@ object PosterEffects {
         else -> "Plain artwork, no effect"
     }
 
-    /** True when this effect animates (so the card runs an animation clock). */
-    fun animated(key: String): Boolean = normalize(key) == SHEEN || normalize(key) == AURA
+    /** The chosen treatments as one line — the description of the first, plus a
+     *  count of the others, so the row stays one line tall. */
+    fun description(keys: Collection<String>): String {
+        val chosen = ALL.filter { it != NONE && it in keys }
+        if (chosen.isEmpty()) return description(NONE)
+        val first = description(chosen.first())
+        return if (chosen.size == 1) first
+        else first + " · +" + (chosen.size - 1).toString() + " more"
+    }
 
-    /** True when this effect wants the blurred halo behind the art. */
-    fun haloed(key: String): Boolean = normalize(key) == GLOW || normalize(key) == SPOTLIGHT
+    /** True when any chosen treatment animates (so the card runs an animation
+     *  clock for the sheen and/or the aura ring). */
+    fun animated(keys: Collection<String>): Boolean =
+        keys.any { it == SHEEN || it == AURA }
+
+    /** Kept for a stored value from an older build. */
+    fun animated(key: String): Boolean = animated(normalizeSet(listOf(key)))
+
+    /** True when any chosen treatment wants the blurred halo behind the art. */
+    fun haloed(keys: Collection<String>): Boolean =
+        keys.any { it == GLOW || it == SPOTLIGHT }
+
+    /** Kept for a stored value from an older build. */
+    fun haloed(key: String): Boolean = haloed(normalizeSet(listOf(key)))
 }
 
 /**
@@ -121,9 +166,9 @@ object PosterEffects {
  * These are the knobs the reference client offers on its artwork: the dynamic
  * iOS-style blur behind a poster, the corner rounding, whether the title and the
  * score are drawn over the art at all, and which of the [PosterEffects] the card
- * wears. Every grid in the app reads them from [rememberPosterStyle] and renders
- * through [PosterArt], so a change in Settings is visible on the very next frame
- * everywhere at once.
+ * wears (one, several, or none). Every grid in the app reads them from
+ * [rememberPosterStyle] and renders through [PosterArt], so a change in Settings
+ * is visible on the very next frame everywhere at once.
  */
 data class PosterStyle(
     /** Blur radius in dp for the coloured halo behind the art (0 = none). */
@@ -136,12 +181,20 @@ data class PosterStyle(
     val showRatings: Boolean = false,
     /** The glass hairline + frosted backing every card in the app shares. */
     val glass: Boolean = true,
-    /** One of [PosterEffects] — the signature look drawn over the card. */
-    val effect: String = PosterEffects.NONE,
-)
+    /** The signature looks drawn over the card — a SET of [PosterEffects], so a
+     *  card can wear several at once (sheen + aura ring, gallery frame + 3D
+     *  tilt…) and an empty set means "none". */
+    val effects: Collection<String> = emptyList(),
+) {
+    /** True when [key] is one of the treatments this card wears. */
+    fun has(key: String): Boolean = key in effects
+}
 
 /** The live poster style, collected from the store. Remembered flows, so the
- *  subscriptions survive recomposition. */
+ *  subscriptions survive recomposition.
+ *
+ *  Called ONCE per row/grid and passed down (see [PosterArt]); a copy per poster
+ *  cell would open one DataStore collection per card on screen. */
 @Composable
 fun rememberPosterStyle(): PosterStyle {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -150,20 +203,20 @@ fun rememberPosterStyle(): PosterStyle {
     val titlesFlow = remember { app.store.posterShowTitlesFlow() }
     val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
     val glassFlow = remember { app.store.posterGlassFlow() }
-    val effectFlow = remember { app.store.posterEffectFlow() }
+    val effectsFlow = remember { app.store.posterEffectsFlow() }
     val blur by blurFlow.collectAsState(initial = 0)
     val corner by cornerFlow.collectAsState(initial = 14)
     val titles by titlesFlow.collectAsState(initial = true)
     val ratings by ratingsFlow.collectAsState(initial = false)
     val glass by glassFlow.collectAsState(initial = true)
-    val effect by effectFlow.collectAsState(initial = PosterEffects.NONE)
+    val effects by effectsFlow.collectAsState(initial = emptySet())
     return PosterStyle(
         blur = blur.coerceIn(0, 24),
         corner = corner.coerceIn(0, 28),
         showTitles = titles,
         showRatings = ratings,
         glass = glass,
-        effect = PosterEffects.normalize(effect),
+        effects = PosterEffects.normalizeSet(effects),
     )
 }
 
@@ -218,9 +271,9 @@ fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
  * The "iOS-style blur" is the artwork itself, enlarged a touch and blurred,
  * sitting behind the crisp poster as a soft coloured halo: that is what gives
  * the reference client's cards their glow, and it costs one extra draw of an
- * image the card is loading anyway. `Modifier.blur` is a no-op below Android 12
- * (its `RenderEffect` does not exist there), which is why the toggle simply
- * changes nothing on an old device rather than failing.
+ * image the card is loading anyway. The blur is a tiny decode scaled back up
+ * ([PosterLoader.haloModel]), not `Modifier.blur` — that modifier does not exist
+ * below Android 12, so the halo used to show for some users and not others.
  *
  * @param model   the Coil model (see [Artwork.model])
  * @param rating  TMDB score to badge, when [PosterStyle.showRatings] is on and
@@ -252,17 +305,22 @@ fun PosterArt(
 ) {
     val shape = style.shape()
     val glass = rememberGlassTokens()
-    val effect = PosterEffects.normalize(style.effect)
-    // One animation clock per card, created only for the two effects that
-    // animate. The animated value is read INSIDE graphicsLayer, never in
-    // composition, so a moving sheen or a breathing ring invalidates the
-    // card's drawing layer and nothing else — no recomposition per frame.
-    val clock = if (PosterEffects.animated(effect)) {
+    val effects = PosterEffects.normalizeSet(style.effects)
+    val tilted = PosterEffects.TILT in effects
+    val sheened = PosterEffects.SHEEN in effects
+    val ringed = PosterEffects.AURA in effects
+    val spotlighted = PosterEffects.SPOTLIGHT in effects
+    val framed = PosterEffects.FRAME in effects
+    // One animation clock per card, created only when one of the chosen
+    // treatments animates. The animated values are read INSIDE graphicsLayer,
+    // never in composition, so a moving sheen or a breathing ring invalidates
+    // the card's drawing layer and nothing else — no recomposition per frame.
+    val clock = if (sheened || ringed) {
         rememberInfiniteTransition(label = "poster-effect")
     } else {
         null
     }
-    val sweep = if (clock != null) {
+    val sweep = if (clock != null && sheened) {
         clock.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
@@ -272,7 +330,7 @@ fun PosterArt(
     } else {
         null
     }
-    val breathe = if (clock != null) {
+    val breathe = if (clock != null && ringed) {
         clock.animateFloat(
             initialValue = 0.42f,
             targetValue = 1f,
@@ -285,8 +343,8 @@ fun PosterArt(
     val accent = MaterialTheme.colorScheme.primary
     val accentAlt = MaterialTheme.colorScheme.tertiary
     // Glow/Spotlight ask for a halo regardless of the blur slider; the other
-    // effects leave the slider's own value alone.
-    val halo = if (PosterEffects.haloed(effect)) maxOf(style.blur, 16) else style.blur
+    // treatments leave the slider's own value alone.
+    val halo = if (PosterEffects.haloed(effects)) maxOf(style.blur, 16) else style.blur
     val innerCorner = (style.corner - 3).coerceAtLeast(0)
     // IMDb's own yellow, not the app accent: the badge is a score from that
     // site, and the colour is what makes "9.8" read as an IMDb rating at a
@@ -298,20 +356,55 @@ fun PosterArt(
         ?: rating?.takeIf { it > 0.0 }?.let { ((it * 10f).roundToInt() / 10f).toString() }
     Box(
         modifier = modifier.then(
-            if (effect == PosterEffects.TILT) {
+            if (tilted) {
                 Modifier.graphicsLayer {
-                    rotationY = -7f
-                    rotationX = 5f
-                    // Camera close to the card: a small rotation then reads as a
-                    // real lean rather than a squash.
-                    cameraDistance = 14f * density
+                    // A real 3D lean, not a flat skew. Two things make it read
+                    // as depth:
+                    //
+                    //  - the camera sits CLOSE to the card. Compose's default
+                    //    camera distance is 8, and SMALLER is a stronger
+                    //    perspective (larger would be nearer to orthographic).
+                    //    This used to be `14f * density` — ~5x FURTHER away than
+                    //    the default on a 3x screen, i.e. almost no perspective
+                    //    at all, which is exactly the reported "3D tilt doesn't
+                    //    look 3D";
+                    //  - the angles are big enough to see, and the near edge is
+                    //    brightened while the far edge is shaded (below), so the
+                    //    two sides of the card are visibly at different depths.
+                    rotationY = -12f
+                    rotationX = 6f
+                    cameraDistance = 6f
                 }
             } else {
                 Modifier
             }
         )
     ) {
-        if (effect == PosterEffects.SPOTLIGHT) {
+        if (tilted) {
+            // The shadow the lean casts: the card's own silhouette, pushed down
+            // and towards the side the card leans away from, so the tilt reads
+            // as a card standing in front of the page rather than as a slanted
+            // picture. Drawn inside the tilting layer (it leans with the card)
+            // and before the art, so only the peeking edge is visible.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        translationX = 5f * density
+                        translationY = 11f * density
+                    }
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.45f),
+                                Color.Black.copy(alpha = 0.08f),
+                            )
+                        ),
+                        shape,
+                    )
+            )
+        }
+        if (spotlighted) {
             // The accent light the card is standing in, larger than the card so
             // it spills onto the page.
             Box(
@@ -329,8 +422,13 @@ fun PosterArt(
             // see [PosterLoader.haloModel]. That is what makes it show on every
             // Android version: `Modifier.blur` (used here before) is a no-op
             // below API 31, so identical settings gave one user a coloured halo
-            // and another flat artwork. On 31+ the blur is applied on top as
-            // well, since it costs nothing and softens the upscale further.
+            // and another flat artwork.
+            //
+            // No `Modifier.blur` on top any more: it built a RenderEffect — an
+            // offscreen render node — for EVERY poster on screen, which is the
+            // single most expensive thing a scrolling grid of them did, and the
+            // upscaled 6–34px decode is already soft. Same look, no per-poster
+            // render effect.
             val haloModel = remember(model, halo) { PosterLoader.haloModel(model, halo) }
             PosterImage(
                 model = haloModel,
@@ -340,13 +438,6 @@ fun PosterArt(
                     // Grown past the cell so the halo peeks out around the art
                     // instead of being hidden behind it.
                     .scale(1.08f)
-                    .then(
-                        if (android.os.Build.VERSION.SDK_INT >= 31) {
-                            Modifier.blur(halo.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
-                        } else {
-                            Modifier
-                        },
-                    )
                     .alpha(0.78f),
                 contentScale = ContentScale.Crop,
             )
@@ -376,7 +467,7 @@ fun PosterArt(
                 contentScale = contentScale,
                 alignment = imageAlignment,
             )
-            if (effect == PosterEffects.SPOTLIGHT) {
+            if (spotlighted) {
                 // Darkens the foot of the art, which is what makes the card look
                 // lit from above instead of uniformly flat.
                 Box(
@@ -390,7 +481,7 @@ fun PosterArt(
                         )
                 )
             }
-            if (effect == PosterEffects.FRAME) {
+            if (framed) {
                 // A whisper of accent tint over the art, then the mount itself.
                 Box(
                     Modifier
@@ -402,7 +493,28 @@ fun PosterArt(
                         )
                 )
             }
-            if (effect == PosterEffects.SHEEN && sweep != null) {
+            if (tilted) {
+                // The highlight the lean promises: the near (right/top) edge of
+                // the card catches the light, the far edge falls into shade.
+                // Drawn over the art, inside the tilting layer, so it follows
+                // the card's angle.
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.20f),
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.26f),
+                                ),
+                                start = Offset.Zero,
+                                end = Offset.Infinite,
+                            )
+                        )
+                )
+            }
+            if (sheened && sweep != null) {
                 Box(
                     Modifier
                         .matchParentSize()
@@ -427,7 +539,7 @@ fun PosterArt(
             }
             overlay()
         }
-        if (effect == PosterEffects.FRAME) {
+        if (framed) {
             Box(
                 Modifier
                     .matchParentSize()
@@ -439,7 +551,7 @@ fun PosterArt(
                     )
             )
         }
-        if (effect == PosterEffects.AURA && breathe != null) {
+        if (ringed && breathe != null) {
             Box(
                 Modifier
                     .matchParentSize()
