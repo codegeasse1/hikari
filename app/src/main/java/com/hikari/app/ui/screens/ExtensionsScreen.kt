@@ -124,6 +124,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -329,7 +331,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             // "Searching…", which is the reported "stuck while searching
             // extensions". [refreshRepoPlugins] bounds each fetch, so a dead
             // host cannot hold a slot for long.
-            val gate = kotlinx.coroutines.sync.Semaphore(4)
+            val gate = Semaphore(4)
             kotlinx.coroutines.coroutineScope {
                 for (repo in pending) {
                     reposLoading.add(repo.url)
