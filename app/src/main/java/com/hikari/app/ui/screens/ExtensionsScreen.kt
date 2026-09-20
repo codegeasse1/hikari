@@ -2523,6 +2523,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onBack = { openFolder = null; vm.clearStatus() },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
@@ -2560,6 +2563,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onBack = { allReposOpen = false; vm.clearStatus() },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
@@ -2597,6 +2603,9 @@ fun ExtensionsScreen() {
             busyMsg = busyMsg,
             successMsg = successMsg,
             errorMsg = errorMsg,
+            installRunning = installRunning,
+            installStopping = installStopping,
+            onStopInstall = { vm.stopBulkInstall() },
             onBack = { sourcesOpen = false; vm.clearStatus() },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
@@ -5304,6 +5313,11 @@ private fun SourceFolderView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    /** True while a bulk install/update runs, and true again while it is
+     *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onBack: () -> Unit,
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
@@ -5541,6 +5555,11 @@ private fun SourcesOverviewView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    /** True while a bulk install/update runs, and true again while it is
+     *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onBack: () -> Unit,
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
@@ -5585,11 +5604,24 @@ private fun SourcesOverviewView(
         HorizontalDivider()
         if (busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(
-                busyMsg,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(16.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (installRunning) {
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                        Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                    }
+                }
+            }
         }
         successMsg?.let { msg ->
             Text(
@@ -5844,6 +5876,11 @@ private fun AllReposView(
     busyMsg: String,
     successMsg: String?,
     errorMsg: String?,
+    /** True while a bulk install/update runs, and true again while it is
+     *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
+    installRunning: Boolean = false,
+    installStopping: Boolean = false,
+    onStopInstall: () -> Unit = {},
     onBack: () -> Unit,
     onOpenRepo: (Cs3Repo) -> Unit,
     onAddRepo: () -> Unit,
@@ -5872,11 +5909,24 @@ private fun AllReposView(
         HorizontalDivider()
         if (busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(
-                busyMsg,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(16.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (installRunning) {
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                        Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                    }
+                }
+            }
         }
         successMsg?.let { msg ->
             Text(
@@ -5976,11 +6026,24 @@ private fun InstalledExtensionsView(
         HorizontalDivider()
         if (busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(
-                busyMsg,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(16.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    busyMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (installRunning) {
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(onClick = onStopInstall, enabled = !installStopping) {
+                        Text(if (installStopping) tr("Stopping…") else tr("Stop"))
+                    }
+                }
+            }
         }
         successMsg?.let { msg ->
             Text(
