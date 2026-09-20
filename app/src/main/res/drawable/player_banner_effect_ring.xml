@@ -1,23 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Loading cover EFFECT "Aura ring": a ring of accent light around the card.
+<!-- Loading cover EFFECT "Aura ring" fallback.
 
-     A ROUNDED RECTANGLE, not a circle. It used to be `shape="oval"` at a fixed
-     300dp, which is what the "the aura ring looks so bad, it's a circle" report
-     was about: a circle drawn around a rectangular card crosses it at four
-     points, so it reads as a stray outline instead of as the card's aura. A
-     rounded rectangle follows the same corner curve the card does — the same
-     thing the poster cards' own Aura ring draws — so the two look like one idea.
+     The ring hangs on the SCREEN's own edge (a rounded rectangle inset 8dp by
+     activity_player.xml), because it is the loading screen's frame lit up rather
+     than a shape drawn around the title card.
 
-     Sized by its parent (`loading_ring_frame`, which is sized by the title block
-     inside it), so the ring hugs whatever card the chosen loading style put up.
+     Its COLOUR is the user's own choice (Settings → App Layout → Loading screen →
+     Aura ring colour) and is handed over from the detail screen as an ARGB extra,
+     which PlayerActivity draws itself — see `auraRingDrawable`. This drawable is
+     only what the view carries before that runs (and what a cover with no colour
+     extra falls back to): the app accent, drawn as a thick soft band of light
+     under a crisp hairline, so the ring reads as a glow rather than a bare
+     outline even in that first frame.
 
-     PlayerActivity animates the alpha (see showLoadingBanner); it is NOT scaled,
-     because scaling a ring that wraps a card pulls it off the card's edges. -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <corners android:radius="26dp" />
-    <stroke
-        android:width="2dp"
-        android:color="@color/hikari_accent_mid" />
-    <solid android:color="@android:color/transparent" />
-</shape>
+     PlayerActivity animates the ALPHA (see showLoadingBanner); the ring is NOT
+     scaled, because scaling a border around the screen would pull it off the
+     edge it is meant to sit on. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="26dp" />
+            <stroke
+                android:width="14dp"
+                android:color="#33F5C569" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="26dp" />
+            <stroke
+                android:width="2dp"
+                android:color="@color/hikari_accent_mid" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</layer-list>

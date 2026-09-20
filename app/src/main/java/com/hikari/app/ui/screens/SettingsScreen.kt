@@ -143,6 +143,7 @@ import com.hikari.app.player.PlayerSkins
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
+import com.hikari.app.ui.AuraColors
 import com.hikari.app.ui.LoadingEffects
 import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterEffects
@@ -164,6 +165,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
+import com.hikari.app.ui.theme.inkOn
 import com.hikari.app.web.UserscriptManager
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
@@ -1510,6 +1512,11 @@ private fun PosterStyleCard(app: HikariApp) {
     val glass by glassFlow.collectAsState(initial = true)
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val effects by effectsFlow.collectAsState(initial = emptySet())
+    // The aura ring's own colour (Settings → App Layout → Poster styling →
+    // Aura ring colour): "Accent" follows the app accent, which is what the
+    // ring always drew, so an existing look is unchanged on update.
+    val auraFlow = remember { app.store.posterAuraColorFlow() }
+    val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     var effectPicker by remember { mutableStateOf(false) }
     // The chosen treatments, translated PART BY PART (a combination read back as
     // one English sentence could not be translated).
@@ -1551,6 +1558,14 @@ private fun PosterStyleCard(app: HikariApp) {
             leadingIcon = Icons.Filled.AutoAwesome,
             onClick = { effectPicker = true },
         )
+        // The aura ring's own colour, offered only while that ring is on: a
+        // colour row for a ring that is not being drawn would be noise.
+        if (PosterEffects.AURA in effects) {
+            AuraColorRow(
+                selected = auraColor,
+                onPick = { key -> scope.launch { runCatching { app.store.setPosterAuraColor(key) } } },
+            )
+        }
         Spacer(Modifier.height(14.dp))
         SettingsSlider(
             label = tr("Dynamic blur"),
@@ -2707,6 +2722,11 @@ private fun LoadingBannerCard(app: HikariApp) {
     val style by styleFlow.collectAsState(initial = LoadingStyles.POSTER)
     val effectsFlow = remember { app.store.loadingEffectsFlow() }
     val effects by effectsFlow.collectAsState(initial = setOf(LoadingEffects.SHEEN))
+    // The colour the cover's aura ring is drawn in (Settings → App Layout →
+    // Loading screen → Aura ring colour). Handed to the player as a resolved
+    // colour, so both screens showing the cover draw the same ring.
+    val auraFlow = remember { app.store.loadingAuraColorFlow() }
+    val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     var pickerOpen by remember { mutableStateOf(false) }
     var effectPickerOpen by remember { mutableStateOf(false) }
     // Translated one treatment at a time — a combination read back as one
@@ -2766,6 +2786,13 @@ private fun LoadingBannerCard(app: HikariApp) {
                 leadingIcon = Icons.Filled.AutoAwesome,
                 onClick = { effectPickerOpen = true },
             )
+            // The ring's colour, offered only while the ring is on.
+            if (LoadingEffects.AURA in effects) {
+                AuraColorRow(
+                    selected = auraColor,
+                    onPick = { key -> scope.launch { runCatching { app.store.setLoadingAuraColor(key) } } },
+                )
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 tr("Applies to the next video you open."),
@@ -3881,6 +3908,92 @@ private fun AccentCard(
                     scope.launch { runCatching { app.store.setPlayerAccent(accent.key) } }
                 }
             )
+        }
+    }
+}
+
+/**
+ * The aura ring's colour picker — Settings → App Layout → Poster styling /
+ * Loading screen → Aura ring colour.
+ *
+ * A ring is the one poster/loading treatment whose whole character is its
+ * colour, so it gets its own choice instead of being nailed to the app accent:
+ * "Accent" (first swatch, and the default, so nothing changes for anyone
+ * upgrading) follows MaterialTheme's primary, exactly as the ring always drew.
+ * The rest are the app's own palette ([HikariAccent]), so the ring can only ever
+ * be one of the colours the rest of the app is built from.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AuraColorRow(selected: String, onPick: (String) -> Unit) {
+    val chosen = AuraColors.normalize(selected)
+    Column(Modifier.padding(top = 12.dp)) {
+        Text(
+            tr("Aura ring colour"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            if (chosen == AuraColors.THEME) tr("Follows the accent colour")
+            else tr("The ring's own colour"),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AuraColors.ALL.forEach { key ->
+                val isSelected = key == chosen
+                val swatch = if (key == AuraColors.THEME) MaterialTheme.colorScheme.primary
+                else HikariAccent.fromKey(key).mid
+                Column(
+                    Modifier
+                        .width(56.dp)
+                        .clickable { onPick(key) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(
+                        Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(swatch),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = null,
+                                    tint = inkOn(swatch),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        tr(AuraColors.label(key)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
     }
 }

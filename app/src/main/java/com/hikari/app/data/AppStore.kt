@@ -165,6 +165,13 @@ class AppStore(private val ctx: Context) {
         val LOADING_EFFECTS = stringSetPreferencesKey("loadingEffects")
         /** A single treatment stored by a build before multi-select existed. */
         val LOADING_EFFECT = stringPreferencesKey("loadingEffect")
+        /** The colour a poster card's "Aura ring" is drawn in — see
+         *  [com.hikari.app.ui.AuraColors]. "theme" (the default) follows the app
+         *  accent, which is what the ring always drew. */
+        val POSTER_AURA_COLOR = stringPreferencesKey("posterAuraColor")
+        /** The same choice for the loading screen's own aura ring. Kept apart
+         *  from the poster's so the two screens can differ. */
+        val LOADING_AURA_COLOR = stringPreferencesKey("loadingAuraColor")
         /** "Search every installed extension" (Settings → Playback → Server
          *  search). On by default: a title is searched across every installed
          *  extension, the way it always has been. Off, only the extension the
@@ -632,6 +639,35 @@ class AppStore(private val ctx: Context) {
         write("LOADING_EFFECTS") {
             it[K.LOADING_EFFECTS] = com.hikari.app.ui.LoadingEffects.normalizeSet(keys)
             it.remove(K.LOADING_EFFECT)
+        }
+    }
+
+    /** The colour a poster card's aura ring is drawn in ([AuraColors.THEME] =
+     *  follow the app accent). */
+    fun posterAuraColorFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.AuraColors.normalize(it[K.POSTER_AURA_COLOR])
+        }
+
+    suspend fun posterAuraColor(): String = posterAuraColorFlow().first()
+
+    suspend fun setPosterAuraColor(key: String) {
+        write("POSTER_AURA_COLOR") {
+            it[K.POSTER_AURA_COLOR] = com.hikari.app.ui.AuraColors.normalize(key)
+        }
+    }
+
+    /** The colour the loading screen's own aura ring is drawn in. */
+    fun loadingAuraColorFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.AuraColors.normalize(it[K.LOADING_AURA_COLOR])
+        }
+
+    suspend fun loadingAuraColor(): String = loadingAuraColorFlow().first()
+
+    suspend fun setLoadingAuraColor(key: String) {
+        write("LOADING_AURA_COLOR") {
+            it[K.LOADING_AURA_COLOR] = com.hikari.app.ui.AuraColors.normalize(key)
         }
     }
 

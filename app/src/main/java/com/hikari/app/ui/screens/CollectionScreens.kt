@@ -3412,8 +3412,11 @@ class TmdbGridViewModel(
     fun loadNext() {
         if (_loading.value || _done.value) return
         if (preset == null && spec == null) return
-        val work = com.hikari.app.work.BackgroundWork.begin("Loading " + label)
-        viewModelScope.launch {
+        var jobHolder: kotlinx.coroutines.Job? = null
+        val work = com.hikari.app.work.BackgroundWork.begin("Loading " + label) {
+            jobHolder?.cancel()
+        }
+        jobHolder = viewModelScope.launch {
             _loading.value = true
             val specNow = spec
             val presetNow = preset

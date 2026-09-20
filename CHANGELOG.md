@@ -1,3 +1,22 @@
+## 0.9.0
+
+The coloured glow is back around every poster, the loading screen's ring and frame wrap the whole screen with a colour of their own, and closing the app now really stops it — no more notification saying it is still running, and no more splash screen that will not go away.
+
+### Added
+
+- **A colour for the aura ring (Settings → App Layout).** The ring around a poster card, and the ring around the loading screen, each have their own colour now: **Accent** (the default — it follows your app colour, exactly as before) or any of the app's eleven palette colours. The row appears under the effect picker as soon as **Aura ring** is ticked, on both the Poster styling card and the Loading screen card, so a red ring on a gold app is one tap.
+
+### Fixed
+
+- **The coloured glow around posters not showing.** The soft halo behind each poster was left as just a slightly enlarged copy of the artwork with no blur on top, so all that showed was a ~4dp rim that read as nothing at all — the effect looked broken no matter what the Dynamic blur slider said. The blur is back (unclipped, so it spills out around the card instead of being cut back to it), and the halo is now drawn as two layers — a tight band of the artwork's colours at the card's edge and a wide faint one beyond it — so the light falls off gradually. The tiny soft decode stays underneath, so the halo still shows on phones older than Android 12, where the blur filter does not exist.
+- **"It is still running in the background after I close the app."** Hikari keeps long searches alive while you are in another app (that is deliberate — Android freezes a backgrounded app and every search used to stop dead), but it never let go when the app was actually *closed*: the notification stayed on screen saying it was still searching, hundreds of requests kept running for minutes, and the next launch had to fight all of that for the phone — which is the "I closed it, opened it again, and it just sits on the Hikari logo" report. Closing the app (Back out of it, or swiping it off the recents list) now cancels every registered background task outright and stops the service, so the notification goes and nothing of ours is left running. Stepping away to another app still keeps work going, as before.
+- **The trailer still playing under the video.** The player built playback without asking for audio focus, so whatever else the phone was playing carried on underneath: the trailer you opened from a title page (which hands off to the YouTube app), a browser tab, a music player. Playback now requests audio focus, which is what pauses them — and the in-app WebView also stops its own media when you leave it (and resumes it when you come back), so a video page opened in Hikari cannot keep playing in the background either.
+- **Two different loading screens in a row.** The detail page puts the loading card up on the tap and the player then shows its own copy of it; the two were meant to be the same picture, but the aura ring was drawn in the app's accent on one and the player's own accent on the other, so the hand-off looked like a second, different loading screen appearing. The detail page now resolves the ring's colour and hands the exact colour over to the player.
+
+### Changed
+
+- **The loading screen's aura ring and gallery frame are out at the phone's edge.** Both used to sit in the middle of the screen around the title card — a small ring around some text, nowhere near the border. The aura ring is now a glowing frame around the whole loading screen (a wide soft band of light under a crisp hairline, in your chosen colour, breathing), and the gallery frame is a hairline mount just inside it, so with both ticked you get one nested pair of rings hugging the screen. The player's own cover draws the identical picture.
+
 ## 0.8.0
 
 The aura ring is a ring around the card instead of a circle over it, every visual effect can be combined with any other, the server search has exception extensions, the 3D tilt actually looks 3D, and the app scrolls and taps more smoothly.

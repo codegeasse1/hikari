@@ -55,32 +55,36 @@
             android:background="@drawable/player_banner_glow"
             android:visibility="gone" />
 
-        <!-- The title block, wrapped in the "Aura ring" treatment (Settings → App
-             Layout → Loading screen → Effect). The ring is a ROUNDED RECTANGLE
-             hugging the card, exactly like the ring a poster card wears — it
-             used to be a fixed 300dp CIRCLE, which crossed a rectangular card at
-             four points and read as a stray outline rather than as the card's
-             aura.
+        <!-- Loading cover EFFECT "Aura ring" (Settings → App Layout → Loading
+             screen → Effect). It hangs on the SCREEN's own edge rather than
+             around the title card: the ring IS the loading screen's frame lit up,
+             so it belongs out at the phone's border (the ring and the gallery
+             frame both sat too far inside — see the 8dp/18dp pair in the detail
+             screen's own cover, which draws the identical picture).
 
-             The wrapper is what makes it hug: the ring view matches the frame's
-             own size, and the frame is sized by the title block inside it, so
-             the ring fits the poster card, the big Cinematic title or the small
-             Minimal one without a single measurement in code. The frame is
-             always laid out (it is the title's parent); only the ring itself is
-             toggled. -->
+             The colour is chosen in Settings (Aura ring colour) and handed over
+             as an ARGB extra; PlayerActivity draws the ring itself from that
+             colour (auraRingDrawable), so the two screens match exactly. The
+             drawable here is only the fallback for when no colour was passed.
+
+             PlayerActivity animates its ALPHA only — the ring is a border around
+             the screen, so scaling it would pull it off the edge. -->
+        <View
+            android:id="@+id/loading_effect_ring"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_margin="8dp"
+            android:background="@drawable/player_banner_effect_ring"
+            android:visibility="gone" />
+
+        <!-- The title block. (It used to be wrapped by a frame that owned the
+             aura ring; the ring moved out to the screen's edge, so this is just
+             the card's centred slot now.) -->
         <FrameLayout
             android:id="@+id/loading_ring_frame"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:padding="18dp">
-
-            <View
-                android:id="@+id/loading_effect_ring"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/player_banner_effect_ring"
-                android:visibility="gone" />
+            android:layout_gravity="center">
 
             <LinearLayout
                 android:id="@+id/loading_title_box"
@@ -97,11 +101,10 @@
                      backdrop. GONE for the other styles. -->
                 <ImageView
                     android:id="@+id/loading_card_poster"
-                    android:layout_width="120dp"
-                    android:layout_height="180dp"
-                    android:layout_marginBottom="16dp"
+                    android:layout_width="128dp"
+                    android:layout_height="192dp"
+                    android:layout_marginBottom="14dp"
                     android:background="@drawable/player_banner_card"
-                    android:padding="6dp"
                     android:scaleType="centerCrop"
                     android:visibility="gone" />
 
@@ -184,14 +187,15 @@
             android:background="@drawable/player_banner_effect_sheen"
             android:visibility="gone" />
 
-        <!-- Inset further than it used to be (14dp read as an edge ON the card;
-             at 22dp the line sits clearly OUTSIDE it, which is what makes it a
-             frame around the cover rather than a border on it). -->
+        <!-- Inset so it sits just inside the aura ring's own path (8dp) when
+             both treatments are chosen, and close to the phone's border on its
+             own — the two rings are one nested pair, not two rings fighting for
+             the same line. -->
         <View
             android:id="@+id/loading_effect_frame"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_margin="22dp"
+            android:layout_margin="18dp"
             android:background="@drawable/player_banner_effect_frame"
             android:visibility="gone" />
     </FrameLayout>

@@ -194,7 +194,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // Extension installs/updates are long downloads+dex loads; register
         // them so a background trip doesn't freeze the process mid-install
         // (see [com.hikari.app.work.BackgroundWork]).
-        val work = com.hikari.app.work.BackgroundWork.begin("Updating extensions")
+        // Holder first: the token's cancel callback has to reach the job, and the
+        // job cannot exist before the token does (see BackgroundWork.cancelAll).
+        var jobHolder: Job? = null
+        val work = com.hikari.app.work.BackgroundWork.begin("Updating extensions") {
+            jobHolder?.cancel()
+        }
         val job = viewModelScope.launch {
             val gen = ++backgroundGeneration
             _busy.value = true
@@ -204,6 +209,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 if (backgroundGeneration == gen) _busy.value = false
             }
         }
+        jobHolder = job
         job.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
         return job
     }

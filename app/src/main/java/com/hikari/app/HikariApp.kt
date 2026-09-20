@@ -1,6 +1,9 @@
 package com.hikari.app
 
+import android.app.Activity
 import android.app.Application
+import android.app.Application.ActivityLifecycleCallbacks
+import android.os.Bundle
 import android.content.Context
 import coil.Coil
 import coil.ImageLoader
@@ -194,6 +197,7 @@ class HikariApp : Application() {
         Logs.init(this)
         Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
+        watchForTheUserClosingTheApp()
         // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
         // loader builds a class loader over the .ext and instantiates a source,
         // and the source immediately resolves its own dependencies out of
@@ -452,6 +456,60 @@ class HikariApp : Application() {
                     "${System.currentTimeMillis() - startupAt}ms",
             )
         }
+    }
+
+    /**
+     * "The user CLOSED the app" — the one moment background work must let go.
+     *
+     * [com.hikari.app.work.BackgroundWork] exists so a long catalog load, search
+     * or source scan survives the user stepping into another app (Android freezes
+     * a backgrounded process, which used to stop them dead). That must NOT extend
+     * to the app being closed: a search left holding a foreground service after
+     * the user is done kept a permanent "Hikari keeps running while you use other
+     * apps" notification on screen, kept hundreds of requests alive for minutes,
+     * and left the next launch fighting that work for the CPU — reported as "it
+     * is still running in the background after I close it, and then it just stays
+     * stuck on the Hikari logo".
+     *
+     * Android has no "the user closed it" callback, so it is inferred, and only
+     * from signals that really mean it:
+     *
+     *  - the last Activity being DESTROYED because it is FINISHING (Back out of
+     *    the app, or the launcher's task removal) — here;
+     *  - the task being swiped off the recents list — WorkService.onTaskRemoved.
+     *
+     * Deliberately NOT from onStop: pressing Home, locking the screen or opening
+     * another app stops the Activities too, and continuing to work through that
+     * is the entire point of the service.
+     */
+    private fun watchForTheUserClosingTheApp() {
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            /** Activities between onStart and onStop — 0 means nothing of ours is
+             *  on screen (backgrounded OR closing). */
+            private var started = 0
+
+            override fun onActivityStarted(activity: Activity) {
+                started++
+                // An Activity is up: background work may hold the process again
+                // (see BackgroundWork.reopen — closing the app latches it shut).
+                com.hikari.app.work.BackgroundWork.reopen()
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                started = (started - 1).coerceAtLeast(0)
+            }
+
+            override fun onActivityDestroyed(activity: Activity) {
+                if (!activity.isFinishing) return
+                if (started > 0) return
+                com.hikari.app.work.BackgroundWork.cancelAll("the last screen was closed")
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        })
     }
 
     /**

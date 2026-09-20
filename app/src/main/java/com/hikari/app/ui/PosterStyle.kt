@@ -31,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -128,7 +130,7 @@ object PosterEffects {
         GLOW -> "Soft coloured halo around the artwork"
         TILT -> "Cards lean back in 3D with a highlight"
         SHEEN -> "A band of light sweeps across the art"
-        AURA -> "A breathing accent ring around the card"
+        AURA -> "A breathing ring around the card, in its own colour"
         SPOTLIGHT -> "Accent spotlight behind, scrim over the bottom"
         FRAME -> "Art inset behind a hairline gallery frame"
         else -> "Plain artwork, no effect"
@@ -185,6 +187,9 @@ data class PosterStyle(
      *  card can wear several at once (sheen + aura ring, gallery frame + 3D
      *  tilt…) and an empty set means "none". */
     val effects: Collection<String> = emptyList(),
+    /** The colour the [PosterEffects.AURA] ring is drawn in
+     *  ([com.hikari.app.ui.AuraColors.THEME] follows the app accent). */
+    val auraColor: String = AuraColors.THEME,
 ) {
     /** True when [key] is one of the treatments this card wears. */
     fun has(key: String): Boolean = key in effects
@@ -204,12 +209,14 @@ fun rememberPosterStyle(): PosterStyle {
     val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
     val glassFlow = remember { app.store.posterGlassFlow() }
     val effectsFlow = remember { app.store.posterEffectsFlow() }
+    val auraFlow = remember { app.store.posterAuraColorFlow() }
     val blur by blurFlow.collectAsState(initial = 0)
     val corner by cornerFlow.collectAsState(initial = 14)
     val titles by titlesFlow.collectAsState(initial = true)
     val ratings by ratingsFlow.collectAsState(initial = false)
     val glass by glassFlow.collectAsState(initial = true)
     val effects by effectsFlow.collectAsState(initial = emptySet())
+    val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     return PosterStyle(
         blur = blur.coerceIn(0, 24),
         corner = corner.coerceIn(0, 28),
@@ -217,6 +224,7 @@ fun rememberPosterStyle(): PosterStyle {
         showRatings = ratings,
         glass = glass,
         effects = PosterEffects.normalizeSet(effects),
+        auraColor = AuraColors.normalize(auraColor),
     )
 }
 
@@ -342,6 +350,11 @@ fun PosterArt(
     }
     val accent = MaterialTheme.colorScheme.primary
     val accentAlt = MaterialTheme.colorScheme.tertiary
+    // The aura ring's colour: its own setting (Settings → App Layout → Poster
+    // styling → Aura ring colour), or the app accent when that is left on
+    // "Accent". See [AuraColors].
+    val auraStart = AuraColors.color(style.auraColor, accent)
+    val auraEnd = AuraColors.color(style.auraColor, accentAlt)
     // Glow/Spotlight ask for a halo regardless of the blur slider; the other
     // treatments leave the slider's own value alone.
     val halo = if (PosterEffects.haloed(effects)) maxOf(style.blur, 16) else style.blur
@@ -420,25 +433,49 @@ fun PosterArt(
         if (halo > 0) {
             // The halo is a TINY decode of the same artwork, scaled back up —
             // see [PosterLoader.haloModel]. That is what makes it show on every
-            // Android version: `Modifier.blur` (used here before) is a no-op
-            // below API 31, so identical settings gave one user a coloured halo
-            // and another flat artwork.
+            // Android version: `Modifier.blur` alone is a NO-OP below API 31, so
+            // identical settings gave one user a coloured glow and another flat
+            // artwork (the "the blur effect doesn't show for him" report).
             //
-            // No `Modifier.blur` on top any more: it built a RenderEffect — an
-            // offscreen render node — for EVERY poster on screen, which is the
-            // single most expensive thing a scrolling grid of them did, and the
-            // upscaled 6–34px decode is already soft. Same look, no per-poster
-            // render effect.
+            // Two layers, because that is what a glow actually is: a tight band
+            // of the artwork's own colours right at the card's edge, and a wide
+            // faint one spilling further out, so the light FALLS OFF instead of
+            // ending in a hard rim. On API 31+ a real gaussian blur is thrown on
+            // top (with an UNBOUNDED edge treatment, so the blur is not clipped
+            // back to the cell — that clipping is what made the halo read as a
+            // flat 4dp outline); below 31 the upscaled 6-34px decode already
+            // carries the softness.
             val haloModel = remember(model, halo) { PosterLoader.haloModel(model, halo) }
+            val soft = remember(halo) {
+                if (android.os.Build.VERSION.SDK_INT >= 31) {
+                    Modifier.blur(halo.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                } else {
+                    Modifier
+                }
+            }
+            // The wide, faint spill. Scales with the blur slider, so the slider
+            // is a real gradient of softness rather than a switch.
+            val spread = 1.10f + (halo.coerceIn(0, 24) / 100f)
             PosterImage(
                 model = haloModel,
                 contentDescription = null,
                 modifier = Modifier
                     .matchParentSize()
-                    // Grown past the cell so the halo peeks out around the art
-                    // instead of being hidden behind it.
-                    .scale(1.08f)
-                    .alpha(0.78f),
+                    .scale(spread)
+                    .then(soft)
+                    .alpha(0.34f),
+                contentScale = ContentScale.Crop,
+            )
+            // The tight band at the card's edge — the bit that makes the card
+            // look like it is glowing rather than sitting on a coloured smear.
+            PosterImage(
+                model = haloModel,
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .scale(1.04f)
+                    .then(soft)
+                    .alpha(0.72f),
                 contentScale = ContentScale.Crop,
             )
         }
@@ -558,7 +595,7 @@ fun PosterArt(
                     .graphicsLayer { alpha = breathe.value }
                     .border(
                         2.dp,
-                        Brush.linearGradient(listOf(accent, accentAlt, accent)),
+                        Brush.linearGradient(listOf(auraStart, auraEnd, auraStart)),
                         shape,
                     )
             )

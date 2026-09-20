@@ -71,6 +71,23 @@ class WorkService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * The user swiped Hikari off the recents list.
+     *
+     * That is a real "the app is closed" — not a "they are looking at something
+     * else" — so the work this service was keeping alive is cancelled outright
+     * ([BackgroundWork.cancelAll]) instead of being left to run with the
+     * notification still on screen. Without this the app kept searching every
+     * installed extension in the background and the user's status bar kept saying
+     * `Opening "…"` long after they had closed it (the "it says it is still
+     * running, and the app won't open any more" report).
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        BackgroundWork.cancelAll("the app was swiped off the recents list")
+        stopSelfWork()
+        super.onTaskRemoved(rootIntent)
+    }
+
     private fun startInForeground() {
         val notif = buildNotification()
         val ok = runCatching {

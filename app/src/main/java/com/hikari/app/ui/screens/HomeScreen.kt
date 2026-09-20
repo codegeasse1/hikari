@@ -256,7 +256,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 key == "all" -> "Loading Home catalogs"
                 else -> "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
             }
-        )
+        ) { loadJob?.cancel() }
         val loadedCollection = pickedCollection
         loadJob = viewModelScope.launch {
             // Row key -> poster-tokenized copy, so a partial update only

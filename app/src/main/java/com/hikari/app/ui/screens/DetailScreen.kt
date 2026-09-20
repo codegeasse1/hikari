@@ -84,6 +84,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -428,9 +429,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     fun load(providerId: String, type: MediaType, mediaId: String, title: String, posterUrl: String?, rawType: String) {
         // Keeps the page's meta/episode/source work alive if the user leaves the
         // app (see [com.hikari.app.work.BackgroundWork]) — the process would
-        // otherwise be frozen mid-fetch.
-        val work = com.hikari.app.work.BackgroundWork.begin("Opening \"${title.take(60)}\"")
-        val loadJob = viewModelScope.launch {
+        // otherwise be frozen mid-fetch. The token also carries the way to STOP
+        // this page's work: when the user closes the app every registered task is
+        // cancelled directly rather than left running for minutes under a
+        // "Hikari keeps running…" notification (see BackgroundWork.cancelAll).
+        var loadJob: kotlinx.coroutines.Job? = null
+        val work = com.hikari.app.work.BackgroundWork.begin(
+            "Opening \"${title.take(60)}\"",
+        ) { loadJob?.cancel() }
+        loadJob = viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _streamsReady.value = false
@@ -557,7 +564,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             launch { loadShelves(item) }
             prefetchFirstStreams(item)
         }
-        loadJob.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+        loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
     /**
@@ -1386,6 +1393,13 @@ fun DetailScreen(
     val loadingEffectsFlow = remember { app.store.loadingEffectsFlow() }
     val loadingEffectsSetting by loadingEffectsFlow
         .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN))
+    // The colour the loading cover's aura ring is drawn in, resolved HERE and
+    // handed to the player as an ARGB int — the ring is the one part of the
+    // cover with its own colour setting, and the two screens showing it
+    // (this page and the player) must resolve it to the same pixels or the
+    // hand-off from one to the other looks like a second loading screen.
+    val loadingAuraColorSetting by remember { app.store.loadingAuraColorFlow() }
+        .collectAsState(initial = com.hikari.app.ui.AuraColors.THEME)
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1487,6 +1501,15 @@ fun DetailScreen(
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
                 putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
+                // The aura ring's colour, resolved to the same ARGB this page
+                // draws it in, so the player's cover continues the exact picture
+                // the detail page put up (see loadingAuraColorSetting above).
+                putExtra(
+                    "loadingAuraColor",
+                    com.hikari.app.ui.AuraColors
+                        .color(loadingAuraColorSetting, MaterialTheme.colorScheme.primary)
+                        .toArgb(),
+                )
                 putExtra("startAfterServers", startAfterServers)
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
@@ -3063,6 +3086,18 @@ private fun rememberLoadingEffect(): Set<String> {
         .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN)).value
 }
 
+/** The colour the cover's aura ring is drawn in (Settings → App Layout →
+ *  Loading screen → Aura ring colour), read the same way as the style and the
+ *  effects — one read per cover, so the ring is the right colour on its first
+ *  frame. See [com.hikari.app.ui.AuraColors]. */
+@Composable
+private fun rememberLoadingAuraColor(): String {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
+    val flow = remember(app) { app.store.loadingAuraColorFlow() }
+    return remember(flow) { flow }
+        .collectAsState(initial = com.hikari.app.ui.AuraColors.THEME).value
+}
+
 /**
  * The cover's own background for every loading style.
  *
@@ -3139,9 +3174,9 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
  * draws: no extra image load, no extra network request, and the style's own
  * motion (the breathing title, the drifting backdrop) keeps running underneath.
  *
- * The aura ring is NOT drawn here — it hugs the card, so it is drawn by
- * [AuraRingBox] around whichever card this style put up. Everything else covers
- * the whole screen and belongs here.
+ * Every one of them covers the whole screen — including the aura ring, which
+ * hangs on the phone's own edge (see [LoadingAuraInset]) rather than around the
+ * card it is drawn over.
  *
  * The two quiet styles were reported as too plain — "minimal and spotlight is so
  * simple, it just shows the title zooming in and out" — and this is the answer:
@@ -3153,7 +3188,62 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
  */
 @Composable
 private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
+    // The ring's colour: its own setting (Settings → App Layout → Loading screen
+    // → Effect → Aura ring colour), or the card's accent when that is left on
+    // "Accent" — see [com.hikari.app.ui.AuraColors].
+    val auraColor = com.hikari.app.ui.AuraColors.color(rememberLoadingAuraColor(), accent)
     val chosen = com.hikari.app.ui.LoadingEffects.normalizeSet(effects)
+    if (com.hikari.app.ui.LoadingEffects.AURA in chosen) {
+        // The aura ring — hung on the SCREEN's own edge, not on the card.
+        //
+        // It used to hug the title card, which put it in the middle of a black
+        // screen: a small rounded rectangle floating around some text, nowhere
+        // near the phone's edges (the "the loading screen aura ring and gallery
+        // frame are too far from the phone border" report). The ring is the
+        // loading screen's frame lit up in the chosen colour, so it belongs at
+        // the edge, wrapping the whole cover — a wide soft band of light under a
+        // crisp hairline, breathing.
+        val clock = rememberInfiniteTransition(label = "loading-aura")
+        val breathe by clock.animateFloat(
+            initialValue = 0.34f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1700, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "breathe",
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = breathe },
+        ) {
+            // The light the ring stands in. A thick, faint stroke centred on the
+            // same path, so the colour bleeds inwards instead of the ring being
+            // a bare outline.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(LoadingAuraInset)
+                    .border(
+                        14.dp,
+                        auraColor.copy(alpha = 0.20f),
+                        RoundedCornerShape(26.dp),
+                    )
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(LoadingAuraInset)
+                    .border(
+                        2.dp,
+                        Brush.linearGradient(listOf(auraColor, auraColor.copy(alpha = 0.45f), auraColor)),
+                        RoundedCornerShape(26.dp),
+                    )
+            )
+        }
+    }
+
     if (com.hikari.app.ui.LoadingEffects.SHEEN in chosen) {
         // A band of light crossing the cover, the way a glossy print does when
         // the light catches it.
@@ -3186,17 +3276,16 @@ private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
     }
 
     if (com.hikari.app.ui.LoadingEffects.FRAME in chosen) {
-        // A gallery mat: the card sits inside a hairline mount, the way a print
-        // does in a frame. Inset a touch FURTHER than it used to be, so the line
-        // reads as a frame around the card rather than as an edge on it.
+        // A gallery mat: a hairline mount around the cover, drawn just inside
+        // the aura ring when both are chosen (see [LoadingAuraInset]).
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(22.dp)
+                .padding(LoadingFrameInset)
                 .border(
                     1.dp,
                     Color.White.copy(alpha = 0.22f),
-                    RoundedCornerShape(20.dp),
+                    RoundedCornerShape(18.dp),
                 )
         )
     }
@@ -3234,71 +3323,24 @@ private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
 }
 
 /**
- * The aura ring, wrapped around whichever card the style drew — Settings → App
- * Layout → Loading screen → Effect → "Aura ring".
+ * Where the loading screen's "Aura ring" and "Gallery frame" sit.
  *
- * A ROUNDED RECTANGLE hugging the card, exactly like the ring a poster card
- * wears ([com.hikari.app.ui.PosterEffects.AURA]), not the circle it used to be.
- * That matters because the card is a card: a circle drawn around a rectangular
- * one crosses it at four points and reads as a stray outline, while a rounded
- * rectangle follows the same corner curve the card does and reads as its aura.
+ * Both wrap the WHOLE cover, right out at the phone's own edge: the aura ring
+ * is the outermost (a lit border around the screen), and the gallery frame is a
+ * hairline mount just inside it, so choosing both gives one nested pair of
+ * rings instead of two rings competing for the same path. The ring is a ROUNDED
+ * rectangle — a circle drawn on a rectangular screen crosses it and reads as a
+ * stray outline.
  *
- * Drawn around the CONTENT rather than over the whole screen, so it fits whatever
- * the style put there — the poster on its glass card, the big Cinematic title,
- * the small Minimal one — instead of being a fixed 300dp shape that fits none of
- * them. Only the alpha moves; the card's own breathing stays the card's.
- *
- * A no-op when the treatment is not chosen, so the call sites read as one line.
+ * These two numbers are shared by every loading style (they are drawn by
+ * [LoadingCoverEffect], over whatever card the style put up) and are matched by
+ * the player's own cover, which draws the same two rings in
+ * activity_player.xml from its own margins — the detail screen's card and the
+ * player's are meant to be the same picture, so the hand-off between them never
+ * moves anything on screen.
  */
-@Composable
-private fun AuraRingBox(
-    effects: Set<String>,
-    accent: Color,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    if (com.hikari.app.ui.LoadingEffects.AURA !in com.hikari.app.ui.LoadingEffects.normalizeSet(effects)) {
-        Box(modifier) { content() }
-        return
-    }
-    val accentAlt = MaterialTheme.colorScheme.tertiary
-    val clock = rememberInfiniteTransition(label = "loading-aura")
-    val breathe by clock.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1700, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "breathe",
-    )
-    Box(modifier) {
-        // The light the ring stands in, breathing with it: without this the ring
-        // is a drawn outline, with it the card looks lit from behind.
-        Box(
-            Modifier
-                .matchParentSize()
-                .graphicsLayer { alpha = breathe * 0.5f }
-                .background(
-                    Brush.verticalGradient(
-                        listOf(accent.copy(alpha = 0.22f), Color.Transparent, accentAlt.copy(alpha = 0.16f))
-                    ),
-                    RoundedCornerShape(28.dp),
-                )
-        )
-        Box(Modifier.padding(9.dp)) { content() }
-        Box(
-            Modifier
-                .matchParentSize()
-                .graphicsLayer { alpha = 0.32f + 0.68f * breathe }
-                .border(
-                    2.dp,
-                    Brush.linearGradient(listOf(accent, accentAlt, accent)),
-                    RoundedCornerShape(28.dp),
-                )
-        )
-    }
-}
+private val LoadingAuraInset = 8.dp
+private val LoadingFrameInset = 18.dp
 
 /** CINEMATIC — the original look: the backdrop drifting slowly under a heavy
  *  scrim, the title breathing in and out, the status line at the bottom. */
@@ -3363,18 +3405,17 @@ private fun CinematicLoadingCard(
                     }
                 )
         )
-        AuraRingBox(effects, Color(0xFFF5C569), Modifier.align(Alignment.Center)) {
-            Column(
-                Modifier
-                    .padding(horizontal = 32.dp)
-                    .graphicsLayer {
-                        scaleX = breath
-                        scaleY = breath
-                    },
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
-            }
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 32.dp)
+                .graphicsLayer {
+                    scaleX = breath
+                    scaleY = breath
+                },
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
@@ -3470,18 +3511,17 @@ private fun SpotlightLoadingCard(
                 center = Offset(size.width / 2f, size.height * 0.42f),
             )
         }
-        AuraRingBox(effects, accent, Modifier.align(Alignment.Center)) {
-            Column(
-                Modifier
-                    .padding(horizontal = 32.dp)
-                    .graphicsLayer {
-                        scaleX = breath
-                        scaleY = breath
-                    },
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                LoadingTitleBlock(title, episodeLabel, detail) { accent }
-            }
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 32.dp)
+                .graphicsLayer {
+                    scaleX = breath
+                    scaleY = breath
+                },
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            LoadingTitleBlock(title, episodeLabel, detail) { accent }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(accent, Color(0xCCFFFFFF))
@@ -3541,10 +3581,11 @@ private fun PosterLoadingCard(
                         .copy(alpha = if (model != null) 0.55f else 0f)
                 )
         )
-        AuraRingBox(effects, accent, Modifier.align(Alignment.Center).padding(horizontal = 30.dp)) {
-            Column(
-                Modifier
-                    .graphicsLayer { translationY = lift }
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 30.dp)
+                .graphicsLayer { translationY = lift }
                     .clip(GlassShape)
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
                     .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), GlassShape)
@@ -3575,7 +3616,6 @@ private fun PosterLoadingCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
         }
         // The chosen loading treatments, over the glass card and its poster.
         LoadingCoverEffect(effects, accent)
@@ -3597,11 +3637,13 @@ private fun MinimalLoadingCard(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        AuraRingBox(effects, accent, Modifier.align(Alignment.Center).padding(horizontal = 20.dp)) {
-            Column(
-                Modifier.padding(horizontal = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+        Column(
+            Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 20.dp)
+                .padding(horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
                 Text(
                     title.uppercase(),
                     style = MaterialTheme.typography.titleMedium,
@@ -3626,7 +3668,6 @@ private fun MinimalLoadingCard(
                 }
                 Spacer(Modifier.height(26.dp))
                 LoadingStatusLine(accent, MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
         // The chosen loading treatments. On this style they are the whole point:
         // without them the card is a title and a spinner and nothing else.

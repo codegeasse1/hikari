@@ -1144,6 +1144,10 @@ class WebViewActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        // Pair with onPause's media stop: a WebView left paused never runs its
+        // scripts again, which would freeze the page for the rest of the session.
+        runCatching { webView.onResume() }
+        runCatching { popupChild?.onResume() }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -1423,6 +1427,23 @@ class WebViewActivity : ComponentActivity() {
         // Persist cookies/DOM-storage to disk the moment the WebView leaves the
         // foreground so logins and sessions survive even a force-kill.
         runCatching { CookieManager.getInstance().flush() }
+        // Stop whatever the page is PLAYING. A WebView plays media in its own
+        // process and does not pause just because the activity it lives in went
+        // to the background — so a trailer (or any video page) opened here kept
+        // its audio running under whatever the user did next, including the
+        // player's own video: the reported "the trailer sound is still coming
+        // while I watch something". pausing the WebView halts timers/rendering,
+        // and the JS is the belt-and-braces for a page that started playback
+        // through its own element rather than the WebView's media APIs.
+        runCatching { webView.onPause() }
+        runCatching { popupChild?.onPause() }
+        runCatching {
+            webView.evaluateJavascript(
+                "(function(){try{document.querySelectorAll('video,audio')" +
+                    ".forEach(function(m){try{m.pause()}catch(e){}})}catch(e){}})()",
+                null,
+            )
+        }
     }
 
     override fun onDestroy() {

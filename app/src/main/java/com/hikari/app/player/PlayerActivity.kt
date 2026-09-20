@@ -556,6 +556,13 @@ class PlayerActivity : ComponentActivity() {
      *  on at once; the extra carries them as a comma-joined list. */
     private var loadingEffects: Set<String> = emptySet()
 
+    /** The colour of the loading cover's aura ring, as ARGB — the detail screen
+     *  resolves it (Settings → App Layout → Loading screen → Aura ring colour,
+     *  see [com.hikari.app.ui.AuraColors]) and hands it over with the other
+     *  cover extras, so both screens draw the identical ring. 0 = not sent;
+     *  [showLoadingBanner] then falls back to the player's own accent. */
+    private var auraRingColor = 0
+
     private var speedIndex = 2
 
     /** True while the controls are locked — the media3 controller stays hidden
@@ -906,6 +913,11 @@ class PlayerActivity : ComponentActivity() {
         loadingEffects = com.hikari.app.ui.LoadingEffects.parse(
             intent.getStringExtra("loadingEffect")
         )
+        // The aura ring's colour, already resolved to ARGB by the detail screen
+        // (it draws the very same ring on its own cover, so passing the number
+        // rather than the preference key is what keeps the hand-off invisible).
+        // 0 means the extra was not sent: fall back to the player's accent.
+        auraRingColor = intent.getIntExtra("loadingAuraColor", 0)
         // A Download tap from outside the player opens the server chooser first
         // and never plays anything (see [downloadPickMode]); the in-player
         // Download button needs no flag because playback is already running.
@@ -2154,6 +2166,33 @@ class PlayerActivity : ComponentActivity() {
     /** [color] with its alpha replaced by [fraction] — for translucent accents. */
     private fun withAlpha(color: Int, fraction: Float): Int =
         (color and 0x00FFFFFF) or (fraction.coerceIn(0f, 1f) * 255f).roundToInt().shl(24)
+
+    /**
+     * The loading cover's aura ring, in the user's chosen colour.
+     *
+     * A thick, faint band of light under a crisp hairline — the same two strokes
+     * the detail screen's cover draws in Compose, and the same inset (8dp, set by
+     * activity_player.xml), so the ring the player shows is the ring the detail
+     * page handed over. Drawn here rather than tinted from XML because the colour
+     * arrives as an ARGB extra (see [auraRingColor]) — the ring has its own
+     * setting now, independent of both accents.
+     */
+    private fun auraRingDrawable(color: Int): Drawable {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int): Int = (v * density).roundToInt()
+        val radius = dp(26).toFloat()
+        val soft = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setStroke(dp(14), withAlpha(color, 0.20f))
+        }
+        val crisp = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setStroke(dp(2), color)
+        }
+        return android.graphics.drawable.LayerDrawable(arrayOf(soft, crisp))
+    }
 
     // ---- Accent palette (Settings → Appearance & Theme) ----------------------------
 
@@ -5877,6 +5916,23 @@ class PlayerActivity : ComponentActivity() {
             // mid-stream is a classic "it randomly stops to buffer" cause on
             // some devices, and media3's default wake mode is NONE.
             .setWakeMode(C.WAKE_MODE_NETWORK)
+            // Ask for AUDIO FOCUS — and stop when headphones are pulled out.
+            //
+            // The player used to keep media3's default attributes with
+            // `handleAudioFocus = false`, so whatever else the phone was already
+            // playing carried straight on UNDER the video: the trailer a user
+            // opened from the detail page (which hands off to the YouTube app and
+            // keeps playing in the background), a browser tab, a music player.
+            // That is the reported "the trailer sound is still coming while I try
+            // to play something". Requesting focus is what makes the platform
+            // pause them — and gives us focus back when they start again.
+            .setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
             // 10s steps on the centre rewind/forward buttons (and media3's own
             // seek handling), matching the reference player. Set here rather
             // than via PlayerView XML attrs, which this media3 version lacks.
@@ -7376,6 +7432,13 @@ class PlayerActivity : ComponentActivity() {
         val effects = com.hikari.app.ui.LoadingEffects.normalizeSet(loadingEffects)
         loadingEffectRing?.visibility =
             if (com.hikari.app.ui.LoadingEffects.AURA in effects) View.VISIBLE else View.GONE
+        // Painted from this session's colour (see [auraRingColor]): the ring has
+        // its own setting now, so the XML drawable's accent-tinted stroke is only
+        // the colour of the very first frame before the intent's value lands.
+        if (com.hikari.app.ui.LoadingEffects.AURA in effects) {
+            val ringColor = if (auraRingColor != 0) auraRingColor else accentMidColor
+            loadingEffectRing?.background = auraRingDrawable(ringColor)
+        }
         loadingEffectSheen?.visibility =
             if (com.hikari.app.ui.LoadingEffects.SHEEN in effects) View.VISIBLE else View.GONE
         loadingEffectFrame?.visibility =

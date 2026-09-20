@@ -103,7 +103,9 @@ class CatalogViewModel(
         // Keeps this page load running while the user is in another app (see
         // [com.hikari.app.work.BackgroundWork]) — otherwise the OS freezes the
         // process and the grid stops filling in until the app is reopened.
-        val work = com.hikari.app.work.BackgroundWork.begin("Loading $catalogName")
+        val work = com.hikari.app.work.BackgroundWork.begin("Loading $catalogName") {
+            loadJob?.cancel()
+        }
         loadJob = viewModelScope.launch {
             _loading.value = true
             val provider: ContentProvider? = manager.byId(providerId)

@@ -76,8 +76,10 @@ object LoadingStyles {
  *  - [NONE]  nothing over the card (the styles as they were).
  *  - [SHEEN] a band of light sweeps across the cover, like a glossy print
  *            catching the light.
- *  - [AURA]  a breathing accent ring behind the name.
- *  - [FRAME] a hairline gallery frame inset around the whole cover.
+ *  - [AURA]  a breathing ring of light around the SCREEN's own edge, in its own
+ *            colour (Settings → Aura ring colour).
+ *  - [FRAME] a hairline gallery frame inset around the whole cover, just inside
+ *            the aura ring when both are chosen.
  *  - [GLOW]  an accent bloom that swells and fades behind the title.
  */
 object LoadingEffects {
@@ -130,7 +132,7 @@ object LoadingEffects {
 
     fun description(key: String?): String = when (normalize(key)) {
         SHEEN -> "A band of light sweeps across the cover"
-        AURA -> "A breathing accent ring around the card"
+        AURA -> "A breathing ring of light around the screen's edge"
         FRAME -> "A hairline gallery frame around the cover"
         GLOW -> "An accent bloom that swells behind the title"
         else -> "No extra treatment"

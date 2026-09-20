@@ -43,7 +43,15 @@ object BackgroundWork {
     /** Handle for one registered piece of work. */
     class Token internal constructor(internal val id: Long)
 
-    private class Entry(val label: String, val startedAt: Long)
+    private class Entry(
+        val label: String,
+        val startedAt: Long,
+        /** Cancels the work behind this token. Optional: work that is a flow
+         *  being collected by somebody else's coroutine cannot be cancelled from
+         *  here, and once the service stops the platform freezes the process
+         *  anyway (which is all the user's "I closed the app" needs). */
+        val onCancel: (() -> Unit)?,
+    )
 
     private val lock = Any()
     private val active = LinkedHashMap<Long, Entry>()
@@ -51,12 +59,28 @@ object BackgroundWork {
     private var stopScheduled = false
     private var sweeping = false
 
+    /**
+     * True between [cancelAll] and the next Activity starting ([reopen]).
+     *
+     * While the app is closed, work that is still unwinding must not be able to
+     * bring the service back up — an app-scope search that has not noticed yet
+     * would otherwise register a fresh token a second after the user closed the
+     * app, restart the foreground service and put that "Hikari keeps running
+     * while you use other apps" notification straight back on screen.
+     */
+    @Volatile
+    private var closed = false
+
     private val handler = Handler(Looper.getMainLooper())
     private val stopRunnable = Runnable { stopIfIdle() }
+
     private val sweepRunnable = object : Runnable {
         override fun run() {
-            sweep()
-            handler.postDelayed(this, SWEEP_INTERVAL_MS)
+            // The sweeper keeps its own life as long as there is work to sweep —
+            // and retires when there is none, so an idle app is not woken every
+            // minute by a handler that stopped mattering.
+            if (sweep()) handler.postDelayed(this, SWEEP_INTERVAL_MS)
+            else synchronized(lock) { sweeping = false }
         }
     }
 
@@ -65,16 +89,29 @@ object BackgroundWork {
      * running in the background. Always pair with [end] (a `finally`, or a
      * job's `invokeOnCompletion`) so the service can stop.
      */
-    fun begin(label: String): Token {
+    fun begin(label: String, onCancel: (() -> Unit)? = null): Token {
         val id = synchronized(lock) {
             val i = nextId++
-            active[i] = Entry(label.trim(), System.currentTimeMillis())
+            active[i] = Entry(label.trim(), System.currentTimeMillis(), onCancel)
             i
         }
+        // The app is closed (see [closed]): the work is still registered — so it
+        // reports and ends normally — but it may not revive the service.
+        if (closed) return Token(id)
         cancelScheduledStop()
         ensureSweeper()
         WorkService.start()
         return Token(id)
+    }
+
+    /**
+     * An Activity is up again, so background work may hold the process once more.
+     * Called from the application's activity lifecycle (see HikariApp), which is
+     * also what makes [cancelAll] a per-session thing rather than a permanent
+     * switch.
+     */
+    fun reopen() {
+        closed = false
     }
 
     /** Ends a token. Idempotent — ending the same token twice is harmless. */
@@ -87,6 +124,48 @@ object BackgroundWork {
     }
 
     fun isActive(): Boolean = synchronized(lock) { active.isNotEmpty() }
+
+    /**
+     * Drops EVERYTHING and cancels the work behind it — "the user closed the
+     * app, nothing of ours should still be running".
+     *
+     * This is the counterpart to [begin]. The registry exists so work survives
+     * the user leaving the app (Home, another app); it must NOT survive the user
+     * closing it, which is what this is for. Without it, a long multi-extension
+     * search kept the process in the foreground-service state after the app was
+     * closed: a permanent "Hikari keeps running while you use other apps"
+     * notification, hundreds of live network calls, and — because the process
+     * stayed warm and busy — the next launch crawling through its splash screen
+     * (reported as "it just stays stuck on the Hikari logo and won't open").
+     *
+     * Called when the last Activity is destroyed because it is FINISHING (Back
+     * out of the app), and from [WorkService.onTaskRemoved] (swiped off the
+     * recents list). Deliberately not from onStop: pressing Home also stops every
+     * activity, and continuing there is the feature.
+     */
+    fun cancelAll(reason: String) {
+        closed = true
+        val dropped = synchronized(lock) {
+            val all = active.values.toList()
+            active.clear()
+            stopScheduled = false
+            all
+        }
+        handler.removeCallbacks(stopRunnable)
+        if (dropped.isEmpty()) {
+            // Nothing registered, but the service may still be up (a token that
+            // ended milliseconds ago): stopping is idempotent and cheap.
+            WorkService.stop()
+            return
+        }
+        com.hikari.app.data.Logs.log(
+            "Work",
+            "cancelling ${dropped.size} background task(s) (" +
+                dropped.joinToString(", ") { "\"" + it.label + "\"" } + ") — " + reason,
+        )
+        dropped.forEach { entry -> runCatching { entry.onCancel?.invoke() } }
+        WorkService.stop()
+    }
 
     /** One line describing everything running, e.g. `Searching "scam" (+2)`. */
     fun label(): String? = synchronized(lock) {
@@ -126,14 +205,29 @@ object BackgroundWork {
 
     /** Drops stale tokens and keeps the service's wakelock fresh while work is
      *  genuinely running (the wakelock is taken with a timeout as a safety net,
-     *  so a long search has to renew it). */
-    private fun sweep() {
+     *  so a long search has to renew it). Returns true when there is still work
+     *  registered — i.e. whether the sweeper should keep running. */
+    private fun sweep(): Boolean {
         val now = System.currentTimeMillis()
-        synchronized(lock) {
-            val expired = active.filterValues { now - it.startedAt > MAX_TOKEN_MS }.keys
-            expired.forEach { active.remove(it) }
+        val expired = synchronized(lock) {
+            val stale = active.filterValues { now - it.startedAt > MAX_TOKEN_MS }
+            stale.forEach { (id, entry) ->
+                active.remove(id)
+                // A token that was never ended is a bug somewhere, but the work
+                // behind it is real and must be stopped, not just forgotten.
+                runCatching { entry.onCancel?.invoke() }
+            }
+            stale.size
         }
-        if (isActive()) WorkService.renewWakeLock() else WorkService.stop()
+        if (expired > 0) {
+            com.hikari.app.data.Logs.log(
+                "Work",
+                "dropped $expired stale background task(s) that never reported finishing",
+            )
+        }
+        val left = isActive()
+        if (left) WorkService.renewWakeLock() else WorkService.stop()
+        return left
     }
 
     /** Convenience: the current Application, or null very early in startup. */
