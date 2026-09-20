@@ -12,6 +12,7 @@ import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.Logs
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RedirectAllow
 import com.hikari.app.data.RepoKind
 import com.hikari.app.net.DohDns
 import com.hikari.app.net.Http
@@ -299,6 +300,14 @@ class HikariApp : Application() {
         // know the value synchronously while its controller is being inflated.
         appScope.launch {
             store.playerSkinFlow().collect { com.hikari.app.player.PlayerSkins.setCurrent(it) }
+        }
+        // "Allowed redirect links" (Settings → Privacy & Browsing → WebView
+        // safety): mirrored in memory so a WebView being redirected right now —
+        // and the Cloudflare-verification view in particular — can honour a link
+        // the user added without waiting for DataStore (see RedirectAllow).
+        appScope.launch {
+            runCatching { store.webviewRedirectAllow() }
+            store.webviewRedirectAllowFlow().collect { RedirectAllow.set(it) }
         }
         Http.init()
         setupImageLoader()

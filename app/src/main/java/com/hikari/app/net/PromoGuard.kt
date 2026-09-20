@@ -75,7 +75,19 @@ object PromoGuard {
             "make a donation|donate (?:now|today|to us|to this)|goal (?:achieved|completed)|" +
             "supporters made this happen|sponsor (?:this|our) (?:repo|project|channel|extension)|" +
             "fund (?:this|our) (?:repo|project|extension)|help us (?:keep|stay) (?:the )?(?:lights|servers|repo)|" +
-            "not affiliated with the cloudstream app",
+            "not affiliated with the cloudstream app|" +
+            // The repo-side funding push: the card a repo (CNCVerse and the like)
+            // hangs over its own pages — "Help keep CNCVerse alive", "Goal
+            // missed = delayed fixes", "No ads, no subscription", "59 supporters
+            // this month", "Can't donate? Watch an ad to support". Phrase-level
+            // again, so "keep the servers running" matches and "Keep watching"
+            // does not.
+            "help (?:us )?keep [\\w'\u2019 .-]{1,28}?(?:alive|free|running|online)|" +
+            "keep [\\w'\u2019 .-]{1,28}?alive|keep it alive|zero support|extensions? die|" +
+            "no ads,? no (?:subscription|ads)|goal missed|monthly (?:goal|target)|" +
+            "active repo maintenance|maintain(?:ing)? \\d+\\+? (?:providers|repos|extensions)|" +
+            "can'?t donate|supporters? (?:this month|so far)|unlock (?:premium|ad-?free)|" +
+            "\\$\\s?\\d{1,6}(?:[,.]\\d{3})?\\s*/\\s*\\$\\s?\\d{1,6}(?:[,.]\\d{3})?",
         RegexOption.IGNORE_CASE,
     )
 

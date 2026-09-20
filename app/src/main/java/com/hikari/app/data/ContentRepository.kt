@@ -1147,8 +1147,15 @@ class ContentRepository(private val manager: ProviderManager) {
     /** After the first extension answers with a usable list, how much longer the
      *  others get to contribute a longer one before the detail page moves on.
      *  Without this the first 2-episode stub to answer would win over the repo
-     *  that carries the whole show. */
-    private val EPISODES_FALLBACK_SETTLE_MS = 4_000L
+     *  that carries the whole show.
+     *
+     *  Kept SHORT (it used to be 4s) because the page now paints every list as
+     *  it lands (see [ContentRepository.episodesFor]'s `onPartial`): the extra
+     *  window is only there to let a longer list replace a shorter one, and the
+     *  user is already looking at the episodes while it runs — waiting 4s before
+     *  showing anything was the reported "it says 0 episodes, then shows them
+     *  all 6-7 seconds later". */
+    private val EPISODES_FALLBACK_SETTLE_MS = 1_200L
 
     /** Home's per-provider ceiling, and the per-catalog one under it. Same
      *  reasoning again: 20s is generous for a plugin manifest and tight for a
@@ -4495,9 +4502,17 @@ class ContentRepository(private val manager: ProviderManager) {
      *  that can list them (some catalog addons serve videos for series via a
      *  different addon, e.g. Cinemeta-backed ids). Non-empty results are cached
      *  so re-opening a detail page doesn't repeat the whole lookup. */
-    suspend fun episodesFor(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+    suspend fun episodesFor(
+        item: MediaItem,
+        onPartial: ((List<Episode>) -> Unit)? = null,
+    ): List<Episode>? = withContext(Dispatchers.IO) {
         if (item.type == MediaType.UNKNOWN) return@withContext null
-        synchronized(episodeCache) { episodeCache[item.uniqueId] }?.let { return@withContext it }
+        synchronized(episodeCache) { episodeCache[item.uniqueId] }?.let {
+            // Re-opening the page is instant: hand the cached list straight to
+            // the caller before doing anything else.
+            onPartial?.invoke(it)
+            return@withContext it
+        }
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
@@ -4513,6 +4528,10 @@ class ContentRepository(private val manager: ProviderManager) {
             }) ?: emptyList()
             if (eps.isNotEmpty()) {
                 val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
+                // Publish the extension's own list the MOMENT it answers, before
+                // any polish: the page must never read "Episodes (0)" over a
+                // list that already exists (see [onPartial]).
+                onPartial?.invoke(sorted)
                 // Auto-translate FIRST, then the TMDB name lookup: when the user
                 // has a TMDB language set, TMDB's own name for the episode is what
                 // the page and the player should print, and it must not be
@@ -4520,8 +4539,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 // option (which is about the extension's own content, not about
                 // the language the app is being read in).
                 val translated = translateEpisodes(item.providerId, sorted)
+                if (translated !== sorted) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
         }
@@ -4539,12 +4560,14 @@ class ContentRepository(private val manager: ProviderManager) {
         // That is the reported "some aniyomi extension shows no episode on
         // series".
         if (item.type == MediaType.SERIES) {
-            episodesFromExtensions(item)?.let { list ->
+            episodesFromExtensions(item, onPartial)?.let { list ->
                 // Same order as above: auto-translate first, then TMDB's names in
                 // the app's chosen language (which win when they exist).
                 val translated = translateEpisodes(item.providerId, list)
+                if (translated !== list) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
         }
@@ -4567,8 +4590,14 @@ class ContentRepository(private val manager: ProviderManager) {
      * The title match is [confidentTitleMatch]: an extension carrying a
      * DIFFERENT show whose name merely starts with this one's must never donate
      * its episode list to this title.
+     *
+     * [onPartial] receives each better list as it lands, so the page fills in
+     * while the rest of the sweep is still running.
      */
-    private suspend fun episodesFromExtensions(item: MediaItem): List<Episode>? {
+    private suspend fun episodesFromExtensions(
+        item: MediaItem,
+        onPartial: ((List<Episode>) -> Unit)? = null,
+    ): List<Episode>? {
         if (item.type != MediaType.SERIES) return null
         // "Server search: only this extension" (Settings → Playback): borrowing
         // another site's episode list is exactly the cross-extension behaviour
@@ -4633,7 +4662,15 @@ class ContentRepository(private val manager: ProviderManager) {
                             while (true) {
                                 val cur = found.get()
                                 if (cur != null && cur.size >= list.size) break
-                                if (found.compareAndSet(cur, list)) break
+                                if (found.compareAndSet(cur, list)) {
+                                    // Hand the page what we have RIGHT NOW instead
+                                    // of waiting for the whole sweep to settle: a
+                                    // list that exists a second after the page
+                                    // opened must not stay invisible for the
+                                    // settle window (see [onPartial]).
+                                    runCatching { onPartial?.invoke(list) }
+                                    break
+                                }
                             }
                         }
                     } finally {

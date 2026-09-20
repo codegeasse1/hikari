@@ -163,7 +163,7 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // In-app UI scale (Settings → Appearance & Theme → In-app UI scale): when on, the app
+            // In-app UI scale (Settings → App Layout → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
             val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
             val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)

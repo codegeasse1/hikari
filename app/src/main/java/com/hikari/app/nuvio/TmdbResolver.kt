@@ -209,7 +209,59 @@ object TmdbResolver {
             }
         }
         if (best != null && bestScore > 0) return best
-        return alternativeMatch(found, variants) ?: best
+        return alternativeMatch(found, variants)
+            ?: best
+            // Still nothing: the title is known to IMDb and to nobody's search
+            // index in the form the site printed it ("… Episode 172 English
+            // Subtitles", a fan-translated name, a romanisation TMDB spells
+            // differently). IMDb's suggestion endpoint needs no key and answers
+            // with the tt-id, which TMDB can then be asked about directly — a
+            // second chance that costs two requests and only runs when every
+            // name search has already come back empty.
+            ?: searchViaImdb(item)
+    }
+
+    /**
+     * Last-resort resolution through IMDb's suggestion endpoint: title → tt-id
+     * → TMDB `/find`. The same endpoint [TmdbMeta] uses for artwork, and the
+     * only lookup available here that does not depend on TMDB's search index
+     * agreeing with the site's spelling of a name.
+     */
+    private suspend fun searchViaImdb(item: MediaItem): Resolved? {
+        val title = item.searchTitle.trim()
+        if (title.isBlank()) return null
+        val q = runCatching {
+            java.net.URLEncoder.encode(title.lowercase(), "UTF-8")
+        }.getOrNull() ?: return null
+        val text = Http.getString(
+            "https://v3.sg.media-imdb.com/suggestion/h/$q.json",
+            mapOf("Accept" to "application/json"),
+        ) ?: return null
+        val arr = runCatching { JSONObject(text).optJSONArray("d") }.getOrNull() ?: return null
+        val wanted = TmdbMeta.normalizeTitle(title)
+        if (wanted.isBlank()) return null
+        var bestId: String? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id").trim()
+            if (!id.startsWith("tt") || id.length < 8) continue
+            val label = TmdbMeta.normalizeTitle(o.optString("l"))
+            if (label.isBlank()) continue
+            var score = when {
+                label == wanted -> 50
+                wanted.length >= 5 && (label.startsWith(wanted) || wanted.startsWith(label)) -> 30
+                else -> 0
+            }
+            if (score == 0) continue
+            if (item.year != null && o.optString("y") == item.year.toString()) score += 25
+            if (score > bestScore) {
+                bestScore = score
+                bestId = id
+            }
+        }
+        val tt = bestId ?: return null
+        return runCatching { resolveImdb(tt, item) }.getOrNull()
     }
 
     /** Name-match score for one search result against every title variant. */

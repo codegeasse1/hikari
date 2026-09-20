@@ -158,8 +158,17 @@ class WebViewActivity : ComponentActivity() {
     @Volatile private var blockedToastShown = false
     // Hosts the user explicitly allowed redirects to (Settings → Privacy & Browsing → WebView safety
     // → Allowed redirect links). Navigations to these are never blocked.
+    //
+    // Seeded from the in-memory mirror rather than empty (see RedirectAllow):
+    // the store read below is asynchronous, and a page's first redirect can
+    // easily beat it — which is how an allowed link (net77.cc) was still
+    // "Blocked redirect to net77.cc" in the verification view.
     @Volatile
-    private var allowedRedirectHosts: Set<String> = emptySet()
+    private var allowedRedirectHosts: Set<String> = com.hikari.app.data.RedirectAllow.now()
+
+    /** The user's allowed redirect hosts, mirror included. */
+    private fun allowedNow(): Set<String> =
+        allowedRedirectHosts + com.hikari.app.data.RedirectAllow.now()
 
     // Guards the auto hand-off to the external player: a page that genuinely
     // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
@@ -352,7 +361,8 @@ class WebViewActivity : ComponentActivity() {
             // Safety toggles from Settings.
             redirectProtection = app.store.webviewRedirect()
             popupProtection = app.store.webviewPopup()
-            allowedRedirectHosts = app.store.webviewRedirectAllow().toSet()
+            allowedRedirectHosts = app.store.webviewRedirectAllow().toSet() +
+                com.hikari.app.data.RedirectAllow.now()
             val enabled = app.store.adEnabled()
             if (enabled) {
                 val lists = app.store.adLists()
@@ -493,7 +503,7 @@ class WebViewActivity : ComponentActivity() {
                         val cur = currentPageHost()
                         if (host != null && cur != null && host != cur &&
                             !AdBlocker.matches(host, whitelistDomains) &&
-                            !AdBlocker.matches(host, allowedRedirectHosts) &&
+                            !AdBlocker.matches(host, allowedNow()) &&
                             !isSameSite(host, cur)
                         ) {
                             showBlockedToast("Blocked redirect to $host")
@@ -572,7 +582,7 @@ class WebViewActivity : ComponentActivity() {
                         val cur = currentPageHost()
                         if (host != null && cur != null && host != cur &&
                             !AdBlocker.matches(host, whitelistDomains) &&
-                            !AdBlocker.matches(host, allowedRedirectHosts) &&
+                            !AdBlocker.matches(host, allowedNow()) &&
                             !isSameSite(host, cur)
                         ) {
                             showBlockedToast("Blocked redirect to $host")
@@ -1040,6 +1050,15 @@ class WebViewActivity : ComponentActivity() {
     private fun isVerifyAllowed(url: String?): Boolean {
         if (url == null) return false
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        // A link the user put on the allowed-redirect list is allowed here too:
+        // an extension's own site very often answers on a mirror host
+        // (net77.cc and friends), and "Verify for Cloudflare" was refusing
+        // exactly the redirect the user had already permitted — the reported
+        // "I allowed net77.cc and the verification WebView still says Blocked
+        // redirect to net77.cc". The allow list only ever NAMES hosts the user
+        // chose, so honouring it cannot open the challenge view to ad-hijack
+        // redirects.
+        if (AdBlocker.matches(host, allowedNow())) return true
         val orig = runCatching { java.net.URI(startUrl).host?.lowercase() }.getOrNull() ?: return true
         if (host == orig) return true
         return host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com") ||
@@ -1546,7 +1565,9 @@ class WebViewActivity : ComponentActivity() {
                 'a[href*="trakteer"]','a[href*="saweria."]','a[href*="sociabuzz"]','a[href*="donationalerts"]',
                 'a[href*="github.com/sponsors"]','a[href*="gofundme"]','a[href*="kickstarter"]'
               ];
-              var PROMO=/buy me a coffee|ko-?fi[.]?com|buymeacoffee|become a patron|become a sponsor|support (us|me|this|our) (on|via|through)|watch an ad to support|send extra love|make a donation|donate (now|today|to us|to this)|goal (achieved|completed)|supporters made this happen|sponsor (this|our) (repo|project|channel|extension)|fund (this|our) (repo|project|extension)|not affiliated with the cloudstream app/i;
+              var PROMO=/buy me a coffee|ko-?fi[.]?com|buymeacoffee|become a patron|become a sponsor|support (us|me|this|our) (on|via|through)|watch an ad to support|send extra love|make a donation|donate (now|today|to us|to this)|goal (achieved|completed)|supporters made this happen|sponsor (this|our) (repo|project|channel|extension)|fund (this|our) (repo|project|extension)|not affiliated with the cloudstream app|help (us )?keep [\w'\u2019 .-]{1,28}?(alive|free|running|online)|keep [\w'\u2019 .-]{1,28}?alive|keep it alive|zero support|extensions? die|no ads,? no (subscription|ads)|goal missed|monthly (goal|target)|active repo maintenance|maintain(ing)? \d+\+? (providers|repos|extensions)|can'?t donate|supporters? (this month|so far)|unlock (premium|ad-?free)|\$\s?\d{1,6}([,.]\d{3})?\s*\/\s*\$\s?\d{1,6}([,.]\d{3})?/i;
+              var DISMISS=/^(maybe later|not now|no thanks|no, thanks|later|maybe next time|remind me later|skip|close|dismiss|\u2715|\u00d7|x)$/i;
+              var lastDismiss=0;
               var MONEY=/ko-?fi[.]|buymeacoffee|patreon[.]com|paypal[.]|github[.]com\/sponsors|opencollective|liberapay|trakteer|saweria[.]|sociabuzz|donationalerts|gofundme|kickstarter|cash[.]app|venmo[.]com/i;
               function hide(e){
                 try{
@@ -1572,12 +1593,52 @@ class WebViewActivity : ComponentActivity() {
                     if(!PROMO.test(a.textContent||'')&&!MONEY.test(href))continue;
                     hide(a);
                     var box=a.parentNode,up=0;
-                    while(box&&up<3){
+                    while(box&&up<6){
                       up++;
                       var t=(box.textContent||'').replace(/\s+/g,' ').trim();
-                      if(t.length>0&&t.length<300&&PROMO.test(t)){hide(box);}
+                      if(t.length>0&&t.length<900&&PROMO.test(t)){hide(box);}
                       box=box.parentNode;
                     }
+                  }
+                }catch(x){}
+                // A funding MODAL — the "Help keep <repo> alive" card a repo
+                // overlays its own page with. It is a big fixed/absolute box
+                // over the content, so it never looks like one of the links
+                // above: it is hidden outright, and its own dismiss control
+                // ("Maybe Later", "✕") is clicked, because a merely hidden
+                // overlay still eats every tap on the page underneath.
+                try{
+                  els=document.querySelectorAll('div,section,aside,article,main,dialog');
+                  var vw=window.innerWidth||0,vh=window.innerHeight||0;
+                  for(i=0;i<els.length;i++){
+                    var o=els[i];
+                    if(!o||!o.parentNode)continue;
+                    if(o.getAttribute('data-hikari-promo')==='1')continue;
+                    if(o.closest('video')||o.querySelector('video'))continue;
+                    var cs=getComputedStyle(o);
+                    if(cs.position!=='fixed'&&cs.position!=='absolute')continue;
+                    var r=o.getBoundingClientRect();
+                    if(vw<=0||vh<=0)break;
+                    if(r.width<vw*0.45||r.height<vh*0.35)continue;
+                    var text=(o.textContent||'').replace(/\s+/g,' ').trim();
+                    if(text.length===0||text.length>2500)continue;
+                    if(!PROMO.test(text))continue;
+                    o.setAttribute('data-hikari-promo','1');
+                    var now=Date.now();
+                    if(now-lastDismiss>1500){
+                      var ctrls=o.querySelectorAll('button,a,[role="button"],span,div');
+                      for(j=0;j<ctrls.length;j++){
+                        var c=ctrls[j];
+                        var ct=(c.textContent||'').replace(/\s+/g,' ').trim();
+                        if(ct.length===0||ct.length>24)continue;
+                        if(!DISMISS.test(ct))continue;
+                        if(c.querySelector('button,a'))continue;
+                        lastDismiss=now;
+                        try{c.click();}catch(x){}
+                        break;
+                      }
+                    }
+                    hide(o);
                   }
                 }catch(x){}
               }

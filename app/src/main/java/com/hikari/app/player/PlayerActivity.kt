@@ -669,6 +669,14 @@ class PlayerActivity : ComponentActivity() {
     /** History key of the current video ("pid|type|mediaId|episodeId") — the
      *  identity used to remember which server the user last played it on. */
     private var historyKey: String = ""
+    /**
+     * Watch history, read once in the background as the player is built (see
+     * [onCreate]). The resume prompt needs it the instant the first frame is on
+     * screen; waiting for a DataStore read at that moment is what made the
+     * prompt arrive several seconds into an already-playing video.
+     */
+    @Volatile
+    private var historySnapshot: List<HistoryEntry>? = null
 
     /** Index whose "last used server" has already been persisted, so walking
      *  servers (retries/failover) doesn't spam the store. */
@@ -787,7 +795,7 @@ class PlayerActivity : ComponentActivity() {
     private var badgeQuality: TextView? = null
     private var badgeSource: TextView? = null
 
-    /** In-app UI scale: when the user turns it on (Settings → Appearance & Theme → In-app UI scale)
+    /** In-app UI scale: when the user turns it on (Settings → App Layout → In-app UI scale)
      *  the whole app stops following the phone's font/display size settings —
      *  including this View-based player, which is outside the Compose tree. */
     override fun attachBaseContext(newBase: android.content.Context) {
@@ -1258,6 +1266,16 @@ class PlayerActivity : ComponentActivity() {
             startPositionMs = intent.getLongExtra("startPosition", 0L).coerceAtLeast(0L)
             resumeHintMs = intent.getLongExtra("histResumePosition", 0L).coerceAtLeast(0L)
             resumeHintDurMs = intent.getLongExtra("histResumeDuration", 0L).coerceAtLeast(0L)
+            // Warm the watch-history snapshot in the background while the player
+            // is still being built: the "Continue from where you left off?" prompt
+            // fires the moment the first frame renders, and with the numbers
+            // already in memory it opens immediately instead of whenever a
+            // DataStore read happens to finish (see [maybeOfferResume]).
+            (applicationContext as HikariApp).appScope.launch {
+                runCatching { (applicationContext as HikariApp).store.history() }
+                    .getOrNull()
+                    ?.let { historySnapshot = it }
+            }
             saveTask = object : Runnable {
                 override fun run() {
                     recordProgress()
@@ -8188,30 +8206,63 @@ class PlayerActivity : ComponentActivity() {
         val he = historyEntry
         val hintPos = resumeHintMs
         val hintDur = resumeHintDurMs
-        (applicationContext as HikariApp).appScope.launch {
-            val all = runCatching {
-                (applicationContext as HikariApp).store.history()
-            }.getOrDefault(emptyList())
-            // Exact identity first. The user very often reopens the SAME video
-            // through a DIFFERENT extension, so fall back to matching on the
-            // media + episode id (ignoring provider/type) and take the most
-            // recent — otherwise a cross-provider replay never saw its saved
-            // progress and the "continue?" prompt silently never appeared.
-            val h = all.firstOrNull { it.uniqueKey == key }
-                ?: he?.let { e ->
-                    all.filter { it.mediaId == e.mediaId && it.episodeId == e.episodeId }
-                        .maxByOrNull { it.watchedAt }
-                }
-            var pos = h?.positionMs ?: 0L
-            var dur = h?.durationMs ?: 0L
-            if (pos <= 0L && hintPos > 0L) {
-                pos = hintPos
-                dur = hintDur
-            }
-            if (!resumable(pos, dur)) return@launch
-            if (isFinishing || isDestroyed) return@launch
-            runOnUiThread { showResumeDialog(pos) }
+        // FAST PATH — no store round-trip at all. The detail screen opened this
+        // player holding the same watch history, and it handed the saved position
+        // of THIS video along as a hint, so the prompt can be drawn the moment
+        // playback starts. It used to read the store first and only fall back to
+        // the hint when that came back empty, which is why a cached server — the
+        // one that starts playing instantly — got its "continue?" prompt five or
+        // six seconds into the video: the numbers were already in hand, the
+        // dialog just waited for a DataStore read to come back.
+        if (hintPos > 0L && resumable(hintPos, hintDur)) {
+            showResumeDialog(hintPos)
+            return
         }
+        // Otherwise take the snapshot warmed while the player was built, and only
+        // read the store when that is not ready yet either.
+        val snap = historySnapshot
+        if (snap != null) {
+            (applicationContext as HikariApp).appScope.launch {
+                offerResumeFrom(snap, key, he, hintPos, hintDur)
+            }
+        } else {
+            (applicationContext as HikariApp).appScope.launch {
+                val all = runCatching {
+                    (applicationContext as HikariApp).store.history()
+                }.getOrDefault(emptyList())
+                historySnapshot = all
+                offerResumeFrom(all, key, he, hintPos, hintDur)
+            }
+        }
+    }
+
+    /**
+     * Resolves what to resume out of [all] and offers it. Exact identity first,
+     * then the same media + episode on any provider (a replay through a
+     * different extension must still find its progress), then the hint the
+     * detail screen passed, then nothing.
+     */
+    private suspend fun offerResumeFrom(
+        all: List<HistoryEntry>,
+        key: String,
+        he: HistoryEntry?,
+        hintPos: Long,
+        hintDur: Long,
+    ) {
+        val h = all.firstOrNull { it.uniqueKey == key }
+            ?: he?.let { e ->
+                all.filter { it.mediaId == e.mediaId && it.episodeId == e.episodeId }
+                    .maxByOrNull { it.watchedAt }
+            }
+        var pos = h?.positionMs ?: 0L
+        var dur = h?.durationMs ?: 0L
+        if (pos <= 0L && hintPos > 0L) {
+            pos = hintPos
+            dur = hintDur
+        }
+        if (!resumable(pos, dur)) return
+        if (isFinishing || isDestroyed) return
+        runOnUiThread { showResumeDialog(pos) }
     }
 
     private fun resumable(pos: Long, dur: Long): Boolean =

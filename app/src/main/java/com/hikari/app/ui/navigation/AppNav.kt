@@ -270,22 +270,25 @@ object Routes {
 
 
 /**
- * The bottom bar's three looks (Settings → App Layout → Taskbar & navigation).
+ * The bottom bar's four looks (Settings → App Layout → Taskbar & navigation).
  *
  *  * [ANIMATED] — a small floating pill; as the user scrolls back up towards the
  *    top of a page it draws itself in — narrower, shorter, and with the button
  *    names set aside so only the icons are left — and settles back out on any
  *    downward scroll (or a tab change). This is the default layout.
  *  * [FLOATING] — the detached glass pill, always the same size.
+ *  * [COMPACT] — the drawn-in pill, permanently: the animated layout's small
+ *    state without the animation. For anyone who wants the taskbar out of the
+ *    way for good, with the whole screen taller.
  *  * [CLASSIC] — the seamless edge-to-edge plate: opaque, flush with the bottom
  *    of the screen, closed off by a hairline along its top edge.
  *
- * All three float over the page (except the seamless plate, which IS the bottom
- * of the page); the two floating ones are deliberately SMALL — a compact pill
+ * All of them float over the page (except the seamless plate, which IS the bottom
+ * of the page); the three floating ones are deliberately SMALL — a compact pill
  * with room around it, not a full navigation bar stretched across the screen —
  * and they are nearly opaque, because a bar over artwork cannot rely on what is
  * behind it being dim.
- * The three used to be indistinguishable in practice: "classic" and the old
+ * The looks used to be indistinguishable in practice: "classic" and the old
  * "borderless" both drew radius 0, no border and no elevation, and differed
  * only in a plate colour that matches the page background on the dark and AMOLED
  * themes — so picking either looked like nothing had changed. Classic is now an
@@ -296,6 +299,7 @@ object NavStyles {
     const val CLASSIC = "classic"
     const val FLOATING = "floating"
     const val ANIMATED = "animated"
+    const val COMPACT = "compact"
 
     data class Option(val key: String, val label: String, val blurb: String)
 
@@ -306,6 +310,11 @@ object NavStyles {
             "A small floating pill that draws itself in as you scroll up."
         ),
         Option(FLOATING, "Floating", "A rounded glass pill that hovers above the page."),
+        Option(
+            COMPACT,
+            "Always compact",
+            "The small icon-only pill, kept small — it never expands."
+        ),
         Option(CLASSIC, "Classic", "Edge-to-edge, flush with the bottom of the screen."),
     )
 
@@ -313,7 +322,7 @@ object NavStyles {
      *  "borderless" value is upgraded to the animated bar rather than dropped,
      *  so anyone who had picked it gets the new look instead of being reset. */
     fun normalize(key: String): String = when (key) {
-        CLASSIC, FLOATING, ANIMATED -> key
+        CLASSIC, FLOATING, ANIMATED, COMPACT -> key
         "borderless" -> ANIMATED
         else -> ANIMATED
     }
@@ -367,6 +376,7 @@ object BarMetrics {
      */
     fun inset(style: String): Dp = when (style) {
         NavStyles.CLASSIC -> classicHeight
+        NavStyles.COMPACT -> midHeight + midMargin * 2
         else -> fullHeight + margin * 2
     }
 }
@@ -408,7 +418,7 @@ private fun AppBottomBar(
     // aside. It stays a stadium capsule of the same bar — the sliver this used
     // to shrink to lost its ends, its names and most of its size, which is why
     // it stopped reading as the taskbar at all.
-    val animatedShrunk = style == NavStyles.ANIMATED && !expanded
+    val animatedShrunk = (style == NavStyles.ANIMATED && !expanded) || style == NavStyles.COMPACT
     // Classic is the only edge-to-edge layout; the other two float over the
     // page. A floating bar is TRANSLUCENT and rounded on every edge, so the
     // page (and the artwork scrolling behind it) still shows through — and it

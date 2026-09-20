@@ -1313,9 +1313,15 @@ class AppStore(private val ctx: Context) {
     fun webviewRedirectAllowFlow(): Flow<List<String>> =
         store.data.map { parseStringList(it[K.WEBVIEW_REDIRECT_ALLOW]) }
 
-    suspend fun webviewRedirectAllow(): List<String> = webviewRedirectAllowFlow().first()
+    suspend fun webviewRedirectAllow(): List<String> =
+        webviewRedirectAllowFlow().first().also { RedirectAllow.set(it) }
 
     suspend fun setWebviewRedirectAllow(list: List<String>) {
+        // Mirror FIRST (synchronously, in memory) and the DataStore write second:
+        // a WebView that is being redirected right now has to see a link the
+        // user just added (see RedirectAllow), and waiting for the store write
+        // would leave that first redirect blocked.
+        RedirectAllow.set(list)
         write("WEBVIEW_REDIRECT_ALLOW") { it[K.WEBVIEW_REDIRECT_ALLOW] = encodeStringList(list) }
     }
 

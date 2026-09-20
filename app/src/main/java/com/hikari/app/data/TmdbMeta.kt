@@ -188,6 +188,27 @@ object TmdbMeta {
     private val SPACES = Regex("\\s+")
 
     /**
+     * The decorations a SITE title carries that a database title never does: the
+     * episode it is ("… Episode 172", "Ep. 12", "E12", "S01E12") plus the
+     * release noise that habitually rides with it ("English Subtitles", "Hindi
+     * Dubbed", "1080p", "WEB-DL", "x265"). They are what makes TMDB's index
+     * return nothing at all for a title that is otherwise plain — and a title
+     * that does not resolve loses its rating strip, its cast, its trailers and
+     * its Related/Similar rows with it.
+     *
+     * Deliberately only used to build ADDITIONAL query variants; the full title
+     * is always tried first, so an exact hit still wins.
+     */
+    private val EPISODE_MARKER = Regex(
+        "(?i)\\b(?:episode|epis|ep)\\.?\\s*[-–—]?\\s*\\d{1,4}\\b" +
+            "|\\bS\\d{1,2}\\s*[Ee]\\d{1,4}\\b" +
+            "|\\b(?:english|eng|hindi|tamil|telugu|malayalam|urdu|bangla|bengali|spanish|arabic|korean)" +
+            "\\s+(?:sub(?:title)?s?|subs|dubbed|dub|audio)\\b" +
+            "|\\b(?:multi|dual)\\s+audio\\b|(?<!\\d)\\b\\d{3,4}p\\b" +
+            "|\\b(?:web[- ]?dl|blu-?ray|hdtv|dvdrip|webrip|hdrip|hdts|x264|x265|h264|h265|hevc|avc|aac|ac3|dts|10bit|8bit|esubs?)\\b",
+    )
+
+    /**
      * Progressively simpler TMDB search queries for a title that carries
      * decorations the TMDB index does not match — site metas are full of them:
      *
@@ -213,9 +234,21 @@ object TmdbMeta {
         val flat = t.replace(BRACKETED, " ").replace(SPACES, " ").trim()
         if (flat.isNotBlank()) out.add(flat)
         for (base in listOf(t, flat)) {
+            // Episode/release decorations go first: "Soul Land 2: The Peerless
+            // Tang Sect Episode 172 English Subtitles" is the shape a search row
+            // for an episode has, and while the long form usually misses TMDB's
+            // index entirely, the plain series name resolves.
+            val noEp = base.replace(EPISODE_MARKER, " ").replace(SPACES, " ")
+                .trim().trim('-', '–', '—', ':', '：', '|', '.', ',', '_').trim()
+            if (noEp.length >= 2) out.add(noEp)
             val noSeason = base.replace(SEASON_MARKER, " ").replace(SPACES, " ")
                 .trim().trim('-', '–', '—', ':', '：', '|', '.').trim()
             if (noSeason.length >= 2) out.add(noSeason)
+            // …and the combination of the two (a season title that also names
+            // the episode): the plainest form of all.
+            val plain = noEp.replace(SEASON_MARKER, " ").replace(SPACES, " ")
+                .trim().trim('-', '–', '—', ':', '：', '|', '.').trim()
+            if (plain.length >= 2) out.add(plain)
             val head = base.substringBefore("：").substringBefore(":")
                 .substringBefore(" - ").trim()
             if (head.length >= 2 && head.length < base.length) out.add(head)

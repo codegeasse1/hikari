@@ -196,9 +196,9 @@ private fun SettingsDivider() {
  * long page of unrelated switches.
  *
  * The split: Appearance & Theme is what the app *is* and *wears* — language,
- * theme, metadata language, interface scale, accent colour, launcher icon,
- * font. Everything about how a page is laid out — posters, ratings, the
- * taskbar, full screen — lives under App Layout.
+ * theme, metadata language, accent colour, launcher icon, font. Everything about
+ * how a page is laid out and how much room the interface takes — interface
+ * scale, posters, ratings, the taskbar, full screen — lives under App Layout.
  */
 private enum class SettingsFolder(
     /** Stable id. Also what a sub-folder names as its [parent]. */
@@ -218,13 +218,13 @@ private enum class SettingsFolder(
     APP_LAYOUT(
         "layout",
         "App Layout",
-        "Posters, ratings, taskbar & full screen",
+        "UI scale, posters, ratings, taskbar & full screen",
         Icons.Filled.Dashboard,
     ),
     PLAYER(
         "player",
         "Player",
-        "Playback start & loading screen",
+        "Controls, video enhancement & loading screen",
         Icons.Filled.PlayArrow,
     ),
     // Where a title's SERVERS come from — the other half of "playing a video",
@@ -248,7 +248,7 @@ private enum class SettingsFolder(
     SOURCES(
         "sources",
         "Sources & Extensions",
-        "yt-dlp fallback, userscripts, Continue Watching",
+        "Installed extensions, userscripts & verification",
         Icons.Filled.Extension,
     ),
     DOWNLOADS(
@@ -543,14 +543,16 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item { SettingsCard { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
-                    item { SettingsCard { PlaybackStartCard(app) } }
+                    // "When playback starts" lives in Playback & Servers, once:
+                    // the same card in two folders only made the user wonder
+                    // which one was in charge. The player folder is the controls.
                     item { SettingsCard { LoadingBannerCard(app) } }
                 }
                 SettingsFolder.PLAYBACK_SERVERS -> {
                     item { SettingsCard(top = 2.dp) { ServerSearchCard(app) } }
-                    // The same card the Player folder shows, by the same store
-                    // values — both stay in step, and "what plays, and when"
-                    // reads as one subject.
+                    // "When playback starts" (play the first server / wait for more)
+                    // lives here — it is a decision about SERVERS — and only here:
+                    // the same card used to show up in the Player folder too.
                     item { SettingsCard { PlaybackStartCard(app) } }
                 }
                 SettingsFolder.NETWORK -> {
@@ -569,8 +571,13 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
-                    item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
                     item { SettingsCard { UserscriptsCard(app) } }
+                    // Whether EXTENSIONS may open their own Cloudflare
+                    // verification page belongs with the extensions, not with the
+                    // WebView's ad/redirect rules: it is a decision about what an
+                    // extension is allowed to do, and that is the folder a user
+                    // opens to look for it.
+                    item { SettingsCard { ExtensionVerifyCard(app) } }
                 }
                 SettingsFolder.DOWNLOADS -> {
                     item { SettingsCard(top = 2.dp) { DownloadSettingsCard(app) } }
@@ -621,11 +628,14 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
-                    item { SettingsCard { UiScaleCard(app) } }
                     // The things the app wears. Each is several choices wide (a
                     // wall of accent swatches, a dozen icon aliases, a stack of
                     // fonts), so they get their own pages instead of turning
                     // Appearance into a long scroll past everything else.
+                    //
+                    // (The "In-app UI scale" card lives under App Layout now:
+                    // it changes how much ROOM the interface takes, which is
+                    // layout, not decoration — see SettingsFolder.APP_LAYOUT.)
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APPEARANCE.key }
                         .forEach { target ->
@@ -664,9 +674,11 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 // ---- App Layout: how a page is arranged ----
                 SettingsFolder.APP_LAYOUT -> {
-                    item { SettingsCard(top = 2.dp) { DetailRatingCard(app) } }
+                    item { SettingsCard(top = 2.dp) { UiScaleCard(app) } }
+                    item { SettingsCard { DetailRatingCard(app) } }
                     item { SettingsCard { HeroBannerCard(app) } }
                     item { SettingsCard { DetailHeaderCard(app) } }
+                    item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
                         .forEach { target ->
@@ -700,7 +712,6 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.PRIVACY -> {
                     item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
-                    item { SettingsCard { ExtensionVerifyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
                 }
                 SettingsFolder.LOGS -> {
@@ -1247,7 +1258,9 @@ private fun UiScaleCard(app: HikariApp) {
     LaunchedEffect(scale) { slider = scale }
 
     SettingsSection(
-        id = "appearance.ui-scale",
+        // Layout, not decoration: this decides how much ROOM the interface takes,
+        // which is why the card sits in App Layout (see SettingsFolder).
+        id = "layout.ui-scale",
         icon = Icons.Filled.FormatSize,
         title = tr("In-app UI scale"),
         summary = if (enabled) (scale * 100).roundToInt().toString() + "%"
@@ -1278,14 +1291,20 @@ private fun UiScaleCard(app: HikariApp) {
             }
             Slider(
                 value = slider,
-                onValueChange = { slider = it },
+                onValueChange = { v ->
+                    // 1%-steps, not 10%: the whole point of this slider is to sit
+                    // between two sizes ("…101%, 102%…"), and a 10%-step slider
+                    // could not land there at all.
+                    slider = (v * 100f).roundToInt().coerceIn(70, 130) / 100f
+                },
                 onValueChangeFinished = {
                     val pct = (slider * 100).roundToInt().coerceIn(70, 130)
                     slider = pct / 100f
                     scope.launch { runCatching { app.store.setUiScale(pct) } }
                 },
                 valueRange = 0.7f..1.3f,
-                steps = 5,
+                // 59 gaps between 70% and 130% = a step of exactly 1%.
+                steps = 59,
                 colors = SliderDefaults.colors(
                     thumbColor = MaterialTheme.colorScheme.primary,
                     activeTrackColor = MaterialTheme.colorScheme.primary,

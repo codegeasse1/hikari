@@ -140,6 +140,7 @@ import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -187,6 +188,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The page's own "retry the episode list" tap (see [retryEpisodes]). */
     private var episodeRetryJob: Job? = null
+
+    /**
+     * Which episode load is the live one.
+     *
+     * Every load that can touch the episode state takes a ticket: `load()` for
+     * its initial pass, `retryEpisodes()` for the page's own retry, and the
+     * partial updates a streaming lookup publishes while it runs. Writes are
+     * only applied when the ticket is still current. Without this, a
+     * superseded pass could land its empty result on a NEWER pass's page — the
+     * "Episodes (0) — No episode list available." that sat over a series whose
+     * episodes were being fetched right then, and then filled in seconds later.
+     */
+    @Volatile
+    private var episodeGeneration = 0
+
+    /** Takes the next ticket for an episode load. */
+    private fun newEpisodeGeneration(): Int = ++episodeGeneration
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -518,15 +536,24 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             if (type != MediaType.SERIES) {
                 launch { prefetchFirstStreams(base) }
             }
+            // The origin's own /meta and the shelf lookups (TMDB extras, cast,
+            // trailers, ratings, Related/Similar) are INDEPENDENT of the episode
+            // list, so all of them start together: a page used to show its score
+            // strip and its Related row only after the episodes had finished
+            // (the shelves were launched after the episode await), which is the
+            // reported "it shows no IMDb/TMDB rating and no similar titles on
+            // some titles". Now the page fills in from three directions at once.
+            val metaDeferred = async { runCatching { repo.metaFor(base) }.getOrDefault(base) }
+            launch { loadShelves(metaDeferred.await()) }
             withContext(Dispatchers.IO) {
-                // Fetch meta FIRST — CS3 plugins can label a series/actor page
+                // The origin's own meta corrects the item's TYPE before the
+                // episode list is asked for — CS3 plugins can label a series page
                 // as a movie on their search results (LeakPorner actors are
-                // NSFW→MOVIE), and getMeta corrects the type from the
-                // LoadResponse. Episodes are then fetched against the
-                // CORRECTED item (loadResponse is cached, so this stays a
-                // single origin fetch) — fetching against the raw base would
-                // leave the episode grid empty for every mis-typed item.
-                val meta = runCatching { repo.metaFor(base) }.getOrDefault(base)
+                // NSFW→MOVIE), and getMeta corrects it from the LoadResponse, so
+                // episodes must be fetched against the CORRECTED item
+                // (loadResponse is cached, so this stays a single origin fetch).
+                // The fetch itself was started above, together with the shelves.
+                val meta = metaDeferred.await()
                 // THE PAGE NEVER RENAMES ITSELF.
                 //
                 // The origin's /meta answers with ITS OWN title — the site's
@@ -545,6 +572,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     originalTitle = base.originalTitle.ifBlank { meta.originalTitle },
                 )
                 _episodesLoading.value = true
+                val gen = newEpisodeGeneration()
                 try {
                     // Retried, never silently final — see [loadEpisodesFor]. This
                     // used to be a bare `runCatching { repo.episodesFor(meta) }`
@@ -553,17 +581,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     // "Episodes (0) — No episode list available." over a series
                     // that has plenty of episodes — and that verdict stayed for
                     // the life of the screen.
-                    _episodes.value = loadEpisodesFor(meta)
+                    val list = loadEpisodesFor(meta, gen)
+                    if (gen == episodeGeneration) _episodes.value = list
                 } finally {
-                    _episodesLoading.value = false
-                    _episodesLoaded.value = true
+                    if (gen == episodeGeneration) {
+                        _episodesLoading.value = false
+                        _episodesLoaded.value = true
+                    }
                 }
             }
             val item = _meta.value ?: base
-            // Shelves are a bonus, never a gate: they resolve in the background
-            // so a slow (or failed) TMDB call can never delay the page or
-            // playback. A miss simply leaves the rows out.
-            launch { loadShelves(item) }
+            // (The shelves — ratings, cast, trailers, Related/Similar — were
+            // started above, in parallel with the episode list: they are a bonus
+            // that must never gate the page, but they must also never wait for
+            // the episodes to finish before they begin.)
             prefetchFirstStreams(item)
         }
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
@@ -590,7 +621,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      * exactly that: a screen left mid-load wrote an empty list, i.e. a
      * "no episodes" verdict for a lookup that had simply been cancelled.
      */
-    private suspend fun loadEpisodesFor(item: MediaItem): List<Episode> {
+    private suspend fun loadEpisodesFor(item: MediaItem, gen: Int): List<Episode> {
         // A movie (or an item whose type is still unknown) has no episode list
         // to retry — one ask, and its answer stands.
         val tries = if (item.type == MediaType.SERIES) EPISODE_LOAD_TRIES else 1
@@ -598,7 +629,17 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         for (attempt in 1..tries) {
             val at = System.currentTimeMillis()
             got = try {
-                repo.episodesFor(item).orEmpty()
+                repo.episodesFor(item) { partial ->
+                    // A list exists NOW (the extension answered, or a borrowed
+                    // one landed mid-sweep): paint it immediately and keep the
+                    // spinner running for the finishing touches. This is what
+                    // makes the episodes appear in about a second instead of
+                    // after the whole lookup — including the TMDB name pass —
+                    // had finished.
+                    if (partial.isNotEmpty() && gen == episodeGeneration) {
+                        _episodes.value = partial
+                    }
+                }.orEmpty()
             } catch (c: kotlinx.coroutines.CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -609,6 +650,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 emptyList()
             }
+            if (gen != episodeGeneration) return got
             if (got.isNotEmpty()) {
                 if (attempt > 1) {
                     com.hikari.app.data.Logs.log(
@@ -625,11 +667,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 "\"${item.title}\": no episode list on attempt $attempt of $tries " +
                     "(${System.currentTimeMillis() - at}ms, type ${item.type})",
             )
+            // Nothing on this attempt: the page keeps its spinner (an empty
+            // verdict here is what read as "this show has 0 episodes" over a
+            // series that was still being resolved).
+            if (gen != episodeGeneration) return got
             if (attempt < tries) delay(EPISODE_LOAD_PAUSE_MS * attempt)
         }
         // Empty after every attempt: the extension could not answer. The page
         // says so (and offers a retry) instead of implying the series has none.
-        _episodesFailed.value = true
+        if (gen == episodeGeneration) _episodesFailed.value = true
         return got
     }
 
@@ -640,11 +686,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         episodeRetryJob?.cancel()
         episodeRetryJob = viewModelScope.launch {
             _episodesLoading.value = true
+            val gen = newEpisodeGeneration()
             try {
-                _episodes.value = loadEpisodesFor(item)
+                val list = loadEpisodesFor(item, gen)
+                if (gen == episodeGeneration) _episodes.value = list
             } finally {
-                _episodesLoading.value = false
-                _episodesLoaded.value = true
+                if (gen == episodeGeneration) {
+                    _episodesLoading.value = false
+                    _episodesLoaded.value = true
+                }
             }
         }
     }
@@ -1193,6 +1243,10 @@ fun DetailScreen(
     val meta by vm.meta.collectAsState()
     val episodes by vm.episodes.collectAsState()
     val episodesLoading by vm.episodesLoading.collectAsState()
+    // True once the episode lookup has FINISHED (success or failure). The page
+    // keeps its spinner until then, so a lookup that is still running can never
+    // be painted as "this series has no episodes".
+    val episodesLoaded by vm.episodesLoaded.collectAsState()
     // True when the episode lookup failed outright (every retry came back
     // empty) — the page then says "couldn't load" and offers a retry instead of
     // claiming the series has no episodes (see DetailViewModel.loadEpisodesFor).
@@ -2642,6 +2696,18 @@ fun DetailScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
+                            // Still resolving (a richer list, or the episodes'
+                            // own names, can land a moment after the first list
+                            // painted) — say so beside the count instead of
+                            // leaving the page looking settled.
+                            if (episodesLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .padding(end = 8.dp)
+                                        .size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (seasons.size > 1) {
                                     Box {
@@ -2702,7 +2768,14 @@ fun DetailScreen(
                     }
                     if (sortedEps.isEmpty()) {
                         item {
-                            if (episodesLoading) {
+                            // Loading includes "a lookup is running, or one was
+                            // never reported finished" — never the empty verdict.
+                            // An empty answer used to be painted the instant a
+                            // superseded (or cancelled) load cleared its flag,
+                            // which is exactly how the page came to say
+                            // "No episode list available." over a series whose
+                            // episodes arrived a few seconds later.
+                            if (episodesLoading || !episodesLoaded) {
                                 Row(
                                     Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
