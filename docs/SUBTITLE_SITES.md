@@ -10,8 +10,9 @@ account, no API key, no addon install. Each endpoint below was verified live
 before it was wired in (status + content + a real download), which is why the
 list is short: a site that needs a key (SubSource, Wyzie, OpenSubtitles.com,
 Jimaku, Assrt) or that is behind an anti-bot wall (opensubtitles.org's HTML
-pages, dl.opensubtitles.org, titlovi, TVSubtitles' search, moviesubtitles.org)
-is deliberately absent.
+pages, dl.opensubtitles.org, titlovi, TVSubtitles' search, moviesubtitles.org —
+and YIFYSubtitles' *files*, whose pages are reachable but whose downloads are
+not) is deliberately absent.
 
 | id | site | search | languages | download |
 |----|------|--------|-----------|----------|
@@ -19,8 +20,7 @@ is deliberately absent.
 | `opensubtitles-org` | opensubtitles.org search API (`rest.opensubtitles.org`) | **by name** (`query-…`), by `imdbid-N`, by episode/season | 30+ | `subs5.strem.io/…/src-api/file/<IDSubtitleFile>` |
 | `subdl` | SubDL (`subdl.com`) | name → title page | 35 | `dl.subdl.com/subtitle/<id>.zip` |
 | `subtitlecat` | SubtitleCat | name → release pages → per-language `.srt` | ~26 | site `.srt` links |
-| `subscene` | Subscene (`subscene.best`) | name → title page | 40+ | `res.subscene.best/file/<subtitleId>.zip` |
-| `yify` | YIFYSubtitles (`yifysubtitles.ch`) | `tt` id page, else name search | many | `/subtitle/<slug>.zip` (needs a Referer) |
+| `subscene` | Subscene (`subscene.best`) | name → title page | 40+ | `subscene.best/download/<subtitleId>` |
 
 ## How a search runs
 
@@ -47,10 +47,16 @@ is deliberately absent.
   which is what the list wants anyway.
 - **The v3 mirror's file ids are the same numbers** opensubtitles.org reports as
   `IDSubtitleFile`, which is why the two routes can share one download host.
-- **YIFY's `.zip` is hot-link protected** (bare request → HTTP 403), so that
-  track carries `Referer: <the title page>` in `SiteTrack.headers` →
-  `SubtitleSource.headers`, and `fetchSubtitleText` tries headers before bare.
-  This one is the site most likely to need attention if it stops working.
+- **Subscene's download URL is `/download/<id>`, not the `res.subscene.best/file/…`
+  route it redirects to.** That route embeds a release-name slug
+  (`titanic_HI_arabic-78041.zip`) that the list page does not carry, so a URL
+  built from the id alone answers HTTP 404. `/download/<id>` is one request and
+  serves the `.zip` (as `application/octet-stream`, which the decoder sniffs).
+- **A site must pass a DOWNLOAD check, not just a search check.** YIFYSubtitles
+  was dropped for failing it: `/movie-imdb/tt…` and its title pages answer 200,
+  but `/subtitle/<slug>.zip` answers **403 with Cloudflare's "Just a moment…"
+  challenge**, so its rows could only ever fail after the user tapped them.
+  Search + page + file for every listed site, or it does not go in `ALL`.
 - **`deleted`/renamed hosts**: Subscene is `subscene.best` (the original
   `subscene.com` is gone), SubtitleCat scrapes its own `.html` rows, SubDL's title
   page announces each language block with `data-language`.

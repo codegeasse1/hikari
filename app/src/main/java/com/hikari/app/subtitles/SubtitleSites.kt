@@ -37,9 +37,6 @@ import org.json.JSONObject
  *  - [SubtitleCatSite] — SubtitleCat, which re-serves what OpenSubtitles,
  *    Addic7ed and friends have, as a plain .srt per language.
  *  - [SubsceneSite] — Subscene, the community library, as a .zip per subtitle.
- *  - [YifySite] — the YIFY subtitle mirror, which is where a rip-based release
- *    name (the ones most streams actually carry) is most likely to match.
- *
  * Two rules every site here follows:
  *
  *  1. A site that fails, times out or is blocked contributes NOTHING and never
@@ -313,7 +310,6 @@ object SubtitleSites {
         SubdlSite,
         SubtitleCatSite,
         SubsceneSite,
-        YifySite,
     )
 
     fun byId(id: String): SubtitleSite? = ALL.firstOrNull { it.id == id }
@@ -701,12 +697,14 @@ private object SubtitleCatSite : SubtitleSite {
 
 /** Subscene: `/search?query=<title>` finds the title (with its year), and the
  *  title page lists every subtitle it holds — language, release, hearing-
- *  impaired flag — with a `.zip` at a URL built from the subtitle's own id. */
+ *  impaired flag — each downloadable through `/download/<subtitleId>`, which
+ *  is the site's own download route (the `res.subscene.best/file/…` URL the
+ *  whole path is derived from needs a release-name slug, not just the id, and
+ *  a hand-built one answers HTTP 404). */
 private object SubsceneSite : SubtitleSite {
     override val id = "subscene"
     override val name = "Subscene"
     private const val BASE = "https://subscene.best"
-    private const val FILES = "https://res.subscene.best/file/"
 
     override suspend fun search(q: SubtitleQuery): List<SiteTrack> = withContext(Dispatchers.IO) {
         val title = q.title.trim()
@@ -751,7 +749,7 @@ private object SubsceneSite : SubtitleSite {
                 lang = lang.code,
                 langLabel = lang.label,
                 release = release,
-                url = FILES + subId + ".zip",
+                url = "$BASE/download/$subId",
                 format = "zip",
                 hearingImpaired = hiCell != null && !hiCell.contains("nbsp") && H.clean(hiCell).isNotBlank(),
             )
@@ -761,61 +759,19 @@ private object SubsceneSite : SubtitleSite {
 }
 
 // ---------------------------------------------------------------------------
-//  6. YIFY
+//  Not included: YIFYSubtitles
 // ---------------------------------------------------------------------------
 
-/** The YIFY subtitle mirror. Its title page is a table of
- *  `<tr data-id> <td>rating</td> <td><span class="sub-lang">Arabic</span></td>
- *  <td><a href="/subtitles/<slug>">release</a></td>`, and each of those has a
- *  `.zip` at `/subtitle/<slug>.zip`.
+/**
+ * The YIFY mirror (`yifysubtitles.ch`) was wired in here and then removed again
+ * after a live check of its own download route: `/subtitle/<slug>.zip` answers
+ * HTTP 403 with Cloudflare's "Just a moment…" challenge while the title page
+ * that links it answers HTTP 200 — so its rows listed fine and then failed on
+ * every tap ("That subtitle couldn't be downloaded"), which is worse than not
+ * listing them at all.
  *
- *  That download is hot-link protected — fetched bare it answers HTTP 403 — so
- *  every track carries the title page as its Referer, which is what the file is
- *  served for. */
-private object YifySite : SubtitleSite {
-    override val id = "yify"
-    override val name = "YIFYSubtitles"
-    private const val HOST = "https://yifysubtitles.ch"
-
-    override suspend fun search(q: SubtitleQuery): List<SiteTrack> = withContext(Dispatchers.IO) {
-        val imdb = q.imdbId.trim()
-        var page = if (imdb.startsWith("tt")) {
-            Http.getStringQuiet("$HOST/movie-imdb/$imdb") ?: ""
-        } else ""
-        if (page.isBlank() || !page.contains("/subtitles/")) {
-            val title = q.title.trim()
-            if (title.length < 2) return@withContext emptyList()
-            val search = Http.getStringQuiet("$HOST/search?q=" + H.encPath(title))
-                ?: return@withContext emptyList()
-            val hit = Regex("href=\"(/movie-imdb/tt\\d+)\"").find(search)?.groupValues?.get(1)
-                ?: Regex("href=\"(/movie/[^\"]+)\"").find(search)?.groupValues?.get(1)
-                ?: return@withContext emptyList()
-            page = Http.getStringQuiet(HOST + hit) ?: return@withContext emptyList()
-        }
-        val out = ArrayList<SiteTrack>()
-        for (row in page.split("<tr data-id=\"").drop(1)) {
-            val head = row.take(1600)
-            val langName = H.clean(Regex("<span class=\"sub-lang\">([\\s\\S]*?)</span>").find(head)?.groupValues?.get(1))
-            val href = Regex("href=\"(/subtitles/[^\"]+)\"").find(head)?.groupValues?.get(1) ?: continue
-            val release = H.clean(
-                Regex("href=\"/subtitles/[^\"]+\"[^>]*>([\\s\\S]*?)</a>").find(head)?.groupValues?.get(1)
-            )
-            val rating = Regex("label-success\">([\\d.]+)<").find(head)?.groupValues?.get(1)
-                ?.toDoubleOrNull() ?: 0.0
-            val lang = SubtitleLang.of(langName)
-            if (lang.label.isBlank() || lang.label == "Subtitle") continue
-            out += SiteTrack(
-                siteId = id,
-                siteName = name,
-                lang = lang.code,
-                langLabel = lang.label,
-                release = release,
-                url = HOST + "/subtitle/" + href.removePrefix("/subtitles/") + ".zip",
-                format = "zip",
-                rating = rating,
-                headers = mapOf("Referer" to HOST + href),
-            )
-        }
-        out.distinctBy { it.url }.take(80)
-    }
-}
+ * That check is what every site in [SubtitleSites.ALL] has passed: BOTH its
+ * search response AND a real download of the file URL one of its rows carries.
+ * A site whose search works but whose files are walled belongs in this comment,
+ * not in the list.
+ */

@@ -295,9 +295,10 @@ data class SubtitleSource(
     val name: String = "",
     /**
      * Headers the DOWNLOAD needs, for the sites that serve a subtitle only to a
-     * request that carries the page it was listed on (the YIFY mirror answers a
-     * bare request with HTTP 403 — see [com.hikari.app.subtitles.YifySite]).
-     * Empty for an addon's track, which needs none.
+     * request that carries the page it was listed on (OpenSubtitles' mirror, for
+     * example, is asked with its own site as the Referer — see
+     * [com.hikari.app.subtitles.SubtitleSites]). Empty for an addon's track,
+     * which needs none.
      */
     val headers: Map<String, String> = emptyMap(),
 )

@@ -5578,8 +5578,8 @@ class PlayerActivity : ComponentActivity() {
         }
 
         fun runSearch() {
-            val query = input.text.toString().trim()
-            if (query.isBlank()) {
+            val typed = input.text.toString().trim()
+            if (typed.isBlank()) {
                 setStatus(I18n.t("Type a title to search for"))
                 return
             }
@@ -5609,7 +5609,14 @@ class PlayerActivity : ComponentActivity() {
                 // id and year must not follow it (asking for "Frozen" from a
                 // Moana page must not resolve Moana's `tt` id and quietly search
                 // for what was already playing).
-                val sameTitle = base != null && query.equals(base.title.trim(), true)
+                val sameTitle = base != null && typed.equals(base.title.trim(), true)
+                // …and an item's display title can be a LOCALISED name (TMDB
+                // hands a Spanish user "Vengadores: Endgame") while every
+                // subtitle site indexes the ORIGINAL release name, so when the
+                // box still holds the item's own title the search asks for
+                // `searchTitle` — the same rule the extension search follows.
+                val query = (if (sameTitle) base?.searchTitle.orEmpty() else typed)
+                    .ifBlank { typed }
                 val known = if (sameTitle) base?.id.orEmpty() else ""
                 val tmdbId = if (sameTitle) known.takeWhile { it.isDigit() } else ""
                 val year = if (sameTitle) base?.year else null
@@ -7209,7 +7216,7 @@ class PlayerActivity : ComponentActivity() {
      * Deliberately a handful: every track in [addonSubs] is downloaded and
      * rewritten to a local file the moment the source is prepared (see
      * [buildSubtitleConfigs]), so the automatic pass takes a subtitle the user
-     * can actually read and stops — the full list of what the six sites hold
+     * can actually read and stops — the full list of what the sites hold
      * (hundreds of tracks, thirty languages) is what the "Load from internet"
      * panel is for, where nothing is downloaded until it is tapped.
      */
