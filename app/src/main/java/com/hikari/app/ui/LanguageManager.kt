@@ -1,5 +1,6 @@
 package com.hikari.app.ui
 
+import android.content.Context
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import com.hikari.app.HikariApp
