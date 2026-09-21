@@ -3322,13 +3322,13 @@ private fun LanguageCard(app: HikariApp, current: String) {
 
     Column(Modifier.padding(16.dp)) {
         Text(
-            stringResource(R.string.settings_language_title),
+            tr("App language"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            stringResource(R.string.settings_language_subtitle),
+            tr("Changes the app's words and the player controls"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.protobuf.ProtoBuf
 import okhttp3.Cache
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
@@ -214,7 +216,21 @@ class HikariApp : Application() {
         // has no DI container, so the patched Injekt singleton is installed and
         // primed here — before anything can possibly load an extension.
         runCatching { dev.mihon.injekt.patchInjekt() }
-        runCatching { registerAniyomiSingletons() }
+            .onFailure {
+                // Swallowing this was a silent trap. `patchInjekt()` REPLACES
+                // the global Injekt scope with the registrar that has the
+                // singleton-caching fix, so a failure here leaves every
+                // extension load on a container nothing primed — and the only
+                // symptom is a `java.lang.reflect.InvocationTargetException:
+                // null` from whichever source touched `Injekt.get<Application>()`
+                // in its constructor. Now it is a line in Settings → Logs.
+                Logs.logError(
+                    "Injekt",
+                    "patchInjekt() failed — extensions will use Injekt's own registrar",
+                    it,
+                )
+            }
+        ensureAniyomiInjekt()
         initCloudStream(this)
         store = AppStore(this)
         val startupAt = System.currentTimeMillis()
@@ -593,14 +609,21 @@ class HikariApp : Application() {
      * `Injekt.get<Application>().getSharedPreferences(...)`, and a source that
      * can't get its preferences throws before it can list anything. `Json`,
      * `NetworkHelper` and `JavaScriptEngine` are what `JsonExtensions.defaultJson`,
-     * `AnimeHttpSource.network` and the JS-driven sources inject.
+     * `AnimeHttpSource.network` and the JS-driven sources inject. `ProtoBuf` is
+     * the odd one out: nothing in Hikari or in the extensions-lib API uses it,
+     * but `keiyoushi.utils.ProtobufKt` — a helper library the yuzono/anime-repo
+     * extensions bundle — reads it in a top-level property initialiser
+     * (`val protoInstance: ProtoBuf = Injekt.get()`), so an extension linking
+     * that library throws the moment anything touches the file.
      *
      * All of them are singletons so every installed extension shares Hikari's
      * one OkHttp stack (cookies + 5 MiB cache) instead of building its own.
-     * Failures are swallowed: an extension asking for something unregistered
-     * gets an `InjektionException` at its own call site, which the provider
-     * already turns into a per-source error message rather than a crash.
+     * Failures are logged by [ensureAniyomiInjekt]; an extension asking for
+     * something still unregistered gets an `InjektionException` at its own call
+     * site, which the provider turns into a per-source error message rather
+     * than a crash.
      */
+    @OptIn(ExperimentalSerializationApi::class)
     private fun registerAniyomiSingletons() {
         Injekt.addSingleton<Application>(this)
         Injekt.addSingleton<Context>(this)
@@ -616,6 +639,46 @@ class HikariApp : Application() {
         Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.JavaScriptEngine> {
             eu.kanade.tachiyomi.network.JavaScriptEngine(this)
         }
+        Injekt.addSingletonFactory<ProtoBuf> { ProtoBuf { } }
+    }
+
+    /** The Injekt scope [registerAniyomiSingletons] last filled, so a scope that
+     *  was replaced by somebody else can be noticed and re-primed. */
+    @Volatile
+    private var primedInjektScope: Any? = null
+
+    /**
+     * Make sure the CURRENT Injekt scope carries the singletons an extension
+     * needs, and remember WHICH scope was primed.
+     *
+     * Called from [onCreate] (before anything can load an extension) and again
+     * from every extension load (see
+     * [com.hikari.app.aniyomi.AniyomiExtensionManager]). Registering the same
+     * singletons twice is a no-op as far as instances go — the registrar keys
+     * its cache by type, so the already-built `NetworkHelper`/`Json` are handed
+     * back — but it is NOT a no-op if something re-ran `patchInjekt()` or
+     * installed a different registrar in the meantime, which is exactly the
+     * case that turns into "every extension failed to instantiate with
+     * InvocationTargetException: null" out of nowhere. Comparing scope identity
+     * makes the check free in the normal path (an identity compare per load).
+     *
+     * A failure is logged rather than swallowed: this is the difference between
+     * "the container was never primed" being a mystery and being a log line.
+     */
+    fun ensureAniyomiInjekt() {
+        val current: Any? = Injekt
+        if (current === primedInjektScope) return
+        runCatching { registerAniyomiSingletons() }
+            .onSuccess { primedInjektScope = Injekt }
+            .onFailure {
+                Logs.logError(
+                    "Injekt",
+                    "could not register the Aniyomi singletons — an extension that asks " +
+                        "Injekt for Application, Json, NetworkHelper, JavaScriptEngine or " +
+                        "ProtoBuf will fail to load",
+                    it,
+                )
+            }
     }
 
     /**

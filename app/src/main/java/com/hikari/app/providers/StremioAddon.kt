@@ -281,6 +281,18 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         }
         resourceSummary[config.id] = summarize(m, out.size)
         if (out.isEmpty()) {
+            // A SUBTITLES-ONLY addon (OpenSubtitles v3, the official SubDL one)
+            // has no catalogs on purpose and answers none. Giving it TMDB's rows
+            // to browse — the fallback below, which exists for stream-only
+            // addons — would put a full page of content on Home that this addon
+            // can never play, which is exactly the "I added it and it shows a
+            // useless catalog" report. It gets nothing on Home; the player asks
+            // it for subtitles instead (see [subtitlesFor]).
+            if (isSubtitleOnly()) {
+                catalogErrors.remove(config.id)
+                streamOnlyAddons.remove(config.id)
+                return emptyList()
+            }
             // Zero catalogs is NOT an error — stream-only addons (Torrentio,
             // Comet, Novastream, HdHub…) are valid and common. Instead of
             // leaving Home empty for one (and hiding it from the picker), it
@@ -655,5 +667,68 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             out += SubtitleSource(s.optString("lang").ifBlank { "Subtitle" }, u)
         }
         return out
+    }
+
+    // ---- Subtitle-only addons ------------------------------------------------
+
+    /**
+     * True when this addon exists to supply SUBTITLES and nothing else — a
+     * manifest whose `resources` list is `["subtitles"]` and which declares no
+     * catalogs. OpenSubtitles v3 (`opensubtitles-v3.strem.io`) and the official
+     * SubDL addon (`api3.subdl.com`) are the two everyone meets: both answer
+     * `/subtitles/{type}/{id}.json` and neither has a catalog or a stream.
+     *
+     * They are not content providers, and treating them as one is why adding
+     * them looked broken: with no catalogs the addon was given TMDB's rows to
+     * browse (the stream-only fallback) and then produced no servers for
+     * anything, so it read as "this repo is useless". Hikari now recognises
+     * them for what they are (see [subtitlesFor]) and asks them for subtitles.
+     */
+    suspend fun isSubtitleOnly(): Boolean {
+        val m = loadManifest() ?: return false
+        if (catalogsOf(m).isNotEmpty()) return false
+        if (hasResource(m, "stream")) return false
+        return hasResource(m, "subtitles")
+    }
+
+    /**
+     * The subtitle tracks this addon has for [item] (and [episode], for a
+     * series), in the order the addon returned them.
+     *
+     * A subtitle addon is asked with an id it recognises, and the two protocol
+     * families differ: OpenSubtitles v3 declares `idPrefixes: ["tt"]` and only
+     * answers IMDb ids, while SubDL declares `tt`, `tmdb:`, `kitsu:`, `mal:`,
+     * `anilist:` and `anidb:` and is happiest with `tmdb:`. So this tries, in
+     * order: the id the item already carries (an addon-sourced item may already
+     * be `tt…`), then the IMDb id TMDB knows behind a TMDB id, then the bare
+     * `tmdb:<id>` form. The first URL that returns a non-empty `subtitles`
+     * array wins, and an episode id gets the protocol's `:season:episode`
+     * suffix.
+     */
+    suspend fun subtitlesFor(item: MediaItem, episode: Episode?): List<SubtitleSource> {
+        val m = loadManifest() ?: return emptyList()
+        if (!hasResource(m, "subtitles")) return emptyList()
+        val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
+        val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
+        val digits = item.id.takeWhile { it.isDigit() }
+        val candidates = linkedSetOf<String>()
+        if (item.id.isNotBlank()) candidates += item.id + epSuffix
+        if (digits.isNotEmpty()) {
+            TmdbBrowse.imdbId(digits, kind)?.let { candidates += it + epSuffix }
+            candidates += "tmdb:$digits"
+        }
+        val segments = linkedSetOf(
+            typeSegment(item.rawType, item.type),
+            if (item.type == MediaType.SERIES) "series" else "movie",
+            "movie", "series", "tv",
+        )
+        for (id in candidates) {
+            for (seg in segments) {
+                val json = getJson(resUrl("subtitles", seg, id)) ?: continue
+                val subs = parseSubs(json.optJSONArray("subtitles"))
+                if (subs.isNotEmpty()) return subs
+            }
+        }
+        return emptyList()
     }
 }

@@ -658,10 +658,17 @@ object AniyomiExtensionManager {
             } else {
                 lastFail[path] = System.currentTimeMillis()
                 // The reason THIS extension failed, captured on the thread that
-                // ran the load (see [loadFailures]).
-                loadFailures[path] = loadError.get()
+                // ran the load (see [loadFailures]) — WITH the full recorded
+                // detail, so the UI can show the unwrapped cause and its frames
+                // ("caused by java.lang.NoClassDefFoundError: …") instead of
+                // only the one-line summary. That summary is all the row used to
+                // carry, which is why a load failure read as
+                // "none of its sources could be loaded" with nothing to act on.
+                val why = loadError.get()
                     ?: lastError
                     ?: "The extension could not be loaded"
+                val detail = takeErrorDetails()
+                loadFailures[path] = if (detail.isBlank()) why else "$why\n$detail"
             }
             return ext
         } finally {
@@ -734,6 +741,13 @@ object AniyomiExtensionManager {
     // ---- The actual load ----
 
     private fun load(context: Context, file: File): Extension? {
+        // The DI container an extension resolves its own dependencies out of
+        // (`Injekt.get<Application>()` in its constructor, which is why a
+        // failure here shows up as an `InvocationTargetException: null`). Cheap
+        // when the scope has not changed — an identity compare — and the only
+        // thing that repairs an extension loader whose Injekt scope was
+        // replaced after startup.
+        runCatching { HikariApp.instance.ensureAniyomiInjekt() }
         errorDetails.get().setLength(0)
         loadError.set(null)
         lastError = null
@@ -950,15 +964,46 @@ object AniyomiExtensionManager {
     }
 
     private fun record(what: String, e: Throwable? = null) {
+        // The CAUSE, not the wrapper. An extension's constructor that throws is
+        // reported by the JVM as an `InvocationTargetException` whose message is
+        // null — the useful line ("NetworkHelper could not be created",
+        // "NoClassDefFoundError: …", "InjektionException: …") is one level
+        // deeper. Printing only the wrapper is what made "ChineseAnime could not
+        // be instantiated: java.lang.reflect.InvocationTargetException: null"
+        // the whole story, with nothing to act on. The unwrapped cause is
+        // printed with its own frames, so the next report names the real fault.
         val line = buildString {
             append(what)
             if (e != null) {
                 append(": ${e.javaClass.name}: ${e.message}")
+                val root = rootCause(e)
+                if (root !== e) {
+                    append("\n    caused by ${root.javaClass.name}: ${root.message}")
+                    for (frame in root.stackTrace.take(6)) append("\n      at $frame")
+                }
                 for (frame in e.stackTrace.take(4)) append("\n    at $frame")
             }
         }
         if (errorDetails.get().length < 4000) errorDetails.get().append(line).append("\n")
         lastError = lastError ?: what
         android.util.Log.e(TAG, line, e)
+    }
+
+    /** The real fault behind [t], unwrapping the reflection/execution wrappers
+     *  (`InvocationTargetException`, `ExecutionException`, a class-initialiser
+     *  failure) that a reflective instantiation puts in front of it. */
+    private fun rootCause(t: Throwable): Throwable {
+        var cur = t
+        var i = 0
+        while (i++ < 8) {
+            val next: Throwable? = when (cur) {
+                is java.lang.reflect.InvocationTargetException -> cur.targetException
+                is java.lang.ExceptionInInitializerError -> cur.exception
+                else -> cur.cause
+            }
+            if (next == null || next === cur) break
+            cur = next
+        }
+        return cur
     }
 }

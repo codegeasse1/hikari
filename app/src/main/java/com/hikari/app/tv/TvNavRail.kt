@@ -79,6 +79,7 @@ import kotlinx.coroutines.launch
  * is a lazy list, so a box that reports something even shorter still lets the
  * D-pad scroll the list to the focused tab instead of hiding it.
  */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun TvNavRail(
     currentRoute: String?,
@@ -86,12 +87,13 @@ fun TvNavRail(
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Same rule as the phone's bar: a tab can be hidden, but the rail can never
-    // be emptied (see TaskbarCard), so a stored set that covers every tab falls
-    // back to the full list.
-    val tabs = remember(hidden) {
-        BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
-    }
+    // EVERY tab, always. The phone's taskbar lets a user hide a button to make
+    // room on a narrow screen — but a rail has no such constraint, and a tab
+    // hidden on the phone that is then unreachable on the television is a
+    // screen the remote can never open ("there is no Extensions or Settings
+    // button on my TV"). The rail therefore ignores the phone's hidden set. The
+    // list can still never be empty; see below.
+    val tabs = remember { BottomTabs }
     val requesters = remember(tabs) { tabs.map { FocusRequester() } }
     var initialFocusPending by remember(tabs) { mutableStateOf(true) }
     val listState = rememberLazyListState()

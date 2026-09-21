@@ -3,12 +3,10 @@ package eu.kanade.tachiyomi.animesource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimeRelation
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
-import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SAnimeEpisodeUpdate
 import eu.kanade.tachiyomi.animesource.model.SAnimeSeasonUpdate
 import eu.kanade.tachiyomi.animesource.model.SEpisode
-import eu.kanade.tachiyomi.animesource.model.Video
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
 import rx.Observable
@@ -62,9 +60,17 @@ interface AnimeCatalogueSource : AnimeSource {
         throw Exception("Stub!")
     }
 
-    override suspend fun getHosterList(episode: SEpisode): List<Hoster> = getHosterList(episode)
-
-    override suspend fun getVideoList(hoster: Hoster): List<Video> = getVideoList(hoster)
+    // NOTE: deliberately NOT overriding getHosterList(SEpisode) /
+    // getVideoList(Hoster) here. Both were once declared as
+    // `= getHosterList(episode)` / `= getVideoList(hoster)` — an override whose
+    // body calls the SAME signature, i.e. infinite recursion and a
+    // StackOverflowError for any extension that implements AnimeCatalogueSource
+    // directly (a lib-16 "new API" source that does not extend
+    // AnimeHttpSource, which supplies its own hoster/video implementation and
+    // therefore hid the recursion for the classic sources). The interface
+    // default in AnimeSource — `throw IllegalStateException("Not used")` — is
+    // what Aniyomi itself relies on, so removing the overrides restores the
+    // upstream behaviour.
 
     @Deprecated(
         "Use the non-RxJava API instead",

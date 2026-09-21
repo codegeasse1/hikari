@@ -14,7 +14,7 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 167
+    versionCode = 168
     versionName = "0.9.9"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
@@ -283,6 +283,28 @@ dependencies {
     // in the cover editor): without it Coil draws only the first frame.
     implementation(libs.coil.gif)
     implementation(libs.kotlinx.serialization.json)
+    // Two kotlinx.serialization modules nothing in Hikari's own source touches,
+    // added because ANIYOMI EXTENSIONS link against them BY NAME:
+    //
+    //  * kotlinx-serialization-json-okio provides
+    //    `kotlinx.serialization.json.okio.OkioStreamsKt`, which the keiyoushi
+    //    utils library (`keiyoushi.utils.Json.parseAs`) reaches through
+    //    `Json.decodeFromBufferedSource` on every response-backed parse. It is a
+    //    SEPARATE artifact from kotlinx-serialization-json, so an extension that
+    //    called it died with
+    //    `NoClassDefFoundError: kotlinx/serialization/json/okio/OkioStreamsKt`.
+    //  * kotlinx-serialization-protobuf provides
+    //    `kotlinx.serialization.protobuf.ProtoBuf`, which
+    //    `keiyoushi.utils.ProtobufKt` reads at class-initialisation time
+    //    (`val protoInstance: ProtoBuf = Injekt.get()`). Without it, merely
+    //    loading that file throws.
+    //
+    // Both are pure Kotlin with no native code, and proguard-rules.pro's
+    // `-keep class kotlinx.serialization.**` already keeps them whole. The
+    // ProtoBuf singleton itself is registered in HikariApp (see
+    // `registerAniyomiSingletons`).
+    implementation(libs.kotlinx.serialization.json.okio)
+    implementation(libs.kotlinx.serialization.protobuf)
     implementation(libs.kotlin.reflect)
     implementation(libs.jackson.databind)
     implementation(libs.jackson.module.kotlin)

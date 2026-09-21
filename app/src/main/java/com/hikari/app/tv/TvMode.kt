@@ -180,13 +180,19 @@ object TvUi {
      * Televisions have cut roughly 5% of the picture off since the CRT era, and
      * plenty of modern sets and HDMI switches still do — content drawn hard
      * against the edge simply is not there on those screens (the classic "the
-     * back button is half off the left side" on a Fire TV). The default keeps
-     * every control well inside the safe area; the slider exists because the
-     * right number depends on the television, and 0 is offered for the sets that
-     * show the whole frame.
+     * back button is half off the left side" on a Fire TV, and the reported
+     * "the navigation rail is cut off at the left edge of my TV"). The default
+     * keeps every control well inside the safe area; the slider exists because
+     * the right number depends on the television, and 0 is offered for the sets
+     * that show the whole frame.
+     *
+     * 48dp is not a guess: a 1080p television reports a 960x540dp viewport, so
+     * 5% of the width is exactly 48dp. Anything smaller left the leftmost
+     * column of the navigation rail clipped on the sets that crop — which is
+     * what the screenshots showed.
      */
-    const val DEFAULT_OVERSCAN_DP = 27
-    const val MAX_OVERSCAN_DP = 64
+    const val DEFAULT_OVERSCAN_DP = 48
+    const val MAX_OVERSCAN_DP = 96
 
     /** The navigation rail's width, which is also the left inset every page
      *  keeps clear of it (see [com.hikari.app.ui.navigation.AppRoot]). */
@@ -210,10 +216,40 @@ object TvUi {
     fun gridMin(phoneDp: Int): androidx.compose.ui.unit.Dp =
         if (TvMode.isTv) maxOf(phoneDp, POSTER_WIDTH_DP).dp else phoneDp.dp
 
-    /** The same idea for a fixed column count (the search results grid). */
-    fun gridColumns(phoneColumns: Int, tvColumns: Int = 6): Int =
-        if (TvMode.isTv) tvColumns else phoneColumns
+    /**
+     * Poster cell width for THIS screen — the number that actually has to move.
+     *
+     * A flat [POSTER_WIDTH_DP] is right on a 1080p television (960dp wide, 540dp
+     * tall) and wrong on anything shorter: a 2:3 poster 168dp wide is 252dp
+     * tall, so on a 360-540dp-tall landscape display four of them cover the
+     * whole screen and the rows underneath are never reached (the "the posters
+     * are far too big, three or four of them fill the screen" report). Sizing
+     * the cell from the screen's HEIGHT instead — roughly three rows to a
+     * screen, clamped to a range that still reads from a sofa — gives about
+     * seven cells across a landscape phone and five across a television, with
+     * every row's title visible under it.
+     */
+    @Composable
+    fun posterWidth(): androidx.compose.ui.unit.Dp {
+        if (!TvMode.current()) return 120.dp
+        val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+        return (h * 0.30f).coerceIn(96f, POSTER_WIDTH_DP.toFloat()).dp
+    }
 
-    /** Poster cell width — see [POSTER_WIDTH_DP]. */
-    val posterWidth = POSTER_WIDTH_DP.dp
+    /** [gridMin], but sized from the screen rather than a constant — see
+     *  [posterWidth]. This is what a poster grid should use. */
+    @Composable
+    fun gridMinFor(phoneDp: Int): androidx.compose.ui.unit.Dp =
+        if (TvMode.current()) maxOf(phoneDp.toFloat(), posterWidth().value).dp else phoneDp.dp
+
+    /** The same idea for a FIXED column count (the search results grid): as many
+     *  columns as the screen can hold at [posterWidth], so a television gets the
+     *  cells an adaptive grid would have given it. */
+    @Composable
+    fun gridColumns(phoneColumns: Int): Int {
+        if (!TvMode.current()) return phoneColumns
+        val w = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+        val avail = (w - RAIL_WIDTH.value).coerceAtLeast(200f)
+        return (avail / posterWidth().value).toInt().coerceIn(4, 8)
+    }
 }

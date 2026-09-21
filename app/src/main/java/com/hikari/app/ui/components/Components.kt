@@ -70,6 +70,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
@@ -155,6 +157,32 @@ fun MediaRow(
             }
         }
     }
+}
+
+/**
+ * The frame a hero card is drawn in.
+ *
+ * On a phone that is simply the card's own aspect ratio at full width — the
+ * shape the design asks for. On a television it is the same card CAPPED to
+ * about half the screen's height, because a 16:9 hero across a 848dp-wide
+ * television screen wants 477dp of a 540dp-tall display: the banner then IS the
+ * page, and nothing below it is ever seen (the "the hero banner takes the whole
+ * screen" half of the TV-layout report). Capping keeps the artwork's shape —
+ * `ContentScale.Crop` takes care of the crop — while leaving the rows
+ * underneath on screen.
+ *
+ * [aspect] is width/height, and [horizontalInsets] is the width the card's own
+ * padding takes off the screen (a carousel's peek-in, for example).
+ */
+@Composable
+private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f): Modifier {
+    val width = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
+    val natural = (width - horizontalInsets) / aspect
+    if (!TvMode.current()) return Modifier.fillMaxWidth().aspectRatio(aspect)
+    val height = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+    return Modifier
+        .fillMaxWidth()
+        .height(natural.coerceAtMost(height * 0.52f).dp)
 }
 
 /**
@@ -268,9 +296,10 @@ fun PosterCard(
     // title and repaints the cell when the answer lands (see
     // rememberPosterScore). Off, it costs nothing at all.
     val badge = rememberPosterScore(item, style)
-    // On a television the same card is drawn at living-room size: a phone's
-    // 120dp cell is a thumbnail at four metres (see TvUi.POSTER_WIDTH_DP).
-    val cardWidth = if (TvMode.current()) TvUi.posterWidth else 120.dp
+    // On a television the same card is drawn at a size that reads from a sofa,
+    // sized from THIS screen's height rather than a constant (see
+    // TvUi.posterWidth) so three or four cells never fill a landscape display.
+    val cardWidth = if (TvMode.current()) TvUi.posterWidth() else 120.dp
     Column(
         Modifier
             .width(cardWidth)
@@ -530,15 +559,19 @@ private fun HeroCarousel(
     val pagerState = rememberPagerState { items.size }
     // Auto-advance every 6s, but stand still while the user is dragging so a
     // swipe never fights the timer (the clock restarts after the drag ends).
-    LaunchedEffect(pagerState, items) {
-        if (items.size <= 1) return@LaunchedEffect
-        while (true) {
-            delay(6000)
-            if (!pagerState.isScrollInProgress) {
-                pagerState.animateScrollToPage((pagerState.currentPage + 1) % items.size)
+    // Not at all on a television — see [HeroAutoAdvance].
+    if (!TvMode.current()) {
+        LaunchedEffect(pagerState, items) {
+            if (items.size <= 1) return@LaunchedEffect
+            while (true) {
+                delay(6000)
+                if (!pagerState.isScrollInProgress) {
+                    pagerState.animateScrollToPage((pagerState.currentPage + 1) % items.size)
+                }
             }
         }
     }
+    val frame = heroFrame(16f / 9f, horizontalInsets = 40f)
     Column(modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
@@ -553,8 +586,7 @@ private fun HeroCarousel(
             val heroScore = if (config.showRating) rememberHeroScore(item) else null
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
+                    .then(frame)
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .clickable { onClick(item) }
@@ -738,6 +770,11 @@ private fun HeroDots(active: Int, count: Int, modifier: Modifier = Modifier) {
  *  a swipe never fights the timer. */
 @Composable
 private fun HeroAutoAdvance(pagerState: androidx.compose.foundation.pager.PagerState, count: Int, everyMs: Long) {
+    // A television's hero stands still. The remote is how a viewer moves
+    // through things there, and a banner that slides sideways every few seconds
+    // under a focused screen is the "the hero keeps jittering" report — on a
+    // weak TV box the animation also drops frames while it does it.
+    if (TvMode.current()) return
     LaunchedEffect(pagerState, count) {
         if (count <= 1) return@LaunchedEffect
         while (true) {
@@ -764,6 +801,7 @@ private fun HeroSpotlight(
 ) {
     val pagerState = rememberPagerState { items.size }
     HeroAutoAdvance(pagerState, items.size, 7000L)
+    val frame = heroFrame(3f / 2f)
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         HorizontalPager(
             state = pagerState,
@@ -774,8 +812,7 @@ private fun HeroSpotlight(
             val hero = Artwork.heroModel(item)
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(3f / 2f)
+                    .then(frame)
                     .clickable { onClick(item) }
             ) {
                 HeroArtwork(
@@ -1344,63 +1381,84 @@ fun GlassDialog(
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
     val a = appear.value
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .graphicsLayer { alpha = a }
-            .background(Color.Black.copy(alpha = 0.62f * a))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { onDismiss() },
-        contentAlignment = Alignment.Center,
+    // A REAL window, not a Box drawn into whichever subtree happened to open
+    // the dialog. That distinction is the whole fix for "the picker opens at
+    // the BOTTOM of the page and I have to scroll to it": the panel used to be
+    // composed inside the card that opened it — i.e. inside one item of a
+    // LazyColumn — so its height was added to that card instead of being laid
+    // over the screen. It looked centred in English (short labels, a card near
+    // the top of a page) and landed below everything in Arabic (longer,
+    // right-to-left labels, and a taller card), which is exactly the report.
+    // In its own window the panel is centred on the SCREEN in every language,
+    // on every screen, and it draws over the taskbar and the navigation rail
+    // instead of behind them.
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnClickOutside = true,
+            dismissOnBackPress = true,
+            decorFitsSystemWindows = false,
+        ),
     ) {
-        Column(
-            modifier
-                .fillMaxWidth(0.92f)
-                .graphicsLayer {
-                    scaleX = 0.94f + 0.06f * a
-                    scaleY = 0.94f + 0.06f * a
-                }
-                // Swallow taps: reaching for a row must not close the dialog.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = a }
+                .background(Color.Black.copy(alpha = 0.62f * a))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                ) {}
-                .then(if (glass.dark) Modifier else Modifier.shadow(6.dp, shape, clip = false))
-                .clip(shape)
-                .background(MaterialTheme.colorScheme.surface)
-                .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
-                .border(1.dp, glass.border, shape)
-                .padding(20.dp),
-            content = {
-                if (title != null || showClose) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (title != null) {
-                            Text(
-                                tr(title),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
-                        if (showClose) {
-                            IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                ) { onDismiss() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier
+                    .fillMaxWidth(0.92f)
+                    .graphicsLayer {
+                        scaleX = 0.94f + 0.06f * a
+                        scaleY = 0.94f + 0.06f * a
+                    }
+                    // Swallow taps: reaching for a row must not close the dialog.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {}
+                    .then(if (glass.dark) Modifier else Modifier.shadow(6.dp, shape, clip = false))
+                    .clip(shape)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                    .border(1.dp, glass.border, shape)
+                    .padding(20.dp),
+                content = {
+                    if (title != null || showClose) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (title != null) {
+                                Text(
+                                    tr(title),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
                                 )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
+                            if (showClose) {
+                                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
+                        Spacer(Modifier.height(4.dp))
                     }
-                    Spacer(Modifier.height(4.dp))
-                }
-                content()
-            },
-        )
+                    content()
+                },
+            )
+        }
     }
 }

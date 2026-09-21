@@ -180,5 +180,31 @@ fun trTag(term: String): String {
 @Composable
 fun tr(en: String): String {
     if (en.isBlank()) return en
-    return I18n.LocalMap.current[en] ?: en
+    I18n.LocalMap.current[en]?.let { return it }
+    // The dictionary is the first and cheapest answer, and the only one that is
+    // instant and offline — but it is not the ONLY answer. A literal that the
+    // selected language's file does not carry used to fall straight through to
+    // English, which is what "I picked Arabic and the settings still say
+    // Cinema / App Layout / Wide banner" is: the app's own copy is wrapped for
+    // translation, and those particular entries simply had no translation yet.
+    // Rather than leaving them English until the next build ships more
+    // dictionary entries, the same live translator the content tags already use
+    // fills the gaps — one round trip per distinct label, cached in memory and
+    // on disk, so it is paid once and then never again.
+    return trMissing(en)
+}
+
+/** The fallback half of [tr]: the label is not in the dictionary, so ask the
+ *  tag translator (and repaint when its answer lands). Kept separate so the
+ *  common case — a dictionary hit — costs one map lookup and no state read. */
+@Composable
+private fun trMissing(en: String): String {
+    val lang = I18n.currentTag
+    if (lang.isBlank() || lang.startsWith("en")) return en
+    TagTranslator.cached(lang, en)?.let { return it }
+    val version by TagTranslator.version.collectAsState()
+    LaunchedEffect(lang, en, version) {
+        if (TagTranslator.cached(lang, en) == null) TagTranslator.request(lang, en)
+    }
+    return en
 }

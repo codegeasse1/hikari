@@ -112,7 +112,7 @@ fun LibraryScreen(nav: NavHostController) {
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = TvUi.gridMin(104)),
+        columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             start = 16.dp,

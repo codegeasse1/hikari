@@ -256,7 +256,7 @@ fun CatalogScreen(
                 // laid out around a living-room cell size instead (see TvUi) —
                 // a phone's 84dp minimum on a 1920dp screen would be twenty-two
                 // columns of thumbnails.
-                columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
+                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),

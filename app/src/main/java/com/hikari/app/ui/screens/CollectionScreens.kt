@@ -176,6 +176,8 @@ import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -2030,6 +2032,26 @@ private fun ImportCollectionsSheet(
         }
     }
 
+    // Parse whatever is ALREADY in the field, however it got there.
+    //
+    // The field's only wiring used to be the Paste button — pasting with the
+    // keyboard (a long-press → Paste, or a paste from a password manager) set
+    // the text but never ran the parser, so no plan existed and the Import
+    // button stayed dead: "I paste the JSON and nothing happens, the button
+    // does nothing". Watching the text means every route in — typed, pasted,
+    // restored from a previous screen — produces the preview and enables the
+    // button. Debounced (a real export is hundreds of kilobytes, and every
+    // keystroke would re-parse it) and off the main thread for the same reason.
+    LaunchedEffect(body) {
+        if (body.isBlank() || plan != null) return@LaunchedEffect
+        delay(280)
+        val parsed = withContext(Dispatchers.Default) {
+            runCatching { NuvioCollectionsImport.parse(body) }.getOrNull()
+        } ?: return@LaunchedEffect
+        plan = parsed
+        message = ""
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         busy = true
@@ -2234,10 +2256,32 @@ private fun ImportCollectionsSheet(
                     val p = plan ?: return@Surface
                     busy = true
                     scope.launch {
-                        val summary = runCatching { importCollections(app, p) }
-                            .getOrElse { I18n.t("The import failed.") }
+                        // On IO, with a deadline. This walks every catalog the
+                        // file names and asks the installed extensions which of
+                        // them they expose — and an extension whose host has
+                        // stopped answering answers NOTHING, so without the
+                        // timeout the button span forever and the sheet sat on
+                        // its spinner (the "it just keeps loading and never
+                        // imports" report). A timed-out lookup drops that one
+                        // source and imports the rest, which is what the user
+                        // asked for anyway.
+                        val summary = withContext(Dispatchers.IO) {
+                            runCatching {
+                                withTimeoutOrNull(90_000L) { importCollections(app, p) }
+                            }
+                        }
                         busy = false
-                        onImported(summary)
+                        val failure = summary.exceptionOrNull()
+                        if (failure != null) {
+                            com.hikari.app.data.Logs.log(
+                                "Collections",
+                                "import failed: ${failure.javaClass.name}: ${failure.message}"
+                            )
+                        }
+                        onImported(
+                            summary.getOrNull()
+                                ?: I18n.t("The import took too long — try again in a moment.")
+                        )
                     }
                 },
                 shape = GlassShape,
@@ -2385,6 +2429,12 @@ private suspend fun importCollections(
  * are skipped rather than failing the whole import: one dead host must not cost
  * the user the other five collections in their file.
  */
+/** How long one installed extension gets to list its catalogs while an import
+ *  is matching the file's sources to it. Generous (an extension that has to
+ *  load a plugin and fetch its index is slow the first time) but bounded — see
+ *  the call site for why a bound is what stops the import spinning for ever. */
+private const val CATALOG_LOOKUP_MS = 12_000L
+
 private suspend fun matchInstalledCatalog(
     app: HikariApp,
     addonId: String,
@@ -2407,7 +2457,12 @@ private suspend fun matchInstalledCatalog(
     }
     for (p in ordered) {
         val refs = cache.getOrPut(p.config.id) {
-            runCatching { p.catalogs() }.getOrDefault(emptyList())
+            // Bounded, like every other extension call in the app: a provider
+            // whose host has stopped answering must not be able to hold the
+            // whole import open.
+            runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(CATALOG_LOOKUP_MS) { p.catalogs() }
+            }.getOrNull() ?: emptyList()
         }
         val hit = refs.firstOrNull { it.id == wanted } ?: continue
         return@withContext CatalogSource(
@@ -3395,7 +3450,7 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             return@Column
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = TvUi.gridMin(150)),
+            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(150)),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3783,7 +3838,7 @@ fun TmdbGridScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
+                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
@@ -3929,7 +3984,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             return@Column
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = TvUi.gridMin(84)),
+            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -179,6 +179,17 @@ class PlayerActivity : ComponentActivity() {
         val providerName: String = "",
     )
 
+    /** Subtitle tracks contributed by the installed SUBTITLE addons
+     *  (OpenSubtitles v3, SubDL…), merged into the playing source's own tracks. */
+    private var addonSubs: List<SubtitleSource> = emptyList()
+
+    /** How many tracks the subtitle addons may contribute per session, and how
+     *  long one addon gets to answer. Both are deliberate: each track is a real
+     *  download when the source is prepared, and a subtitle addon that has
+     *  stopped answering must not be able to delay the attach. */
+    private val MAX_ADDON_SUBS = 10
+    private val ADDON_SUBTITLE_MS = 12_000L
+
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
 
@@ -1400,6 +1411,11 @@ class PlayerActivity : ComponentActivity() {
         // showed the same card while it searched, so this keeps the "finding
         // your server" screen continuous until real video is on screen.
         showLoadingCover()
+
+        // Subtitle addons (OpenSubtitles v3 / SubDL / …): ask for this title's
+        // subtitle tracks in the background and fold them into whichever source
+        // ends up playing.
+        startAddonSubtitleFetch()
 
         if (liveId != null) {
             // The detail screen keeps searching every installed provider while
@@ -6415,6 +6431,78 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
+     * Asks every installed subtitle addon (OpenSubtitles v3, SubDL, …) for this
+     * title's subtitles and, when any come back, re-attaches the source with
+     * them.
+     *
+     * This is the whole point of those addons: they are Stremio's subtitle
+     * resource and nothing else — no catalog, no stream — so a host that only
+     * understands them as content providers shows the user an empty page and
+     * calls the repo useless. The tracks they return are ordinary
+     * [SubtitleSource]s, which is exactly what the player already knows how to
+     * fetch, validate, re-time and select, so they appear in the subtitle menu
+     * beside the provider's own.
+     *
+     * Runs once, off the main thread, after the sources have been listed —
+     * playback is never held up by it. The list is capped and ordered
+     * favourites-first (the app's own language, then English), because every
+     * track is downloaded and rewritten to a local file when the source is
+     * prepared, and nobody wants twenty of them for a film they are watching.
+     */
+    private fun startAddonSubtitleFetch() {
+        val item = favouriteItem ?: return
+        val epSeason = intent.getIntExtra("histEpisodeSeason", 0)
+        val epNumber = intent.getIntExtra("histEpisodeNumber", 0)
+        val episode = if (epNumber > 0) {
+            Episode(
+                number = epNumber,
+                id = intent.getStringExtra("histEpisodeId").orEmpty(),
+                season = epSeason.coerceAtLeast(1),
+            )
+        } else {
+            null
+        }
+        lifecycleScope.launch {
+            val addons = runCatching {
+                (applicationContext as HikariApp).providers.providers.value
+                    .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                    .filter { it.config.enabled }
+            }.getOrDefault(emptyList())
+            if (addons.isEmpty()) return@launch
+            val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
+            val tracks = withContext(Dispatchers.IO) {
+                addons.flatMap { addon ->
+                    runCatching {
+                        withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(item, episode) }
+                    }.getOrDefault(emptyList())
+                }
+                    // Two addons can offer the same file, and a repeated URL is a
+                    // second download of the same subtitles.
+                    .distinctBy { it.url }
+                    .sortedByDescending { s ->
+                        val lang = s.lang.lowercase()
+                        when {
+                            wanted.isNotBlank() && lang.startsWith(wanted) -> 2
+                            lang.startsWith("en") -> 1
+                            else -> 0
+                        }
+                    }
+                    .take(MAX_ADDON_SUBS)
+            }
+            if (tracks.isEmpty()) return@launch
+            addonSubs = tracks
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "subtitle addons: ${tracks.size} track(s) — " +
+                    tracks.joinToString(", ") { it.lang }.take(180),
+            )
+            // The user chose "Off": keep the tracks (the menu will list them)
+            // but do not re-prepare the item just to add them.
+            if (!textOff) reattachSubtitles(null)
+        }
+    }
+
+    /**
      * If the current server still hasn't started delivering video 20s after
      * prepare, ask the user: switch to the next server or keep waiting — and
      * auto-switch after 3s if they don't answer. CloudStream plays in ~5s, but
@@ -7131,7 +7219,9 @@ class PlayerActivity : ComponentActivity() {
      *  returning the configurations to hand ExoPlayer. Runs on an IO thread. */
     private suspend fun buildSubtitleConfigs(src: PlayerSource): List<MediaItem.SubtitleConfiguration> =
         withContext(Dispatchers.IO) {
-            src.subtitles.mapNotNull { s ->
+            // The provider's own tracks plus whatever the subtitle addons
+            // contributed for this title (see [startAddonSubtitleFetch]).
+            (src.subtitles + addonSubs).distinctBy { it.url }.mapNotNull { s ->
                 val raw = fetchSubtitleText(s, src.headers)
                 if (raw == null) {
                     android.util.Log.w(

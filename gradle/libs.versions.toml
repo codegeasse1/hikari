@@ -56,6 +56,11 @@ coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coi
 coil-svg = { group = "io.coil-kt", name = "coil-svg", version.ref = "coil" }
 coil-gif = { group = "io.coil-kt", name = "coil-gif", version.ref = "coil" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
+# The two kotlinx.serialization modules the Aniyomi extension ecosystem links
+# against by name but Hikari's own code never used — see the note beside them in
+# app/build.gradle.kts.
+kotlinx-serialization-json-okio = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json-okio", version.ref = "serializationJson" }
+kotlinx-serialization-protobuf = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-protobuf", version.ref = "serializationJson" }
 kotlin-reflect = { group = "org.jetbrains.kotlin", name = "kotlin-reflect", version.ref = "kotlin" }
 jackson-databind = { group = "com.fasterxml.jackson.core", name = "jackson-databind", version.ref = "jackson" }
 jackson-module-kotlin = { group = "com.fasterxml.jackson.module", name = "jackson-module-kotlin", version.ref = "jackson" }

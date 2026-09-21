@@ -1,6 +1,7 @@
 package com.hikari.app
 
 import android.os.Bundle
+import android.content.res.Configuration
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -12,6 +13,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.hikari.app.net.Updater
@@ -132,6 +136,21 @@ class MainActivity : AppCompatActivity() {
             "layout: " + (if (TvMode.isTv) "television" else "phone/tablet") +
                 " (" + TvMode.describe(this) + ")",
         )
+        // A television shows this app LANDSCAPE, always.
+        //
+        // The TV layout is a landscape design (a rail down the left, rows to the
+        // right of it), and a box that reports a portrait screen — or a phone
+        // whose user has switched the television layout on to look at it — would
+        // otherwise letterbox it: the app draws a 16:9 interface inside a tall
+        // window, with black bands above and below, which is exactly the "the
+        // app is not full screen on my TV" report. Asking for landscape makes
+        // the window take the whole display, and every rail, hero and grid in
+        // the app is drawn against the shape it was designed for.
+        if (TvMode.isTv) {
+            runCatching {
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            }
+        }
         // True fullscreen (the default): hide the system status + navigation
         // bars everywhere (swipe from any edge to briefly reveal them), so
         // content fills the whole screen instead of stopping below a status
@@ -177,6 +196,38 @@ class MainActivity : AppCompatActivity() {
             val i18nMap = remember(uiLanguageTag) {
                 com.hikari.app.i18n.I18n.mapFor(this@MainActivity, uiLanguageTag)
             }
+            // The language the UI is DRAWN in, applied through Compose instead of
+            // by asking Android to rebuild the activity.
+            //
+            // This is the "I change the language and half the screen stays
+            // English until I restart" bug. The platform's per-app locale (see
+            // LanguageManager.apply) is still set — the player's View-based
+            // overlay reads values-<lang>/strings.xml, so it has to be — but the
+            // activity declares `locale|layoutDirection` in android:configChanges,
+            // so Android hands the change to onConfigurationChanged instead of
+            // recreating anything. The result was a single frame in which the
+            // composables that read the configuration had the new language and
+            // the rest still held the old one, which reads as a screen written
+            // in two languages at once, and only a cold start made it uniform.
+            //
+            // Providing the configuration ourselves makes it one atomic change:
+            // every tr() re-reads LocalMap, every read of LocalConfiguration and
+            // LocalLayoutDirection sees the new language on the same frame, and
+            // an RTL language flips the layout in the same pass. Nothing is
+            // recreated, so scroll position, the open settings card and the
+            // navigation stack all survive the switch.
+            val localizedConfig = remember(uiLanguageTag) {
+                val base = Configuration(this@MainActivity.resources.configuration)
+                val locale = if (uiLanguageTag.isBlank()) {
+                    java.util.Locale.getDefault()
+                } else {
+                    java.util.Locale.forLanguageTag(uiLanguageTag)
+                }
+                base.setLocale(locale)
+                base.setLayoutDirection(locale)
+                base
+            }
+            val rtl = localizedConfig.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
             LaunchedEffect(i18nMap, uiLanguageTag) {
                 com.hikari.app.i18n.I18n.setCurrent(i18nMap, uiLanguageTag)
                 // One line, deliberately: the interface language is the one
@@ -317,10 +368,25 @@ class MainActivity : AppCompatActivity() {
             // the interface live, without a restart.
             val tvModeFlow = remember { store.tvModeFlow() }
             LaunchedEffect(tvModeFlow) {
-                tvModeFlow.collect { TvMode.setOverride(it) }
+                tvModeFlow.collect {
+                    TvMode.setOverride(it)
+                    // Switching the television layout on (or off) also switches
+                    // the window's orientation with it, and re-applies the bars:
+                    // the rail is a landscape design, and the phone layout must
+                    // be left free to rotate as the user holds the device.
+                    runCatching {
+                        requestedOrientation =
+                            if (TvMode.isTv) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }
+                    applyImmersiveMode()
+                }
             }
 
             CompositionLocalProvider(
+                LocalConfiguration provides localizedConfig,
+                LocalLayoutDirection provides
+                    if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
                 com.hikari.app.i18n.I18n.LocalMap provides i18nMap
             ) {
             HikariTheme(

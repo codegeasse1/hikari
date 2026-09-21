@@ -19,6 +19,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -85,6 +86,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
@@ -4155,28 +4157,16 @@ private fun ProductionRow(
                         Modifier
                             .fillMaxWidth()
                             .height(58.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(scheme.onSurface.copy(alpha = 0.06f)),
+                            .clip(RoundedCornerShape(10.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        val logo = c.logoUrl
-                        if (logo != null) {
-                            AsyncImage(
-                                model = logo,
-                                contentDescription = c.name,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxWidth(0.84f)
-                                    .height(42.dp)
-                            )
-                        } else {
-                            Text(
-                                c.name.trim().take(2).uppercase(),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = scheme.onSurfaceVariant
-                            )
-                        }
+                        CompanyLogoTile(
+                            logoUrl = c.logoUrl,
+                            name = c.name,
+                            modifier = Modifier
+                                .fillMaxWidth(0.84f)
+                                .height(42.dp),
+                        )
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -4191,6 +4181,164 @@ private fun ProductionRow(
             }
         }
     }
+}
+
+/**
+ * One production company / network logo, on a plate that suits it.
+ *
+ * TMDB ships these as transparent PNGs, and it has two kinds: a WHITE wordmark
+ * (drawn for a dark backdrop) and a COLOURED or dark one (drawn for a light
+ * one). Drawn straight onto the page, one of the two is always wrong — a dark
+ * navy Walt Disney script on a near-black card is the "the logo is a solid
+ * black box" report, and a white wordmark on a white card is the same problem
+ * inverted. So the tile MEASURES its logo: the average luminance of the opaque
+ * pixels decides whether the plate behind it is near-black or off-white. That
+ * makes every logo readable whatever colour it was drawn in, instead of fixing
+ * one brand and breaking the next.
+ *
+ * The bitmap is fetched through Coil's own loader (the app's shared memory +
+ * disk cache, so this costs one decode of an image the row would have loaded
+ * anyway), and a logo that cannot be fetched or decoded falls back to the
+ * company's initials so the row never shows an empty box.
+ */
+@Composable
+private fun CompanyLogoTile(
+    logoUrl: String?,
+    name: String,
+    modifier: Modifier = Modifier,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val key = logoUrl.orEmpty() + "|" + name
+    var art by remember(key) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var light by remember(key) { mutableStateOf<Boolean?>(null) }
+
+    LaunchedEffect(key) {
+        if (logoUrl.isNullOrBlank()) return@LaunchedEffect
+        val drawable = runCatching {
+            coil.imageLoader(context).execute(
+                coil.request.ImageRequest.Builder(context)
+                    .data(logoUrl)
+                    .allowHardware(false)
+                    .build()
+            ).drawable
+        }.getOrNull() ?: return@LaunchedEffect
+        val bitmap = runCatching { drawableToBitmap(drawable) }.getOrNull()
+            ?: return@LaunchedEffect
+        light = logoIsLight(bitmap)
+        art = bitmap
+    }
+
+    val picture = art
+    if (picture == null) {
+        // While the logo loads (or when there is none, or it will not decode):
+        // the company's initials on the plain card, which is honest and never a
+        // blank rectangle.
+        Box(
+            modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                compinitials(name),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    // The plate: off-white behind a dark logo, near-black behind a light one.
+    val plate = if (light == true) Color(0xFF12151C) else Color(0xFFF2F3F7)
+    Box(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(plate)
+            .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(8.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            bitmap = picture.asImageBitmap(),
+            contentDescription = name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth(0.88f)
+                .height(32.dp),
+        )
+    }
+}
+
+/**
+ * A Coil-loaded drawable as a [android.graphics.Bitmap], so [logoIsLight] can
+ * read its pixels. A [android.graphics.drawable.BitmapDrawable] is already one;
+ * anything else (a vector, an animated drawable, an SVG via coil-svg — TMDB
+ * serves a few logos as SVG) is rasterised onto a fresh bitmap through a
+ * Canvas. Written against `android.graphics` only, deliberately: this runs for
+ * every logo on every detail page, and it must not depend on any of the
+ * helper extensions a library update could move.
+ */
+private fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): android.graphics.Bitmap {
+    (drawable as? android.graphics.drawable.BitmapDrawable)?.let { return it.bitmap }
+    val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
+    val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 128
+    val bitmap = android.graphics.Bitmap.createBitmap(
+        w, h, android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val canvas = android.graphics.Canvas(bitmap)
+    drawable.setBounds(0, 0, w, h)
+    drawable.draw(canvas)
+    return bitmap
+}
+
+/** Two letters standing in for a logo that is missing or undrawable. */
+private fun compinitials(name: String): String {
+    val words = name.trim().split(' ').filter { it.isNotBlank() }
+    return when {
+        words.isEmpty() -> "?"
+        words.size == 1 -> words[0].take(2).uppercase()
+        else -> (words[0].take(1) + words[1].take(1)).uppercase()
+    }
+}
+
+/**
+ * True when a logo's own pixels are bright enough to need a dark plate behind
+ * them, false when they are dark enough to need a light one.
+ *
+ * A transparent PNG's colour channels are zeroed wherever the alpha is zero, so
+ * the transparent pixels are skipped rather than averaged in (averaging them
+ * would report every logo as black). The sample is a grid of at most ~40x40
+ * pixels: a logo that is dark at its edge and light in its middle has to be
+ * judged as a whole, and a full-resolution pass would cost more than the
+ * download.
+ */
+private fun logoIsLight(bitmap: android.graphics.Bitmap): Boolean {
+    val w = bitmap.width
+    val h = bitmap.height
+    if (w <= 0 || h <= 0) return false
+    val stepX = (w / 40).coerceAtLeast(1)
+    val stepY = (h / 40).coerceAtLeast(1)
+    var total = 0.0
+    var count = 0
+    var x = 0
+    while (x < w) {
+        var y = 0
+        while (y < h) {
+            val px = bitmap.getPixel(x, y)
+            val alpha = (px ushr 24) and 0xFF
+            if (alpha >= 32) {
+                val r = (px shr 16) and 0xFF
+                val g = (px shr 8) and 0xFF
+                val b = px and 0xFF
+                total += (0.299 * r + 0.587 * g + 0.114 * b) * (alpha / 255.0)
+                count++
+            }
+            y += stepY
+        }
+        x += stepX
+    }
+    if (count == 0) return true // a fully transparent logo: assume a white one
+    return (total / count) >= 120.0
 }
 
 /** A horizontal "Related"/"Similar" shelf of poster cells under the detail
