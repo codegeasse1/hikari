@@ -4215,12 +4215,14 @@ private fun CompanyLogoTile(
     LaunchedEffect(key) {
         if (logoUrl.isNullOrBlank()) return@LaunchedEffect
         val drawable = runCatching {
-            coil.imageLoader(context).execute(
-                coil.request.ImageRequest.Builder(context)
-                    .data(logoUrl)
-                    .allowHardware(false)
-                    .build()
-            ).drawable
+            withContext(Dispatchers.IO) {
+                coil.Coil.imageLoader(context).execute(
+                    coil.request.ImageRequest.Builder(context)
+                        .data(logoUrl)
+                        .allowHardware(false)
+                        .build()
+                ).drawable
+            }
         }.getOrNull() ?: return@LaunchedEffect
         val bitmap = runCatching { drawableToBitmap(drawable) }.getOrNull()
             ?: return@LaunchedEffect

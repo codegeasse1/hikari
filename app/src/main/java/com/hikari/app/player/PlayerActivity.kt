@@ -6474,7 +6474,7 @@ class PlayerActivity : ComponentActivity() {
                 addons.flatMap { addon ->
                     runCatching {
                         withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(item, episode) }
-                    }.getOrDefault(emptyList())
+                    }.getOrNull().orEmpty()
                 }
                     // Two addons can offer the same file, and a repeated URL is a
                     // second download of the same subtitles.
