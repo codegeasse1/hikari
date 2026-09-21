@@ -39,7 +39,7 @@ object IptvArt {
     private const val H = 540
 
     /** Key -> the `file://` URL already made for it. */
-    private val urls = ConcurrentHashMap<String, String>()
+    private val urls = ConcurrentHashMap<Int, String>()
 
     private val lock = Any()
 

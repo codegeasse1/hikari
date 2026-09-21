@@ -144,7 +144,7 @@ object Artwork {
                     runCatching { IptvArt.tile(item)?.let { Pair<String?, String?>(it, null) } }
                         .getOrNull()
                 } else {
-                    runCatching { TmdbMeta.artwork(item) }.getOrNull()
+                    runCatching { runBlocking { TmdbMeta.artwork(item) } }.getOrNull()
                 }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
                 saveCache()

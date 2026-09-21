@@ -468,12 +468,12 @@ private fun IptvTile(
     name: String,
     subtitle: String,
     shape: String,
-    onClick: () -> Unit,
     cover: String? = null,
     /** A `file://` URL of a locally drawn tile (see [IptvArt]) — used when there
      *  is no real artwork at all, which is the common case for a group. */
     art: String? = null,
     badge: String? = null,
+    onClick: () -> Unit,
 ) {
     val tokens = rememberGlassTokens()
     val model = cover ?: art

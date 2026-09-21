@@ -90,6 +90,8 @@ import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
+import com.hikari.app.ui.screens.IptvPlaylistScreen
+import com.hikari.app.ui.screens.IptvScreen
 import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen

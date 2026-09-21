@@ -168,6 +168,7 @@ import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
+import com.hikari.app.ui.navigation.BottomTab
 import com.hikari.app.ui.navigation.BottomTabs
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.NavStyles
