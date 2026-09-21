@@ -14,7 +14,7 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 168
+    versionCode = 169
     versionName = "0.9.9"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.

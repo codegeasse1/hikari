@@ -24,19 +24,22 @@ object AccentStore {
     private const val KEY_APP = "app"
     private const val KEY_PLAYER = "player"
     private const val KEY_LINKED = "linked"
+    private const val KEY_THEME = "theme"
 
     @Volatile private var loaded = false
     @Volatile private var appKey = HikariAccent.DEFAULT_APP.key
     @Volatile private var playerKey = HikariAccent.DEFAULT_PLAYER.key
     @Volatile private var linked = false
+    @Volatile private var themeKey = "dark"
 
     /** Persist + cache the current preferences. Called from the store setters
      *  and from MainActivity whenever the DataStore flows emit, so the mirror
      *  self-heals even if a write was missed. */
-    fun sync(context: Context, app: String, player: String, linked: Boolean) {
+    fun sync(context: Context, app: String, player: String, linked: Boolean, theme: String) {
         this.appKey = app
         this.playerKey = player
         this.linked = linked
+        this.themeKey = theme
         loaded = true
         runCatching {
             context.applicationContext
@@ -45,6 +48,7 @@ object AccentStore {
                 .putString(KEY_APP, app)
                 .putString(KEY_PLAYER, player)
                 .putBoolean(KEY_LINKED, linked)
+                .putString(KEY_THEME, theme)
                 .apply()
         }
     }
@@ -56,6 +60,7 @@ object AccentStore {
             appKey = p.getString(KEY_APP, null) ?: HikariAccent.DEFAULT_APP.key
             playerKey = p.getString(KEY_PLAYER, null) ?: HikariAccent.DEFAULT_PLAYER.key
             linked = p.getBoolean(KEY_LINKED, false)
+            themeKey = p.getString(KEY_THEME, null) ?: "dark"
         }
         loaded = true
     }
@@ -83,5 +88,19 @@ object AccentStore {
     fun playerOwn(context: Context): HikariAccent {
         ensureLoaded(context)
         return HikariAccent.fromKey(playerKey)
+    }
+
+    /**
+     * The theme the app UI is drawn in ("dark", "glass", "amoled", "light").
+     *
+     * Mirrored for the same reason the accents are: [com.hikari.app.MainActivity]
+     * seeds its Compose state with a synchronous read, so the FIRST frame after
+     * the Activity is created is already the chosen theme. Without it every
+     * return from the player painted one frame of the stock dark theme (and the
+     * stock accent with it) before DataStore answered.
+     */
+    fun theme(context: Context): String {
+        ensureLoaded(context)
+        return themeKey
     }
 }

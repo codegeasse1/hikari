@@ -2324,11 +2324,20 @@ private suspend fun importCollections(
     // can hit its host. Asking once per extension instead of once per source
     // keeps a 100-source file to a handful of requests.
     val catalogCache = HashMap<String, List<CatalogRef>>()
+    // One deadline for the whole matching phase: see CATALOG_MATCH_BUDGET_MS.
+    // An import is a local write and must never be held open by a plugin's
+    // host — the sources that could not be matched inside the budget are
+    // dropped and reported, which is what the summary line is for.
+    val matchDeadline = System.currentTimeMillis() + CATALOG_MATCH_BUDGET_MS
+    // Shared by every source in the file — see MAX_GUESSED_ADDONS.
+    val guessedAddons = HashSet<String>()
     val result = NuvioCollectionsImport.materialise(
         plan,
         app.store::newId,
     ) { addonId, type, catalogId ->
-        matchInstalledCatalog(app, addonId, type, catalogId, catalogCache)
+        matchInstalledCatalog(
+            app, addonId, type, catalogId, catalogCache, matchDeadline, guessedAddons,
+        )
     }
     var collections = 0
     var folders = 0
@@ -2425,15 +2434,46 @@ private suspend fun importCollections(
  * match directly).
  *
  * The addon's last name segment is the usable hint ("cinemeta"), and it is
- * looked for in the extension's name and address. Extensions that do not answer
- * are skipped rather than failing the whole import: one dead host must not cost
- * the user the other five collections in their file.
+ * looked for in the extension's name and address.
+ *
+ * ONLY HINTED EXTENSIONS ARE EVER ASKED. The previous version walked the whole
+ * installed list (200-400 providers on a normal install) asking each one to
+ * enumerate its catalogs, with a 12 s cap on each — so an import whose file
+ * names an addon the user does not have spent *minutes* inside the first
+ * source, and a dozen of them never finished at all. That is the reported
+ * "importing json just keeps loading and never imports": the Import button sat
+ * on its spinner while the loop plodded through every extension, and the whole
+ * app went unresponsive behind it. Now a source either matches one of the few
+ * providers that LOOK like the addon it names (a handful of calls, all inside
+ * one shared deadline) or is dropped and COUNTED, which the summary line
+ * already reports honestly ("N catalogs are from an addon that is not
+ * installed").
+ *
+ * A small guess is still made when nothing looks like the addon, so a file that
+ * names addons by a different spelling is not imported empty: at most
+ * [MAX_GUESSED_PROVIDERS] of them, with a much shorter cap each.
  */
-/** How long one installed extension gets to list its catalogs while an import
- *  is matching the file's sources to it. Generous (an extension that has to
- *  load a plugin and fetch its index is slow the first time) but bounded — see
- *  the call site for why a bound is what stops the import spinning for ever. */
-private const val CATALOG_LOOKUP_MS = 12_000L
+/** How long one HINTED extension gets to list its catalogs. Generous (an
+ *  extension that has to load a plugin and fetch its index is slow the first
+ *  time) but bounded. */
+private const val CATALOG_LOOKUP_MS = 8_000L
+/** The cap for a provider that is only a GUESS (see [matchInstalledCatalog]).
+ *  Deliberately small: a guess is a lottery ticket, and the file in the report
+ *  names a dozen catalogs of an addon the user does not have — at 3 s each they
+ *  were eating the whole matching budget before the first TMDB folder could be
+ *  written. */
+private const val CATALOG_GUESS_MS = 1_200L
+/** The most guessed providers ONE import will ask. */
+private const val MAX_GUESSED_PROVIDERS = 6
+/** The most DIFFERENT addons one import will guess for. A file whose addon
+ *  spellings Hikari does not recognise is worth a few attempts, not one per
+ *  source: the rest are dropped and counted, which the summary says outright. */
+private const val MAX_GUESSED_ADDONS = 4
+/** The whole matching phase of one import: after this the remaining sources are
+ *  dropped (and counted), instead of a wedged extension holding the sheet open.
+ *  Importing is a local write; nothing about it may depend on a plugin's host
+ *  being alive. */
+private const val CATALOG_MATCH_BUDGET_MS = 30_000L
 
 private suspend fun matchInstalledCatalog(
     app: HikariApp,
@@ -2443,40 +2483,93 @@ private suspend fun matchInstalledCatalog(
     /** provider id → the catalogs it exposes. Filled on demand and reused for
      *  the rest of the import (see the call site). */
     cache: MutableMap<String, List<CatalogRef>>,
+    /** Wall clock after which this import stops matching (see
+     *  [CATALOG_MATCH_BUDGET_MS]). */
+    deadline: Long,
+    /** The addon ids this import has already guessed for (see
+     *  [MAX_GUESSED_ADDONS]); shared across the whole import. */
+    guessedAddons: MutableSet<String>,
 ): CatalogSource? = withContext(Dispatchers.IO) {
     val wanted = catalogId.trim()
     if (wanted.isBlank()) return@withContext null
+    if (System.currentTimeMillis() > deadline) return@withContext null
+    // The file says which KIND the catalog is ("series"/"movie"): an addon that
+    // exposes both a movie and a series catalog under the same id ("year") must
+    // be matched to the right one, or the folder is built on the wrong shelf.
+    val wantType = when (type.trim().lowercase()) {
+        "movie", "movies", "film" -> MediaType.MOVIE
+        "series", "tv", "show", "shows", "anime" -> MediaType.SERIES
+        else -> MediaType.UNKNOWN
+    }
     val hint = addonId.substringAfterLast('.').trim().lowercase()
     val installed = app.providers.providers.value.filter { it.config.enabled }
-    val ordered = installed.sortedByDescending { p ->
-        val name = p.config.name.lowercase()
-        val url = p.config.url.lowercase()
-        var score = 0
-        if (hint.isNotBlank() && (name.contains(hint) || url.contains(hint))) score += 2
-        score
-    }
-    for (p in ordered) {
-        val refs = cache.getOrPut(p.config.id) {
-            // Bounded, like every other extension call in the app: a provider
-            // whose host has stopped answering must not be able to hold the
-            // whole import open.
-            runCatching {
-                kotlinx.coroutines.withTimeoutOrNull(CATALOG_LOOKUP_MS) { p.catalogs() }
-            }.getOrNull() ?: emptyList()
+    val hinted = if (hint.isBlank()) {
+        emptyList()
+    } else {
+        installed.filter { p ->
+            p.config.name.contains(hint, ignoreCase = true) ||
+                p.config.url.contains(hint, ignoreCase = true)
         }
-        val hit = refs.firstOrNull { it.id == wanted } ?: continue
-        return@withContext CatalogSource(
-            kind = CatalogSourceKind.PROVIDER,
-            title = hit.name,
-            providerId = p.config.id,
-            catalogId = hit.id,
-            type = hit.type,
-            rawType = hit.rawType,
-        )
+    }
+    if (hinted.isEmpty()) {
+        // Nothing looks like this addon. Try a few anyway (a file may spell the
+        // addon differently from the extension's own name), cheaply — and only
+        // for a handful of addons per import, so a long file full of addons
+        // Hikari does not know cannot spend the whole matching phase guessing.
+        // Guessing for an addon that has already been guessed is free: its
+        // catalog list is in [cache] by then.
+        val key = addonId.lowercase()
+        if (key !in guessedAddons) {
+            if (guessedAddons.size >= MAX_GUESSED_ADDONS) return@withContext null
+            guessedAddons += key
+        }
+        for (p in installed.take(MAX_GUESSED_PROVIDERS)) {
+            if (System.currentTimeMillis() > deadline) return@withContext null
+            val hit = pickCatalog(catalogsOf(p, cache, CATALOG_GUESS_MS), wanted, wantType)
+                ?: continue
+            return@withContext providerSource(p, hit)
+        }
+        return@withContext null
+    }
+    for (p in hinted) {
+        if (System.currentTimeMillis() > deadline) return@withContext null
+        val hit = pickCatalog(catalogsOf(p, cache, CATALOG_LOOKUP_MS), wanted, wantType)
+            ?: continue
+        return@withContext providerSource(p, hit)
     }
     null
 }
 
+/** The catalog called [wanted], preferring the one whose kind matches the
+ *  imported source's own type. */
+private fun pickCatalog(refs: List<CatalogRef>, wanted: String, wantType: MediaType): CatalogRef? =
+    refs.firstOrNull { it.id == wanted && wantType != MediaType.UNKNOWN && it.type == wantType }
+        ?: refs.firstOrNull { it.id == wanted }
+
+/** One extension's catalog list, asked at most ONCE per import — a real export
+ *  names the same addon dozens of times (one "Latest", one "Trending", one per
+ *  genre), and enumerating an extension's catalogs can hit its host. Bounded,
+ *  like every other extension call in the app: a provider whose host has
+ *  stopped answering must not be able to hold the whole import open. */
+private suspend fun catalogsOf(
+    p: ContentProvider,
+    cache: MutableMap<String, List<CatalogRef>>,
+    budgetMs: Long,
+): List<CatalogRef> = cache.getOrPut(p.config.id) {
+    runCatching {
+        kotlinx.coroutines.withTimeoutOrNull(budgetMs) { p.catalogs() }
+    }.getOrNull().orEmpty()
+}
+
+private fun providerSource(p: ContentProvider, hit: CatalogRef): CatalogSource =
+    CatalogSource(
+        kind = CatalogSourceKind.PROVIDER,
+        title = hit.name,
+        providerId = p.config.id,
+        catalogId = hit.id,
+        type = hit.type,
+        rawType = hit.rawType,
+    )
 
 /** Installed-extension picker, shared by the folder editor. */
 @OptIn(ExperimentalMaterial3Api::class)

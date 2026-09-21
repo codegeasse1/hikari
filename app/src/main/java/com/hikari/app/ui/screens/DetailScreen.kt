@@ -126,6 +126,7 @@ import com.hikari.app.data.TitleRating
 import com.hikari.app.data.TmdbMeta
 import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
+import com.hikari.app.data.Translator
 import com.hikari.app.data.Trailer
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
@@ -501,6 +502,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } else null
             val originalName = tmdbNames?.second?.takeIf { it.isNotBlank() }
+                ?: englishSearchName(title, isTmdbRow)
             val lookupNames = listOfNotNull(title.takeIf { it.isNotBlank() }, originalName)
                 .distinctBy { it.lowercase() }
             val activeProvider = if (manager.byId(providerId) != null) {
@@ -5272,4 +5274,90 @@ private fun EpisodeRow(
             }
         }
     }
+}
+
+/**
+ * The name to SEARCH the extensions with, for a title the app is showing in a
+ * language they do not index.
+ *
+ * The page keeps the name the user tapped — that is the whole point of the
+ * title-language setting — but every provider the background lookup asks
+ * (~250 of them) indexes the ORIGINAL, English name. A TMDB row carries that
+ * name already ([com.hikari.app.data.MediaItem.originalTitle], filled from
+ * TMDB's own response). An EXTENSION item does not: it is named whatever its
+ * site calls it, so an Arabic repo's "فلم موانا" — a perfectly good display
+ * name — was handed to every other repo as the search key, none of them
+ * recognised it, and the movie played from the nuvio engines alone, because
+ * those resolve by TMDB id and never read the title. In English the same
+ * movie had servers everywhere. That is the reported asymmetry.
+ *
+ * So this translates the item's own name to English once (gtx, cached in
+ * memory AND on disk by [com.hikari.app.data.Translator]), and the result rides
+ * on the item as its original name — which is what
+ * [com.hikari.app.data.MediaItem.searchTitle] prefers, and therefore what the
+ * cross pass, the TMDB lookup behind the Cast/Trailers/Details rows and the
+ * episode-name lookup all use.
+ *
+ * Bounded and cheap: a name that is already Latin/English is recognised
+ * locally and never leaves the device (the common case, so the ordinary page
+ * pays nothing), and a foreign one waits at most [NAME_LOOKUP_MS] — on the
+ * first open of that title only, because the translation is cached. Null when
+ * there is nothing better to search with, which keeps the display name in
+ * place.
+ */
+private const val NAME_LOOKUP_MS = 2_500L
+
+/**
+ * The words a translator ADDS when it is handed a bare title: "فلم موانا" comes
+ * back as "The movie Moana", not "Moana", and "مسلسل لوست" as "The series Lost".
+ *
+ * They cannot be left in the search key. It is the key every extension is asked
+ * for and the name TMDB is asked to resolve, and no index holds "the movie
+ * moana" — so the whole point of translating the name would be undone by the one
+ * word the translator volunteered. It appends them as readily as it prefixes
+ * them ("Breaking Bad" + "مسلسل" → "Breaking Bad series"), so both ends are
+ * stripped, repeatedly, until neither matches.
+ *
+ * A strip is refused when it would leave fewer than three characters or nothing
+ * but digits: "Movie 43" must stay "Movie 43", not "43", and a title that really
+ * ends in one of these words is protected by that same rule.
+ */
+private val TITLE_DECORATION_LEAD = Regex(
+    "(?i)^\\s*(?:the\\s+|a\\s+|an\\s+)?" +
+        "(?:full\\s+)?(?:movies?|films?|tv\\s+series|tv\\s+shows?|series|shows?|" +
+        "animes?|animations?|cartoons?|dramas?|documentar(?:y|ies)|officials?)\\s*[:\\-–—]?\\s+",
+)
+
+/** The same words when the translator puts them LAST — which is just as common:
+ *  the arabic "مسلسل برايكينغ باد" comes back as "Breaking Bad series" and
+ *  "انمي ناروتو" as "Naruto anime". */
+private val TITLE_DECORATION_TAIL = Regex(
+    "(?i)\\s+(?:full\\s+)?(?:movies?|films?|tv\\s+series|tv\\s+shows?|series|shows?|" +
+        "animes?|animations?|cartoons?|dramas?|documentar(?:y|ies))\\s*$",
+)
+
+private fun stripSearchDecorations(name: String): String {
+    var s = name.trim()
+    repeat(3) {
+        var next = s.replaceFirst(TITLE_DECORATION_LEAD, "").trim()
+        next = next.replaceFirst(TITLE_DECORATION_TAIL, "").trim()
+        if (next == s) return s
+        if (next.length < 3 || next.all { it.isDigit() }) return s
+        s = next
+    }
+    return s
+}
+
+private suspend fun englishSearchName(title: String, isTmdbRow: Boolean): String? {
+    // A TMDB row resolves its own original name (see the call site), so this is
+    // only ever the extension-item path.
+    if (isTmdbRow) return null
+    val own = title.trim()
+    if (own.isBlank()) return null
+    val english = withTimeoutOrNull(NAME_LOOKUP_MS) {
+        withContext(Dispatchers.IO) {
+            runCatching { Translator.translate(own).trim() }.getOrNull()
+        }
+    }?.takeIf { it.isNotBlank() && it != own } ?: return null
+    return stripSearchDecorations(english).ifBlank { english }
 }

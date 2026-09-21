@@ -351,6 +351,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppFont(key: String) {
         write("APP_FONT") { it[K.APP_FONT] = key }
+        syncFont()
     }
 
     /** File name (inside `filesDir/fonts`) of a font the user imported, or "".
@@ -371,6 +372,15 @@ class AppStore(private val ctx: Context) {
             it[K.APP_FONT_FILE] = fileName
             it[K.APP_FONT_LABEL] = label
         }
+        syncFont()
+    }
+
+    /** Mirror the font choice into [com.hikari.app.ui.AppFonts] — the same
+     *  treatment the accent and the UI scale get, and for the same reason: the
+     *  player and the WebView are View-based and read it while their Activity is
+     *  being created, before DataStore has answered. */
+    private suspend fun syncFont() {
+        runCatching { com.hikari.app.ui.AppFonts.sync(ctx, appFont(), appFontFile()) }
     }
 
     // ---- Library categories ----
@@ -1156,6 +1166,7 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTheme(key: String) {
         write("THEME") { it[K.THEME] = key }
+        syncAccents()
     }
 
     // ---- Accent colours (app + player) ----
@@ -1206,7 +1217,7 @@ class AppStore(private val ctx: Context) {
      *  player can read them synchronously during Activity creation. */
     private suspend fun syncAccents() {
         runCatching {
-            AccentStore.sync(ctx, appAccent(), playerAccent(), themeLinked())
+            AccentStore.sync(ctx, appAccent(), playerAccent(), themeLinked(), theme())
         }
     }
 
@@ -1427,6 +1438,10 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setLanguage(tag: String) {
         write("LANGUAGE") { it[K.LANGUAGE] = tag }
+        // Mirror it, so an Activity created while the write is still settling
+        // comes up in the chosen language rather than the platform's — and so a
+        // backup restore (which lands here, not through the picker) does too.
+        runCatching { com.hikari.app.ui.LanguageManager.rememberStored(ctx, tag) }
     }
 
     // ---- Universal extractor (yt-dlp fallback) ----

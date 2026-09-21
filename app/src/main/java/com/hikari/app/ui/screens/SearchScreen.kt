@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,6 +61,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MediaType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
@@ -262,6 +264,36 @@ fun SearchScreen(
     var langMenu by remember { mutableStateOf(false) }
     var translating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // ---- Result filters (kind + year) -------------------------------------
+    //
+    // These narrow what has ALREADY been found rather than being added to the
+    // query, and that is deliberate: searching every installed extension is a
+    // long multi-page scan, so a filter that re-ran it would make picking a
+    // year feel like a new search. Here a tap is instant, and the answer is the
+    // same list, filtered — "search moana, pick the year, keep only the movie"
+    // without paying for the sweep again.
+    var kindFilterKey by rememberSaveable { mutableStateOf("all") }
+    var yearFilter by rememberSaveable { mutableStateOf(0) }   // 0 = any year
+    var yearMenu by remember { mutableStateOf(false) }
+    val kindFilter = SearchKindFilter.fromKey(kindFilterKey)
+
+    // The years these results actually carry, newest first: offering a year
+    // nothing matched would be a filter that can only ever empty the grid.
+    val filterYears = remember(results) {
+        results.mapNotNull { it.year }.filter { it > 1900 }.distinct().sortedDescending()
+    }
+    // A filter is only "on" when it can actually hide something.
+    val filterOn = kindFilter != SearchKindFilter.ALL || yearFilter != 0
+    val filtered = remember(results, kindFilter, yearFilter) {
+        if (!filterOn) results else results.filter { it.passesSearchFilter(kindFilter, yearFilter) }
+    }
+    // What the filter KEPT although the provider never said — so the grid can
+    // explain itself (those results need no special handling, they are simply
+    // shown) instead of looking like it silently ignored the filter.
+    val keptUnknown = remember(results, kindFilter, yearFilter) {
+        if (!filterOn) 0 else results.count { it.unknownToFilter(kindFilter, yearFilter) }
+    }
 
     // The name of the one selected source, when exactly one is picked — an
     // extension, or one of the user's catalogs. It is what makes the search box
@@ -466,6 +498,134 @@ fun SearchScreen(
                 )
             }
         }
+        // ---- Result filters: kind + year (see the state at the top) ---------
+        //
+        // Same chip row as the providers above, so the two read as one control
+        // strip: what to search, then what to keep. The year chip opens a
+        // SCROLLABLE list of the years these results actually carry.
+        if (results.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 2.dp),
+            ) {
+                item {
+                    FilterChip(
+                        selected = kindFilter == SearchKindFilter.ALL,
+                        onClick = { kindFilterKey = SearchKindFilter.ALL.key },
+                        label = { Text(tr("Both")) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        )
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = kindFilter == SearchKindFilter.MOVIES,
+                        onClick = { kindFilterKey = SearchKindFilter.MOVIES.key },
+                        label = { Text(tr("Movies")) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        )
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = kindFilter == SearchKindFilter.SERIES,
+                        onClick = { kindFilterKey = SearchKindFilter.SERIES.key },
+                        label = { Text(tr("Series")) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        )
+                    )
+                }
+                item {
+                    Box {
+                        FilterChip(
+                            selected = yearFilter != 0,
+                            onClick = { yearMenu = true },
+                            label = {
+                                Text(if (yearFilter == 0) tr("Any year") else yearFilter.toString())
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = tr("Year"),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            shape = RoundedCornerShape(24.dp),
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedLabelColor = MaterialTheme.colorScheme.primary,
+                            )
+                        )
+                        DropdownMenu(
+                            expanded = yearMenu,
+                            onDismissRequest = { yearMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(tr("Any year")) },
+                                onClick = {
+                                    yearFilter = 0
+                                    yearMenu = false
+                                },
+                            )
+                            filterYears.forEach { year ->
+                                DropdownMenuItem(
+                                    text = { Text(year.toString()) },
+                                    onClick = {
+                                        yearFilter = year
+                                        yearMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (filterOn) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+                    Text(
+                        if (filtered.isEmpty()) {
+                            tr("Nothing in these results matches the filter.")
+                        } else {
+                            // Two single-placeholder phrases joined the way the
+                            // rest of the app joins counted labels (see
+                            // ExtensionsScreen's "N repos · M enabled"), so each
+                            // half is a key the dictionaries can hold.
+                            tr("%s shown").replace("%s", filtered.size.toString()) +
+                                " · " +
+                                tr("%s found").replace("%s", results.size.toString())
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (filtered.isNotEmpty() && keptUnknown > 0) {
+                        Text(
+                            tr("%s have no year or kind, so they are kept")
+                                .replace("%s", keptUnknown.toString()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
         if (searching) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
@@ -495,7 +655,15 @@ fun SearchScreen(
                 // hand-built TMDB source belongs to them, and no extension
                 // would ever hand it back.
                 if (collectionHits.isNotEmpty()) {
-                    CollectionHitsRow(collectionHits) { hit ->
+                    CollectionHitsRow(
+                        if (filterOn) {
+                            collectionHits.filter {
+                                it.item.passesSearchFilter(kindFilter, yearFilter)
+                            }
+                        } else {
+                            collectionHits
+                        }
+                    ) { hit ->
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(
@@ -518,7 +686,7 @@ fun SearchScreen(
                 // recomposition and opened a DataStore collection per poster on
                 // screen, which is a lot of subscriptions for one grid (see
                 // [com.hikari.app.ui.components.MediaRow]).
-                val gridItems = remember(results) { results.distinctBy { it.uniqueId } }
+                val gridItems = remember(filtered) { filtered.distinctBy { it.uniqueId } }
                 val style = rememberPosterStyle()
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(TvUi.gridColumns(4)),
@@ -655,5 +823,49 @@ private fun CollectionHitsRow(
                 }
             }
         }
+    }
+}
+
+/** Which kind of result the grid keeps: everything, only films, only shows. */
+private enum class SearchKindFilter(val key: String) {
+    ALL("all"),
+    MOVIES("movies"),
+    SERIES("series");
+
+    companion object {
+        fun fromKey(key: String?): SearchKindFilter =
+            entries.firstOrNull { it.key == key } ?: ALL
+    }
+}
+
+/**
+ * Whether one search result survives the filter row.
+ *
+ * A result whose provider never said what it is (type UNKNOWN) or when it is
+ * from (no year) is KEPT: whole extensions label their results with neither, and
+ * hiding all of them would turn picking a year into an empty screen — which
+ * reads as a broken search, not a narrower one. [MediaItem.unknownToFilter] is
+ * the same question the other way round, so the count of those can be shown
+ * next to "Showing 12 of 240" instead of the grid silently disagreeing with its
+ * own total.
+ */
+private fun MediaItem.passesSearchFilter(kind: SearchKindFilter, year: Int): Boolean {
+    if (year != 0 && this.year != null && this.year != year) return false
+    return when (kind) {
+        SearchKindFilter.ALL -> true
+        SearchKindFilter.MOVIES -> type != MediaType.SERIES
+        SearchKindFilter.SERIES -> type != MediaType.MOVIE
+    }
+}
+
+/** True when this result is only visible because the provider did not say what
+ *  it is — an unknown year under a year filter, or an unknown kind under a kind
+ *  filter. */
+private fun MediaItem.unknownToFilter(kind: SearchKindFilter, year: Int): Boolean {
+    if (year != 0 && this.year == null) return true
+    return when (kind) {
+        SearchKindFilter.ALL -> false
+        SearchKindFilter.MOVIES -> type == MediaType.UNKNOWN
+        SearchKindFilter.SERIES -> type == MediaType.UNKNOWN
     }
 }

@@ -367,10 +367,23 @@ object TmdbMeta {
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
         val seg = segment(resolved.mediaType)
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"
-        val d = TmdbResolver.apiGet(
-            "/$seg/${resolved.tmdbId}",
-            mapOf("append_to_response" to "credits,videos,$certKey,external_ids"),
-        ) ?: return null
+        // `videos` is answered in the app's chosen TMDB language TOO, and that
+        // is the whole reason the Trailers row can come back with one entry (or
+        // none): TMDB only lists videos TAGGED with the requested language, so
+        // with, say, Arabic selected it returns the one Arabic trailer and stops
+        // — while the same title in English has a dozen. The user's report was
+        // exactly that ("in Arabic the movie shows only 1 trailer, in English
+        // many"), and it looked like a translation bug rather than a query one.
+        // `include_video_language` asks for the chosen language FIRST and English
+        // after it, so a localized trailer still leads the row and the English
+        // ones fill the rest; `null` catches videos with no language tag at all.
+        val query = LinkedHashMap<String, String>()
+        query["append_to_response"] = "credits,videos,$certKey,external_ids"
+        val videoLang = TmdbResolver.contentLanguage.substringBefore('-').lowercase()
+        if (videoLang.isNotBlank() && videoLang != "en") {
+            query["include_video_language"] = "$videoLang,en,null"
+        }
+        val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", query) ?: return null
 
         val isMovie = seg == "movie"
         // Movie runtime is one number; a series carries a per-episode list and,

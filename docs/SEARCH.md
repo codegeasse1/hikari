@@ -149,6 +149,18 @@ So anything that WAITS on such a call can be wedged indefinitely. Consequences:
   TMDB lookup so a real localized name is never replaced by an English one.
 - **Search**: every provider query uses `MediaItem.searchTitle` = the original
   (English) name whenever TMDB knows one. Never search with the display title.
+- **An EXTENSION item has no TMDB original name, so one is derived**: the page
+  translates the item's own name to English once (`englishSearchName` in
+  `DetailScreen.kt`, 2.5 s, skipped for a name that is already Latin, cached in
+  memory and on disk by `Translator`), carries it as `originalTitle`, and strips
+  the words the translator adds ("The movie Moana" → "Moana"). Without this an
+  Arabic-named item hands the Arabic name to every other repo, none of which
+  indexes it, and only the engines that resolve by TMDB id answer — the reported
+  "in Arabic it plays from nuvio only, in English it finds all the servers".
+- **TMDB's own `videos` list must be asked for MORE than one language**
+  (`TmdbMeta.extras`): the list only contains videos tagged with the requested
+  language, so a non-English `language` returns one trailer (or none). The query
+  sends `include_video_language=<app>,en,null`.
 
 ### 5. A server must belong to the same show AND the same episode
 

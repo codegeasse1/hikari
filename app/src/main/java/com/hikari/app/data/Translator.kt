@@ -39,8 +39,37 @@ object Translator {
     @Volatile
     private var storeRef: AppStore? = null
 
-    private val LETTERS =
-        Regex("[A-Za-z\\u00C0-\\u024F\\u0370-\\u03FF\\u0400-\\u04FF\\u3040-\\u30FF\\u3400-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF]")
+    /**
+     * "This string has readable letters in it" — the gate that decides whether a
+     * string is worth sending to the translator at all.
+     *
+     * It has to recognise EVERY script a title can arrive in, because a miss is
+     * not "we skip a translation", it is "the app silently keeps a name no
+     * provider indexes". The list used to be Latin + Greek + Cyrillic + CJK,
+     * which meant an ARABIC title ("فلم موانا") was judged letterless and passed
+     * through untouched — and that is exactly the name the source search then
+     * handed to every installed extension, none of which has it. Arabic, Hebrew,
+     * Persian, Hindi, Thai, Vietnamese-with-diacritics and the rest are all
+     * covered now, including the Arabic presentation forms a rendered string can
+     * carry.
+     */
+    private val LETTERS = Regex(
+        "[" +
+            "A-Za-z" +
+            "\\u00C0-\\u024F" +                                  // Latin + Latin Extended (accents)
+            "\\u0370-\\u03FF\\u0400-\\u04FF" +                 // Greek, Cyrillic
+            "\\u0530-\\u058F\\u0590-\\u05FF\\u0700-\\u074F" +  // Armenian, Hebrew, Syriac
+            "\\u0600-\\u06FF\\u0750-\\u077F" +                 // Arabic + Supplement
+            "\\u0900-\\u097F\\u0980-\\u09FF\\u0A00-\\u0A7F" +  // Devanagari, Bengali, Gurmukhi
+            "\\u0A80-\\u0AFF\\u0B00-\\u0B7F\\u0B80-\\u0BFF" +  // Gujarati, Oriya, Tamil
+            "\\u0C00-\\u0C7F\\u0C80-\\u0CFF\\u0D00-\\u0D7F" +  // Telugu, Kannada, Malayalam
+            "\\u0D80-\\u0DFF\\u0E00-\\u0E7F\\u0E80-\\u0EFF" +  // Sinhala, Thai, Lao
+            "\\u0F00-\\u0FFF\\u1000-\\u109F\\u10A0-\\u10FF" +  // Tibetan, Myanmar, Georgian
+            "\\u1100-\\u11FF\\u1200-\\u137F\\u1780-\\u17FF" +  // Hangul Jamo, Ethiopic, Khmer
+            "\\u3040-\\u30FF\\u3400-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF" + // CJK, Kana, Hangul
+            "\\uFB50-\\uFDFF\\uFE70-\\uFEFF" +                 // Arabic presentation forms
+            "]",
+    )
     private val PUNCT_ONLY =
         Regex("""^[\d\s.,!?%$#@&*()/\-+='"<>\[\]{}|\\:;_~^`\u00A0]+$""")
     private val ASCII = Regex("""^[\x00-\x7F]+$""")

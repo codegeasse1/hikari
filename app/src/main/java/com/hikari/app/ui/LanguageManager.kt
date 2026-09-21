@@ -65,6 +65,37 @@ object LanguageManager {
     @Volatile
     private var pendingTag: String? = null
 
+    // ---- Synchronous mirror ------------------------------------------------
+    //
+    // The STORED tag is mirrored into plain SharedPreferences so an Activity can
+    // read it without waiting on DataStore. Without it a screen had to seed its
+    // language state with "" (i.e. "follow the platform") and then correct
+    // itself when the store answered — the whole interface visibly repainted a
+    // moment after every return from the player. [pending] still wins over the
+    // mirror; the mirror only fills the gap between a store read and the store.
+    private const val PREFS = "hikari_language"
+    private const val KEY_TAG = "tag"
+
+    /** Persist the stored tag into the mirror (cheap; call it whenever the
+     *  store's value is known). */
+    fun rememberStored(context: Context, tag: String) {
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_TAG, tag)
+                .apply()
+        }
+    }
+
+    /** The stored tag as of the last write, readable synchronously. */
+    fun stored(context: Context): String =
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_TAG, "") ?: ""
+        }.getOrDefault("")
+
     /** The in-memory override, or null when the stored value is authoritative. */
     fun pending(): String? = pendingTag
 
@@ -122,6 +153,7 @@ object LanguageManager {
      *  recreation the apply had just triggered. */
     fun choose(app: HikariApp, tag: String) {
         pendingTag = tag
+        rememberStored(app, tag)
         app.appScope.launch { runCatching { app.store.setLanguage(tag) } }
         apply(tag)
     }

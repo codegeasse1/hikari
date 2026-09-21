@@ -59,6 +59,14 @@ object UiScale {
         loaded = true
     }
 
+    /** The saved preference, readable without suspending — what a screen seeds
+     *  its Compose state with so the first frame after an Activity is created
+     *  is already the chosen scale (see [com.hikari.app.MainActivity]). */
+    fun current(context: Context): Pair<Boolean, Float> {
+        ensureLoaded(context)
+        return enabled to scale
+    }
+
     /** [base] with a Configuration that ignores the phone's font/display size
      *  settings while the in-app scale is on; [base] itself when it is off. */
     fun wrap(base: Context): Context {

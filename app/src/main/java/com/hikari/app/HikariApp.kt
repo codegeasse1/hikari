@@ -41,8 +41,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.conscrypt.Conscrypt
 import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.addSingleton
-import uy.kohesive.injekt.api.addSingletonFactory
+import uy.kohesive.injekt.api.TypeReference
 import java.io.File
 import java.security.Security
 import java.util.concurrent.TimeUnit
@@ -625,21 +624,70 @@ class HikariApp : Application() {
      */
     @OptIn(ExperimentalSerializationApi::class)
     private fun registerAniyomiSingletons() {
-        Injekt.addSingleton<Application>(this)
-        Injekt.addSingleton<Context>(this)
-        Injekt.addSingletonFactory<kotlinx.serialization.json.Json> {
-            kotlinx.serialization.json.Json {
-                ignoreUnknownKeys = true
-                explicitNulls = false
+        // Every line registers ONE type, and each one is allowed to fail on its
+        // own. The whole block used to sit inside a single `runCatching`, and
+        // the FIRST failure therefore left the container completely empty —
+        // every extension then answered "No registered instance or factory for
+        // type class android.app.Application", which is the reported "Anichi:
+        // none of its sources could be loaded" for every Aniyomi extension the
+        // user installed. Registering one at a time means one bad type costs
+        // that type, not the container.
+        registerAniyomiSingleton("Application") { Injekt.addSingleton(Ref(Application::class.java), this) }
+        registerAniyomiSingleton("Context") { Injekt.addSingleton(Ref(Context::class.java), this) }
+        registerAniyomiSingleton("Json") {
+            Injekt.addSingletonFactory(Ref(kotlinx.serialization.json.Json::class.java)) {
+                kotlinx.serialization.json.Json {
+                    ignoreUnknownKeys = true
+                    explicitNulls = false
+                }
             }
         }
-        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.NetworkHelper> {
-            eu.kanade.tachiyomi.network.NetworkHelper(this)
+        registerAniyomiSingleton("NetworkHelper") {
+            Injekt.addSingletonFactory(Ref(eu.kanade.tachiyomi.network.NetworkHelper::class.java)) {
+                eu.kanade.tachiyomi.network.NetworkHelper(this)
+            }
         }
-        Injekt.addSingletonFactory<eu.kanade.tachiyomi.network.JavaScriptEngine> {
-            eu.kanade.tachiyomi.network.JavaScriptEngine(this)
+        registerAniyomiSingleton("JavaScriptEngine") {
+            Injekt.addSingletonFactory(Ref(eu.kanade.tachiyomi.network.JavaScriptEngine::class.java)) {
+                eu.kanade.tachiyomi.network.JavaScriptEngine(this)
+            }
         }
-        Injekt.addSingletonFactory<ProtoBuf> { ProtoBuf { } }
+        registerAniyomiSingleton("ProtoBuf") {
+            Injekt.addSingletonFactory(Ref(ProtoBuf::class.java)) { ProtoBuf { } }
+        }
+    }
+
+    /**
+     * A [TypeReference] that simply STATES its type.
+     *
+     * This is the difference between Injekt working in a release build and not
+     * working at all. The library's own helpers are
+     * `inline fun <reified T> fullType() = object : FullTypeReference<T>(){}`,
+     * and `FullTypeReference` reads `javaClass.genericSuperclass`, throwing
+     * `IllegalArgumentException: Internal error: TypeReference constructed
+     * without actual type information` whenever that is not a parameterized
+     * type. Those anonymous objects exist only to carry an erased type
+     * argument, R8 rewrites them away in the release build, and the throw took
+     * the whole registration down with it — which is why EVERY Aniyomi
+     * extension failed to instantiate (the user's own log line:
+     * `at uy.kohesive.injekt.api.FullTypeReference.<init>` /
+     * `at com.hikari.app.HikariApp.registerAniyomiSingletons`). A reference
+     * that answers from a `Class` constant cannot be broken by any optimizer.
+     */
+    private class Ref<T : Any>(private val cls: Class<T>) : TypeReference<T> {
+        override val type: java.lang.reflect.Type get() = cls
+    }
+
+    /** One registration, logged if it fails — see [registerAniyomiSingletons]. */
+    private inline fun registerAniyomiSingleton(what: String, register: () -> Unit) {
+        runCatching(register).onFailure {
+            Logs.logError(
+                "Injekt",
+                "could not register $what for the Aniyomi extensions — an extension " +
+                    "that injects $what will fail to load",
+                it,
+            )
+        }
     }
 
     /** The Injekt scope [registerAniyomiSingletons] last filled, so a scope that

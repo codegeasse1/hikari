@@ -173,7 +173,15 @@ class MainActivity : AppCompatActivity() {
             // Remember the Flow — a fresh store.themeFlow() per recomposition
             // would make collectAsState reset to the initial key each time.
             val themeFlow = remember { store.themeFlow() }
-            val themeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
+            // Seeded from the SYNCHRONOUS mirror, not from the stock default: a
+            // first frame drawn in the wrong theme is one full screen of the
+            // wrong colours, and DataStore's answer arrives a moment later — the
+            // reported "the accent I chose reset to the default and then changed
+            // back", seen every time the app came back from the player. See
+            // [AccentStore.theme].
+            val themeKey by themeFlow.collectAsState(
+                initial = AccentStore.theme(this@MainActivity)
+            )
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
             // App language (Settings → Appearance & Theme). The map is
@@ -181,7 +189,12 @@ class MainActivity : AppCompatActivity() {
             // that wraps a literal with tr(...) re-renders in the new language
             // the moment the choice changes — app-wide, live, no restart.
             val languageFlow = remember { store.languageFlow() }
-            val storedLanguage by languageFlow.collectAsState(initial = "")
+            val storedLanguage by languageFlow.collectAsState(
+                // The mirror first (see [LanguageManager.stored]): with "" the
+                // interface would come up in the platform's language and then
+                // repaint into the user's chosen one a moment later.
+                initial = com.hikari.app.ui.LanguageManager.stored(this@MainActivity)
+            )
             // The picker's choice is kept in memory (LanguageManager.pending)
             // until the store catches up, so the activity recreation the locale
             // change triggers can never show the previous language.
@@ -244,6 +257,10 @@ class MainActivity : AppCompatActivity() {
             }
             LaunchedEffect(storedLanguage) {
                 com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
+                // Keep the synchronous mirror in step (both when this screen set
+                // it and when something else did — a backup restore, Android's
+                // own per-app language screen).
+                com.hikari.app.ui.LanguageManager.rememberStored(this@MainActivity, storedLanguage)
             }
 
             // Accent colours (Settings → Appearance & Theme). The app accent repaints
@@ -252,27 +269,45 @@ class MainActivity : AppCompatActivity() {
             val appAccentFlow = remember { store.appAccentFlow() }
             val playerAccentFlow = remember { store.playerAccentFlow() }
             val themeLinkedFlow = remember { store.themeLinkedFlow() }
-            val appAccentKey by appAccentFlow.collectAsState(initial = HikariAccent.DEFAULT_APP.key)
-            val playerAccentKey by playerAccentFlow.collectAsState(
-                initial = HikariAccent.DEFAULT_PLAYER.key
+            // Seeded from the SYNCHRONOUS mirrors (see [AccentStore]) rather
+            // than from the stock defaults: with the defaults the first frame
+            // after the Activity was created painted the stock gold accent and
+            // the stock dark theme, and DataStore's answer arrived a frame or
+            // two later — the reported "the accent I picked reset to the default
+            // and then changed back", seen on every return from the player.
+            val appAccentKey by appAccentFlow.collectAsState(
+                initial = AccentStore.app(this@MainActivity).key
             )
-            val themeLinked by themeLinkedFlow.collectAsState(initial = false)
+            val playerAccentKey by playerAccentFlow.collectAsState(
+                initial = AccentStore.playerOwn(this@MainActivity).key
+            )
+            val themeLinked by themeLinkedFlow.collectAsState(
+                initial = AccentStore.isLinked(this@MainActivity)
+            )
             val appAccent = HikariAccent.fromKey(appAccentKey)
 
             // Keep the synchronous mirror of the accent preferences current, so
             // the player (and the next cold start) picks them up immediately.
-            LaunchedEffect(appAccentKey, playerAccentKey, themeLinked) {
+            LaunchedEffect(appAccentKey, playerAccentKey, themeLinked, themeKey) {
                 AccentStore.sync(
-                    this@MainActivity, appAccentKey, playerAccentKey, themeLinked
+                    this@MainActivity, appAccentKey, playerAccentKey, themeLinked, themeKey
                 )
             }
 
             // In-app UI scale (Settings → App Layout → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
             val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
-            val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(initial = false)
+            // Same seeding rule as the accents: the synchronous mirror, so the
+            // first frame is already laid out at the saved scale instead of at
+            // 100% and then jumping.
+            val uiScaleMirror = remember {
+                com.hikari.app.ui.UiScale.current(this@MainActivity)
+            }
+            val uiScaleEnabled by uiScaleEnabledFlow.collectAsState(
+                initial = uiScaleMirror.first
+            )
             val uiScaleFlow = remember { store.uiScaleFlow() }
-            val uiScale by uiScaleFlow.collectAsState(initial = 1f)
+            val uiScale by uiScaleFlow.collectAsState(initial = uiScaleMirror.second)
 
             // Keep the synchronous mirror of the preference current, so
             // View-based screens (player, WebView) and the next cold start
@@ -288,7 +323,7 @@ class MainActivity : AppCompatActivity() {
             // without a restart. The mirror above is kept in step so the next
             // onResume/onWindowFocusChanged re-applies the same mode.
             val fullscreenOffFlow = remember { store.fullscreenOffFlow() }
-            val fullscreenOffPref by fullscreenOffFlow.collectAsState(initial = false)
+            val fullscreenOffPref by fullscreenOffFlow.collectAsState(initial = fullscreenOff)
             LaunchedEffect(fullscreenOffPref) {
                 fullscreenOff = fullscreenOffPref
                 applyImmersiveMode()
@@ -300,8 +335,13 @@ class MainActivity : AppCompatActivity() {
             // this keeps up to date.
             val appFontFlow = remember { store.appFontFlow() }
             val appFontFileFlow = remember { store.appFontFileFlow() }
-            val appFontKey by appFontFlow.collectAsState(initial = com.hikari.app.ui.AppFonts.DEFAULT)
-            val appFontFile by appFontFileFlow.collectAsState(initial = "")
+            // Seeded from the synchronous mirror for the same reason as the
+            // accents and the scale.
+            val appFontSaved = remember {
+                com.hikari.app.ui.AppFonts.current(this@MainActivity)
+            }
+            val appFontKey by appFontFlow.collectAsState(initial = appFontSaved.key)
+            val appFontFile by appFontFileFlow.collectAsState(initial = appFontSaved.fileName)
             var importedFontLabel by remember { mutableStateOf("") }
             LaunchedEffect(appFontKey, appFontFile) {
                 com.hikari.app.ui.AppFonts.sync(this@MainActivity, appFontKey, appFontFile)
