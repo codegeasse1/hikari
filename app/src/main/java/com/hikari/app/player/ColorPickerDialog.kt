@@ -104,7 +104,7 @@ class ColorPickerDialog(
 
         // ---- live caption preview ------------------------------------------
         val preview = CaptionPreview(host).apply {
-            text = "Sample caption"
+            text = I18n.t("Sample caption")
             previewTypeface = Typeface.DEFAULT
         }
         panel.addView(preview, LinearLayout.LayoutParams(

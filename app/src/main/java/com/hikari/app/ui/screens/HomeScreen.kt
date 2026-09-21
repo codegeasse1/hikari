@@ -684,13 +684,16 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         } else {
                             EmptyState(
-                                title = "Couldn't load ${selectedName ?: "this extension"}",
+                                title = I18n.t("Couldn't load %s")
+                                    .replace("%s", selectedName ?: I18n.t("This extension")),
                                 subtitle = reason?.takeIf {
                                     !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it)
                                 }
-                                    ?: "Nothing came back from this extension. Retry, or open its " +
-                                        "site in the WebView to check whether it is up — otherwise " +
-                                        "browse another extension.",
+                                    ?: I18n.t(
+                                        "Nothing came back from this extension. Retry, or open its " +
+                                            "site in the WebView to check whether it is up — otherwise " +
+                                            "browse another extension."
+                                    ),
                                 actionLabel = tr("Retry"),
                                 action = vm::refresh,
                             )

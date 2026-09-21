@@ -27,6 +27,7 @@ object LanguageManager {
     val SYSTEM = AppLanguage("", "🌐", "System default")
 
     val LANGUAGES: List<AppLanguage> = listOf(
+        AppLanguage("en", "🇬🇧", "English"),
         AppLanguage("es", "🇪🇸", "Español"),
         AppLanguage("pt-BR", "🇧🇷", "Português (BR)"),
         AppLanguage("fr", "🇫🇷", "Français"),
@@ -66,6 +67,45 @@ object LanguageManager {
 
     /** The in-memory override, or null when the stored value is authoritative. */
     fun pending(): String? = pendingTag
+
+    /**
+     * The language the interface should actually speak.
+     *
+     * [stored] is Hikari's own setting ("" = "System default"). When the user
+     * has not made a choice, the answer is whatever the PLATFORM is using —
+     * Android's per-app language screen for Hikari, or the device locale — and
+     * that is the gap this closes: a phone whose language is Arabic, or a user
+     * who picked Arabic for Hikari in Android's own app-language screen, got an
+     * app whose *content* came back in Arabic (the title language follows the
+     * locale) while the interface around it stayed English, because Hikari's own
+     * preference was still empty. Reading the platform's answer here means the
+     * interface follows the same language the rest of Android was told.
+     */
+    fun effectiveTag(stored: String): String {
+        if (stored.isNotBlank()) return stored
+        return platformTag()
+    }
+
+    /** What the platform says the app's language is: the per-app locale when one
+     *  is set, else the device locale. "" when it cannot be read. */
+    fun platformTag(): String {
+        val perApp = runCatching {
+            AppCompatDelegate.getApplicationLocales().toLanguageTags()
+        }.getOrNull().orEmpty()
+        if (perApp.isNotBlank()) return perApp.substringBefore(',')
+        return runCatching { java.util.Locale.getDefault().toLanguageTag() }.getOrDefault("")
+    }
+
+    /** The language's own name for [tag], or null when we do not carry it. Used
+     *  for the "System default (…)" row so it names the language actually in
+     *  effect instead of always saying English. */
+    fun nameOf(tag: String): String? {
+        val t = tag.trim()
+        if (t.isBlank()) return null
+        LANGUAGES.firstOrNull { it.tag.equals(t, ignoreCase = true) }?.let { return it.name }
+        val base = t.substringBefore('-')
+        return LANGUAGES.firstOrNull { it.tag.substringBefore('-').equals(base, ignoreCase = true) }?.name
+    }
 
     /** Forgets the override once the store reports the same value, so a language
      *  changed anywhere else (Android's own per-app language screen) is not

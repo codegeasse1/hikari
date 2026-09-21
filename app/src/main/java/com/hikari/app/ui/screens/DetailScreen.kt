@@ -2,6 +2,7 @@ package com.hikari.app.ui.screens
 import androidx.compose.ui.focus.focusRequester
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.trTag
 
 import android.app.Application
 import android.content.Intent
@@ -2438,7 +2439,7 @@ fun DetailScreen(
                 CircularProgressIndicator()
             }
             error != null && meta == null -> Box(Modifier.fillMaxSize()) {
-                EmptyState("Something went wrong", error.orEmpty(), "Back", { nav.popBackStack() })
+                EmptyState(tr("Something went wrong"), error.orEmpty(), tr("Back"), { nav.popBackStack() })
             }
             else -> {
                 LazyColumn(Modifier.fillMaxSize()) {
@@ -2493,7 +2494,7 @@ fun DetailScreen(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
-                                                g,
+                                                trTag(g),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.primary
                                             )
@@ -4759,9 +4760,14 @@ private fun CastRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 6.dp)
                     )
-                    c.character?.let {
+                    c.character?.let { role ->
                         Text(
-                            it,
+                            // A role is content, so only our own dictionary can
+                            // help (the dictionary carries the handful that
+                            // appear again and again — "(voice)", "Himself",
+                            // "Narrator"); a real character's name passes
+                            // through untouched.
+                            tr(role),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,

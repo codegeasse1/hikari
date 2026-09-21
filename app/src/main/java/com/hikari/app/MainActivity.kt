@@ -167,11 +167,29 @@ class MainActivity : AppCompatActivity() {
             // until the store catches up, so the activity recreation the locale
             // change triggers can never show the previous language.
             val languageTag = com.hikari.app.ui.LanguageManager.pending() ?: storedLanguage
-            val i18nMap = remember(languageTag) {
-                com.hikari.app.i18n.I18n.mapFor(this@MainActivity, languageTag)
+            // The language the INTERFACE speaks. `languageTag` is Hikari's own
+            // setting (which the TMDB title language follows), but when it is
+            // empty — "System default" — the platform's answer (Android's
+            // per-app language screen for Hikari, or the device locale) decides,
+            // so choosing Arabic for the app ANYWHERE translates it. See
+            // LanguageManager.effectiveTag.
+            val uiLanguageTag = com.hikari.app.ui.LanguageManager.effectiveTag(languageTag)
+            val i18nMap = remember(uiLanguageTag) {
+                com.hikari.app.i18n.I18n.mapFor(this@MainActivity, uiLanguageTag)
             }
-            LaunchedEffect(i18nMap) {
-                com.hikari.app.i18n.I18n.setCurrent(i18nMap)
+            LaunchedEffect(i18nMap, uiLanguageTag) {
+                com.hikari.app.i18n.I18n.setCurrent(i18nMap, uiLanguageTag)
+                // One line, deliberately: the interface language is the one
+                // thing a user reports as "I set Arabic and it is still
+                // English", and this says which tag was resolved, what Hikari's
+                // own setting held, and how many strings the dictionary
+                // actually had — the three questions that answer it.
+                com.hikari.app.data.Logs.log(
+                    "i18n",
+                    "interface language '$uiLanguageTag' (setting '$languageTag', " +
+                        "platform '${com.hikari.app.ui.LanguageManager.platformTag()}'), " +
+                        "${i18nMap.size} strings",
+                )
             }
             LaunchedEffect(storedLanguage) {
                 com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
@@ -580,7 +598,7 @@ class MainActivity : AppCompatActivity() {
             val size = dpToPx(context, 44)
             val close = android.widget.ImageButton(context).apply {
                 id = settingsCloseButtonId
-                contentDescription = "Close settings"
+                contentDescription = com.hikari.app.i18n.I18n.t("Close settings")
                 scaleType = android.widget.ImageView.ScaleType.CENTER
                 // Same touch feedback a Material icon button uses; falls back to
                 // a plain transparent background if the sheet's theme has none.

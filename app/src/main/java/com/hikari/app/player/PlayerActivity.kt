@@ -3479,6 +3479,11 @@ class PlayerActivity : ComponentActivity() {
         // narrow for its bow to read as a pane rather than a wall, while a
         // slab/deck/card is mostly a container for rows — and a wider one fits
         // the longer option labels without clipping them.
+        // The width budget the panel's own silhouette can actually use inside
+        // the window (the halo is painted around it, and a few dp are kept on
+        // each side so the glow has somewhere to fade).
+        val roomW = win.x - 2 * halo - (8 * density).toInt()
+        val minW = (140 * density).toInt()
         val panelW = minOf(
             // Wider than it used to be, for both the pane and the flat slabs:
             // the rows, the engine chips ("All / CloudStream / Hikari / Nuvio /
@@ -3499,24 +3504,43 @@ class PlayerActivity : ComponentActivity() {
             // the longer server names fit on one line.
             (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
             (560 * density).toInt(),
-        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
-            .coerceAtLeast((140 * density).toInt())
+        )
+            // The floor must never win over the room that exists: on a small
+            // window (split screen, a phone-sized television box, a window that
+            // has not settled yet) 140dp of "minimum width" made the panel
+            // WIDER than the screen, and the right-hand column of every row —
+            // the "Change" button, the sync stepper — was sliced off with no way
+            // to reach it. That is the cut subtitle box a user reported.
+            .coerceAtMost(roomW)
+            .coerceAtLeast(minOf(minW, roomW).coerceAtLeast(1))
         // The panel must FLOAT on the video with all four rounded corners (and
         // the light sweeping around them) visible: it is capped against the hint
         // line plus the halo's own room above it, and against a fraction of the
         // window, so it never runs off the top/bottom edge — which used to clip
         // its bottom curve and hide the last rows. Anything longer scrolls.
-        val chrome = (96 * density).toInt()
-        val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
+        //
+        // 104dp of chrome rather than 96: the hint line above the panel can run
+        // to four lines (see the cross-extension tally), and it is the ROOT —
+        // hint plus panel — that has to fit the window, so the reserve has to
+        // cover the tallest hint it will actually draw.
+        val chrome = (104 * density).toInt()
+        val fitsScreen = (win.y - chrome).coerceAtLeast((72 * density).toInt())
         // Taller too: a server list scrolled four rows at a time is the other
         // half of "there isn't room" — the panel's own rounded bottom stays on
         // screen, and anything longer still scrolls.
         val maxFraction = (win.y * if (flatPanel) 0.76f else 0.66f).toInt()
         val minPanel = (110 * density).toInt()
+        // The floor has to give way to the ceiling, or a window shorter than
+        // 110dp + its chrome asks for a panel that cannot exist: `coerceIn`
+        // then throws "Cannot coerce value to an empty range: maximum 256 is
+        // less than minimum 272" from fitToContent — the crash a user reported
+        // (the panel's own onLayoutChange listener runs it, so it took the whole
+        // player down).
+        val hardCap = minOf(fitsScreen, maxFraction)
+        val softFloor = minOf(minPanel, hardCap)
         val panelH = (preferredHeightDp * density).toInt()
-            .coerceAtMost(fitsScreen)
-            .coerceAtMost(maxFraction)
-            .coerceAtLeast(minPanel)
+            .coerceAtMost(hardCap)
+            .coerceAtLeast(softFloor)
         // The panel view carries its own halo, so its silhouette comes out
         // exactly panelW x panelH in the middle of it.
         root.addView(panel, LinearLayout.LayoutParams(
@@ -3544,6 +3568,21 @@ class PlayerActivity : ComponentActivity() {
         // height wide and never spans the full width, which is a large part of
         // why it reads as a lightweight overlay instead of a full-screen sheet.
         // The halo is added back on top so the PANEL keeps that width.
+        var appliedWinW = -1
+        fun sizeDialogWindow() {
+            // Re-read the window every time this is asked for. The size a dialog
+            // is shown with is whatever the window said at that instant, and on a
+            // rotation, a split-screen resize or a window that has not settled
+            // yet that instant's answer is wrong — which is how a panel ended up
+            // wider or taller than the screen and got its edges sliced off, with
+            // the scroll view unable to help because it believed it fit.
+            val w = windowSize()
+            val maxW = (if (w.x > 0) minOf(win.x, w.x) else win.x)
+            val wantW = (panelW + 2 * halo).coerceAtMost(maxW).coerceAtLeast(1)
+            if (wantW == appliedWinW) return
+            appliedWinW = wantW
+            dialog.window?.setLayout(wantW, WindowManager.LayoutParams.WRAP_CONTENT)
+        }
         dialog.window?.apply {
             setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
             setGravity(Gravity.CENTER)
@@ -3585,11 +3624,30 @@ class PlayerActivity : ComponentActivity() {
             // halo is added AROUND the silhouette, not inside it.
             val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
                 panel.paddingTop + panel.paddingBottom
-            val sil = wanted.coerceIn(minPanel, minOf(fitsScreen, maxFraction))
-            if (sil == appliedSil) return
+            // The caps are re-derived from the window as it is NOW, not as it
+            // was when the dialog was shown: a rotation or a window resize moves
+            // the real budget, and the size captured at show time is exactly what
+            // used to leave a grown panel hanging off the screen. And the floor
+            // yields to the ceiling (see `softFloor`), so the pair can never be
+            // an empty range — `coerceIn` threw on that
+            // ("maximum 256 is less than minimum 272"), from THIS listener,
+            // which is the crash a user reported.
+            val now = windowSize()
+            val liveH = if (now.y > 0) minOf(win.y, now.y) else win.y
+            val cap = minOf(
+                (liveH - chrome).coerceAtLeast((72 * density).toInt()),
+                (liveH * if (flatPanel) 0.76f else 0.66f).toInt(),
+            )
+            val floor = minOf(minPanel, cap)
+            val sil = wanted.coerceAtMost(cap).coerceAtLeast(floor)
+            if (sil == appliedSil) {
+                sizeDialogWindow()
+                return
+            }
             appliedSil = sil
             panelLp.height = sil + 2 * halo
             panel.layoutParams = panelLp
+            sizeDialogWindow()
         }
         // Widths only exist after the dialog is shown, and the rows can change
         // height while it is up (a server landing mid-search), so fit now and
@@ -4255,7 +4313,10 @@ class PlayerActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = (11 * density).roundToInt() })
                 stateRow.addView(TextView(this).apply {
-                    text = "Your provider is searched first. Every server shows here the moment it is found."
+                    text = I18n.t(
+                        "Your provider is searched first. Every server shows here the " +
+                            "moment it is found."
+                    )
                     dpText(10f)
                     includeFontPadding = false
                     gravity = Gravity.CENTER
@@ -6340,7 +6401,8 @@ class PlayerActivity : ComponentActivity() {
                     playSource(currentIndex + 1)
                     return
                 }
-                countdown?.text = "Switching to the next server in ${(remaining / 1000) + 1}s…"
+                countdown?.text = I18n.t("Switching to the next server in %ss…")
+                    .replace("%s", ((remaining / 1000) + 1).toString())
                 bufferingWatchdog.postDelayed(this, 250)
             }
         }

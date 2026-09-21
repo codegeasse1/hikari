@@ -197,7 +197,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (!_installRunning.value || installCancelled) return
         installCancelled = true
         _installStopping.value = true
-        _busyMsg.value = "Stopping after the current extension…"
+        _busyMsg.value = I18n.t("Stopping after the current extension…")
     }
 
     /** Repos whose plugin list is being fetched right now — guards the window
@@ -2082,7 +2082,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val failed = mutableListOf<String>()
                 for ((i, p) in pending.withIndex()) {
                     if (installCancelled) break
-                    _busyMsg.value = "Installing ${p.name} (${i + 1}/${pending.size})…"
+                    _busyMsg.value = I18n.t("Installing %s (%s/%s)…")
+                        .replaceFirst("%s", p.name)
+                        .replaceFirst("%s", (i + 1).toString())
+                        .replaceFirst("%s", pending.size.toString())
                     val r = runCatching {
                         withTimeoutOrNull(90_000) {
                             when (effectiveRepoKind(kind, p.url)) {
@@ -2192,7 +2195,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 for ((i, item) in items.withIndex()) {
                     if (installCancelled) break
                     val (p, kind) = item
-                    _busyMsg.value = "Updating ${p.name} (${i + 1}/${items.size})…"
+                    _busyMsg.value = I18n.t("Updating %s (%s/%s)…")
+                        .replaceFirst("%s", p.name)
+                        .replaceFirst("%s", (i + 1).toString())
+                        .replaceFirst("%s", items.size.toString())
                     val r = runCatching {
                         withTimeoutOrNull(90_000) {
                             when (effectiveRepoKind(kind, p.url)) {

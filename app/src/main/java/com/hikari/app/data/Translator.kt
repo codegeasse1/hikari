@@ -248,4 +248,48 @@ object Translator {
             runCatching { store.setTranslateCache(snapshot) }
         }
     }
+
+    /**
+     * The UI-label half of the same mechanism: an interface string (our own
+     * English copy, e.g. "Video quality") translated once into the app's
+     * language and then remembered.
+     *
+     * WHY IT LIVES HERE. The app ships a hand-written dictionary of its own copy
+     * (assets/i18n/<tag>.json) and it covers most screens — but not all of them,
+     * and the player's View-based UI in particular was built from `I18n.t()`
+     * calls whose keys were never added. A missing key used to mean English, for
+     * ever, in every language. This is the safety net: anything the dictionary
+     * does not carry is translated once, cached (memory AND the same persisted
+     * cache the titles use, under a `ui|` prefix that cannot collide with a
+     * title) and then served instantly — so the interface ends up in the chosen
+     * language even where nobody wrote a translation.
+     *
+     * The prefix matters: keys are "ui|<lang>|<english>", so the same English
+     * label can hold one translation per language side by side.
+     */
+    fun uiCached(lang: String, text: String): String? {
+        val t = text.trim()
+        if (t.isBlank() || lang.isBlank()) return null
+        return synchronized(lock) { cache[uiKey(lang, t)] }
+    }
+
+    /** Records a UI label's translation (memory + the debounced disk write). */
+    fun rememberUi(lang: String, text: String, translated: String) {
+        val t = text.trim()
+        if (t.isBlank() || lang.isBlank() || translated.isBlank()) return
+        synchronized(lock) { cache[uiKey(lang, t)] = translated }
+        maybePersist()
+    }
+
+    /** A place-holder-safe translation of a UI label: "%s" is not something a
+     *  translator can be trusted to keep, so a result that lost (or gained) one
+     *  is refused and the English is kept instead. */
+    suspend fun translateUi(text: String, targetLang: String): String {
+        val out = translateTo(text, targetLang)
+        val before = Regex("%[sd]").findAll(text).count()
+        val after = Regex("%[sd]").findAll(out).count()
+        return if (before == after) out else text
+    }
+
+    private fun uiKey(lang: String, text: String) = "ui|" + lang.trim().lowercase() + "|" + text
 }

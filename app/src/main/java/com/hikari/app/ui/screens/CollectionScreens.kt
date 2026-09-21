@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -119,6 +120,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.IntOffset
@@ -145,6 +147,7 @@ import com.hikari.app.data.CoverKinds
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.NuvioCatalogImport
+import com.hikari.app.data.NuvioCollectionsImport
 import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
@@ -209,6 +212,7 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
     var askNewCollection by remember { mutableStateOf(false) }
     var askNewFolder by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Collection?>(null) }
+    var importOpen by remember { mutableStateOf(false) }
 
     BackHandler(enabled = folderDraft != null || draft != null) {
         if (folderDraft != null) folderDraft = null else draft = null
@@ -257,6 +261,22 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                 title = tr("Collections"),
                 subtitle = tr("Your own folders of catalogs, shown on Home."),
                 onBack = onBack,
+                // The clipboard sits where the reference app puts it, because
+                // that is where a user who came from there will look: importing
+                // a file is about the COLLECTION list, not about one folder
+                // inside one collection. (It used to live in the folder editor,
+                // where a Nuvio/SkyStream export — which already carries its own
+                // folders — had nowhere to go but into the folder the user had
+                // just made by hand.)
+                actions = {
+                    IconButton(onClick = { importOpen = true }) {
+                        Icon(
+                            Icons.Filled.ContentPaste,
+                            contentDescription = tr("Import collections (JSON)"),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                },
             )
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -296,6 +316,49 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                         }
                     }
                 }
+                // The second way in: a file that was already made somewhere else
+                // (the reference app's collections export, a friend's copy)
+                // already says which folders it holds and which catalog each one
+                // shows, so it becomes collections directly — nothing to rebuild
+                // by hand. Sits next to "New collection" because that is the same
+                // decision: how do the collections on this screen come to exist.
+                item {
+                    Surface(
+                        onClick = { importOpen = true },
+                        shape = GlassShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 16.dp, vertical = 15.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.ContentPaste,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    tr("Import collections (JSON)"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    tr(
+                                        "Paste a Nuvio/SkyStream collections export, or open a .json " +
+                                            "file. Its folders and catalogs are created for you."
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
                 if (collections.isEmpty()) {
                     item {
                         Column(Modifier.padding(top = 28.dp)) {
@@ -310,11 +373,18 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                     }
                 }
                 items(collections, key = { it.id }) { c ->
-                    CollectionListRow(
+                    CollectionBlock(
                         collection = c,
                         onOpen = { Routes.safeNavigate(nav, Routes.collectionView(c.id)) },
                         onEdit = { openEditor(c) },
                         onDelete = { confirmDelete = c },
+                        // A folder tile opens that folder directly. The block is
+                        // a browsable preview of the collection, so the tap a
+                        // user makes on a tile has to be the tap they meant —
+                        // not "open the collection, then find this folder again".
+                        onOpenFolder = { f ->
+                            Routes.safeNavigate(nav, Routes.collectionView(c.id, f.id))
+                        },
                     )
                 }
             }
@@ -360,6 +430,16 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                 draft = editingForFolder.copy(folders = editingForFolder.folders + f)
                 folderDraft = f
             },
+        )
+    }
+
+    if (importOpen) {
+        ImportCollectionsSheet(
+            onImported = { summary ->
+                importOpen = false
+                android.widget.Toast.makeText(context, summary, android.widget.Toast.LENGTH_LONG).show()
+            },
+            onDismiss = { importOpen = false },
         )
     }
 
@@ -436,7 +516,7 @@ private fun CollectionListRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    folderSummary(collection),
+                    FolderSummary(collection),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -462,12 +542,80 @@ private fun CollectionListRow(
 }
 
 /** "3 folders · 5 catalogs" — what the collection actually holds. */
-private fun folderSummary(c: Collection): String {
+@Composable
+private fun FolderSummary(c: Collection): String {
     val folders = c.folders.size
     val sources = c.folders.sumOf { it.sources.size }
-    val f = if (folders == 1) "folder" else "folders"
-    val s = if (sources == 1) "catalog" else "catalogs"
+    val f = if (folders == 1) tr("folder") else tr("folders")
+    val s = if (sources == 1) tr("catalog") else tr("catalogs")
     return "$folders $f · $sources $s"
+}
+
+/**
+ * One collection in the manager's list: the collection's own card, and then its
+ * folders as a scrollable row of cover tiles.
+ *
+ * This is the arrangement the reference app's "personal catalog creator" shows
+ * (a heading per collection with its folder tiles underneath, each tile wearing
+ * the logo the user gave it — Netflix, Prime Video, DC…), and the reason the
+ * folder tiles are here at all: a collection is mostly *seen* through its
+ * folders, so the screen that manages collections should show them without a
+ * second tap. The card above keeps the affordances the row had (open the whole
+ * collection, rename it, delete it); the tiles themselves open their folder.
+ */
+@Composable
+private fun CollectionBlock(
+    collection: Collection,
+    onOpen: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onOpenFolder: (CollectionFolder) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        CollectionListRow(
+            collection = collection,
+            onOpen = onOpen,
+            onEdit = onEdit,
+            onDelete = onDelete,
+        )
+        if (collection.folders.isEmpty()) return@Column
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            // Only vertical padding: the list this block sits in already insets
+            // its items by 16dp a side, so the first folder tile starts on the
+            // same line as the collection card above it instead of 16dp further
+            // in than everything else on the screen.
+            contentPadding = PaddingValues(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(collection.folders, key = { it.id }) { f ->
+                // The shape the tile will actually wear: its own when it has a
+                // cover, otherwise the collection's (see FolderTile).
+                val ownCover = CoverKinds.normalize(f.coverKind) != CoverKinds.NONE &&
+                    f.coverValue.isNotBlank()
+                FolderTile(
+                    folder = f,
+                    inheritedKind = collection.coverKind,
+                    inheritedValue = collection.coverValue,
+                    inheritedShape = collection.tileShape,
+                    width = folderTileWidth(if (ownCover) f.tileShape else collection.tileShape),
+                    onClick = { onOpenFolder(f) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The width one folder tile takes in a horizontal row. A wide (16:9) tile needs
+ * the most room to read as a wide tile; a poster keeps its 2:3 proportions in a
+ * narrower column; a square sits between the two. Heights follow from the
+ * shape ([TileShapes.aspect]), so the row stays even.
+ */
+private fun folderTileWidth(shape: String): Dp = when (TileShapes.normalize(shape)) {
+    TileShapes.WIDE -> 178.dp
+    TileShapes.SQUARE -> 134.dp
+    else -> 124.dp
 }
 
 /** The collection editor: name, its folders, and Save. */
@@ -675,7 +823,6 @@ private fun FolderEditorPage(
 
     var tmdbSheet by remember { mutableStateOf(false) }
     var providerSheet by remember { mutableStateOf(false) }
-    var importSheet by remember { mutableStateOf(false) }
     var titleSheet by remember { mutableStateOf(false) }
     var pickProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var catalogs by remember { mutableStateOf<List<CatalogRef>?>(null) }
@@ -814,43 +961,13 @@ private fun FolderEditorPage(
                     }
                 }
             }
-            // Importing a list of titles: the third way to fill a folder, next
-            // to TMDB presets and extension catalogs. See ImportListSheet.
-            item {
-                Surface(
-                    onClick = { importSheet = true },
-                    shape = GlassShape,
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp),
-                ) {
-                    Row(
-                        Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.List,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                tr("Import a list (JSON)"),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                tr("Paste a Nuvio or Stremio list, or open a .json file"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
+            // (The "import a list (JSON)" card sat here, inside the folder
+            // editor. It could only ever fill the folder the user had already
+            // made, while the exports people actually bring — Nuvio's and
+            // SkyStream's — already contain their OWN folders and catalogs, so
+            // the file's structure had to be rebuilt by hand first. Importing
+            // moved up to the collections list, where its folders become
+            // collections; see ImportCollectionsSheet.)
             item {
                 Text(
                     tr("Catalog sources"),
@@ -970,37 +1087,6 @@ private fun FolderEditorPage(
             addedKeys = sources.mapTo(HashSet<String>()) { it.key },
             onAdd = { source -> sources = sources.toggleSource(source) },
             onDismiss = { titleSheet = false },
-        )
-    }
-
-    if (importSheet) {
-        ImportListSheet(
-            onImport = { lists ->
-                // Imported titles live in the collection itself (there is no
-                // extension or server behind them), so each chosen list becomes
-                // one ITEMS source with its own stable id. A list whose titles
-                // are ALREADY in this folder is dropped rather than added twice.
-                val existing = sources.map { it.itemsJson }.toHashSet()
-                val added = lists.mapNotNull { group ->
-                    val json = NuvioCatalogImport.encode(group.items)
-                    if (json.isEmpty() || existing.contains(json)) return@mapNotNull null
-                    CatalogSource(
-                        kind = CatalogSourceKind.ITEMS,
-                        title = group.name.ifBlank { I18n.t("Imported list") },
-                        itemsJson = json,
-                        type = if (group.items.any { it.type == MediaType.SERIES }) {
-                            MediaType.SERIES
-                        } else {
-                            MediaType.MOVIE
-                        },
-                        rawType = "import",
-                        uid = app.store.newId("items"),
-                    )
-                }
-                sources = sources + added
-                importSheet = false
-            },
-            onDismiss = { importSheet = false },
         )
     }
 
@@ -1892,52 +1978,55 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) { 
 }
 
 /**
- * Imports a list of titles from JSON (a Nuvio/Stremio export, a file someone
- * shared, a catalog response copied out of a browser) as one or more folder
- * sources.
+ * Imports collections that were made somewhere else — the reference app's
+ * "Import Collections", a friend's export, a file kept from before.
  *
- * The sheet is deliberately two-step: paste (or open a file), then LOOK at what
- * was found before anything is added. JSON exports vary wildly — one file can
- * hold four named catalogs — so the user picks which of the lists inside it to
- * bring in, each shown with its name and how many titles it actually yielded.
- * Nothing is added until they tap the button, and a file that yields nothing is
- * reported in place rather than silently ignored.
+ * The file (see [NuvioCollectionsImport]) is an array of collections, each
+ * holding folders, each folder holding the catalogs it shows. That is Hikari's
+ * own model, so an import recreates the STRUCTURE: the folders appear as
+ * folders and the catalogs as catalogs, with the covers the file carried.
+ * Nothing has to be rebuilt by hand.
+ *
+ * Deliberately two-step, like every import in the app: paste (or open a file),
+ * then see what was found — how many collections, how many folders, how many
+ * catalogs, and how many sources have to be skipped because nothing installed
+ * can serve them. Nothing is written until the button is tapped.
+ *
+ * A file that turns out to be a plain list of titles (not collections) is
+ * imported too, as one collection holding one folder: the same guarantee —
+ * "paste it and it works" — without pretending it had a structure it did not.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ImportListSheet(
-    onImport: (List<NuvioCatalogImport.ImportedList>) -> Unit,
+private fun ImportCollectionsSheet(
+    onImported: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // The JSON itself, and what the text field shows: a file's contents can be
-    // megabytes, and putting that in a TextField would stall the sheet, so a
-    // loaded file is summarised in the field and kept here.
+    // The file's own text, and what the field shows: a file can be megabytes,
+    // and putting that in a TextField would stall the sheet.
     var body by remember { mutableStateOf("") }
     var fieldLabel by remember { mutableStateOf("") }
-    var lists by remember { mutableStateOf<List<NuvioCatalogImport.ImportedList>?>(null) }
-    var selected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var plan by remember { mutableStateOf<NuvioCollectionsImport.Plan?>(null) }
     var message by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
 
     fun read(source: String) {
-        val found = NuvioCatalogImport.parse(source)
-        lists = found
-        selected = found.indices.filter { found[it].items.isNotEmpty() }.toSet()
+        val parsed = NuvioCollectionsImport.parse(source)
+        plan = parsed
+        val titles = parsed.titleLists.count { it.items.isNotEmpty() }
         // I18n.t, not tr(): this runs from a click/file-picker callback, which
         // is outside composition, where the composable tr() cannot be called.
         message = when {
-            found.isEmpty() -> I18n.t(
-                "No titles found. Paste the JSON exactly as you got it — an array of " +
-                    "titles, or an object with items/metas/catalogs inside."
+            parsed.collections.isNotEmpty() -> ""
+            titles > 0 -> ""
+            else -> I18n.t(
+                "No collections found. Paste the JSON exactly as you got it — an " +
+                    "array of collections, each with its folders inside."
             )
-            found.all { it.items.isEmpty() } -> I18n.t(
-                "This file describes catalogs but carries no titles of its own, so there " +
-                    "is nothing to save."
-            )
-            else -> ""
         }
     }
 
@@ -1963,6 +2052,7 @@ private fun ImportListSheet(
         }
     }
 
+    val parsed = plan
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
@@ -1970,15 +2060,14 @@ private fun ImportListSheet(
                 .padding(horizontal = 16.dp),
         ) {
             Text(
-                tr("Import a list of titles"),
+                tr("Import collections (JSON)"),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
             Text(
                 tr(
-                    "Paste a Nuvio or Stremio list, a catalog response, or any JSON array of " +
-                        "titles. The names are matched on TMDB, so they get posters, details " +
-                        "and sources like every other title."
+                    "Paste your collections JSON below. Every collection's folders and " +
+                        "catalogs are created for you — nothing to rebuild by hand."
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1990,7 +2079,7 @@ private fun ImportListSheet(
                 onValueChange = {
                     fieldLabel = ""
                     body = it
-                    lists = null
+                    plan = null
                     message = ""
                 },
                 label = { Text(tr("JSON")) },
@@ -2066,82 +2155,101 @@ private fun ImportListSheet(
                 )
             }
 
-            val found = lists
-            if (found != null && found.any { it.items.isNotEmpty() }) {
+            if (parsed != null && parsed.collections.isNotEmpty()) {
                 Text(
                     tr("Found in this file"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
                 )
-                found.forEachIndexed { i, group ->
-                    if (group.items.isEmpty()) return@forEachIndexed
-                    Surface(
-                        onClick = {
-                            selected = if (selected.contains(i)) selected - i else selected + i
-                        },
-                        shape = GlassShape,
-                        color = if (selected.contains(i)) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                        } else {
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                // A scrollable preview, because a real export has a dozen
+                // collections and the button has to stay reachable.
+                LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                    itemsIndexed(parsed.collections, key = { i, c -> "$i|" + c.title }) { _, c ->
+                        Surface(
+                            shape = GlassShape,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
                         ) {
-                            Icon(
-                                if (selected.contains(i)) Icons.Filled.Check else Icons.Filled.List,
-                                contentDescription = null,
-                                tint = if (selected.contains(i)) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    group.name.ifBlank { tr("Imported list") },
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                            Row(
+                                Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Filled.List,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
                                 )
-                                Text(
-                                    group.items.size.toString() + " " + tr("titles"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        c.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        c.folders.size.toString() + " " + tr("folders") + " · " +
+                                            c.folders.sumOf { it.sources.size } + " " +
+                                            tr("catalogs"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
 
-            val chosen = found?.let { list ->
-                list.filterIndexed { i, g -> g.items.isNotEmpty() && selected.contains(i) }
-            }.orEmpty()
+            val titleLists = parsed?.titleLists.orEmpty().filter { it.items.isNotEmpty() }
+            if (parsed != null && parsed.collections.isEmpty() && titleLists.isNotEmpty()) {
+                Text(
+                    tr("Found in this file"),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                )
+                titleLists.forEach { group ->
+                    Text(
+                        group.name.ifBlank { tr("Imported list") } + " · " +
+                            group.items.size + " " + tr("titles"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+
+            val ready = parsed != null && (
+                parsed.collections.isNotEmpty() ||
+                    parsed.titleLists.any { it.items.isNotEmpty() }
+                )
             Surface(
                 onClick = {
-                    if (chosen.isNotEmpty()) onImport(chosen)
+                    val p = plan ?: return@Surface
+                    busy = true
+                    scope.launch {
+                        val summary = runCatching { importCollections(app, p) }
+                            .getOrElse { I18n.t("The import failed.") }
+                        busy = false
+                        onImported(summary)
+                    }
                 },
                 shape = GlassShape,
                 color = MaterialTheme.colorScheme.primary,
-                enabled = chosen.isNotEmpty(),
+                enabled = ready && !busy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 18.dp, bottom = 28.dp),
             ) {
                 Box(Modifier.padding(vertical = 15.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        if (chosen.isEmpty()) tr("Add to folder") else
-                            tr("Add") + " " + chosen.size + " " + tr("to folder"),
+                        tr("Import"),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimary,
@@ -2151,6 +2259,152 @@ private fun ImportListSheet(
         }
     }
 }
+
+/**
+ * Writes an imported [NuvioCollectionsImport.Plan] into the store and reports
+ * what happened in one line.
+ *
+ * Saving is the ONLY side effect, and it happens once, at the end: a plan whose
+ * catalogs cannot all be matched still becomes collections (the folders the
+ * user drew are worth keeping even when a source has to be dropped), and the
+ * count of what was dropped is part of the message rather than a log line
+ * nobody reads.
+ */
+private suspend fun importCollections(
+    app: HikariApp,
+    plan: NuvioCollectionsImport.Plan,
+): String {
+    // One catalog list per installed extension, shared by every source in the
+    // file: a real export names the same addon dozens of times (one "Latest",
+    // one "Trending", one per genre…), and enumerating an extension's catalogs
+    // can hit its host. Asking once per extension instead of once per source
+    // keeps a 100-source file to a handful of requests.
+    val catalogCache = HashMap<String, List<CatalogRef>>()
+    val result = NuvioCollectionsImport.materialise(
+        plan,
+        app.store::newId,
+    ) { addonId, type, catalogId ->
+        matchInstalledCatalog(app, addonId, type, catalogId, catalogCache)
+    }
+    var collections = 0
+    var folders = 0
+    for (c in result.collections) {
+        runCatching { app.store.upsertCollection(c) }
+        collections++
+        folders += c.folders.size
+    }
+    // Not collections after all: a plain list of titles. It becomes one
+    // collection holding one folder per named list in the file, so it behaves
+    // exactly like a list the user built by hand.
+    if (collections == 0) {
+        val lists = plan.titleLists.filter { it.items.isNotEmpty() }
+        if (lists.isNotEmpty()) {
+            val built = lists.mapNotNull { group ->
+                val json = NuvioCatalogImport.encode(group.items)
+                if (json.isEmpty()) return@mapNotNull null
+                CollectionFolder(
+                    id = app.store.newId("fld"),
+                    name = group.name.ifBlank { I18n.t("Imported list") },
+                    sources = listOf(
+                        CatalogSource(
+                            kind = CatalogSourceKind.ITEMS,
+                            title = group.name.ifBlank { I18n.t("Imported list") },
+                            itemsJson = json,
+                            type = if (group.items.any { it.type == MediaType.SERIES }) {
+                                MediaType.SERIES
+                            } else {
+                                MediaType.MOVIE
+                            },
+                            rawType = "import",
+                            uid = app.store.newId("items"),
+                        )
+                    ),
+                )
+            }
+            if (built.isNotEmpty()) {
+                runCatching {
+                    app.store.upsertCollection(
+                        Collection(
+                            id = app.store.newId("col"),
+                            name = lists.first().name.ifBlank { I18n.t("Imported list") },
+                            folders = built,
+                        )
+                    )
+                }
+                collections++
+                folders += built.size
+            }
+        }
+    }
+    val head = I18n.t("Imported %s").replace(
+        "%s",
+        collections.toString() + " " +
+            (if (collections == 1) I18n.t("collection") else I18n.t("collections")) +
+            " · " + folders + " " + I18n.t("folders") +
+            " · " + result.catalogs + " " + I18n.t("catalogs"),
+    )
+    val notes = buildList {
+        if (result.droppedAddons > 0) {
+            add(
+                result.droppedAddons.toString() + " " + I18n.t("catalogs") + " " +
+                    I18n.t("are from an addon that is not installed")
+            )
+        }
+        if (result.droppedTrakt > 0) {
+            add(result.droppedTrakt.toString() + " " + I18n.t("Trakt lists (not supported)"))
+        }
+    }
+    return if (notes.isEmpty()) head else head + " — " + notes.joinToString(", ")
+}
+
+/**
+ * Which installed extension exposes [catalogId] of [type] — the bridge between
+ * an imported file's `addonId` ("com.linvo.cinemeta") and Hikari's own provider
+ * id (which is derived from the addon's URL, not its manifest id, so they never
+ * match directly).
+ *
+ * The addon's last name segment is the usable hint ("cinemeta"), and it is
+ * looked for in the extension's name and address. Extensions that do not answer
+ * are skipped rather than failing the whole import: one dead host must not cost
+ * the user the other five collections in their file.
+ */
+private suspend fun matchInstalledCatalog(
+    app: HikariApp,
+    addonId: String,
+    type: String,
+    catalogId: String,
+    /** provider id → the catalogs it exposes. Filled on demand and reused for
+     *  the rest of the import (see the call site). */
+    cache: MutableMap<String, List<CatalogRef>>,
+): CatalogSource? = withContext(Dispatchers.IO) {
+    val wanted = catalogId.trim()
+    if (wanted.isBlank()) return@withContext null
+    val hint = addonId.substringAfterLast('.').trim().lowercase()
+    val installed = app.providers.providers.value.filter { it.config.enabled }
+    val ordered = installed.sortedByDescending { p ->
+        val name = p.config.name.lowercase()
+        val url = p.config.url.lowercase()
+        var score = 0
+        if (hint.isNotBlank() && (name.contains(hint) || url.contains(hint))) score += 2
+        score
+    }
+    for (p in ordered) {
+        val refs = cache.getOrPut(p.config.id) {
+            runCatching { p.catalogs() }.getOrDefault(emptyList())
+        }
+        val hit = refs.firstOrNull { it.id == wanted } ?: continue
+        return@withContext CatalogSource(
+            kind = CatalogSourceKind.PROVIDER,
+            title = hit.name,
+            providerId = p.config.id,
+            catalogId = hit.id,
+            type = hit.type,
+            rawType = hit.rawType,
+        )
+    }
+    null
+}
+
 
 /** Installed-extension picker, shared by the folder editor. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3100,7 +3354,7 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
     Column(Modifier.fillMaxSize()) {
         PageHeader(
             title = collection.name,
-            subtitle = folderSummary(collection),
+            subtitle = FolderSummary(collection),
             onBack = { nav.popBackStack() },
             // Same magnifier as a folder page, for the collection itself — the
             // "abc" header the user marked. Searching here spans every folder
@@ -3159,6 +3413,9 @@ private fun FolderTile(
     inheritedKind: String = CoverKinds.NONE,
     inheritedValue: String = "",
     inheritedShape: String = folder.tileShape,
+    /** A fixed width for a tile that sits in a horizontal row (see
+     *  [CollectionBlock]); null lets the tile fill the grid cell it is in. */
+    width: Dp? = null,
     onClick: () -> Unit,
 ) {
     val ownCover = CoverKinds.normalize(folder.coverKind) != CoverKinds.NONE &&
@@ -3166,7 +3423,7 @@ private fun FolderTile(
     val tokens = rememberGlassTokens()
     Column(
         Modifier
-            .fillMaxWidth()
+            .then(if (width != null) Modifier.width(width) else Modifier.fillMaxWidth())
             .clip(GlassShape)
             .background(tokens.fillTop)
             .border(1.dp, tokens.border, GlassShape)

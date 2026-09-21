@@ -3310,12 +3310,14 @@ private fun LoadingBannerCard(app: HikariApp) {
 private fun LanguageCard(app: HikariApp, current: String) {
     var pickerOpen by remember { mutableStateOf(false) }
     val selected = LanguageManager.ALL.firstOrNull { it.tag == current } ?: LanguageManager.SYSTEM
-    // The System-default entry is deliberately NOT translated: its job is to say
-    // "unless you pick otherwise, this app speaks English", and that reads best
-    // as the plain English words followed by the language actually in effect —
-    // ("System default (English)"). Translating it left the brackets empty (or
-    // nonsense) in every language but English.
-    val systemLabel = "System default (English)"
+    // The System-default entry says what it will actually do rather than always
+    // claiming English: on a phone whose own language is Arabic, or for a user
+    // who picked Arabic for Hikari in Android's app-language screen, "System
+    // default" means Arabic — and it used to say "(English)" either way, which
+    // is exactly why a user could be sure they had "selected Arabic in the app"
+    // and still see an English interface.
+    val systemLabel = "System default" + " (" +
+        (LanguageManager.nameOf(LanguageManager.platformTag()) ?: "English") + ")"
     val selectedName = if (selected.tag.isBlank()) systemLabel else selected.name
 
     Column(Modifier.padding(16.dp)) {

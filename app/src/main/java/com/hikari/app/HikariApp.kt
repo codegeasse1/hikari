@@ -241,7 +241,24 @@ class HikariApp : Application() {
                         "starting with the default language (see Store lines above for why)",
                 )
             } else {
-                com.hikari.app.ui.LanguageManager.apply(tag)
+                // Only push a language Hikari itself was given: a blank setting
+                // means "System default", and applying that would CLEAR a
+                // per-app locale the user chose for Hikari in Android's own
+                // app-language screen (setApplicationLocales with an empty list
+                // is "follow the device", not "leave it alone").
+                if (tag.isNotBlank()) {
+                    com.hikari.app.ui.LanguageManager.apply(tag)
+                }
+                // Hand the View-based screens (the player, its dialogs, the
+                // WebView) their language map before anything can draw: Compose
+                // gets it from I18n.LocalMap in MainActivity, but I18n.t() reads
+                // the map pushed here, and a player opened without the main
+                // screen having drawn yet would otherwise be English.
+                val effective = com.hikari.app.ui.LanguageManager.effectiveTag(tag)
+                com.hikari.app.i18n.I18n.setCurrent(
+                    com.hikari.app.i18n.I18n.mapFor(this@HikariApp, effective),
+                    effective,
+                )
             }
         }
         Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
