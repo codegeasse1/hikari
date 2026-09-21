@@ -567,6 +567,20 @@ class PlayerActivity : ComponentActivity() {
     private var favouriteItem: AppMediaItem? = null
     private var isFavourite = false
 
+    /**
+     * The title this player is showing, as the launch intent carried it.
+     *
+     * [favouriteItem] is only built when the intent brings a media id, so a live
+     * channel — or any stream opened without one — left the subtitle search box
+     * EMPTY, which is the reported "when I tap search subtitles it doesn't even
+     * show the name of the series or movie in the bar". The intent ALWAYS carries
+     * the title, so there is no reason for a blank one: this is the name the box
+     * is pre-filled with, and the name a search with no item behind it asks for.
+     */
+    private val playingTitle: String
+        get() = favouriteItem?.title?.takeIf { it.isNotBlank() }
+            ?: intent.getStringExtra("title").orEmpty().trim()
+
     /** Episode listing / in-player episode switching, built lazily so the
      *  provider stack isn't touched until the Episodes pill is actually used. */
     private val contentRepo by lazy { ContentRepository((applicationContext as HikariApp).providers) }
@@ -5367,7 +5381,10 @@ class PlayerActivity : ComponentActivity() {
         }
 
         val input = EditText(this).apply {
-            setText(favouriteItem?.title.orEmpty())
+            // Pre-filled with what is playing, from the ITEM when there is one
+            // and from the intent's own title when there is not — see
+            // [playingTitle].
+            setText(playingTitle)
             hint = I18n.t("Title to search for")
             setHintTextColor(0x88FFFFFF.toInt())
             setTextColor(0xFFFFFFFF.toInt())
@@ -5618,13 +5635,14 @@ class PlayerActivity : ComponentActivity() {
                 val query = (if (sameTitle) base?.searchTitle.orEmpty() else typed)
                     .ifBlank { typed }
                 val known = if (sameTitle) base?.id.orEmpty() else ""
-                val tmdbId = if (sameTitle) known.takeWhile { it.isDigit() } else ""
                 val year = if (sameTitle) base?.year else null
                 // `tt…`: OpenSubtitles and Subscene answer by it, and the
                 // resolver already knows how to find one for a title scraped
                 // from a site (which carries no id any database recognises).
                 val imdb = if (known.startsWith("tt")) known else withContext(Dispatchers.IO) {
-                    com.hikari.app.subtitles.SubtitleIds.imdb(query, year, tmdbId, isSeries)
+                    com.hikari.app.subtitles.SubtitleIds.imdb(
+                        if (sameTitle) base else null, query, year, isSeries,
+                    )
                 }
                 if (isFinishing || isDestroyed) return@launch
                 if (imdb.isNotBlank()) idsTried.add(imdb)
@@ -5632,7 +5650,6 @@ class PlayerActivity : ComponentActivity() {
                     title = query,
                     year = year,
                     imdbId = imdb,
-                    tmdbId = tmdbId,
                     isSeries = isSeries,
                     season = episode?.season ?: 0,
                     episode = episode?.number ?: 0,
@@ -7140,7 +7157,25 @@ class PlayerActivity : ComponentActivity() {
      * prepared, and nobody wants twenty of them for a film they are watching.
      */
     private fun startAddonSubtitleFetch(force: Boolean = false) {
-        val item = favouriteItem ?: return
+        // The item this lookup runs for. [favouriteItem] is only built when the
+        // launch intent carries a media id, so a title opened without one (a
+        // live channel, a hand-picked stream) used to return here and never got
+        // a subtitle at all — even with "Find subtitles automatically" on. The
+        // intent's own title is enough for every site, which searches by NAME.
+        val item = favouriteItem ?: AppMediaItem(
+            providerId = originProviderId,
+            id = intent.getStringExtra("histMediaId").orEmpty(),
+            title = playingTitle,
+            type = runCatching {
+                MediaType.valueOf(intent.getStringExtra("histType").orEmpty())
+            }.getOrDefault(MediaType.UNKNOWN),
+        )
+        if (item.title.isBlank()) return
+        // A live channel is not a title any subtitle site knows, and an IPTV
+        // item is never looked up outside its own playlist (see
+        // [com.hikari.app.data.IptvMark]) — the automatic pass does not run for
+        // one. The manual "Load from internet" panel still does, on request.
+        if (com.hikari.app.data.IptvMark.of(item)) return
         // `force` = the user just switched "Find subtitles automatically" on
         // while the video was already playing: that is a request for a subtitle
         // NOW, so the once-per-title guards are cleared for this run.
@@ -7227,17 +7262,15 @@ class PlayerActivity : ComponentActivity() {
     ): List<SubtitleSource> = withContext(Dispatchers.IO) {
         runCatching {
             val isSeries = episode != null || item.type == MediaType.SERIES
-            val tmdbId = item.id.takeWhile { it.isDigit() }
             val title = item.searchTitle.trim()
             if (title.isBlank()) return@withContext emptyList()
             val imdb = if (item.id.startsWith("tt")) item.id else withContext(Dispatchers.IO) {
-                com.hikari.app.subtitles.SubtitleIds.imdb(title, item.year, tmdbId, isSeries)
+                com.hikari.app.subtitles.SubtitleIds.imdb(item, title, item.year, isSeries)
             }
             val q = com.hikari.app.subtitles.SubtitleQuery(
                 title = title,
                 year = item.year,
                 imdbId = imdb,
-                tmdbId = tmdbId,
                 isSeries = isSeries,
                 season = episode?.season ?: 0,
                 episode = episode?.number ?: 0,

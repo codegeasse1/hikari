@@ -1822,6 +1822,14 @@ fun DetailScreen(
                 StreamsLive.setStatus(
                     sid,
                     when {
+                        // An IPTV channel is looked up in its own playlist and
+                        // nowhere else (see ContentRepository.streamsForInner),
+                        // so the line must not promise a sweep of every
+                        // installed extension.
+                        com.hikari.app.data.IptvMark.isIptvProvider(
+                            activeProviderId.ifBlank { providerId }
+                        ) ->
+                            "Searching this playlist for servers…"
                         exceptionN > 0 ->
                             "Searching your extension + $exceptionN more…"
                         !com.hikari.app.data.SearchScope.allExtensions ->

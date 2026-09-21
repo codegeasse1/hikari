@@ -1,5 +1,6 @@
 package com.hikari.app.subtitles
 
+import com.hikari.app.data.MediaItem
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
@@ -254,8 +255,6 @@ data class SubtitleQuery(
     /** `tt…` — resolved by the caller ([SubtitleIds]) so every site that wants
      *  one can use it; blank when the title could not be placed. */
     val imdbId: String = "",
-    /** The TMDB id, when the item carries one (digits only). */
-    val tmdbId: String = "",
     val isSeries: Boolean = false,
     val season: Int = 0,
     val episode: Int = 0,
@@ -333,18 +332,27 @@ object SubtitleSites {
  * carry: an `tt…` id (OpenSubtitles answers nothing else) and a year to match a
  * search result against.
  *
- * Resolution runs in the order that costs least: an id the item already carries,
- * then TMDB (through [com.hikari.app.nuvio.TmdbResolver], which resolves a
- * scraped title by NAME and is already cached and single-flight), then IMDb's
- * own suggestion endpoint, which needs no key and finds what TMDB could not.
+ * Resolution runs in the order that costs least AND is least likely to be
+ * wrong: an id the item already carries, then a TMDB id for an item that really
+ * came from TMDB, then IMDb's own suggestion endpoint — which needs no key and
+ * matches on the NAME (plus the year and whether it is a series), so it also
+ * places a title scraped from a site, which no database has an id for.
  */
 object SubtitleIds {
 
-    suspend fun imdb(title: String, year: Int?, tmdbId: String, isSeries: Boolean): String =
+    suspend fun imdb(item: MediaItem?, title: String, year: Int?, isSeries: Boolean): String =
         withContext(Dispatchers.IO) {
             val kind = if (isSeries) "tv" else "movie"
-            val digits = tmdbId.takeWhile { it.isDigit() }
-            if (digits.isNotEmpty()) {
+            val known = item?.id.orEmpty().trim()
+            if (known.startsWith("tt")) return@withContext known
+            // A TMDB id — but only from an item that CAME from TMDB, which
+            // [MediaItem.rating] is the tell for: our TMDB browse fills it, and
+            // an extension's own catalog items never carry one (see its doc).
+            // A purely numeric id from a scraper is the SITE's id, and asking
+            // TMDB for it resolves a DIFFERENT film — whose subtitles would
+            // then be offered under this title's name.
+            val digits = known.takeWhile { it.isDigit() }
+            if (digits.isNotEmpty() && item?.rating != null) {
                 runCatching { com.hikari.app.data.TmdbBrowse.imdbId(digits, kind) }
                     .getOrNull()?.takeIf { it.startsWith("tt") }?.let { return@withContext it }
             }

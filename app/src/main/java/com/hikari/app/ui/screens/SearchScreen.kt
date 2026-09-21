@@ -4,6 +4,7 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
 import android.app.Application
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +36,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -274,25 +278,44 @@ fun SearchScreen(
     // same list, filtered — "search moana, pick the year, keep only the movie"
     // without paying for the sweep again.
     var kindFilterKey by rememberSaveable { mutableStateOf("all") }
-    var yearFilter by rememberSaveable { mutableStateOf(0) }   // 0 = any year
-    var yearMenu by remember { mutableStateOf(false) }
     val kindFilter = SearchKindFilter.fromKey(kindFilterKey)
 
-    // The years these results actually carry, newest first: offering a year
-    // nothing matched would be a filter that can only ever empty the grid.
-    val filterYears = remember(results) {
-        results.mapNotNull { it.year }.filter { it > 1900 }.distinct().sortedDescending()
+    // The years to keep, chosen from a FIXED list of every year there is —
+    // never from the results — and holding as many as the user picks
+    // ("2001,2002,2004" keeps exactly those three). The old control offered
+    // only the years the results so far happened to carry, which meant a year
+    // could not be picked until a title from it had already been found: the
+    // filter was chosen after the fact instead of before the search. Held as a
+    // sorted, comma-joined string so it survives the ViewModel/activity being
+    // recreated (watching something and coming back).
+    var yearsKey by rememberSaveable { mutableStateOf("") }
+    val yearsFilter: Set<Int> = remember(yearsKey) {
+        yearsKey.split(',').mapNotNull { it.trim().toIntOrNull() }.filter { it > 1800 }.toSet()
+    }
+    fun setYears(next: Set<Int>) {
+        yearsKey = next.sortedDescending().joinToString(",")
+    }
+    fun toggleYear(year: Int) {
+        setYears(if (year in yearsFilter) yearsFilter - year else yearsFilter + year)
     }
     // A filter is only "on" when it can actually hide something.
-    val filterOn = kindFilter != SearchKindFilter.ALL || yearFilter != 0
-    val filtered = remember(results, kindFilter, yearFilter) {
-        if (!filterOn) results else results.filter { it.passesSearchFilter(kindFilter, yearFilter) }
+    val filterOn = kindFilter != SearchKindFilter.ALL || yearsFilter.isNotEmpty()
+    val filtered = remember(results, kindFilter, yearsKey) {
+        if (!filterOn) results else results.filter { it.passesSearchFilter(kindFilter, yearsFilter) }
     }
-    // What the filter KEPT although the provider never said — so the grid can
-    // explain itself (those results need no special handling, they are simply
-    // shown) instead of looking like it silently ignored the filter.
-    val keptUnknown = remember(results, kindFilter, yearFilter) {
-        if (!filterOn) 0 else results.count { it.unknownToFilter(kindFilter, yearFilter) }
+    // What the KIND filter kept although the provider never said what it is
+    // (those are simply shown), and what the YEAR filter dropped for the same
+    // reason — the two numbers the grid explains itself with, so it can never
+    // look like it silently ignored a filter.
+    val keptUnknownKind = remember(results, kindFilter, yearsKey) {
+        if (!filterOn) 0 else results.count { it.unknownKindKept(kindFilter, yearsFilter) }
+    }
+    val hiddenNoYear = remember(results, kindFilter, yearsKey) {
+        // Only the ones the KIND filter would have shown: an item dropped by
+        // "Movies" is not hidden because it has no year.
+        if (yearsFilter.isEmpty()) 0 else results.count {
+            it.year == null && it.passesSearchFilter(kindFilter, emptySet())
+        }
     }
 
     // The name of the one selected source, when exactly one is picked — an
@@ -501,9 +524,11 @@ fun SearchScreen(
         // ---- Result filters: kind + year (see the state at the top) ---------
         //
         // Same chip row as the providers above, so the two read as one control
-        // strip: what to search, then what to keep. The year chip opens a
-        // SCROLLABLE list of the years these results actually carry.
-        if (results.isNotEmpty()) {
+        // strip: what to search, then what to keep. The kind chips and the year
+        // strip are shown from the moment the screen is up — NOT only once
+        // results exist — because the filter is meant to be chosen BEFORE (or
+        // while) the scan runs.
+        run {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -552,53 +577,71 @@ fun SearchScreen(
                     )
                 }
                 item {
-                    Box {
-                        FilterChip(
-                            selected = yearFilter != 0,
-                            onClick = { yearMenu = true },
-                            label = {
-                                Text(if (yearFilter == 0) tr("Any year") else yearFilter.toString())
-                            },
-                            trailingIcon = {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = tr("Year"),
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            },
-                            shape = RoundedCornerShape(24.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                selectedLabelColor = MaterialTheme.colorScheme.primary,
-                            )
+                    // The filter's own status, and the way to clear it: it lists
+                    // what is picked (with a ✕ to drop it) and nothing else — the
+                    // years themselves are the strip below, which is where they
+                    // are chosen. It reads "Any year" and stays a no-op while
+                    // nothing is picked.
+                    val picked = when {
+                        yearsFilter.isEmpty() -> tr("Any year")
+                        yearsFilter.size <= 3 ->
+                            yearsFilter.sortedDescending().joinToString(", ")
+                        else -> tr("%s years").replace("%s", yearsFilter.size.toString())
+                    }
+                    FilterChip(
+                        selected = yearsFilter.isNotEmpty(),
+                        onClick = { setYears(emptySet()) },
+                        label = { Text(if (yearsFilter.isEmpty()) picked else "$picked ✕") },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = MaterialTheme.colorScheme.primary,
                         )
-                        DropdownMenu(
-                            expanded = yearMenu,
-                            onDismissRequest = { yearMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(tr("Any year")) },
-                                onClick = {
-                                    yearFilter = 0
-                                    yearMenu = false
-                                },
-                            )
-                            filterYears.forEach { year ->
-                                DropdownMenuItem(
-                                    text = { Text(year.toString()) },
-                                    onClick = {
-                                        yearFilter = year
-                                        yearMenu = false
-                                    },
-                                )
-                            }
-                        }
+                    )
+                }
+            }
+            // The YEAR strip: every year there is, in one slim scroller of its
+            // own, tapped to toggle (multi-select — 2001 · 2002 · 2004 keeps
+            // all three at once). It is deliberately a short, thin box: a year
+            // is four digits, so the control needs no more height than a chip
+            // row, and a fixed list means a year can be picked before the
+            // search has found a single title.
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                border = BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 6.dp)
+                    .height(34.dp),
+            ) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    item {
+                        YearChip(
+                            label = tr("Any"),
+                            selected = yearsFilter.isEmpty(),
+                            onClick = { setYears(emptySet()) },
+                        )
+                    }
+                    items(SEARCH_YEARS) { year ->
+                        YearChip(
+                            label = year.toString(),
+                            selected = year in yearsFilter,
+                            onClick = { toggleYear(year) },
+                        )
                     }
                 }
             }
-            if (filterOn) {
+            if (filterOn && results.isNotEmpty()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
                         if (filtered.isEmpty()) {
@@ -615,10 +658,18 @@ fun SearchScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (filtered.isNotEmpty() && keptUnknown > 0) {
+                    if (filtered.isNotEmpty() && keptUnknownKind > 0) {
                         Text(
                             tr("%s have no year or kind, so they are kept")
-                                .replace("%s", keptUnknown.toString()),
+                                .replace("%s", keptUnknownKind.toString()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (hiddenNoYear > 0) {
+                        Text(
+                            tr("%s have no year, so they are hidden")
+                                .replace("%s", hiddenNoYear.toString()),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -658,7 +709,7 @@ fun SearchScreen(
                     CollectionHitsRow(
                         if (filterOn) {
                             collectionHits.filter {
-                                it.item.passesSearchFilter(kindFilter, yearFilter)
+                                it.item.passesSearchFilter(kindFilter, yearsFilter)
                             }
                         } else {
                             collectionHits
@@ -839,18 +890,61 @@ private enum class SearchKindFilter(val key: String) {
 }
 
 /**
+ * Every year the year strip offers: next year (a title can already be dated
+ * to it) back to 1950, newest first, so the strip opens on the years people
+ * actually search for and scrolls into the back catalogue.
+ *
+ * A FIXED list on purpose: the years come from the calendar, not from what the
+ * search has found so far, so a year is pickable before a single result is in.
+ */
+private val SEARCH_YEARS: List<Int> = run {
+    val thisYear = runCatching {
+        java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    }.getOrDefault(2025)
+    ((thisYear + 1) downTo 1950).toList()
+}
+
+/**
+ * One year in the search filter strip: small, thin and tappable, drawn like the
+ * provider chips around it so the strip reads as one control.
+ */
+@Composable
+private fun YearChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.75f))
+        else null,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/**
  * Whether one search result survives the filter row.
  *
- * A result whose provider never said what it is (type UNKNOWN) or when it is
- * from (no year) is KEPT: whole extensions label their results with neither, and
- * hiding all of them would turn picking a year into an empty screen — which
- * reads as a broken search, not a narrower one. [MediaItem.unknownToFilter] is
- * the same question the other way round, so the count of those can be shown
- * next to "Showing 12 of 240" instead of the grid silently disagreeing with its
- * own total.
+ * The KIND half keeps a result whose provider never said what it is (type
+ * UNKNOWN): whole extensions label their results that way, and hiding all of
+ * them would turn picking Movie or Series into an empty screen — which reads as
+ * a broken search, not a narrower one. [MediaItem.unknownKindKept] is that same
+ * question the other way round, so the count can be shown next to "N shown ·
+ * M found" instead of the grid silently disagreeing with its own total.
+ *
+ * The YEAR half is STRICT: the years are picked BEFORE the search, so a result
+ * whose source never said when it came out cannot be presented as one of them
+ * (it is counted into "…have no year, so they are hidden" instead).
  */
-private fun MediaItem.passesSearchFilter(kind: SearchKindFilter, year: Int): Boolean {
-    if (year != 0 && this.year != null && this.year != year) return false
+private fun MediaItem.passesSearchFilter(kind: SearchKindFilter, years: Set<Int>): Boolean {
+    if (years.isNotEmpty() && (year == null || year !in years)) return false
     return when (kind) {
         SearchKindFilter.ALL -> true
         SearchKindFilter.MOVIES -> type != MediaType.SERIES
@@ -858,14 +952,10 @@ private fun MediaItem.passesSearchFilter(kind: SearchKindFilter, year: Int): Boo
     }
 }
 
-/** True when this result is only visible because the provider did not say what
- *  it is — an unknown year under a year filter, or an unknown kind under a kind
- *  filter. */
-private fun MediaItem.unknownToFilter(kind: SearchKindFilter, year: Int): Boolean {
-    if (year != 0 && this.year == null) return true
-    return when (kind) {
-        SearchKindFilter.ALL -> false
-        SearchKindFilter.MOVIES -> type == MediaType.UNKNOWN
-        SearchKindFilter.SERIES -> type == MediaType.UNKNOWN
-    }
+/** True when this result is SHOWN only because the provider did not say what it
+ *  is (an unknown kind under a Movie/Series filter — see
+ *  [MediaItem.passesSearchFilter]). */
+private fun MediaItem.unknownKindKept(kind: SearchKindFilter, years: Set<Int>): Boolean {
+    if (kind == SearchKindFilter.ALL) return false
+    return type == MediaType.UNKNOWN && passesSearchFilter(kind, years)
 }

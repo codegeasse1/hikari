@@ -2038,7 +2038,16 @@ class ContentRepository(private val manager: ProviderManager) {
             // exception to the exception: that repo keeps its own catalogue to
             // itself, so the pass collapses to "only this extension" whatever
             // the two switches say.
-            val originIsException = SearchScope.isException(item.providerId)
+            // An IPTV channel is a LIVE CHANNEL of one playlist: no other repo
+            // can possibly hold it, whatever the two switches say, so its
+            // lookup behaves exactly like a repo that keeps its catalogue to
+            // itself (the rule a marked exception repo already gets). Without
+            // this, playing a channel swept every installed extension — hundreds
+            // of movie/series repos searching a channel NAME — which is the
+            // reported "any IPTV link should only search its own links, not
+            // every other provider's".
+            val originIsIptv = IptvMark.of(item)
+            val originIsException = originIsIptv || SearchScope.isException(item.providerId)
             val scopeAll = if (originIsException) false else SearchScope.allExtensions
             val exceptions = if (originIsException) {
                 emptySet()
@@ -4735,6 +4744,10 @@ class ContentRepository(private val manager: ProviderManager) {
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? {
         if (item.type != MediaType.SERIES) return null
+        // A channel list is not an episode list, and no other repo holds this
+        // channel: an IPTV item is never "borrowed" from another extension (see
+        // the origin rule in [streamsForInner]).
+        if (IptvMark.of(item)) return null
         // "Server search: only this extension" (Settings → Playback): borrowing
         // another site's episode list is exactly the cross-extension behaviour
         // that switch turns off — and asking for it here would have made the

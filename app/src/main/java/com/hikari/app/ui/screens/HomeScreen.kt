@@ -336,6 +336,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             ?.takeIf { isCollectionKey(it) }
             ?.let { key -> known.firstOrNull { it.id == collectionIdOf(key) } }
         val key = if (kept.isEmpty()) "all" else kept.joinToString(",")
+        // The ONE extension this pick is about, when the pick is a single
+        // extension — [rows] below is then held to that extension's rows only.
+        val soloPick = kept.singleOrNull()?.takeIf { !isCollectionKey(it) }
+        val soloName = soloPick?.let { manager.byId(it)?.config?.name }
         lastLoadedCollection = folderCollection
         val cached = homeCache[key]
         if (folderCollection != null) {
@@ -383,7 +387,29 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // extension's feed, a multi pick gives every chosen extension's feed
             // plus a personal catalog's shelves — see [rowsFlowFor].
             val rowFlow = rowsFlowFor(kept, known)
-            rowFlow.collect { rows ->
+            rowFlow.collect { incoming ->
+                // A pick of exactly ONE extension shows that extension's
+                // catalog rows and NOTHING else. This is the promise the
+                // provider pill makes ("4K HDHUB" over a screen that really is
+                // 4K HDHUB's shelves), and it is enforced here instead of being
+                // trusted from the flow: a provider list that holds the same id
+                // twice (a stale entry an update left behind, one repo
+                // registered through two engines) would otherwise let another
+                // provider's rows through the id filter — which is exactly the
+                // reported "no matter what provider I am selecting, it loads all
+                // providers' catalogs".
+                val rows = if (soloPick == null || soloName == null) incoming else incoming.filter {
+                    it.providerId == soloPick && it.providerName == soloName
+                }
+                if (rows.size != incoming.size) {
+                    com.hikari.app.data.Logs.log(
+                        "Home",
+                        "pick=$soloPick dropped ${incoming.size - rows.size} row(s) that were not" +
+                            " its own (from " +
+                            incoming.map { it.providerName }.distinct().take(6).joinToString(",") +
+                            ")",
+                    )
+                }
                 val tokenized = withContext(Dispatchers.IO) {
                     rows.map { row ->
                         val ck = row.key.ifBlank { "${row.providerId}|${row.catalogId}|${row.title}" }
@@ -407,12 +433,26 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 homeCache[key] = latest
                 _rows.value = latest
                 _loading.value = false
-            } else if (cached == null) {
-                // Stream returned nothing (all providers slow / offline): keep
-                // the cached feed if we had one, otherwise don't leave the
-                // spinner up forever.
-                _rows.value = emptyList()
+                com.hikari.app.data.Logs.log(
+                    "Home",
+                    "pick=" + (if (key == "all") "all" else key) +
+                        " rows=" + latest.size +
+                        " from=" + latest.map { it.providerName }.distinct().take(8)
+                            .joinToString(","),
+                )
+            } else {
+                // Stream returned nothing (all providers slow / offline): fall
+                // back to THIS pick's cached feed if there is one, otherwise
+                // empty — never to whatever happened to be on screen before,
+                // which is how another provider's feed could outlive the pick
+                // that produced it (the pill said one provider, the rows said
+                // another).
+                _rows.value = homeCache[key].orEmpty()
                 _loading.value = false
+                com.hikari.app.data.Logs.log(
+                    "Home",
+                    "pick=" + (if (key == "all") "all" else key) + " produced no rows",
+                )
             }
         }
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
