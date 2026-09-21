@@ -1,3 +1,28 @@
+## 0.10.1
+
+"Load from internet" now searches **six subtitle sites of its own** — no addon installed and no account needed — the TV layout switches performance mode on by itself, and two reported regressions are fixed: an empty Home on "All providers", and a "Show all" page that opened on "Nothing here right now" for every row of a personal catalog.
+
+### Added
+
+- **Six subtitle sites, built in.** The player's **Load from internet** panel could only ask the Stremio subtitle addons you had installed, so an install with none was told "No subtitle addon is installed" and had no way to get a subtitle at all — and an install WITH one got "No subtitles found" for every title whose IMDb id could not be resolved (those addons answer an empty list, with HTTP 200, to anything but a \`tt…\` id). Six sites are now asked directly, in parallel, each with its own timeout:
+
+  - **OpenSubtitles** — the catalogue behind its public mirror: a track per language with its own download URL, one request.
+  - **OpenSubtitles search** — opensubtitles.org's own search API, which is the one that answers by **name** as well as by id, and reports each track's download count and rating.
+  - **SubDL** — 35 languages, every release as a .zip.
+  - **SubtitleCat** — the aggregator, as a plain .srt per language.
+  - **Subscene** — the community library, one .zip per subtitle.
+  - **YIFYSubtitles** — where a rip-based release name is most likely to match.
+
+  The results list reads like the players people are used to: **language · site · release · format**, sorted with your own language first and then English, so picking a subtitle is picking a language rather than guessing at a rip name. Nothing is downloaded until a row is tapped, and a site that is down (or blocked) costs nothing but its own line going missing.
+- **Find subtitles automatically** (Subtitles panel, off by default). With it on, a video that starts with no subtitle of its own — and with no subtitle addon installed at all — gets a track in your language, looked up on those sites as soon as playback begins, instead of the user having to open the panel every time.
+- The "no subtitles found" line now says **which sources answered and with how many**, which sources stayed silent, and which ids were asked with — the difference between "this title has none" and "the lookup could not place this title".
+
+### Fixed
+
+- **Home on "All providers" showed nothing.** The all-providers feed asked for the rows of *no* provider, so the whole page fell through to its empty state ("No content yet") for anyone browsing All. Home on All is back to stacking every installed extension's home page, exactly as before; a pick made only of personal catalogs still shows just those catalogs' folder tiles.
+- **"Show all" on a row inside a personal catalog opened an empty page.** The button handed the extension the personal catalog's internal source key ("prov|cs3|movie|trending") instead of the catalog's own id, so the extension answered nothing and the page said "Nothing here right now — the site may be blocking or down." It now opens the real catalog, with the extension's own type, and pages through it.
+- **Performance mode follows the TV layout.** A television gets the lighter visuals the moment the app starts, and switching **Settings → TV & Remote → Layout** to the TV layout turns them on immediately (a phone whose user switches the layout on gets them too). Working the switch yourself makes it your choice from then on — it is never overridden again.
+
 ## 0.10.0
 
 The personal catalog creator now has the whole set of collection settings the reference client has (minus the account/Trakt half, which needs engines Hikari does not have), a personal catalog can be pinned onto Home so its folders are there without picking anything, and a batch of reported player, subtitle and layout defects are fixed.

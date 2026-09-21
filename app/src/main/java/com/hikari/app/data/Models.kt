@@ -293,6 +293,13 @@ data class SubtitleSource(
      * stream.
      */
     val name: String = "",
+    /**
+     * Headers the DOWNLOAD needs, for the sites that serve a subtitle only to a
+     * request that carries the page it was listed on (the YIFY mirror answers a
+     * bare request with HTTP 403 — see [com.hikari.app.subtitles.YifySite]).
+     * Empty for an addon's track, which needs none.
+     */
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /** DRM info for a protected stream, carried from the extracting extension so

@@ -291,10 +291,22 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         saved: List<Collection>,
     ): kotlinx.coroutines.flow.Flow<List<CatalogRow>> {
         val extensionIds = picks.filterNot { isCollectionKey(it) }.toSet()
-        return if (extensionIds.isEmpty() && picks.isNotEmpty()) {
-            kotlinx.coroutines.flow.flowOf(emptyList())
-        } else {
-            repo.homeRowsStreamingFor(extensionIds)
+        return when {
+            // The ordinary case, and the one that must never move: NO pick at
+            // all is "All providers", which is the feed that stacked every
+            // installed extension's home page. It has to ask for that feed
+            // (`homeRowsStreaming()` — no id filter) rather than for
+            // `homeRowsStreamingFor(emptySet())`, which reads as "rows from
+            // NONE of the providers" and painted an empty Home for anyone on
+            // All — the reported "in home clicking all provider … not all show
+            // like it earlier used to show".
+            picks.isEmpty() -> repo.homeRowsStreaming()
+            extensionIds.isNotEmpty() -> repo.homeRowsStreamingFor(extensionIds)
+            // A pick made ONLY of collections has no extension feed at all:
+            // falling through to the combined feed here would quietly stack
+            // every installed extension's home page under the user's own
+            // catalogs.
+            else -> kotlinx.coroutines.flow.flowOf(emptyList())
         }
     }
 

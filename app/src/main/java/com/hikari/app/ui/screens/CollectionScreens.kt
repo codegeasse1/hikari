@@ -4352,11 +4352,22 @@ private fun FolderRowList(
                                 }
                             )
                         } else {
+                            // The EXTENSION's own catalog id and raw type, never
+                            // [CatalogRow.catalogId] — on a row that came out of a
+                            // personal catalog that field holds the SOURCE's key
+                            // ("prov|cs3|movie|trending"), not a catalog id, and
+                            // the extension answers a lookup for it with nothing:
+                            // the "Show all" page then opened on "Nothing here
+                            // right now" for every row of every personal catalog.
                             Routes.safeNavigate(
                                 nav,
                                 Routes.catalog(
-                                    row.providerId, row.catalogId, row.title,
-                                    row.providerName, row.type, row.rawType
+                                    (src?.providerId ?: row.providerId).ifBlank { row.providerId },
+                                    (src?.catalogId ?: row.catalogId).ifBlank { row.catalogId },
+                                    row.title,
+                                    row.providerName,
+                                    src?.type ?: row.type,
+                                    (src?.rawType ?: row.rawType).ifBlank { row.rawType },
                                 )
                             )
                         }

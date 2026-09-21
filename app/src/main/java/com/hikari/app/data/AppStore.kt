@@ -246,6 +246,14 @@ class AppStore(private val ctx: Context) {
          *  backdrop effects that a cheap TV stick's GPU cannot afford while it
          *  is also decoding video. */
         val TV_PERF = booleanPreferencesKey("tvPerf")
+        /** Whether the USER has made the performance-mode choice themselves.
+         *  Until they do, the mode follows the layout: it is switched on by
+         *  itself whenever the television layout is active (see
+         *  [com.hikari.app.HikariApp]'s `syncTvPerformance`) and off again for
+         *  the phone layout, which is what "turn performance mode on when the
+         *  TV layout is detected" means — and the moment the user works the
+         *  switch, their answer is kept and never overridden again. */
+        val TV_PERF_CHOSEN = booleanPreferencesKey("tvPerfChosen")
         /** Whether the first-run television defaults have been applied to this
          *  install already (they must be applied once, not on every launch). */
         val TV_SEEDED = booleanPreferencesKey("tvSeeded")
@@ -933,6 +941,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTvPerf(on: Boolean) {
         write("TV_PERF") { it[K.TV_PERF] = on }
+    }
+
+    /** True once the user has worked the performance-mode switch themselves. */
+    fun tvPerfChosenFlow(): Flow<Boolean> =
+        store.data.map { it[K.TV_PERF_CHOSEN] ?: false }
+
+    suspend fun tvPerfChosen(): Boolean = tvPerfChosenFlow().first()
+
+    /** Records that the performance mode is now the USER's choice, not the
+     *  layout's — [com.hikari.app.HikariApp] stops keeping it in step with the
+     *  layout from here on. */
+    suspend fun setTvPerfChosen(chosen: Boolean) {
+        write("TV_PERF_CHOSEN") { it[K.TV_PERF_CHOSEN] = chosen }
     }
 
     /** True once the first-run television defaults have been applied. */

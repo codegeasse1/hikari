@@ -114,6 +114,9 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -216,6 +219,26 @@ class PlayerActivity : ComponentActivity() {
      *  off mid-walk and left only a `tmdb:` id, which OpenSubtitles v3 answers
      *  with nothing (the "no subtitles found for every movie" report). */
     private val ADDON_SUBTITLE_MS = 30_000L
+
+    /** How many SITE tracks the automatic pass may attach per video (see
+     *  [autoSiteTracks]). Every attached track is downloaded and written to disk
+     *  when the source is prepared, so this is a subtitle the user can read —
+     *  not a catalogue. The panel is where the whole list is browsed. */
+    private val MAX_AUTO_SITE_SUBS = 4
+
+    /** How long ONE subtitle site gets to answer (see
+     *  [com.hikari.app.subtitles.SubtitleSites]). Every site runs at the same
+     *  time, so a site that has gone down costs this and nothing else — the
+     *  others have already published their tracks by then. 18s is generous for
+     *  the two-request sites (SubDL, SubtitleCat, Subscene), which do a search
+     *  and then open the title's own page. */
+    private val SITE_SUBTITLE_MS = 18_000L
+
+    /** How many subtitle rows the "Load from internet" panel draws. The sites
+     *  between them can offer hundreds (a popular film has 300+ tracks across
+     *  thirty languages); the list is sorted into the user's language first, so
+     *  the cap only ever trims the tail nobody was going to scroll to. */
+    private val MAX_SUBTITLE_ROWS = 150
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
@@ -657,6 +680,13 @@ class PlayerActivity : ComponentActivity() {
      *  [showSubtitleStyleDialog]). */
     private var subtitleStyle = SubtitleStyle()
 
+    /** "Find subtitles automatically" (the Subtitles panel): with it on, a
+     *  video that starts with no subtitle of its own also asks the subtitle
+     *  SITES for a track in the app's language, in the background, the way
+     *  [startAddonSubtitleFetch] already asks the installed addons. Off by
+     *  default — it is a network search the user did not ask for. */
+    private var autoSubtitleSites = false
+
     /** Set while the caption-style panel is open: a font picked from the system
      *  file picker lands asynchronously, and this lets the panel refresh its
      *  font row (and is cleared when the panel closes). */
@@ -862,6 +892,7 @@ class PlayerActivity : ComponentActivity() {
         subtitleOffsetMs = subsPrefs.getLong("sub_offset", 0L)
         subtitlePosition = subsPrefs.getFloat("sub_pos", subtitlePosition)
         subtitleStyle = SubtitleStyle.load(subsPrefs)
+        autoSubtitleSites = subsPrefs.getBoolean("sub_auto_sites", false)
         applySubtitleSize(subtitleScale)
         applySubtitlePosition(subtitlePosition)
         applySubtitleStyle()
@@ -5260,31 +5291,68 @@ class PlayerActivity : ComponentActivity() {
             posValue,
             pill(I18n.t("Higher")) { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
         ))
+        // "Find subtitles on the internet": the automatic half of the
+        // "Load from internet" panel. With it on, a video that starts with no
+        // subtitle of its own — and no subtitle addon installed at all — gets a
+        // track in the app's own language, looked up on the subtitle sites as
+        // soon as playback begins. Off by default: it is a network search the
+        // user did not ask for, and one that silently downloads a file.
+        val autoSites = valueLabel(if (autoSubtitleSites) I18n.t("On") else I18n.t("Off"))
+        fun applyAutoSites() {
+            autoSites.text = if (autoSubtitleSites) I18n.t("On") else I18n.t("Off")
+            subsPrefs.edit().putBoolean("sub_auto_sites", autoSubtitleSites).apply()
+            // Turning it on is a request for subtitles NOW, not from the next
+            // video: ask straight away.
+            if (autoSubtitleSites && addonSubs.isEmpty()) startAddonSubtitleFetch(force = true)
+        }
+        addRow(controlRow(
+            I18n.t("Find subtitles automatically"),
+            autoSites,
+            pill(if (autoSubtitleSites) I18n.t("Turn off") else I18n.t("Turn on")) {
+                autoSubtitleSites = !autoSubtitleSites
+                applyAutoSites()
+            },
+        ))
 
         presentGlass(
             dialog,
             I18n.t("Subtitle settings"),
             list,
             620f,
-            hint = I18n.t("Applies while captions are on."),
+            hint = if (autoSubtitleSites) {
+                I18n.t("Applies while captions are on.") + " · " +
+                    I18n.t("Searches %s subtitle sites and every addon")
+                        .replace("%s", com.hikari.app.subtitles.SubtitleSites.ALL.size.toString())
+            } else {
+                I18n.t("Applies while captions are on.")
+            },
             iconRes = R.drawable.ic_settings,
             rowHosts = listOf(list),
         )
     }
 
     /**
-     * "Load from internet": ask every installed subtitle addon for this title —
-     * the episode's, when what is playing is an episode — and apply whichever
-     * track the user taps.
+     * "Load from internet": ask every subtitle SITE ([com.hikari.app.subtitles.SubtitleSites])
+     * and every installed subtitle addon for this title — the episode's, when
+     * what is playing is an episode — and apply whichever track the user taps.
      *
-     * This is the manual half of what [startAddonSubtitleFetch] does on its own,
-     * and it exists because the automatic pass has to be conservative: it looks
-     * the title up by the name the item carries and takes whatever comes back.
-     * A release the database does not know under that name, or an episode of a
-     * show whose season numbering differs from the addon's, comes back empty —
-     * and then this, with the name typed the way the database has it, is what
-     * works. The field opens pre-filled with the title, so the common case is
-     * one tap on Search.
+     * The sites are the part that works with nothing installed: an install of
+     * CloudStream-style extensions and no subtitle addon used to be told "No
+     * subtitle addon is installed" and had no way to get a subtitle at all, and
+     * an install WITH one got "no subtitles found" for every title whose `tt` id
+     * could not be resolved (see [com.hikari.app.subtitles.OpenSubtitlesSite]).
+     * The sites answer by name, by id and in thirty-odd languages, and each one
+     * is asked concurrently with its own timeout, so a site that is down costs
+     * nothing but its own row going missing.
+     *
+     * This is also the manual half of what [startAddonSubtitleFetch] does on its
+     * own, and it exists because the automatic pass has to be conservative: it
+     * looks the title up by the name the item carries and takes whatever comes
+     * back. A release the database does not know under that name, or an episode
+     * of a show whose season numbering differs, comes back empty — and then
+     * this, with the name typed the way the database has it, is what works. The
+     * field opens pre-filled with the title, so the common case is one tap on
+     * Search.
      */
     private fun showSubtitleSearchDialog() {
         val density = resources.displayMetrics.density
@@ -5382,6 +5450,133 @@ class PlayerActivity : ComponentActivity() {
         }
 
         val episode = currentEpisode()
+        val base = favouriteItem
+        val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
+
+        // Everything the CURRENT search has so far: the sites' tracks, the
+        // addons' tracks, a per-source count, the sources that never answered,
+        // and the ids that were asked with. Filled in as each source lands —
+        // the panel shows the search happening instead of a spinner for the
+        // slowest site — so each collection is synchronized.
+        val siteTracks = java.util.Collections.synchronizedList(
+            ArrayList<com.hikari.app.subtitles.SiteTrack>()
+        )
+        val addonTracks = java.util.Collections.synchronizedList(ArrayList<SubtitleSource>())
+        val counts = java.util.Collections.synchronizedMap(LinkedHashMap<String, Int>())
+        val failures = java.util.Collections.synchronizedList(ArrayList<String>())
+        val idsTried = java.util.Collections.synchronizedList(ArrayList<String>())
+        var lastRender = 0L
+
+        /**
+         * Lays the panel out from whatever has arrived. Called once per source
+         * as it lands (throttled — a site that answers with two hundred tracks
+         * must not rebuild the list six times for nothing; [isDone] always
+         * paints) and once more when every source has finished.
+         */
+        fun render(query: String, isDone: Boolean) {
+            val now = System.currentTimeMillis()
+            if (!isDone && now - lastRender < 250L) return
+            lastRender = now
+            val countsText = synchronized(counts) {
+                counts.entries.joinToString(" · ") { "${it.key} ${it.value}" }
+            }
+            // The user's own language first, then English, then the rest — each
+            // group keeping the order the site itself offered (which is by
+            // downloads for the sites that report one).
+            val siteList = synchronized(siteTracks) {
+                siteTracks.withIndex()
+                    .sortedWith(
+                        compareBy(
+                            { com.hikari.app.subtitles.SubtitleLang.rank(it.value.lang, wanted) },
+                            { -it.value.downloads },
+                            { it.index },
+                        )
+                    )
+                    .map { it.value }
+            }
+            val addonList = synchronized(addonTracks) {
+                addonTracks.withIndex()
+                    .sortedWith(
+                        compareBy(
+                            { com.hikari.app.subtitles.SubtitleLang.rank(it.value.lang, wanted) },
+                            { it.index },
+                        )
+                    )
+                    .map { it.value }
+            }
+            val total = siteList.size + addonList.size
+            results.removeAllViews()
+            when {
+                !isDone -> setStatus(
+                    I18n.t("Searching…") + if (countsText.isBlank()) "" else "   " + countsText
+                )
+
+                total == 0 -> {
+                    // WHAT was asked is part of the answer: the ids the
+                    // id-driven sites were given, and which sources stayed
+                    // silent, are what turn "no subtitles found" into something
+                    // that can be acted on (see Stremio's own panel, which
+                    // prints exactly this).
+                    val ids = synchronized(idsTried) { idsTried.distinct() }
+                    val down = synchronized(failures) { failures.toList() }
+                    setStatus(
+                        I18n.t("No subtitles found for \"%s\"").replace("%s", query) +
+                            (if (countsText.isBlank()) "" else " · " + countsText) +
+                            (if (down.isEmpty()) "" else " · " +
+                                I18n.t("No answer from %s").replace("%s", down.joinToString(", "))) +
+                            (if (ids.isEmpty()) "" else " · " + ids.joinToString(", "))
+                    )
+                }
+
+                else -> {
+                    setStatus(
+                        I18n.t("Found %s subtitles").replace("%s", total.toString()) +
+                            if (countsText.isBlank()) "" else "   " + countsText
+                    )
+                    var shown = 0
+                    for (t in siteList) {
+                        if (shown++ >= MAX_SUBTITLE_ROWS) break
+                        val bits = ArrayList<String>(4)
+                        bits += t.siteName
+                        if (t.release.isNotBlank()) bits += t.release.take(70)
+                        if (t.format.isNotBlank() && !t.format.equals("srt", true)) {
+                            bits += t.format.uppercase()
+                        }
+                        if (t.trusted) bits += I18n.t("Trusted")
+                        addOptionRow(
+                            results,
+                            GlassOption(
+                                label = t.langLabel +
+                                    if (t.hearingImpaired) " · " + I18n.t("Hearing impaired")
+                                    else "",
+                                sub = bits.joinToString(" · "),
+                                iconRes = R.drawable.ic_download,
+                                marker = RowMarker.ICON,
+                            ),
+                        ) {
+                            dialog.dismiss()
+                            applyRemoteSubtitle(com.hikari.app.subtitles.SubtitleSites.toSource(t))
+                        }
+                    }
+                    for (s in addonList) {
+                        if (shown++ >= MAX_SUBTITLE_ROWS) break
+                        addOptionRow(
+                            results,
+                            GlassOption(
+                                label = languageOf(s.lang) ?: s.lang.ifBlank { I18n.t("Subtitle") },
+                                sub = s.name.ifBlank { I18n.t("Subtitle addon") },
+                                iconRes = R.drawable.ic_download,
+                                marker = RowMarker.ICON,
+                            ),
+                        ) {
+                            dialog.dismiss()
+                            applyRemoteSubtitle(s)
+                        }
+                    }
+                }
+            }
+        }
+
         fun runSearch() {
             val query = input.text.toString().trim()
             if (query.isBlank()) {
@@ -5389,9 +5584,14 @@ class PlayerActivity : ComponentActivity() {
                 return
             }
             results.removeAllViews()
+            siteTracks.clear()
+            addonTracks.clear()
+            counts.clear()
+            failures.clear()
+            idsTried.clear()
             setStatus(I18n.t("Searching…"))
             setBusy(true)
-            val base = favouriteItem
+            val sites = com.hikari.app.subtitles.SubtitleSites.ALL
             lifecycleScope.launch {
                 val addons = runCatching {
                     (applicationContext as HikariApp).providers.providers.value
@@ -5399,81 +5599,77 @@ class PlayerActivity : ComponentActivity() {
                         .filter { it.config.enabled }
                 }.getOrDefault(emptyList())
                 if (isFinishing || isDestroyed) return@launch
-                if (addons.isEmpty()) {
+                if (addons.isEmpty() && sites.isEmpty()) {
                     setBusy(false)
-                    setStatus(I18n.t("No subtitle addon is installed"))
+                    setStatus(I18n.t("No subtitle source is available"))
                     return@launch
                 }
-                // The typed name IS the query: the item is rebuilt with no id and
-                // no original title so the addons resolve it by this name alone
-                // (a site-scraper item's id means nothing to them, and a
+                val isSeries = episode != null || base?.type == MediaType.SERIES
+                // A title the user RETYPED is a DIFFERENT title: the item's own
+                // id and year must not follow it (asking for "Frozen" from a
+                // Moana page must not resolve Moana's `tt` id and quietly search
+                // for what was already playing).
+                val sameTitle = base != null && query.equals(base.title.trim(), true)
+                val known = if (sameTitle) base?.id.orEmpty() else ""
+                val tmdbId = if (sameTitle) known.takeWhile { it.isDigit() } else ""
+                val year = if (sameTitle) base?.year else null
+                // `tt…`: OpenSubtitles and Subscene answer by it, and the
+                // resolver already knows how to find one for a title scraped
+                // from a site (which carries no id any database recognises).
+                val imdb = if (known.startsWith("tt")) known else withContext(Dispatchers.IO) {
+                    com.hikari.app.subtitles.SubtitleIds.imdb(query, year, tmdbId, isSeries)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                if (imdb.isNotBlank()) idsTried.add(imdb)
+                val q = com.hikari.app.subtitles.SubtitleQuery(
+                    title = query,
+                    year = year,
+                    imdbId = imdb,
+                    tmdbId = tmdbId,
+                    isSeries = isSeries,
+                    season = episode?.season ?: 0,
+                    episode = episode?.number ?: 0,
+                    locale = wanted,
+                )
+                // The addons are asked with the typed name alone (an item from
+                // a site scraper carries an id none of them knows, and a
                 // localised display title would be looked up as-is).
-                val q = if (base != null) {
+                val addonItem = if (base != null) {
                     base.copy(id = "", title = query, originalTitle = "", posterUrl = null)
                 } else {
                     AppMediaItem(providerId = "", id = "", title = query, type = MediaType.MOVIE)
                 }
-                val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
-                // Per-addon outcome, not just a flat list of tracks: when
-                // nothing comes back, the ids each addon was asked with are what
-                // makes the failure readable (see the status line below).
-                val lookups = withContext(Dispatchers.IO) {
-                    addons.map { addon ->
+                // Every source at once, each with its own ceiling: one dead site
+                // costs its own timeout and nothing else.
+                coroutineScope {
+                    for (site in sites) launch {
+                        val got = runCatching {
+                            withTimeoutOrNull(SITE_SUBTITLE_MS) { site.search(q) }
+                        }.getOrNull()
+                        if (got == null) failures.add(site.name)
+                        else siteTracks.addAll(got)
+                        counts[site.name] = got?.size ?: 0
+                        render(query, false)
+                    }
+                    for (addon in addons) launch {
                         val lookup = runCatching {
                             withTimeoutOrNull(ADDON_SUBTITLE_MS) {
-                                addon.subtitlesForDetailed(q, episode)
+                                addon.subtitlesForDetailed(addonItem, episode)
                             }
                         }.getOrNull()
-                        addon.config.name to lookup
+                        if (lookup == null) {
+                            failures.add(addon.config.name)
+                        } else {
+                            idsTried.addAll(lookup.idsTried)
+                            addonTracks.addAll(lookup.tracks)
+                        }
+                        counts[addon.config.name] = lookup?.tracks?.size ?: 0
+                        render(query, false)
                     }
                 }
-                val found = lookups.flatMap { it.second?.tracks.orEmpty() }
-                        .distinctBy { it.url }
-                        .sortedByDescending { s ->
-                            val lang = s.lang.lowercase()
-                            when {
-                                wanted.isNotBlank() && lang.startsWith(wanted) -> 2
-                                lang.startsWith("en") -> 1
-                                else -> 0
-                            }
-                        }
                 if (isFinishing || isDestroyed) return@launch
                 setBusy(false)
-                results.removeAllViews()
-                if (found.isEmpty()) {
-                    // What was ASKED is part of the answer. OpenSubtitles v3
-                    // answers only `tt…` ids — a `tmdb:` id or a bare name gets
-                    // an empty list with HTTP 200 — so "no subtitles found" on
-                    // every title is almost always "the tt id could not be
-                    // resolved", and saying which ids were tried turns a dead end
-                    // into a bug report that can be acted on.
-                    val ids = lookups.flatMap { it.second?.idsTried.orEmpty() }.distinct()
-                    val counts = lookups.joinToString(", ") { (name, lookup) ->
-                        name + " " + (lookup?.tracks?.size ?: 0).toString()
-                    }
-                    setStatus(
-                        I18n.t("No subtitles found for \"%s\"").replace("%s", query) + " " +
-                            if (ids.isEmpty()) I18n.t("Try the title in English.")
-                            else I18n.t("Asked %s").replace("%s", counts) + " · " +
-                                ids.joinToString(", ")
-                    )
-                    return@launch
-                }
-                setStatus(I18n.t("Found %s tracks").replace("%s", "${found.size}"))
-                found.forEach { s ->
-                    addOptionRow(
-                        results,
-                        GlassOption(
-                            label = languageOf(s.lang) ?: s.lang.ifBlank { I18n.t("Subtitle") },
-                            sub = s.name.ifBlank { I18n.t("Subtitle addon") },
-                            iconRes = R.drawable.ic_download,
-                            marker = RowMarker.ICON,
-                        ),
-                    ) {
-                        dialog.dismiss()
-                        applyRemoteSubtitle(s)
-                    }
-                }
+                render(query, true)
             }
         }
         searchBtn.setOnClickListener { runSearch() }
@@ -5487,9 +5683,12 @@ class PlayerActivity : ComponentActivity() {
             hint = if (episode != null) {
                 I18n.t("Season %s episode %s")
                     .replaceFirst("%s", "${episode.season}")
-                    .replaceFirst("%s", "${episode.number}")
+                    .replaceFirst("%s", "${episode.number}") + " · " +
+                    I18n.t("Searches %s subtitle sites and every addon")
+                        .replace("%s", com.hikari.app.subtitles.SubtitleSites.ALL.size.toString())
             } else {
-                I18n.t("Searches every installed subtitle addon")
+                I18n.t("Searches %s subtitle sites and every addon")
+                    .replace("%s", com.hikari.app.subtitles.SubtitleSites.ALL.size.toString())
             },
             iconRes = R.drawable.ic_search,
             rowHosts = listOf(results),
@@ -6914,9 +7113,10 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Asks every installed subtitle addon (OpenSubtitles v3, SubDL, …) for this
-     * title's subtitles and, when any come back, re-attaches the source with
-     * them.
+     * Asks every installed subtitle addon (OpenSubtitles v3, SubDL, …) — and,
+     * when the user has switched "Find subtitles automatically" on, the subtitle
+     * SITES ([autoSiteTracks]) — for this title's subtitles and, when any come
+     * back, re-attaches the source with them.
      *
      * This is the whole point of those addons: they are Stremio's subtitle
      * resource and nothing else — no catalog, no stream — so a host that only
@@ -6932,8 +7132,15 @@ class PlayerActivity : ComponentActivity() {
      * track is downloaded and rewritten to a local file when the source is
      * prepared, and nobody wants twenty of them for a film they are watching.
      */
-    private fun startAddonSubtitleFetch() {
+    private fun startAddonSubtitleFetch(force: Boolean = false) {
         val item = favouriteItem ?: return
+        // `force` = the user just switched "Find subtitles automatically" on
+        // while the video was already playing: that is a request for a subtitle
+        // NOW, so the once-per-title guards are cleared for this run.
+        if (force) {
+            addonSubsFetched = false
+            addonSubsRunning = false
+        }
         if (addonSubsFetched || addonSubsRunning) return
         addonSubsRunning = true
         val episode = currentEpisode()
@@ -6943,20 +7150,23 @@ class PlayerActivity : ComponentActivity() {
                     .filterIsInstance<com.hikari.app.providers.StremioAddon>()
                     .filter { it.config.enabled }
             }.getOrDefault(emptyList())
-            if (addons.isEmpty()) {
-                addonSubsRunning = false
-                addonSubsFetched = true
-                return@launch
-            }
             val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
             val tracks = withContext(Dispatchers.IO) {
-                addons.flatMap { addon ->
+                val fromAddons = addons.flatMap { addon ->
                     runCatching {
                         withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(item, episode) }
                     }.getOrNull().orEmpty()
                 }
-                    // Two addons can offer the same file, and a repeated URL is a
-                    // second download of the same subtitles.
+                // The subtitle SITES, when the user has asked for subtitles to
+                // be found automatically (Subtitles panel → "Find subtitles
+                // automatically"). This is the case that makes subtitles work at
+                // all on an install with nothing but content extensions: no
+                // addon is installed, the provider attached nothing, and the
+                // sites answer by NAME — which is all such an install has.
+                val fromSites = if (autoSubtitleSites) autoSiteTracks(item, episode, wanted) else emptyList()
+                (fromAddons + fromSites)
+                    // Two sources can offer the same file, and a repeated URL is
+                    // a second download of the same subtitles.
                     .distinctBy { it.url }
                     .sortedByDescending { s ->
                         val lang = s.lang.lowercase()
@@ -6975,8 +7185,8 @@ class PlayerActivity : ComponentActivity() {
             addonSubs = tracks
             com.hikari.app.data.Logs.log(
                 "Player",
-                "subtitle addons: ${tracks.size} track(s) — " +
-                    tracks.joinToString(", ") { it.lang }.take(180),
+                "subtitles: ${tracks.size} track(s) — " +
+                    tracks.joinToString(", ") { it.name.ifBlank { it.lang } }.take(220),
             )
             // The user chose "Off": keep the tracks (the menu will list them)
             // but do not re-prepare the item just to add them.
@@ -6990,6 +7200,65 @@ class PlayerActivity : ComponentActivity() {
             // report.
             if (subsDialog != null) showSubsDialog(waitedForTracks = true)
         }
+    }
+
+    /**
+     * A FEW site tracks for the automatic pass (see [startAddonSubtitleFetch]):
+     * the app's own language first, then English, and nothing else.
+     *
+     * Deliberately a handful: every track in [addonSubs] is downloaded and
+     * rewritten to a local file the moment the source is prepared (see
+     * [buildSubtitleConfigs]), so the automatic pass takes a subtitle the user
+     * can actually read and stops — the full list of what the six sites hold
+     * (hundreds of tracks, thirty languages) is what the "Load from internet"
+     * panel is for, where nothing is downloaded until it is tapped.
+     */
+    private suspend fun autoSiteTracks(
+        item: MediaItem,
+        episode: Episode?,
+        wanted: String,
+    ): List<SubtitleSource> = withContext(Dispatchers.IO) {
+        runCatching {
+            val isSeries = episode != null || item.type == MediaType.SERIES
+            val tmdbId = item.id.takeWhile { it.isDigit() }
+            val title = item.searchTitle.trim()
+            if (title.isBlank()) return@withContext emptyList()
+            val imdb = if (item.id.startsWith("tt")) item.id else withContext(Dispatchers.IO) {
+                com.hikari.app.subtitles.SubtitleIds.imdb(title, item.year, tmdbId, isSeries)
+            }
+            val q = com.hikari.app.subtitles.SubtitleQuery(
+                title = title,
+                year = item.year,
+                imdbId = imdb,
+                tmdbId = tmdbId,
+                isSeries = isSeries,
+                season = episode?.season ?: 0,
+                episode = episode?.number ?: 0,
+                locale = wanted,
+            )
+            val found = coroutineScope {
+                com.hikari.app.subtitles.SubtitleSites.ALL.map { site ->
+                    async {
+                        runCatching {
+                            withTimeoutOrNull(SITE_SUBTITLE_MS) { site.search(q) }
+                        }.getOrNull().orEmpty()
+                    }
+                }.awaitAll().flatten()
+            }
+            found.withIndex()
+                .sortedWith(
+                    compareBy(
+                        { com.hikari.app.subtitles.SubtitleLang.rank(it.value.lang, wanted) },
+                        { -it.value.downloads },
+                        { it.index },
+                    )
+                )
+                .map { it.value }
+                .filter { com.hikari.app.subtitles.SubtitleLang.rank(it.lang, wanted) <= 2 }
+                .distinctBy { it.langLabel }
+                .take(MAX_AUTO_SITE_SUBS)
+                .map { com.hikari.app.subtitles.SubtitleSites.toSource(it) }
+        }.getOrDefault(emptyList())
     }
 
     /**
@@ -7368,13 +7637,19 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun fetchSubtitleText(s: SubtitleSource, headers: Map<String, String>): String? {
         subtitleRawCache[s.url]?.let { return it }
-        // Two attempts: with the source's own headers, then bare. Plenty of
-        // subtitle hosts 403 a request that carries a Referer (or an
-        // extension's cookies) while others only answer WITH it, and a
-        // subtitle that fails to load is invisible to the user — the picker row
-        // is there, choosing it just shows nothing.
-        for (attempt in 0..1) {
-            val h = if (attempt == 0) headers else emptyMap()
+        // Three attempts, in the order that wastes least: the TRACK's own
+        // headers (a hot-link-protected host serves the file only to a request
+        // that carries the page it was listed on) merged with the stream's,
+        // then the track's own alone, then bare. Plenty of subtitle hosts 403 a
+        // request that carries a Referer (or an extension's cookies) while
+        // others only answer WITH it, and a subtitle that fails to load is
+        // invisible to the user — the picker row is there, choosing it just
+        // shows nothing.
+        val attempts = ArrayList<Map<String, String>>(3)
+        for (candidate in listOf(headers + s.headers, s.headers, emptyMap())) {
+            if (attempts.none { it == candidate }) attempts += candidate
+        }
+        for (h in attempts) {
             val bytes = Http.getBytes(s.url, h) ?: continue
             val text = decodeSubtitleBytes(bytes) ?: continue
             if (!isSubtitleText(text)) continue

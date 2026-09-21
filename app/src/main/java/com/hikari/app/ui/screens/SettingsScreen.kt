@@ -1955,7 +1955,15 @@ private fun TvPerformanceCard(app: HikariApp) {
             supporting = tr("Skips the poster treatments and their blur"),
             checked = on,
             onCheckedChange = { value ->
-                scope.launch { runCatching { app.store.setTvPerf(value) } }
+                scope.launch {
+                    runCatching {
+                        app.store.setTvPerf(value)
+                        // The switch is the user's answer now: the app stops
+                        // following the layout and keeps whatever they chose
+                        // (see HikariApp.syncTvPerformance).
+                        app.store.setTvPerfChosen(true)
+                    }
+                }
             },
         )
         Text(
@@ -1967,6 +1975,16 @@ private fun TvPerformanceCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
+        )
+        Text(
+            tr(
+                "It is switched on for you whenever the TV layout is active, and " +
+                    "off for the phone layout. Changing the switch yourself makes " +
+                    "it your choice from then on."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 6.dp),
         )
     }
 }

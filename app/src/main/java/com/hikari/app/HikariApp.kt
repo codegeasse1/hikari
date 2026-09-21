@@ -30,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -192,6 +193,42 @@ class HikariApp : Application() {
         contentLanguageRevision.value = contentLanguageRevision.value + 1L
     }
 
+    /**
+     * Keeps the TELEVISION PERFORMANCE MODE in step with the layout, for as long
+     * as the user has not made that choice themselves.
+     *
+     * The layout is decided by the device (or by the user's override in
+     * Settings → TV & Remote, which is the same flag), and the lighter visuals
+     * belong with it: on a box the poster treatments and their blur are drawn
+     * per card, per frame, on top of decoding 1080p, and a TV viewer would never
+     * find that switch in a settings folder. So the TV layout switches it ON by
+     * itself, and the phone layout switches it back off — both at launch and the
+     * moment the layout changes.
+     *
+     * The first-run seeding in [onCreate] already does this for a television on a
+     * fresh install; this is the part that keeps being true afterwards (a phone
+     * whose user turns the TV layout on to look at it, or a box that only settles
+     * its UI mode once an activity exists, which is why [com.hikari.app.tv.TvMode.detect]
+     * runs again in MainActivity).
+     *
+     * Once the user works the switch in Settings themselves,
+     * [com.hikari.app.data.AppStore.tvPerfChosen] is set and this never touches
+     * the setting again — an explicit answer always beats an automatic one.
+     */
+    private suspend fun syncTvPerformance(store: com.hikari.app.data.AppStore) {
+        if (runCatching { store.tvPerfChosen() }.getOrDefault(false)) return
+        val want = com.hikari.app.tv.TvMode.isTv
+        if (runCatching { store.tvPerf() }.getOrDefault(false) == want) return
+        runCatching {
+            store.setTvPerf(want)
+            Logs.log(
+                "App",
+                "performance mode " + (if (want) "on" else "off") +
+                    " — the " + (if (want) "TV" else "phone") + " layout is active",
+            )
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -326,6 +363,22 @@ class HikariApp : Application() {
                         )
                     }
                     store.setTvSeeded(true)
+                }
+                syncTvPerformance(store)
+                // Keep the PERFORMANCE MODE in step with the layout from here
+                // on: switching "Layout" in Settings → TV & Remote to the TV
+                // layout turns the lighter visuals on by itself, and switching
+                // back to the phone layout turns them off. This is the wanted
+                // behaviour ("when the app detects the TV layout it should turn
+                // performance mode on automatically") and it is also the case
+                // the first-run seeding above cannot cover: a phone whose user
+                // switches the TV layout on, or a box whose UI mode only settles
+                // after the first launch. The moment the user works the switch
+                // themselves the choice is theirs and this stops touching it
+                // (see [AppStore.tvPerfChosen]).
+                store.tvModeFlow().distinctUntilChanged().collect { current ->
+                    com.hikari.app.tv.TvMode.setOverride(current)
+                    syncTvPerformance(store)
                 }
             }
         }
