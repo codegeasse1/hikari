@@ -712,6 +712,11 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { HeroBannerCard(app) } }
                     item { SettingsCard { DetailHeaderCard(app) } }
                     item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
+                    // Animated covers (a personal catalog's GIF folder tiles).
+                    // Per-device on purpose: the same imported file goes to a
+                    // phone that renders a row of GIFs happily and to a TV stick
+                    // that would rather not spend its frames on them.
+                    item { SettingsCard { GifAnimCard(app) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
                         .filter { !isTv || !it.phoneOnly }
@@ -1124,6 +1129,49 @@ private fun ContinueWatchingCard(
                 onCheckedChange = { show ->
                     scope.launch { app.store.setHideContinue(!show) }
                 }
+            )
+        }
+    }
+}
+
+/**
+ * Animated covers on tiles.
+ *
+ * A personal catalog's folder tile can wear a GIF (see [CoverKinds.GIF]), and
+ * the reference app pairs that with two switches: the catalog's own "show GIF
+ * when configured", and a per-device override. This is the device half — a
+ * television stick that drops frames while a wall of GIFs animates can turn them
+ * still without editing what it imported, and a folder whose own "always
+ * animate" is on still animates either way (see
+ * [com.hikari.app.data.AppStore.gifAnimFlow]).
+ */
+@Composable
+private fun GifAnimCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.gifAnimFlow() }
+    val on by flow.collectAsState(initial = true)
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Animate covers"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    tr(
+                        "Play animated folder covers (GIFs) in your personal catalogs. Off " +
+                            "draws their first frame — lighter on a TV stick."
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = on,
+                onCheckedChange = { v -> scope.launch { runCatching { app.store.setGifAnim(v) } } },
             )
         }
     }
@@ -1818,7 +1866,14 @@ private fun TvDeviceCard(app: HikariApp) {
             ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp),
+            // This paragraph is the card's LAST child, and a [GlassCard] is
+            // clipped to its rounded shape with no padding of its own: with only
+            // a top inset the copy was drawn hard against the glass's left edge
+            // and its final line ran under the rounded bottom corner, so the
+            // explanation read as cut off ("the written explanation is not
+            // showing, it's cut off"). It gets the same 16dp the card's rows use,
+            // plus a bottom inset of its own.
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
         )
     }
 }

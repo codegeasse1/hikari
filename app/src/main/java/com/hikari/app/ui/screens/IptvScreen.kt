@@ -1,5 +1,9 @@
 package com.hikari.app.ui.screens
 
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +20,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -24,15 +30,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -57,6 +69,8 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.IptvPlaylist
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
 import com.hikari.app.data.TileShapes
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
@@ -69,6 +83,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 
 /**
  * The IPTV tab: the user's playlists as tiles, and the channels inside them.
@@ -104,6 +119,63 @@ fun IptvScreen(nav: NavHostController) {
     val shapeFlow = remember { app.store.iptvShapeFlow() }
     val shape by shapeFlow.collectAsState(initial = TileShapes.POSTER)
     val scope = rememberCoroutineScope()
+    val uiContext = LocalContext.current
+
+    // "+" opens the add-playlist dialog right here, with the link field already
+    // in front of the user — the tab used to bounce to Extensions and leave them
+    // to find "Add IPTV playlist" themselves ("make clicking it directly open
+    // m3u8 entering link so user can add directly from there too").
+    var showAdd by remember { mutableStateOf(false) }
+    var addLink by remember { mutableStateOf("") }
+    var addName by remember { mutableStateOf("") }
+    var addFileLabel by remember { mutableStateOf("") }
+    var addFilePath by remember { mutableStateOf("") }
+    var adding by remember { mutableStateOf(false) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val picked = copyPlaylistInto(uiContext, uri)
+                if (picked == null) {
+                    Toast.makeText(uiContext, I18n.t("Could not read that file"), Toast.LENGTH_LONG).show()
+                } else {
+                    addFileLabel = picked.first
+                    addFilePath = picked.second
+                }
+            }
+        }
+    }
+
+    fun addNow() {
+        val link = addLink
+        val local = addFilePath.takeIf { it.isNotBlank() }
+        val name = addName
+        adding = true
+        scope.launch {
+            val result = addIptvPlaylist(app, link, local, name)
+            adding = false
+            result.fold(
+                onSuccess = { n ->
+                    Toast.makeText(
+                        uiContext,
+                        I18n.t("Added IPTV playlist (%s channels)").replace("%s", n.toString()),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    showAdd = false
+                    addLink = ""
+                    addName = ""
+                    addFileLabel = ""
+                    addFilePath = ""
+                },
+                onFailure = { t ->
+                    Toast.makeText(
+                        uiContext,
+                        t.message ?: I18n.t("Could not read that playlist"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                },
+            )
+        }
+    }
 
     var cards by remember { mutableStateOf<List<IptvCard>>(emptyList()) }
     var reading by remember { mutableStateOf(false) }
@@ -137,7 +209,7 @@ fun IptvScreen(nav: NavHostController) {
             shape = shape,
             onCycleShape = { scope.launch { app.store.setIptvShape(nextShape(shape)) } },
             onSearch = null,
-            onAdd = { Routes.navigateTab(nav, Routes.EXTENSIONS) },
+            onAdd = { showAdd = true },
         )
         when {
             playlists.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -156,15 +228,15 @@ fun IptvScreen(nav: NavHostController) {
                     )
                     Text(
                         tr(
-                            "Add an M3U/M3U8 link (or a playlist file) in Extensions → " +
-                                "Add IPTV playlist, and it appears here as a tile."
+                            "Paste an M3U/M3U8 link (or pick a playlist file) and it " +
+                                "appears here as a tile."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 6.dp),
                     )
                     Surface(
-                        onClick = { Routes.navigateTab(nav, Routes.EXTENSIONS) },
+                        onClick = { showAdd = true },
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(top = 8.dp),
@@ -217,6 +289,171 @@ fun IptvScreen(nav: NavHostController) {
             }
         }
     }
+
+    if (showAdd) {
+        AlertDialog(
+            onDismissRequest = { if (!adding) showAdd = false },
+            title = { Text(tr("Add IPTV playlist")) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        tr(
+                            "Paste an M3U/M3U8 link — an Xtream panel's " +
+                                "get.php?username=…&password=…&type=m3u_plus link works, and so " +
+                                "does a single m3u8 stream. Or pick a playlist file from storage."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = addLink,
+                        onValueChange = { addLink = it },
+                        placeholder = { Text(tr("https://…/playlist.m3u")) },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
+                            Icon(
+                                Icons.Filled.FolderOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(tr("Pick a file"))
+                        }
+                        if (addFileLabel.isNotBlank()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                addFileLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = addName,
+                        onValueChange = { addName = it },
+                        label = { Text(tr("Name (optional)")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (adding) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                tr("Reading playlist…"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !adding && (addLink.isNotBlank() || addFilePath.isNotBlank()),
+                    onClick = { addNow() },
+                ) { Text(tr("Add")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showAdd = false
+                    addLink = ""
+                    addName = ""
+                    addFileLabel = ""
+                    addFilePath = ""
+                }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+}
+
+/**
+ * Copies a picked playlist file into the app's own storage, because a SAF Uri
+ * is not readable after a restart and a playlist the user chose should keep
+ * working. Returns (display name, stored path), or null when the file could not
+ * be read — the same rule the Extensions screen's picker follows, kept here so
+ * the IPTV tab can add a playlist without leaving the tab.
+ */
+private suspend fun copyPlaylistInto(
+    context: android.content.Context,
+    uri: Uri,
+): Pair<String, String>? = withContext(Dispatchers.IO) {
+    runCatching {
+        val raw = runCatching {
+            context.contentResolver
+                .query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
+        val name = raw?.trim().orEmpty().ifBlank { "playlist.m3u" }
+        val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_").takeLast(80)
+        val dir = File(context.filesDir, "iptv").apply { mkdirs() }
+        val file = File(dir, safe)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            file.outputStream().use { out -> input.copyTo(out) }
+        } ?: throw Exception("Could not read that file")
+        if (file.length() == 0L) throw Exception("That file is empty")
+        name to file.absolutePath
+    }.getOrNull()
+}
+
+/**
+ * Adds (or updates) an IPTV playlist from the tab's own + button. [link] is the
+ * pasted M3U/M3U8/Xtream URL and [localPath] the stored copy of a picked file —
+ * one of the two. The playlist is READ before it is saved, so a dead link or a
+ * file with no channels is reported instead of becoming an empty tile, and the
+ * id is derived from the source so adding the same link twice updates the one
+ * entry (exactly what the Extensions screen does, see its addIptvPlaylist).
+ */
+private suspend fun addIptvPlaylist(
+    app: HikariApp,
+    link: String,
+    localPath: String?,
+    name: String,
+): Result<Int> = withContext(Dispatchers.IO) {
+    val url = when {
+        !localPath.isNullOrBlank() -> localPath
+        else -> link.trim().let {
+            if (it.startsWith("http://") || it.startsWith("https://")) it
+            else if (it.isBlank()) "" else "https://$it"
+        }
+    }
+    if (url.isBlank()) {
+        return@withContext Result.failure(
+            Exception(I18n.t("Paste an M3U/M3U8 link, or pick a playlist file")),
+        )
+    }
+    val count = IptvProvider.preview(url).getOrElse {
+        return@withContext Result.failure(
+            Exception(it.message ?: I18n.t("Could not read that playlist")),
+        )
+    }
+    val display = name.trim().ifBlank {
+        if (url.startsWith("http")) {
+            url.substringAfter("://").substringBefore('/').ifBlank { "IPTV" }
+        } else {
+            File(url).name.substringBeforeLast('.').ifBlank { "IPTV" }
+        }
+    }
+    app.store.addProvider(
+        ProviderConfig(
+            id = "iptv|" + url.hashCode(),
+            name = display,
+            type = ProviderType.IPTV,
+            url = url,
+        )
+    )
+    app.providers.refresh()
+    Result.success(count)
 }
 
 /**

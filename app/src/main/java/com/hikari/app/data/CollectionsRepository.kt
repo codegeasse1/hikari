@@ -107,6 +107,12 @@ class CollectionsRepository(private val manager: ProviderManager) {
     suspend fun folderRowsOnce(collection: Collection, folder: CollectionFolder): List<CatalogRow> =
         folderRows(collection, folder).lastOrNull().orEmpty()
 
+    /** Every folder's every catalog in one go — the "All" tab of a collection
+     *  whose folders are browsed as a tab strip, which has to paint its rows
+     *  together for the same reason a folder page does. */
+    suspend fun allRowsOnce(collection: Collection): List<CatalogRow> =
+        allRows(collection).lastOrNull().orEmpty()
+
     /**
      * The rows Home shows for a collection pick.
      *

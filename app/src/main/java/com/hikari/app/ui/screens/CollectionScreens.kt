@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -70,6 +71,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.AlertDialog
@@ -85,6 +87,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -93,6 +96,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -142,12 +146,14 @@ import com.hikari.app.data.CatalogSource
 import com.hikari.app.data.CatalogSourceKind
 import com.hikari.app.data.Collection
 import com.hikari.app.data.CollectionFolder
+import com.hikari.app.data.CollectionViewModes
 import com.hikari.app.data.CollectionsRepository
 import com.hikari.app.data.CoverKinds
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.NuvioCatalogImport
 import com.hikari.app.data.NuvioCollectionsImport
+import com.hikari.app.data.NuvioCollectionsExport
 import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
@@ -278,6 +284,38 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
+                    // The way OUT of the app: the same file the import reads,
+                    // written from what is on this screen. A personal catalog is
+                    // an afternoon's work, and until now the only copy of it was
+                    // inside this install — there was no way to move it to a
+                    // second device, send it to a friend, or keep it before a
+                    // reinstall.
+                    IconButton(
+                        enabled = collections.isNotEmpty(),
+                        onClick = {
+                            val json = NuvioCollectionsExport.encode(collections)
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as? android.content.ClipboardManager
+                            if (cm != null) {
+                                cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText(
+                                        "Hikari collections", json,
+                                    )
+                                )
+                                Toast.makeText(
+                                    context,
+                                    tr("Collections JSON copied"),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.Filled.ContentCopy,
+                            contentDescription = tr("Copy collections (JSON)"),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 },
             )
             LazyColumn(
@@ -374,12 +412,31 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                         }
                     }
                 }
-                items(collections, key = { it.id }) { c ->
+                itemsIndexed(collections, key = { _, c -> c.id }) { index, c ->
                     CollectionBlock(
                         collection = c,
                         onOpen = { Routes.safeNavigate(nav, Routes.collectionView(c.id)) },
                         onEdit = { openEditor(c) },
                         onDelete = { confirmDelete = c },
+                        // Collections are kept — and drawn on Home — in the order
+                        // they are listed, so the up/down pair here is what makes
+                        // "my own order" possible without a drag nobody can see.
+                        canMoveUp = index > 0,
+                        canMoveDown = index < collections.lastIndex,
+                        onMoveUp = {
+                            scope.launch {
+                                app.store.saveCollections(
+                                    collections.moveItem(index, index - 1)
+                                )
+                            }
+                        },
+                        onMoveDown = {
+                            scope.launch {
+                                app.store.saveCollections(
+                                    collections.moveItem(index, index + 1)
+                                )
+                            }
+                        },
                         // A folder tile opens that folder directly. The block is
                         // a browsable preview of the collection, so the tap a
                         // user makes on a tile has to be the tap they meant —
@@ -486,6 +543,10 @@ private fun CollectionListRow(
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
 ) {
     GlassCard(
         onClick = onOpen,
@@ -510,19 +571,42 @@ private fun CollectionListRow(
             )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (collection.pinToTop) {
+                        // A pinned catalog is drawn on Home without being picked,
+                        // so the list says so where the user will look for it.
+                        Icon(
+                            Icons.Filled.PushPin,
+                            contentDescription = tr("Pinned to Home"),
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        collection.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
-                    collection.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    FolderSummary(collection),
+                    FolderSummary(collection) + if (collection.pinToTop) {
+                        " · " + tr("Pinned")
+                    } else {
+                        ""
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            MoveButtons(
+                canMoveUp = canMoveUp,
+                canMoveDown = canMoveDown,
+                onMoveUp = onMoveUp,
+                onMoveDown = onMoveDown,
+            )
             IconButton(onClick = onEdit) {
                 Icon(
                     Icons.Filled.Edit,
@@ -670,6 +754,122 @@ private fun CollectionEditorPage(
                     onShape = { onChange(collection.copy(tileShape = it)) },
                     name = collection.name,
                 )
+            }
+            // How this catalog behaves on Home and how it draws itself: the
+            // reference app's collection settings, minus the Trakt/account half
+            // Hikari has no engine for.
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    tr("Pin to top of Home"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    tr(
+                                        "Show this catalog's folders on Home even when nothing " +
+                                            "is picked from the source list."
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(
+                                checked = collection.pinToTop,
+                                onCheckedChange = { onChange(collection.copy(pinToTop = it)) },
+                            )
+                        }
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                            modifier = Modifier.padding(vertical = 10.dp),
+                        )
+                        Text(
+                            tr("Folders shown as"),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            tr(
+                                "Rows stacks one shelf per folder. Tabs puts a tab strip at " +
+                                    "the top and shows one folder at a time."
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(Modifier.padding(top = 8.dp)) {
+                            ChoiceChip(
+                                label = tr("Rows"),
+                                selected = collection.viewMode != CollectionViewModes.TABS,
+                                onClick = {
+                                    onChange(collection.copy(viewMode = CollectionViewModes.ROWS))
+                                },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            ChoiceChip(
+                                label = tr("Tabs"),
+                                selected = collection.viewMode == CollectionViewModes.TABS,
+                                onClick = {
+                                    onChange(collection.copy(viewMode = CollectionViewModes.TABS))
+                                },
+                            )
+                        }
+                        if (collection.viewMode == CollectionViewModes.TABS) {
+                            Row(
+                                Modifier.padding(top = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        tr("Show an \"All\" tab"),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        tr(
+                                            "An extra tab holding every folder's catalogs, " +
+                                                "for browsing the whole catalog at once."
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Switch(
+                                    checked = collection.showAllTab,
+                                    onCheckedChange = {
+                                        onChange(collection.copy(showAllTab = it))
+                                    },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            shape = GlassShape,
+                            value = collection.backdropUrl,
+                            onValueChange = { onChange(collection.copy(backdropUrl = it)) },
+                            singleLine = true,
+                            label = { Text(tr("Wide backdrop URL (optional)")) },
+                            supportingText = {
+                                Text(
+                                    tr(
+                                        "A wide image for this catalog's own page header. " +
+                                            "Blank uses the cover above."
+                                    )
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        )
+                    }
+                }
             }
             item {
                 Surface(
@@ -829,6 +1029,13 @@ private fun FolderEditorPage(
     var coverKind by remember { mutableStateOf(folder.coverKind) }
     var coverValue by remember { mutableStateOf(folder.coverValue) }
     var tileShape by remember { mutableStateOf(folder.tileShape) }
+    // The folder's own presentation switches (the reference app's folder
+    // settings): whether the tile carries its name, and whether an animated
+    // cover keeps animating when the tile is not focused.
+    var hideTitle by remember { mutableStateOf(folder.hideTitle) }
+    var gifAlways by remember { mutableStateOf(folder.gifAlways) }
+    var heroBackdrop by remember { mutableStateOf(folder.heroBackdropUrl) }
+    var titleLogo by remember { mutableStateOf(folder.titleLogoUrl) }
 
     var tmdbSheet by remember { mutableStateOf(false) }
     var providerSheet by remember { mutableStateOf(false) }
@@ -914,6 +1121,97 @@ private fun FolderEditorPage(
                     onShape = { tileShape = it },
                     name = name,
                 )
+            }
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    tr("Hide the folder name"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    tr(
+                                        "Draw the tile as cover art only — the name still shows " +
+                                            "in here and on the folder's own page."
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = hideTitle, onCheckedChange = { hideTitle = it })
+                        }
+                        if (CoverKinds.normalize(coverKind) == CoverKinds.GIF) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                                modifier = Modifier.padding(vertical = 10.dp),
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        tr("Always animate"),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        tr(
+                                            "An animated cover plays only while its tile is " +
+                                                "focused unless this is on — a screen of " +
+                                                "animating tiles costs battery."
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Switch(checked = gifAlways, onCheckedChange = { gifAlways = it })
+                            }
+                        }
+                        OutlinedTextField(
+                            shape = GlassShape,
+                            value = heroBackdrop,
+                            onValueChange = { heroBackdrop = it },
+                            singleLine = true,
+                            label = { Text(tr("Hero backdrop URL (optional)")) },
+                            supportingText = {
+                                Text(
+                                    tr(
+                                        "A wide image behind this folder's page header. Blank " +
+                                            "uses the cover."
+                                    )
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        )
+                        OutlinedTextField(
+                            shape = GlassShape,
+                            value = titleLogo,
+                            onValueChange = { titleLogo = it },
+                            singleLine = true,
+                            label = { Text(tr("Title logo URL (optional)")) },
+                            supportingText = {
+                                Text(
+                                    tr(
+                                        "A transparent logo image (a Netflix-style wordmark) " +
+                                            "drawn on this folder's header instead of its name."
+                                    )
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        )
+                    }
+                }
             }
             item {
                 Row(Modifier.padding(top = 16.dp)) {
@@ -1056,6 +1354,10 @@ private fun FolderEditorPage(
                                 coverKind = coverKind,
                                 coverValue = coverValue,
                                 tileShape = tileShape,
+                                hideTitle = hideTitle,
+                                gifAlways = gifAlways,
+                                heroBackdropUrl = heroBackdrop.trim(),
+                                titleLogoUrl = titleLogo.trim(),
                             )
                         )
                     },
@@ -1408,6 +1710,39 @@ private fun autoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Flo
  * row: a preset already in the folder is ticked, and tapping it again takes it
  * back out. The hand-built form is still one source and then the sheet closes.
  */
+
+/**
+ * A Custom (discover) source's advanced filters: one entry per TMDB parameter,
+ * as (state key, field label, hint that says exactly what TMDB wants).
+ *
+ * These are the same filters the reference app's custom-source editor exposes —
+ * genres (its `,`/`|` id syntax), excluded genres, a release-date window, a
+ * rating and vote floor, original language, origin country, keywords and
+ * excluded keywords, companies, networks and a streaming-provider pair with a
+ * watch region — and they are passed through verbatim, so "90s Japanese horror,
+ * rated 7+, on Netflix in the US" is one row. Anything left blank sends no
+ * parameter, which is why an untouched section behaves exactly as before.
+ */
+private val TMDB_ADV_FILTERS: List<Triple<String, String, String>> = listOf(
+    Triple("genresText", "Genres", "TMDB genre ids — 28,12 = both, 28|12 = either"),
+    Triple("genresExclude", "Exclude genres", "TMDB genre ids, comma separated"),
+    Triple("dateFrom", "Released from", "YYYY-MM-DD"),
+    Triple("dateTo", "Released to", "YYYY-MM-DD"),
+    Triple("ratingMin", "Lowest rating", "0-10, e.g. 7"),
+    Triple("ratingMax", "Highest rating", "0-10, e.g. 9"),
+    Triple("votesMin", "Fewest votes", "e.g. 200"),
+    Triple("language", "Original language", "en, ja, ko…"),
+    Triple("country", "Origin country", "US, GB, JP…"),
+    Triple("keywords", "Keywords", "TMDB keyword ids — 9715,9882"),
+    Triple("keywordsExclude", "Exclude keywords", "TMDB keyword ids"),
+    Triple("companies", "Companies", "TMDB company ids — 420 for Marvel"),
+    Triple("companiesExclude", "Exclude companies", "TMDB company ids"),
+    Triple("networks", "Networks", "TMDB network ids — 213 for Netflix"),
+    Triple("providers", "On these services", "TMDB provider ids — 8 for Netflix"),
+    Triple("providersExclude", "Not on these services", "TMDB provider ids"),
+    Triple("region", "Watch region", "US, GB, IN… — needed for the service filters"),
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TmdbSourceSheet(
@@ -1425,6 +1760,10 @@ private fun TmdbSourceSheet(
     var sort by remember { mutableStateOf("popularity.desc") }
     var genre by remember { mutableStateOf(0) }
     var year by remember { mutableStateOf("") }
+    // The advanced discover filters (see [TMDB_ADV_FILTERS]): one string per
+    // TMDB parameter, empty when unset.
+    var showAdvanced by remember { mutableStateOf(false) }
+    val adv = remember { mutableStateMapOf<String, String>() }
     var hits by remember { mutableStateOf<List<TmdbHit>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
@@ -1451,6 +1790,8 @@ private fun TmdbSourceSheet(
         searched = false
         genre = 0
         year = ""
+        adv.clear()
+        showAdvanced = false
         sort = "popularity.desc"
         media = when {
             t.forcesTv -> "tv"
@@ -1499,6 +1840,33 @@ private fun TmdbSourceSheet(
             genre = if (type == TmdbSourceType.DISCOVER) genre else 0,
             year = if (type == TmdbSourceType.DISCOVER) year.toIntOrNull() ?: 0 else 0,
             title = displayTitle.trim(),
+            // Only a Custom source carries these; every other kind is an id or a
+            // name and would ignore them anyway.
+            genresText = if (type == TmdbSourceType.DISCOVER) adv["genresText"].orEmpty() else "",
+            genresExclude = if (type == TmdbSourceType.DISCOVER) {
+                adv["genresExclude"].orEmpty()
+            } else "",
+            dateFrom = if (type == TmdbSourceType.DISCOVER) adv["dateFrom"].orEmpty() else "",
+            dateTo = if (type == TmdbSourceType.DISCOVER) adv["dateTo"].orEmpty() else "",
+            ratingMin = if (type == TmdbSourceType.DISCOVER) adv["ratingMin"].orEmpty() else "",
+            ratingMax = if (type == TmdbSourceType.DISCOVER) adv["ratingMax"].orEmpty() else "",
+            votesMin = if (type == TmdbSourceType.DISCOVER) adv["votesMin"].orEmpty() else "",
+            language = if (type == TmdbSourceType.DISCOVER) adv["language"].orEmpty() else "",
+            country = if (type == TmdbSourceType.DISCOVER) adv["country"].orEmpty() else "",
+            keywords = if (type == TmdbSourceType.DISCOVER) adv["keywords"].orEmpty() else "",
+            keywordsExclude = if (type == TmdbSourceType.DISCOVER) {
+                adv["keywordsExclude"].orEmpty()
+            } else "",
+            companies = if (type == TmdbSourceType.DISCOVER) adv["companies"].orEmpty() else "",
+            companiesExclude = if (type == TmdbSourceType.DISCOVER) {
+                adv["companiesExclude"].orEmpty()
+            } else "",
+            networks = if (type == TmdbSourceType.DISCOVER) adv["networks"].orEmpty() else "",
+            providers = if (type == TmdbSourceType.DISCOVER) adv["providers"].orEmpty() else "",
+            providersExclude = if (type == TmdbSourceType.DISCOVER) {
+                adv["providersExclude"].orEmpty()
+            } else "",
+            region = if (type == TmdbSourceType.DISCOVER) adv["region"].orEmpty() else "",
         )
         val given = displayTitle.trim()
         val known = choice?.name?.takeIf { it.isNotBlank() }
@@ -1704,6 +2072,53 @@ private fun TmdbSourceSheet(
                                 .fillMaxWidth()
                                 .padding(top = 12.dp),
                         )
+                    }
+                    // The rest of the reference app's discover filter set. It is
+                    // folded away because it is seventeen fields and most rows
+                    // use the chips above; anything typed here is sent to TMDB
+                    // verbatim, and anything left blank sends no parameter at
+                    // all — so an untouched section changes nothing.
+                    item {
+                        Surface(
+                            onClick = { showAdvanced = !showAdvanced },
+                            shape = GlassShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 14.dp),
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    tr("Advanced filters"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(
+                                    if (showAdvanced) Icons.Filled.KeyboardArrowUp
+                                    else Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = null,
+                                )
+                            }
+                        }
+                    }
+                    if (showAdvanced) {
+                        items(TMDB_ADV_FILTERS, key = { it.first }) { (key, label, hint) ->
+                            OutlinedTextField(
+                                shape = GlassShape,
+                                value = adv[key].orEmpty(),
+                                onValueChange = { adv[key] = it },
+                                singleLine = true,
+                                label = { Text(tr(label)) },
+                                supportingText = { Text(tr(hint)) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp),
+                            )
+                        }
                     }
                 }
 
@@ -2228,6 +2643,26 @@ private fun ImportCollectionsSheet(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    // A collection whose sources are ALL
+                                    // catalogs this install does not have (or
+                                    // Trakt lists, which have no engine here)
+                                    // imports as folders that load nothing.
+                                    // Saying so BEFORE the import is the
+                                    // difference between "the file was wrong"
+                                    // and "you have to build it again by hand".
+                                    if (c.folders.isNotEmpty() &&
+                                        c.folders.sumOf { it.sources.size } == 0
+                                    ) {
+                                        Text(
+                                            tr(
+                                                "No catalogs here — every source names an " +
+                                                    "addon you don't have installed, or a " +
+                                                    "Trakt list."
+                                            ),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2908,6 +3343,10 @@ private fun CoverArt(
      *  the tile then fills it instead of imposing its own aspect. */ 
     shaped: Boolean = true,
     emojiSize: TextUnit = 34.sp,
+    /** False to draw an animated cover as its FIRST FRAME. Only a
+     *  [CoverKinds.GIF] cover is affected, and only when its folder (or this
+     *  device) asked for it — see [PosterLoader.stillModel]. */
+    animateGif: Boolean = true,
 ) {
     val tokens = rememberGlassTokens()
     val k = CoverKinds.normalize(kind)
@@ -2922,7 +3361,16 @@ private fun CoverArt(
     val sized = if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier
     if ((k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank()) {
         PosterArt(
-            model = value,
+            // A held-still gif resolves to its first frame, and to NULL while
+            // that frame is being fetched — [PosterArt] draws nothing for a null
+            // model, and this cell is recomposed the moment the frame lands
+            // (PosterLoader's waiting-counter), so the tile fills in rather than
+            // staying empty.
+            model = if (k == CoverKinds.GIF && !animateGif) {
+                PosterLoader.stillModel(value)
+            } else {
+                value
+            },
             contentDescription = name.ifBlank { null },
             style = posterStyle,
             modifier = modifier.then(sized),
@@ -3514,9 +3962,125 @@ fun CollectionViewScreen(nav: NavHostController, collectionId: String, folderId:
 
     val folder = c.folders.firstOrNull { it.id == folderId }
     if (folder == null) {
-        CollectionFoldersPage(nav = nav, collection = c)
+        // A collection whose own view mode is TABS opens as a tab strip — one
+        // tab per folder, and an "All" tab when the user left it on — instead of
+        // the folder grid. Its folders are all still reachable, just one at a
+        // time, and each tab's body is the same page tapping that folder's tile
+        // would have opened (see [CollectionTabsContent]).
+        if (c.viewMode == CollectionViewModes.TABS && c.folders.isNotEmpty()) {
+            CollectionTabsContent(nav = nav, collection = c)
+        } else {
+            CollectionFoldersPage(nav = nav, collection = c)
+        }
     } else {
         CollectionFolderContent(nav = nav, collection = c, folder = folder)
+    }
+}
+
+/**
+ * A collection browsed as a TAB STRIP: one tab per folder (plus an "All" tab
+ * holding every folder's catalogs, when the user left that on), and the picked
+ * tab's shelves below it.
+ *
+ * This is the reference app's other collection view mode, and the reason it
+ * exists is the one the user hit with a nine-folder collection: rows of folders
+ * make you scroll past seven to reach the eighth, while tabs put every folder
+ * one tap away. Nothing about the content changes — each tab paints exactly what
+ * that folder's page paints (the same [FolderRowList], so "Show all", an
+ * imported title list and a failing source all behave identically).
+ */
+@Composable
+private fun CollectionTabsContent(nav: NavHostController, collection: Collection) {
+    val app = LocalContext.current.applicationContext as HikariApp
+    val showAll = collection.showAllTab && collection.folders.size > 1
+    // The "All" tab is the slot after the last folder.
+    val allSlot = collection.folders.size
+    var index by remember(collection.id) { mutableStateOf(0) }
+    var rows by remember(collection.id, index) { mutableStateOf<List<CatalogRow>?>(null) }
+
+    LaunchedEffect(collection.id, index) {
+        rows = null
+        val repo = CollectionsRepository(app.providers)
+        rows = withContext(Dispatchers.IO) {
+            val loaded = if (showAll && index == allSlot) {
+                runCatching { repo.allRowsOnce(collection) }.getOrDefault(emptyList())
+            } else {
+                val folder = collection.folders.getOrNull(index)
+                if (folder == null) {
+                    emptyList()
+                } else {
+                    runCatching { repo.folderRowsOnce(collection, folder) }
+                        .getOrDefault(emptyList())
+                }
+            }
+            // The same poster-token collapse every other catalog grid does, so a
+            // folder full of base64 items stays inside a stock heap.
+            loaded.map { row -> row.copy(items = row.items.map { it.tokenized() }) }
+        }
+    }
+
+    val current = collection.folders.getOrNull(index)
+    Column(Modifier.fillMaxSize()) {
+        PageHeader(
+            title = collection.name,
+            subtitle = if (showAll && index == allSlot) {
+                FolderSummary(collection)
+            } else {
+                collection.name + " · " + (current?.name.orEmpty())
+            },
+            onBack = { nav.popBackStack() },
+            heroBackdrop = collection.backdropUrl,
+            actions = {
+                IconButton(
+                    onClick = {
+                        Routes.safeNavigate(nav, Routes.searchInCollection(collection.id))
+                    }
+                ) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = tr("Search inside this catalog"),
+                    )
+                }
+            },
+        )
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(collection.folders, key = { it.id }) { f ->
+                val i = collection.folders.indexOf(f)
+                ChoiceChip(
+                    label = f.name,
+                    selected = i == index,
+                    onClick = { if (i != index) index = i },
+                )
+            }
+            if (showAll) {
+                item(key = "all-tab") {
+                    ChoiceChip(
+                        label = tr("All"),
+                        selected = index == allSlot,
+                        onClick = { index = allSlot },
+                    )
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+        FolderRowList(
+            nav = nav,
+            sources = if (showAll && index == allSlot) {
+                collection.allSources
+            } else {
+                current?.sources.orEmpty()
+            },
+            loaded = rows,
+            emptyTitle = tr("Nothing here right now"),
+            emptySubtitle = tr(
+                "This folder's catalogs returned no content. Check the extension's " +
+                    "site, or edit the folder to pick another catalog."
+            ),
+        )
     }
 }
 
@@ -3528,6 +4092,9 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             title = collection.name,
             subtitle = FolderSummary(collection),
             onBack = { nav.popBackStack() },
+            // The collection's own wide backdrop, when it has one — the hero the
+            // reference app opens a catalog with.
+            heroBackdrop = collection.backdropUrl,
             // Same magnifier as a folder page, for the collection itself — the
             // "abc" header the user marked. Searching here spans every folder
             // and every source of the collection.
@@ -3597,6 +4164,14 @@ fun FolderTile(
     val ownCover = CoverKinds.normalize(folder.coverKind) != CoverKinds.NONE &&
         folder.coverValue.isNotBlank()
     val tokens = rememberGlassTokens()
+    // An animated cover animates when the folder itself asks for it, or when
+    // this device is set to animate them (Settings → App Layout). Otherwise the
+    // first frame is drawn — the reference app's "Show GIF when configured",
+    // with the per-device override it also has, since a phone and a TV stick
+    // want different answers from the same file.
+    val app = LocalContext.current.applicationContext as HikariApp
+    val gifAnimFlow = remember { app.store.gifAnimFlow() }
+    val animateGif by gifAnimFlow.collectAsState(initial = true)
     Column(
         Modifier
             .then(if (width != null) Modifier.width(width) else Modifier.fillMaxWidth())
@@ -3611,17 +4186,20 @@ fun FolderTile(
             value = if (ownCover) folder.coverValue else inheritedValue,
             shape = if (ownCover) folder.tileShape else inheritedShape,
             name = folder.name,
+            animateGif = folder.gifAlways || animateGif,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(6.dp))
-        Text(
-            folder.name,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 3.dp),
-        )
+        if (!folder.hideTitle) {
+            Text(
+                folder.name,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 3.dp),
+            )
+        }
         Text(
             folder.sources.firstOrNull()?.title?.let { first ->
                 if (folder.sources.size > 1) "$first +${folder.sources.size - 1}"
@@ -3660,6 +4238,12 @@ private fun CollectionFolderContent(
             title = folder.name,
             subtitle = breadcrumb,
             onBack = { nav.popBackStack() },
+            // The folder's own hero, when the file (or the editor) gave it one:
+            // a wide backdrop above the header and, above all, a wordmark in
+            // place of the title text — the way the reference app opens a
+            // catalog folder.
+            heroBackdrop = folder.heroBackdropUrl,
+            titleLogo = folder.titleLogoUrl,
             // Search INSIDE this catalog: the magnifier opens the Search tab
             // scoped to the collection this folder belongs to, so a title can be
             // looked for across exactly the sources the user picked for it
@@ -3678,73 +4262,95 @@ private fun CollectionFolderContent(
             },
         )
         val loaded = rows
-        if (loaded == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            return@Column
+        FolderRowList(
+            nav = nav,
+            sources = folder.sources,
+            loaded = loaded,
+            emptyTitle = tr("Nothing here right now"),
+            emptySubtitle = tr(
+                "This folder's catalogs returned no content. Check the extension's " +
+                    "site, or edit the folder to pick another catalog."
+            ),
+        )
+    }
+}
+
+/**
+ * The shelves of one folder — or of every folder at once, for the tab view's
+ * "All" tab — with the loading and empty states that go with them.
+ *
+ * Shared so a folder opened directly (a tile tap) and a folder shown inside a
+ * tab strip are the same page: same rows, same "Show all" behaviour, same
+ * explanation when a source comes back with nothing.
+ */
+@Composable
+private fun FolderRowList(
+    nav: NavHostController,
+    sources: List<CatalogSource>,
+    loaded: List<CatalogRow>?,
+    emptyTitle: String,
+    emptySubtitle: String,
+) {
+    if (loaded == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
         }
-        if (loaded.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyState(
-                    title = tr("Nothing here right now"),
-                    subtitle = tr(
-                        "This folder's catalogs returned no content. Check the extension's " +
-                            "site, or edit the folder to pick another catalog."
-                    ),
-                )
-            }
-            return@Column
+        return
+    }
+    if (loaded.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            EmptyState(title = emptyTitle, subtitle = emptySubtitle)
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp),
-        ) {
-            items(loaded.distinctBy { it.key }, key = { it.key }) { row ->
-                // The folder source this row came from — needed for "Show all".
-                val src = folder.sources.firstOrNull { it.key == row.catalogId }
-                MediaRow(
-                    title = row.title,
-                    providerName = row.providerName,
-                    items = row.items,
-                    onClick = { item ->
-                        Routes.safeNavigate(
-                            nav,
-                            Routes.detail(
-                                item.providerId, item.type, item.id,
-                                item.title, item.posterUrl, item.rawType
-                            )
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp),
+    ) {
+        items(loaded.distinctBy { it.key }, key = { it.key }) { row ->
+            // The source this row came from — needed for "Show all".
+            val src = sources.firstOrNull { it.key == row.catalogId }
+            MediaRow(
+                title = row.title,
+                providerName = row.providerName,
+                items = row.items,
+                onClick = { item ->
+                    Routes.safeNavigate(
+                        nav,
+                        Routes.detail(
+                            item.providerId, item.type, item.id,
+                            item.title, item.posterUrl, item.rawType
                         )
-                    },
-                    // An imported list already puts ALL of its titles in this
-                    // row, and there is no upstream catalog to page through, so
-                    // it has no "Show all" — offering one would open an empty
-                    // screen. Every other kind keeps it.
-                    onShowAll = if (src?.kind == CatalogSourceKind.ITEMS) null else {
-                        {
-                            if (src?.kind == CatalogSourceKind.TMDB) {
-                                val spec = src.spec
-                                Routes.safeNavigate(
-                                    nav,
-                                    if (spec != null) {
-                                        Routes.tmdbGridSpec(spec.encode(), row.title)
-                                    } else {
-                                        Routes.tmdbGrid(src.tmdbPreset, row.title)
-                                    }
+                    )
+                },
+                // An imported list already puts ALL of its titles in this row,
+                // and there is no upstream catalog to page through, so it has no
+                // "Show all" — offering one would open an empty screen. Every
+                // other kind keeps it.
+                onShowAll = if (src?.kind == CatalogSourceKind.ITEMS) null else {
+                    {
+                        if (src?.kind == CatalogSourceKind.TMDB) {
+                            val spec = src.spec
+                            Routes.safeNavigate(
+                                nav,
+                                if (spec != null) {
+                                    Routes.tmdbGridSpec(spec.encode(), row.title)
+                                } else {
+                                    Routes.tmdbGrid(src.tmdbPreset, row.title)
+                                }
+                            )
+                        } else {
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.catalog(
+                                    row.providerId, row.catalogId, row.title,
+                                    row.providerName, row.type, row.rawType
                                 )
-                            } else {
-                                Routes.safeNavigate(
-                                    nav,
-                                    Routes.catalog(
-                                        row.providerId, row.catalogId, row.title,
-                                        row.providerName, row.type, row.rawType
-                                    )
-                                )
-                            }
+                            )
                         }
                     }
-                )
-            }
+                }
+            )
         }
     }
 }
@@ -3768,8 +4374,27 @@ private fun PageHeader(
      *  header carries its own). Laid out after the titles, so the titles shrink
      *  around them instead of being pushed off the row. */
     actions: (@Composable () -> Unit)? = null,
+    /** A wide image drawn ABOVE the title row — a folder's or collection's own
+     *  hero, the way the reference app opens a catalog with its artwork. Null or
+     *  blank draws the header exactly as it was. */
+    heroBackdrop: String? = null,
+    /** A transparent wordmark drawn in place of the title TEXT (a
+     *  Netflix-style logo). Blank keeps the text title. */
+    titleLogo: String? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
+        if (!heroBackdrop.isNullOrBlank()) {
+            AsyncImage(
+                model = heroBackdrop,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(118.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .clip(GlassShape),
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -3783,16 +4408,27 @@ private fun PageHeader(
                 )
             }
             Column(Modifier.weight(1f)) {
-                Text(
-                    // Preset/catalog names are translated; a user-typed
-                    // collection name isn't in the i18n files, so tr() hands it
-                    // back unchanged.
-                    tr(title),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (!titleLogo.isNullOrBlank()) {
+                    AsyncImage(
+                        model = titleLogo,
+                        contentDescription = tr(title),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .height(38.dp)
+                            .fillMaxWidth(0.62f),
+                    )
+                } else {
+                    Text(
+                        // Preset/catalog names are translated; a user-typed
+                        // collection name isn't in the i18n files, so tr() hands
+                        // it back unchanged.
+                        tr(title),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (subtitle.isNotBlank()) {
                     Text(
                         subtitle,

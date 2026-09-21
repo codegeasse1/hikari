@@ -138,6 +138,76 @@ object PosterLoader {
     fun model(poster: String?, backdrop: String?): Any? =
         model(poster?.takeIf { it.isNotBlank() } ?: backdrop)
 
+    // ------------------------------------------------------------------
+    //  Animated covers drawn as a STILL
+    // ------------------------------------------------------------------
+
+    /** First frames already fetched this session, keyed by URL. */
+    private val stills = ConcurrentHashMap<String, android.graphics.Bitmap>()
+
+    /** Waiting cells per still URL, so a frame that lands repaints exactly the
+     *  tile that asked for it (same idea as [pending]). */
+    private val stillPending = ConcurrentHashMap<String, MutableState<Long>>()
+
+    /** Bound on the still cache and on the waiting map: covers are a handful per
+     *  screen, and this must not grow with a catalog of thousands. */
+    private const val STILLS_MAX = 64
+
+    private val stillInFlight = ConcurrentHashMap.newKeySet<String>()
+    private val stillLastAttempt = ConcurrentHashMap<String, Long>()
+
+    /**
+     * The FIRST FRAME of an animated cover, as a Coil model — what a tile draws
+     * when gif animation is switched off for it (see
+     * [com.hikari.app.data.AppStore.gifAnimFlow]: a catalog's own "always
+     * animate" setting, and the device's own override).
+     *
+     * Null while that frame is still being fetched — the caller is recomposed
+     * when it lands, exactly like a data-URI poster ([pending]). A GIF can only
+     * be held still by decoding it ourselves:
+     * [android.graphics.BitmapFactory.decodeByteArray] returns the first frame
+     * of an animated GIF, while Coil would hand back an animating drawable.
+     *
+     * Failure is rate-limited ([RETRY_COOLDOWN_MS]) so an unreachable cover can
+     * not spin the decode pool on every recomposition.
+     */
+    fun stillModel(url: String?): Any? {
+        val u = normalize(url) ?: return null
+        stills[u]?.let { return it }
+        if (stillPending.size >= STILLS_MAX) return null
+        val state = stillPending.getOrPut(u) { mutableStateOf(0L) }
+        // Read during composition: this cell repaints when ITS frame lands.
+        state.value
+        scheduleStill(u)
+        return null
+    }
+
+    private fun scheduleStill(u: String) {
+        val now = System.currentTimeMillis()
+        stillLastAttempt[u]?.let { if (now - it < RETRY_COOLDOWN_MS) return }
+        if (!stillInFlight.add(u)) return
+        stillLastAttempt[u] = now
+        prepExecutor.execute {
+            try {
+                val bytes = com.hikari.app.net.Http.getBytes(u)
+                val bmp = bytes?.let { b ->
+                    runCatching {
+                        android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size)
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    if (stills.size >= STILLS_MAX) {
+                        stills.keys.firstOrNull()?.let { stills.remove(it) }
+                    }
+                    stills[u] = bmp
+                    stillPending.remove(u)?.let { st -> st.value = st.value + 1L }
+                }
+            } finally {
+                stillInFlight.remove(u)
+            }
+        }
+    }
+
     /**
      * Re-issues a failed request on attempt N (0 = the original model). Coil
      * does not retry on its own, so a transient 5xx / dropped connection / busy

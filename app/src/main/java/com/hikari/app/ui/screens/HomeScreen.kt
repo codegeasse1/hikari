@@ -270,45 +270,31 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     }
 
     /**
-     * The FILTERED row stream for the current pick(s).
+     * The row stream for the current pick(s) — EXTENSION catalogs only.
      *
-     * One collection picked on its own is NOT handled here: Home shows that
-     * collection's FOLDERS instead of its contents (see HomeScreen), because a
-     * personal catalog is a set of folders and collapsing them into shelves hid
-     * exactly what the user built ("in home it show same folder not its
-     * extracted catalog from inside").
+     * Collections are deliberately NOT flattened into shelves here any more.
+     * Home draws each picked (or pinned) collection as its own titled row of
+     * FOLDER TILES (see the collection folder rows in HomeScreen), which is the
+     * shape the reference app uses and the one the user built when they made the
+     * catalogs: "see in home it showing like folder netflix, amazon, and clicking
+     * it show inside the catalog poster and content … but in our hikari it not
+     * creating the folder like that on home". Merging a collection's folders into
+     * one shelf per folder produced exactly the poster rows that read as "it
+     * shows a normal poster catalog instead of folders".
      *
-     * A multi pick merges: every extension's feed, plus one collection's rows per
-     * collection chosen — with the LATEST list from each source concatenated, so
-     * a fast extension's rows paint immediately while the slower ones are still
-     * arriving (merging the raw flows would flip-flop between partial lists).
+     * A pick made ONLY of collections therefore has no extension feed at all:
+     * falling through to `homeRowsStreamingFor(emptySet())` would quietly stack
+     * every installed extension's home page under the user's own catalogs.
      */
     private fun rowsFlowFor(
         picks: List<String>,
         saved: List<Collection>,
     ): kotlinx.coroutines.flow.Flow<List<CatalogRow>> {
         val extensionIds = picks.filterNot { isCollectionKey(it) }.toSet()
-        val pickedCollections = picks.filter { isCollectionKey(it) }
-            .mapNotNull { key -> saved.firstOrNull { it.id == collectionIdOf(key) } }
-        val parts = ArrayList<kotlinx.coroutines.flow.Flow<List<CatalogRow>>>()
-        if (extensionIds.isNotEmpty()) parts += repo.homeRowsStreamingFor(extensionIds)
-        pickedCollections.forEach { parts += collections.pickRows(it) }
-        if (parts.isEmpty()) return repo.homeRowsStreamingFor(emptySet())
-        if (parts.size == 1) return parts[0]
-        return kotlinx.coroutines.flow.channelFlow {
-            val latest = arrayOfNulls<List<CatalogRow>>(parts.size)
-            val lock = Any()
-            parts.forEachIndexed { i, part ->
-                launch {
-                    part.collect { rows ->
-                        val combined = synchronized(lock) {
-                            latest[i] = rows
-                            latest.filterNotNull().flatten()
-                        }
-                        send(combined)
-                    }
-                }
-            }
+        return if (extensionIds.isEmpty() && picks.isNotEmpty()) {
+            kotlinx.coroutines.flow.flowOf(emptyList())
+        } else {
+            repo.homeRowsStreamingFor(extensionIds)
         }
     }
 
@@ -487,6 +473,29 @@ fun HomeScreen(nav: NavHostController) {
     val collectionsFlow = remember { app.store.collectionsFlow() }
     val collections by collectionsFlow.collectAsState(initial = emptyList())
     val selectedCollection = collections.firstOrNull { selected == "$COLLECTION_PREFIX${it.id}" }
+    // Which collections Home draws as FOLDER rows — a row titled with the
+    // collection's name whose tiles are the folders inside it, so a tap ENTERS
+    // that folder instead of flattening every folder's contents into one shelf
+    // (the reference app's shape, and what the user asked for: "in home it
+    // showing like folder netflix, amazon, and clicking it show inside the
+    // catalog poster and content"). It is:
+    //   • every collection the user picked — one or several (a multi pick used
+    //     to flatten them all into poster shelves), and
+    //   • every PINNED collection while Home is on "All", which is what pinning
+    //     a catalog means: it shows up on Home by itself, without being picked.
+    val pickedCollections = selection
+        .filter { it.startsWith(COLLECTION_PREFIX) }
+        .mapNotNull { key -> collections.firstOrNull { it.id == key.removePrefix(COLLECTION_PREFIX) } }
+    val pinnedCollections = if (selection.isEmpty()) collections.filter { it.pinToTop } else emptyList()
+    val collectionFolderRows = (pickedCollections + pinnedCollections)
+        .distinctBy { it.id }
+        // A folder-less collection has no tiles to draw inside its row; on a pick
+        // the empty state below still explains it.
+        .filter { it.folders.isNotEmpty() }
+    // What the empty state talks about when nothing loaded: the single pick, or
+    // the first picked collection that turned out to have no folders at all.
+    val emptyTalkCollection = selectedCollection
+        ?: pickedCollections.firstOrNull { it.folders.isEmpty() }
     // The picker's label for the current pick: the extension's name, the
     // collection's name, or nothing (All). Several picks are counted instead.
     val selectedName = when {
@@ -704,38 +713,43 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            // A personal catalog picked on its own shows ITS OWN FOLDERS — the
-            // same tiles its page draws in Settings ("Your own folders of
-            // catalogs, shown on Home") — instead of shelves of everything
-            // inside them. Tapping a folder enters it, which is the hierarchy
-            // the user built when they made the catalog: "in home it show same
-            // folder … i can click animation to enter in that animation box and
-            // see all catalog".
-            val folderPick = selectedCollection
-            if (folderPick != null) {
-                item(key = "collection-folders") {
+            // A personal catalog shows its OWN FOLDERS — the same tiles its page
+            // draws in Settings ("Your own folders of catalogs, shown on Home").
+            // Tapping a folder enters it, which is the hierarchy the user built:
+            // "in home it show same folder … i can click animation to enter in
+            // that animation box and see all catalog". One row PER collection, so
+            // a multi pick shows each collection's folders under its own name
+            // instead of merging them into poster shelves.
+            collectionFolderRows.forEach { c ->
+                item(key = "collection-folders|${c.id}") {
                     CollectionFoldersOnHome(
-                        collection = folderPick,
+                        collection = c,
                         onOpenFolder = { folder ->
                             Routes.safeNavigate(
                                 nav,
-                                Routes.collectionView(folderPick.id, folder.id),
+                                Routes.collectionView(c.id, folder.id),
                             )
                         },
                         onShowAll = {
-                            Routes.safeNavigate(nav, Routes.collectionGrid(folderPick.id))
+                            Routes.safeNavigate(nav, Routes.collectionGrid(c.id))
                         },
                     )
                 }
             }
-            if (loading && folderPick == null) {
+            if (loading && collectionFolderRows.isEmpty()) {
                 items(4) { ShimmerRow() }
             }
             // Two rows can carry the same key when an extension offers the same
             // catalog twice (or two catalogs under one name): a duplicated Lazy
             // key is a crash in Compose, not a warning, so repeats are dropped
             // before the feed is built (see [uniqueRows]).
-            if (folderPick == null) uniqueRows.forEach { row ->
+            //
+            // No "and only when no collection is picked" guard any more: a pick
+            // made solely of collections yields NO extension rows at all (see
+            // HomeViewModel.rowsFlowFor), while a multi pick that contains both
+            // shows the collections' folder rows AND the extensions' shelves —
+            // which is what picking several sources means.
+            uniqueRows.forEach { row ->
                 item(
                     key = row.key.ifBlank { "${row.providerName}|${row.title}" },
                     // One content type for every shelf, so the LazyColumn can
@@ -776,9 +790,9 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            if (rows.isEmpty() && !loading && folderPick == null) {
+            if (rows.isEmpty() && !loading && collectionFolderRows.isEmpty()) {
                 item {
-                    val collection = selectedCollection
+                    val collection = emptyTalkCollection
                     if (collection != null) {
                         val noFolders = collection.folders.isEmpty()
                         EmptyState(

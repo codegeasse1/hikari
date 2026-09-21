@@ -471,7 +471,33 @@ data class CollectionFolder(
     val coverKind: String = CoverKinds.NONE,
     val coverValue: String = "",
     val tileShape: String = TileShapes.POSTER,
+    /** Draw the folder's tile with no name under it — just the cover. The name
+     *  still appears in the editor, in search and in the folder's own header;
+     *  a wall of tiles whose artwork already says "Netflix" reads better
+     *  without the caption. */
+    val hideTitle: Boolean = false,
+    /** Keep an animated GIF playing even when the tile is not focused. Off by
+     *  default: a screen of twenty animating GIFs is a battery fire, so [CoverKinds.GIF]
+     *  only plays while its tile has focus unless this is on (the user can also
+     *  force it per device — see AppStore's gifAnimFlow). */
+    val gifAlways: Boolean = false,
+    /** The folder's own wide backdrop, shown behind its page header the way the
+     *  reference app shows a folder's hero. Blank = the cover stands in. */
+    val heroBackdropUrl: String = "",
+    /** A transparent title-logo image for the folder's page hero. Blank = the
+     *  folder's name is drawn as text. */
+    val titleLogoUrl: String = "",
 )
+
+/** How a collection's folders are browsed on the collection's own page. */
+object CollectionViewModes {
+    /** One shelf per folder, stacked (the app's original shape). */
+    const val ROWS = "rows"
+    /** A tab strip: one tab per folder, the picked folder's catalogs below it. */
+    const val TABS = "tabs"
+    val ALL = listOf(ROWS, TABS)
+    fun normalize(key: String?): String = if (key in ALL) key as String else ROWS
+}
 
 /** How a collection/folder tile is shaped. The cover is drawn into it. */
 object TileShapes {
@@ -522,6 +548,17 @@ data class Collection(
     val coverValue: String = "",
     /** The shape of this collection's own tile in the collections grid. */
     val tileShape: String = TileShapes.POSTER,
+    /** Pinned to the top of Home: a pinned collection's folders are drawn on
+     *  Home even when nothing is picked, which is what makes a personal catalog
+     *  behave like a folder row you own rather than something you have to
+     *  remember to select. */
+    val pinToTop: Boolean = false,
+    /** Rows (the default) or a tab strip per folder — see [CollectionViewModes]. */
+    val viewMode: String = CollectionViewModes.ROWS,
+    /** Give the Tabs view an extra "All" tab holding every folder's catalogs. */
+    val showAllTab: Boolean = true,
+    /** A wide backdrop for the collection's own header, like a folder's hero. */
+    val backdropUrl: String = "",
 ) {
     val isEmpty: Boolean get() = folders.isEmpty()
     /** Every source of every folder, deduped — the collection's whole diet. */

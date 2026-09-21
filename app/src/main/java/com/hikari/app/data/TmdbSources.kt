@@ -123,6 +123,35 @@ data class TmdbSpec(
     val genre: Int = 0,
     val year: Int = 0,
     val title: String = "",
+    // ---------------------------------------------------------------------
+    //  The Discover screen's advanced filters, in TMDB's own vocabulary.
+    //
+    //  The chip-level [genre]/[year] above stay for the quick path; these are
+    //  the full set the reference app's custom-source editor exposes, so a
+    //  hand-built "90s Japanese horror, well rated, on Netflix in the US" row is
+    //  expressible. Every one of them is a STRING that is empty when unset —
+    //  empty means "do not send the parameter", which is what makes an unset
+    //  filter behave exactly like it did before this existed. Only
+    //  [TmdbSourceType.DISCOVER] (and the company/network variants, which are
+    //  discover queries too) read them.
+    // ---------------------------------------------------------------------
+    val genresText: String = "",
+    val genresExclude: String = "",
+    val dateFrom: String = "",
+    val dateTo: String = "",
+    val ratingMin: String = "",
+    val ratingMax: String = "",
+    val votesMin: String = "",
+    val language: String = "",
+    val country: String = "",
+    val keywords: String = "",
+    val keywordsExclude: String = "",
+    val companies: String = "",
+    val companiesExclude: String = "",
+    val networks: String = "",
+    val providers: String = "",
+    val providersExclude: String = "",
+    val region: String = "",
 ) {
     val isMovie: Boolean get() = media == "movie"
     val isTv: Boolean get() = media == "tv"
@@ -136,10 +165,17 @@ data class TmdbSpec(
     }
 
     /** Identity for dedupe — [title] is deliberately excluded, since renaming a
-     *  source must not let the same source be added twice. */
+     *  source must not let the same source be added twice. Every filter is part
+     *  of it: two discover rows that differ only in their filters are two
+     *  different rows, and without this they would collide and one of them would
+     *  quietly disappear from the folder. */
     val identity: String
-        get() = listOf(type.key, id, preset, media, sort, genre.toString(), year.toString())
-            .joinToString("|")
+        get() = listOf(
+            type.key, id, preset, media, sort, genre.toString(), year.toString(),
+            genresText, genresExclude, dateFrom, dateTo, ratingMin, ratingMax,
+            votesMin, language, country, keywords, keywordsExclude, companies,
+            companiesExclude, networks, providers, providersExclude, region,
+        ).joinToString("|")
 
     fun encode(): String = JSONObject()
         .put("t", type.key)
@@ -150,6 +186,23 @@ data class TmdbSpec(
         .put("g", genre)
         .put("y", year)
         .put("n", title)
+        .put("gx", genresText)
+        .put("gd", genresExclude)
+        .put("df", dateFrom)
+        .put("dt", dateTo)
+        .put("rmn", ratingMin)
+        .put("rmx", ratingMax)
+        .put("vmn", votesMin)
+        .put("lg", language)
+        .put("ct", country)
+        .put("kw", keywords)
+        .put("kx", keywordsExclude)
+        .put("co", companies)
+        .put("cx", companiesExclude)
+        .put("nw", networks)
+        .put("pv", providers)
+        .put("px", providersExclude)
+        .put("rg", region)
         .toString()
 
     companion object {
@@ -166,6 +219,23 @@ data class TmdbSpec(
                     genre = o.optInt("g", 0),
                     year = o.optInt("y", 0),
                     title = o.optString("n"),
+                    genresText = o.optString("gx"),
+                    genresExclude = o.optString("gd"),
+                    dateFrom = o.optString("df"),
+                    dateTo = o.optString("dt"),
+                    ratingMin = o.optString("rmn"),
+                    ratingMax = o.optString("rmx"),
+                    votesMin = o.optString("vmn"),
+                    language = o.optString("lg"),
+                    country = o.optString("ct"),
+                    keywords = o.optString("kw"),
+                    keywordsExclude = o.optString("kx"),
+                    companies = o.optString("co"),
+                    companiesExclude = o.optString("cx"),
+                    networks = o.optString("nw"),
+                    providers = o.optString("pv"),
+                    providersExclude = o.optString("px"),
+                    region = o.optString("rg"),
                 )
             }.getOrNull()
         }
@@ -501,7 +571,54 @@ object TmdbSources {
             val id = numericId(spec.id) ?: return emptyList()
             query[filterKey] = id
         }
-        if (spec.genre > 0) query["with_genres"] = spec.genre.toString()
+        // The genre FILTER text wins over the single-genre chip when both are
+        // set: typed text can express what a chip cannot (several genres ANDed
+        // with "," or ORed with "|", and an exclude list).
+        if (spec.genresText.isNotBlank()) query["with_genres"] = spec.genresText.trim()
+        else if (spec.genre > 0) query["with_genres"] = spec.genre.toString()
+        if (spec.genresExclude.isNotBlank()) query["without_genres"] = spec.genresExclude.trim()
+        // The date fields differ per endpoint — TMDB rejects a movie's release
+        // field on /discover/tv — so the right pair is chosen for the segment
+        // being asked.
+        val dateGte = if (seg == "tv") "first_air_date.gte" else "primary_release_date.gte"
+        val dateLte = if (seg == "tv") "first_air_date.lte" else "primary_release_date.lte"
+        if (spec.dateFrom.isNotBlank()) query[dateGte] = spec.dateFrom.trim()
+        if (spec.dateTo.isNotBlank()) query[dateLte] = spec.dateTo.trim()
+        if (spec.ratingMin.isNotBlank()) query["vote_average.gte"] = spec.ratingMin.trim()
+        if (spec.ratingMax.isNotBlank()) query["vote_average.lte"] = spec.ratingMax.trim()
+        val votes = spec.votesMin.trim()
+        if (votes.isNotBlank()) query["vote_count.gte"] = votes
+        if (spec.language.isNotBlank()) {
+            query["with_original_language"] = spec.language.trim().lowercase()
+        }
+        if (spec.country.isNotBlank()) {
+            query["with_origin_country"] = spec.country.trim().uppercase()
+        }
+        if (spec.keywords.isNotBlank()) query["with_keywords"] = spec.keywords.trim()
+        if (spec.keywordsExclude.isNotBlank()) {
+            query["without_keywords"] = spec.keywordsExclude.trim()
+        }
+        // with_companies / with_networks are ALSO how a Production or Network
+        // source names its own entity (see [filterKey]); an extra filter that
+        // would overwrite that id is ignored rather than silently replacing the
+        // studio with something else.
+        if (spec.companies.isNotBlank() && filterKey != "with_companies") {
+            query["with_companies"] = spec.companies.trim()
+        }
+        if (spec.companiesExclude.isNotBlank()) {
+            query["without_companies"] = spec.companiesExclude.trim()
+        }
+        if (spec.networks.isNotBlank() && filterKey != "with_networks") {
+            query["with_networks"] = spec.networks.trim()
+        }
+        if (spec.providers.isNotBlank()) {
+            query["with_watch_providers"] = spec.providers.trim()
+            if (spec.region.isNotBlank()) query["watch_region"] = spec.region.trim().uppercase()
+        }
+        if (spec.providersExclude.isNotBlank()) {
+            query["without_watch_providers"] = spec.providersExclude.trim()
+            if (spec.region.isNotBlank()) query["watch_region"] = spec.region.trim().uppercase()
+        }
         if (spec.year > 0) {
             if (seg == "tv") query["first_air_date_year"] = spec.year.toString()
             else query["primary_release_year"] = spec.year.toString()
@@ -510,7 +627,8 @@ object TmdbSources {
         query["sort_by"] = sort
         // TMDB's average-vote sort is meaningless without a floor on the number
         // of votes — without it the row fills with 10.0-rated films nobody saw.
-        if (sort.startsWith("vote_average")) query["vote_count.gte"] = "200"
+        // A user-set floor is respected: it is their filter, not this guard.
+        if (sort.startsWith("vote_average") && votes.isBlank()) query["vote_count.gte"] = "200"
         query["page"] = page.toString()
         val data = TmdbResolver.apiGet("/discover/$seg", query) ?: return emptyList()
         val arr = data.optJSONArray("results") ?: return emptyList()

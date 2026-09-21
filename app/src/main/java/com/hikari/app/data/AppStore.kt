@@ -77,6 +77,8 @@ class AppStore(private val ctx: Context) {
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
+        /** Animate animated covers on tiles (see [gifAnimFlow]). */
+        val GIF_ANIM = booleanPreferencesKey("gifAnim")
         val LAST_SOURCE = stringPreferencesKey("lastSource")
         val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
@@ -1178,6 +1180,27 @@ class AppStore(private val ctx: Context) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
     }
 
+    // ---- Animated covers on tiles ----
+
+    /**
+     * Whether an ANIMATED cover (a folder/collection GIF) actually animates on
+     * a tile, or is drawn as its first frame.
+     *
+     * Two switches decide it, and the folder's own setting wins: a folder whose
+     * "always animate" is on animates, and one whose is off only animates when
+     * this device-level setting is on. That is the reference app's split between
+     * "Show GIF when configured" (the catalog's preference) and the per-device
+     * override — a phone that renders a wall of GIFs smoothly and a TV stick
+     * that cannot both get what they need from the same imported file.
+     */
+    fun gifAnimFlow(): Flow<Boolean> = store.data.map { it[K.GIF_ANIM] ?: true }
+
+    suspend fun gifAnim(): Boolean = gifAnimFlow().first()
+
+    suspend fun setGifAnim(on: Boolean) {
+        write("GIF_ANIM") { it[K.GIF_ANIM] = on }
+    }
+
     // ---- Per-extension auto-translate (WebView pages → English) ----
 
     /** Provider ids whose web pages are always translated to English. */
@@ -2276,6 +2299,10 @@ class AppStore(private val ctx: Context) {
                         .put("coverKind", f.coverKind)
                         .put("coverValue", f.coverValue)
                         .put("tileShape", f.tileShape)
+                        .put("hideTitle", f.hideTitle)
+                        .put("gifAlways", f.gifAlways)
+                        .put("heroBackdrop", f.heroBackdropUrl)
+                        .put("titleLogo", f.titleLogoUrl)
                         .put("sources", sources)
                 )
             }
@@ -2286,6 +2313,10 @@ class AppStore(private val ctx: Context) {
                     .put("coverKind", c.coverKind)
                     .put("coverValue", c.coverValue)
                     .put("tileShape", c.tileShape)
+                    .put("pinToTop", c.pinToTop)
+                    .put("viewMode", c.viewMode)
+                    .put("showAllTab", c.showAllTab)
+                    .put("backdrop", c.backdropUrl)
                     .put("folders", folders)
             )
         }
@@ -2364,6 +2395,13 @@ class AppStore(private val ctx: Context) {
                                 coverKind = CoverKinds.normalize(fo.optString("coverKind")),
                                 coverValue = fo.optString("coverValue"),
                                 tileShape = TileShapes.normalize(fo.optString("tileShape")),
+                                // Defaults are the pre-existing behaviour, so a
+                                // save written before these fields existed reads
+                                // back exactly as it behaved then.
+                                hideTitle = fo.optBoolean("hideTitle", false),
+                                gifAlways = fo.optBoolean("gifAlways", false),
+                                heroBackdropUrl = fo.optString("heroBackdrop"),
+                                titleLogoUrl = fo.optString("titleLogo"),
                             )
                         )
                     }
@@ -2375,6 +2413,10 @@ class AppStore(private val ctx: Context) {
                     coverKind = CoverKinds.normalize(o.optString("coverKind")),
                     coverValue = o.optString("coverValue"),
                     tileShape = TileShapes.normalize(o.optString("tileShape")),
+                    pinToTop = o.optBoolean("pinToTop", false),
+                    viewMode = CollectionViewModes.normalize(o.optString("viewMode")),
+                    showAllTab = o.optBoolean("showAllTab", true),
+                    backdropUrl = o.optString("backdrop"),
                 )
             }
         } catch (e: Exception) {

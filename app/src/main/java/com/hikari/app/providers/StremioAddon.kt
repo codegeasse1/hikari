@@ -43,6 +43,18 @@ import java.util.concurrent.ConcurrentHashMap
  * only normalize to MediaType for the UI, treating anything unknown as SERIES
  * so catalogs are never dropped as "no usable catalogs".
  */
+/**
+ * One subtitle lookup's outcome: the tracks, the ids the addon was asked with,
+ * and — when it answered nothing at all — why. See
+ * [StremioAddon.subtitlesForDetailed]; the ids are what the player's "no
+ * subtitles found" line reports so the failure is diagnosable from the device.
+ */
+data class SubtitleLookup(
+    val tracks: List<SubtitleSource> = emptyList(),
+    val idsTried: List<String> = emptyList(),
+    val note: String = "",
+)
+
 class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -69,8 +81,17 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
         /** How long a subtitle lookup may spend resolving a title to an
          *  IMDb/TMDB id before it gives up on that id route (the direct ids are
-         *  tried first and usually answer). */
-        private const val RESOLVE_TIMEOUT_MS = 8_000L
+         *  tried first and usually answer).
+         *
+         *  Raised from 8s: resolution by NAME walks several stripped variants of
+         *  the title across TMDB's movie and tv namespaces and then IMDb's
+         *  suggestion endpoint, and on a slow connection 8s ran out mid-walk —
+         *  which left ONLY a `tmdb:` id in hand, and OpenSubtitles v3 answers
+         *  that with an empty list. The result was "no subtitles found" for
+         *  every title on that connection. The caller's own budget is longer
+         *  than this (see PlayerActivity's ADDON_SUBTITLE_MS) so the walk is
+         *  always allowed to finish. */
+        private const val RESOLVE_TIMEOUT_MS = 20_000L
 
         /** How long a FAILED manifest fetch is remembered, so a dead host is not
          *  re-probed by every search/meta/episode/stream call in between. */
@@ -710,9 +731,28 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
      * array wins, and an episode id gets the protocol's `:season:episode`
      * suffix.
      */
-    suspend fun subtitlesFor(item: MediaItem, episode: Episode?): List<SubtitleSource> {
-        val m = loadManifest() ?: return emptyList()
-        if (!hasResource(m, "subtitles")) return emptyList()
+    suspend fun subtitlesFor(item: MediaItem, episode: Episode?): List<SubtitleSource> =
+        subtitlesForDetailed(item, episode).tracks
+
+    /**
+     * [subtitlesFor], plus WHY it came back empty.
+     *
+     * The ids the addon was actually asked with are returned alongside the
+     * tracks ([SubtitleLookup.idsTried]) so the player's "no subtitles found"
+     * line can say what was tried instead of leaving the user (and whoever they
+     * report it to) guessing. The protocol is unforgiving about this:
+     * OpenSubtitles v3 declares `idPrefixes: ["tt"]` and answers an empty
+     * `subtitles` array — with HTTP 200 — to a `tmdb:550` id or to a bare name,
+     * so "nothing found" is what EVERY title looks like when the `tt` id could
+     * not be resolved ("in all movie it saying same not found").
+     */
+    suspend fun subtitlesForDetailed(item: MediaItem, episode: Episode?): SubtitleLookup {
+        val m = loadManifest() ?: return SubtitleLookup(
+            emptyList(), emptyList(), "manifest could not be read",
+        )
+        if (!hasResource(m, "subtitles")) return SubtitleLookup(
+            emptyList(), emptyList(), "no subtitle resource",
+        )
         // What this track should be CALLED in the player's subtitle list: with
         // several subtitle addons installed (OpenSubtitles v3 AND SubDL, say)
         // two "English" rows are indistinguishable without it.
@@ -735,21 +775,80 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         // added opensub but in player the subtitle from the added subtitle
         // extension not showing in player".
         resolvedCandidates(item, episode, kind).forEach { candidates += it }
+        // Nothing has produced a `tt` id yet — and a `tt` id is the ONLY thing
+        // OpenSubtitles v3 answers. IMDb's own suggestion endpoint needs no key
+        // and returns the tt-id for a name TMDB could not place (or could not be
+        // reached about in time), so ask it before giving up: this is the route
+        // that turns the blanket "no subtitles found for any movie" into a real
+        // track list.
+        if (candidates.none { it.startsWith("tt") }) {
+            imdbSuggestedId(item)?.let { candidates += it + epSuffix }
+        }
         val segments = linkedSetOf(
             typeSegment(item.rawType, item.type),
             if (item.type == MediaType.SERIES) "series" else "movie",
             "movie", "series", "tv",
         )
+        val tried = ArrayList<String>(candidates.size)
         for (id in candidates) {
+            tried += id
             for (seg in segments) {
                 val json = getJson(resUrl("subtitles", seg, id)) ?: continue
                 val subs = parseSubs(json.optJSONArray("subtitles"))
                 if (subs.isNotEmpty()) {
-                    return subs.map { it.copy(name = addonName) }
+                    return SubtitleLookup(subs.map { it.copy(name = addonName) }, tried, "")
                 }
             }
         }
-        return emptyList()
+        return SubtitleLookup(emptyList(), tried, "")
+    }
+
+    /**
+     * An IMDb id for [item] straight from IMDb's suggestion endpoint, which
+     * needs no API key: `/suggestion/h/<query>.json` answers
+     * `d:[{ l: title, y: year, q: "feature"|"TV series", id: "tt…" }]`.
+     *
+     * This is the subtitle path's last resort for an id and the first one that
+     * always works without a database round-trip: the addon that matters most
+     * here (OpenSubtitles v3) answers ONLY `tt…` ids — a `tmdb:` id and a bare
+     * title both come back as an empty list with HTTP 200 (verified against the
+     * live service) — so a title TMDB could not resolve used to look like "this
+     * addon has no subtitles for anything".
+     */
+    private suspend fun imdbSuggestedId(item: MediaItem): String? {
+        val title = item.searchTitle.trim()
+        if (title.isBlank()) return null
+        val q = runCatching {
+            java.net.URLEncoder.encode(title.lowercase(), "UTF-8")
+        }.getOrNull() ?: return null
+        val text = Http.getString(
+            "https://v3.sg.media-imdb.com/suggestion/h/$q.json",
+            mapOf("Accept" to "application/json"),
+        ) ?: return null
+        val arr = runCatching { JSONObject(text).optJSONArray("d") }.getOrNull() ?: return null
+        val wanted = title.lowercase().trim()
+        val wantTv = item.type == MediaType.SERIES
+        var best: String? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id").trim()
+            if (!id.startsWith("tt")) continue
+            val label = o.optString("l").lowercase().trim()
+            if (label.isBlank()) continue
+            var score = 0
+            if (label == wanted) score += 50
+            else if (wanted.length >= 5 && (label.startsWith(wanted) || wanted.startsWith(label))) score += 20
+            else continue
+            if (item.year != null && o.optString("y") == item.year.toString()) score += 30
+            val isTv = o.optString("q").contains("TV", ignoreCase = true)
+            if (isTv == wantTv) score += 5
+            if (score > bestScore) {
+                bestScore = score
+                best = id
+            }
+        }
+        return best
     }
 
     /**

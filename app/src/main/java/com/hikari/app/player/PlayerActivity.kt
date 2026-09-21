@@ -209,7 +209,13 @@ class PlayerActivity : ComponentActivity() {
      *  up" report. The timeout is what protects the attach: an addon that has
      *  stopped answering must not be able to hold playback hostage. */
     private val MAX_ADDON_SUBS = 60
-    private val ADDON_SUBTITLE_MS = 12_000L
+    /** How long one addon's subtitle lookup may take. The lookup itself walks
+     *  a title → id resolution (TMDB by name, then IMDb's suggestion endpoint)
+     *  before it asks for tracks, and that walk is allowed 20s inside
+     *  [com.hikari.app.providers.StremioAddon] — a shorter budget here cut it
+     *  off mid-walk and left only a `tmdb:` id, which OpenSubtitles v3 answers
+     *  with nothing (the "no subtitles found for every movie" report). */
+    private val ADDON_SUBTITLE_MS = 30_000L
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
@@ -3608,13 +3614,19 @@ class PlayerActivity : ComponentActivity() {
             // come from. Still short of the window so the panel keeps floating
             // with both its rounded sides visible.
             (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
-            // The height axis is only a "do not become a wall" guard, and in the
-            // LANDSCAPE player it is the binding one (the window is three times
-            // wider than it is tall), which is what kept the engine chips — five
-            // of them — wider than the panel on a phone. Raised so the chips and
-            // the longer server names fit on one line.
-            (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
-            (560 * density).toInt(),
+            // The height axis is deliberately NOT a width cap any more. It used
+            // to be (`win.y * 0.93`), as a "do not become a wall" guard — but the
+            // LANDSCAPE player is three times wider than it is tall, so this term
+            // always won there and clamped every panel to ~93% of the SCREEN
+            // HEIGHT as its WIDTH. That is the cut subtitle/source/audio box the
+            // user reported: the right-hand column of each row (the "Change"
+            // pill, the A+/− steppers, the +0.5s button) sat beyond that edge
+            // with no way to reach it ("the subtitle box is showing cut … and it
+            // is not horizontally scrollable"). Height is capped where it
+            // belongs — the scroll view below measures the real room and caps
+            // the LIST (see [MaxHeightScrollView]), and the panel itself is
+            // WRAP_CONTENT, so a tall list can never spill off the screen.
+            (620 * density).toInt(),
         )
             // The floor must never win over the room that exists: on a small
             // window (split screen, a phone-sized television box, a window that
@@ -5113,10 +5125,12 @@ class PlayerActivity : ComponentActivity() {
             this.text = text
             dpText(12f)
             setTextColor(0xFFE6EAF3.toInt())
-            // The label keeps a fixed slice of the row so the controls' scroll
-            // area is the same on every row (and always the wider part).
-            maxWidth = (104 * density).toInt()
-            maxLines = 1
+            // The label is a WEIGHTED child of its row (see [controlRow]), so it
+            // takes the space the controls leave instead of holding a fixed slice
+            // — and it may wrap to two lines rather than ellipsizing to "Caption
+            // st…". It used to reserve 104dp and one line, which pushed the
+            // controls off the panel's edge on a narrow window.
+            maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
@@ -5129,11 +5143,23 @@ class PlayerActivity : ComponentActivity() {
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
+        /**
+         * One labelled row of controls.
+         *
+         * The controls ride inside a HorizontalScrollView. A caption-style
+         * summary plus the A−/100%/A+ steppers plus the sync buttons are wider
+         * than even a generous panel on a phone held in portrait, and a row that
+         * cannot scroll leaves its last button past the panel's edge, unreachable
+         * — which is the cut subtitle box that was reported. The label gives up
+         * its width first (it is the weighted child), and whatever still does not
+         * fit can be dragged.
+         */
         fun controlRow(label: String, vararg controls: View): LinearLayout =
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 clipToPadding = false
+                clipChildren = false
                 setPadding(
                     (10 * density).toInt(), (6 * density).toInt(),
                     (10 * density).toInt(), (6 * density).toInt()
@@ -5143,9 +5169,37 @@ class PlayerActivity : ComponentActivity() {
                     cornerRadius = 999f
                     setColor(0x14FFFFFF.toInt())
                 }
-                addView(rowLabel(label))
-                addView(weightSpacer())
-                controls.forEach { addView(it) }
+                val cluster = LinearLayout(this@PlayerActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    controls.forEach { addView(it) }
+                }
+                val scroller = HorizontalScrollView(this@PlayerActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    clipToPadding = false
+                    clipChildren = false
+                    addView(
+                        cluster,
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        )
+                    )
+                }
+                addView(
+                    rowLabel(label),
+                    LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ).apply { marginEnd = (8 * density).toInt() }
+                )
+                addView(
+                    scroller,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                )
             }
 
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
@@ -5360,12 +5414,20 @@ class PlayerActivity : ComponentActivity() {
                     AppMediaItem(providerId = "", id = "", title = query, type = MediaType.MOVIE)
                 }
                 val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
-                val found = withContext(Dispatchers.IO) {
-                    addons.flatMap { addon ->
-                        runCatching {
-                            withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(q, episode) }
-                        }.getOrNull().orEmpty()
+                // Per-addon outcome, not just a flat list of tracks: when
+                // nothing comes back, the ids each addon was asked with are what
+                // makes the failure readable (see the status line below).
+                val lookups = withContext(Dispatchers.IO) {
+                    addons.map { addon ->
+                        val lookup = runCatching {
+                            withTimeoutOrNull(ADDON_SUBTITLE_MS) {
+                                addon.subtitlesForDetailed(q, episode)
+                            }
+                        }.getOrNull()
+                        addon.config.name to lookup
                     }
+                }
+                val found = lookups.flatMap { it.second?.tracks.orEmpty() }
                         .distinctBy { it.url }
                         .sortedByDescending { s ->
                             val lang = s.lang.lowercase()
@@ -5375,14 +5437,25 @@ class PlayerActivity : ComponentActivity() {
                                 else -> 0
                             }
                         }
-                }
                 if (isFinishing || isDestroyed) return@launch
                 setBusy(false)
                 results.removeAllViews()
                 if (found.isEmpty()) {
+                    // What was ASKED is part of the answer. OpenSubtitles v3
+                    // answers only `tt…` ids — a `tmdb:` id or a bare name gets
+                    // an empty list with HTTP 200 — so "no subtitles found" on
+                    // every title is almost always "the tt id could not be
+                    // resolved", and saying which ids were tried turns a dead end
+                    // into a bug report that can be acted on.
+                    val ids = lookups.flatMap { it.second?.idsTried.orEmpty() }.distinct()
+                    val counts = lookups.joinToString(", ") { (name, lookup) ->
+                        name + " " + (lookup?.tracks?.size ?: 0).toString()
+                    }
                     setStatus(
                         I18n.t("No subtitles found for \"%s\"").replace("%s", query) + " " +
-                            I18n.t("Try the title in English.")
+                            if (ids.isEmpty()) I18n.t("Try the title in English.")
+                            else I18n.t("Asked %s").replace("%s", counts) + " · " +
+                                ids.joinToString(", ")
                     )
                     return@launch
                 }

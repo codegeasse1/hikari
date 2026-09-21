@@ -4214,6 +4214,31 @@ private fun ProductionRow(
  * anyway), and a logo that cannot be fetched or decoded falls back to the
  * company's initials so the row never shows an empty box.
  */
+/**
+ * The production-company logos already decoded this session, keyed by URL.
+ *
+ * The row they live in is a LazyRow, so a logo scrolled out of view has its
+ * cell disposed and its `remember`ed bitmap dropped. Without this cache that
+ * meant a visible hole (initials, or a bare plate) for the second or two it took
+ * to fetch and decode the same image again every time the user scrolled back —
+ * the reported "thumbnail on that provider becomes blank when I scroll, and
+ * loads again when I come back".
+ *
+ * An [android.util.LruCache] of ~96 logos is a bounded few MB (these wordmarks
+ * are small transparent PNGs) and is process-wide, so a studio's logo is also
+ * instant on the NEXT detail page that lists it.
+ */
+private object CompanyLogoCache {
+    private val cache = object :
+        android.util.LruCache<String, Pair<android.graphics.Bitmap, Boolean>>(96) {}
+
+    fun get(key: String): Pair<android.graphics.Bitmap, Boolean>? = cache.get(key)
+
+    fun put(key: String, bitmap: android.graphics.Bitmap, light: Boolean) {
+        runCatching { cache.put(key, bitmap to light) }
+    }
+}
+
 @Composable
 private fun CompanyLogoTile(
     logoUrl: String?,
@@ -4221,12 +4246,21 @@ private fun CompanyLogoTile(
     modifier: Modifier = Modifier,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val key = logoUrl.orEmpty() + "|" + name
-    var art by remember(key) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var light by remember(key) { mutableStateOf<Boolean?>(null) }
+    // A logo that has been drawn once is kept in memory for the rest of the
+    // session (see [CompanyLogoCache]). This row is a LazyRow: scrolling a logo
+    // off-screen DISPOSES its cell, and re-entering it used to start from
+    // nothing — so the tile flashed its initials (a "blank" thumbnail) until
+    // Coil fetched and decoded the very same bytes again. That is the reported
+    // "the one I just scrolled goes blank, and when I scroll back it loads
+    // again". The cache is keyed by the logo URL alone: the same studio appears
+    // on many detail pages, and the name only matters for the fallback.
+    val key = logoUrl.orEmpty().ifBlank { "name|" + name }
+    val memory = remember(key) { CompanyLogoCache.get(key) }
+    var art by remember(key) { mutableStateOf(memory?.first) }
+    var light by remember(key) { mutableStateOf(memory?.second) }
 
     LaunchedEffect(key) {
-        if (logoUrl.isNullOrBlank()) return@LaunchedEffect
+        if (art != null || logoUrl.isNullOrBlank()) return@LaunchedEffect
         val drawable = runCatching {
             withContext(Dispatchers.IO) {
                 coil.Coil.imageLoader(context).execute(
@@ -4239,7 +4273,9 @@ private fun CompanyLogoTile(
         }.getOrNull() ?: return@LaunchedEffect
         val bitmap = runCatching { drawableToBitmap(drawable) }.getOrNull()
             ?: return@LaunchedEffect
-        light = logoIsLight(bitmap)
+        val lit = logoIsLight(bitmap)
+        CompanyLogoCache.put(key, bitmap, lit)
+        light = lit
         art = bitmap
     }
 
