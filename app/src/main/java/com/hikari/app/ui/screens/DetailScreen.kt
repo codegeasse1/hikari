@@ -496,13 +496,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // invent an unrelated "original title" and then search 250 repos for
             // it, which is far worse than the problem being fixed.
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
+            // A live TV channel's NAME is not a title any database knows: the
+            // English-name lookup below searched TMDB with "Sony TV HD" and
+            // "Pardesi TV" for nothing. IPTV items keep their own name as the
+            // name every provider lookup uses (see IptvMark).
+            val isIptv = com.hikari.app.data.IptvMark.isIptvProvider(providerId)
             val tmdbNames = if (isTmdbRow) {
                 withTimeoutOrNull(6_000) {
                     runCatching { TmdbMeta.titlesForId(mediaId, type) }.getOrNull()
                 }
             } else null
             val originalName = tmdbNames?.second?.takeIf { it.isNotBlank() }
-                ?: englishSearchName(title, isTmdbRow)
+                ?: if (isIptv) null else englishSearchName(title, isTmdbRow)
             val lookupNames = listOfNotNull(title.takeIf { it.isNotBlank() }, originalName)
                 .distinctBy { it.lowercase() }
             val activeProvider = if (manager.byId(providerId) != null) {
@@ -567,7 +572,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // reported "it shows no IMDb/TMDB rating and no similar titles on
             // some titles". Now the page fills in from three directions at once.
             val metaDeferred = async { runCatching { repo.metaFor(base) }.getOrDefault(base) }
-            launch { loadShelves(metaDeferred.await()) }
+            // IPTV: a live channel gets NO TMDB shelves — no ratings strip, no
+            // Cast/Trailers, and above all no Related/Similar row, which for a
+            // channel name ("Sony TV HD") returned a shelf of unrelated films.
+            // See [com.hikari.app.data.IptvMark].
+            if (!com.hikari.app.data.IptvMark.of(base)) {
+                launch { loadShelves(metaDeferred.await()) }
+            }
             withContext(Dispatchers.IO) {
                 // The origin's own meta corrects the item's TYPE before the
                 // episode list is asked for — CS3 plugins can label a series page

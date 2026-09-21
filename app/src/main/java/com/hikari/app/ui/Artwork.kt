@@ -2,6 +2,7 @@ package com.hikari.app.ui
 
 import androidx.compose.runtime.mutableStateOf
 import com.hikari.app.HikariApp
+import com.hikari.app.data.IptvMark
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.TmdbMeta
 import java.io.File
@@ -133,7 +134,18 @@ object Artwork {
             try {
                 // The lookup is suspending; this worker is a plain thread, so
                 // bridge into it. Blocking a daemon artwork thread is fine.
-                val res = runCatching { runBlocking { TmdbMeta.artwork(item) } }.getOrNull()
+                //
+                // A LIVE TV CHANNEL never reaches TMDB (see [IptvMark]): a
+                // channel has no TMDB entry, so the title match returned an
+                // unrelated film's poster — which is what put film artwork on
+                // IPTV rows. Its tile is drawn locally, offline, from the
+                // channel's own name instead ([IptvArt]).
+                val res = if (IptvMark.of(item)) {
+                    runCatching { IptvArt.tile(item)?.let { Pair<String?, String?>(it, null) } }
+                        .getOrNull()
+                } else {
+                    runCatching { TmdbMeta.artwork(item) }.getOrNull()
+                }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
                 saveCache()
                 revision.value = revisionCounter.incrementAndGet()

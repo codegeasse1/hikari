@@ -283,7 +283,17 @@ data class HistoryEntry(
     val uniqueKey: String get() = "$providerId|$type|$mediaId|$episodeId"
 }
 
-data class SubtitleSource(val lang: String, val url: String)
+data class SubtitleSource(
+    val lang: String,
+    val url: String,
+    /**
+     * Which addon offered this track ("OpenSubtitles v3", "SubDL"). Shown as the
+     * subtitle row's second line, so two addons' identically-named tracks can be
+     * told apart in the player. Blank for a track a provider attached to its own
+     * stream.
+     */
+    val name: String = "",
+)
 
 /** DRM info for a protected stream, carried from the extracting extension so
  *  the player can open a matching media3 DRM session instead of showing a black

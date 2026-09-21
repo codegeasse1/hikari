@@ -92,6 +92,13 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val LANGUAGE = stringPreferencesKey("appLanguage")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
+        /**
+         * A MULTI pick for Home: the provider/collection keys the Home feed is
+         * built from when the user has long-pressed the source pill and picked
+         * several sources. Empty (or one entry, which is what a plain tap
+         * writes) means the single [HOME_PROVIDER] pick is in force.
+         */
+        val HOME_PROVIDERS = stringPreferencesKey("homeProviders")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
@@ -113,6 +120,18 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
         val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
+        /**
+         * Whether the IPTV tab's button is drawn in the taskbar. Its OWN
+         * preference rather than an entry in [HIDDEN_TABS] because IPTV has to
+         * be off by default on every install, including the ones that already
+         * have a hidden-tabs list stored: an entry in that list can only be
+         * written by the user, so a default-off tab could never be expressed
+         * there.
+         */
+        val IPTV_TAB = booleanPreferencesKey("showIptvTab")
+        /** Shape of the tiles on the IPTV tab's playlist/group grids (see
+         *  [TileShapes]: poster / square / wide). */
+        val IPTV_SHAPE = stringPreferencesKey("iptvTileShape")
         val APP_ICON = stringPreferencesKey("appIcon")
         /** Language TMDB titles are shown in. "" = follow the app language,
          *  "none" = leave TMDB on English, otherwise a TMDB code ("es-ES"). */
@@ -1114,6 +1133,49 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHomeProvider(id: String) {
         write("HOME_PROVIDER") { it[K.HOME_PROVIDER] = id }
+    }
+
+    /**
+     * The MULTI pick — every source key Home should draw when the user has
+     * selected more than one in the picker (see [setHomeProviders]).
+     */
+    fun homeProvidersFlow(): Flow<Set<String>> =
+        store.data.map { parseStringList(it[K.HOME_PROVIDERS]).toSet() }
+
+    suspend fun homeProviders(): Set<String> = homeProvidersFlow().first()
+
+    /**
+     * Saves a multi pick. Called with one key it is exactly a single pick — the
+     * old [setHomeProvider] preference is kept in step so a build that predates
+     * multi-select (and the Search tab's scope, which reads the same string)
+     * still agrees with what Home shows.
+     */
+    suspend fun setHomeProviders(ids: Set<String>) {
+        val list = ids.filter { it.isNotBlank() }.toList()
+        write("HOME_PROVIDERS") { it[K.HOME_PROVIDERS] = encodeStringList(list) }
+        if (list.size <= 1) {
+            write("HOME_PROVIDER") { it[K.HOME_PROVIDER] = list.firstOrNull().orEmpty() }
+        }
+    }
+
+    // ---- The IPTV tab (off by default; Settings → Taskbar buttons) ----
+
+    /** True when the IPTV button has been switched on in the taskbar settings. */
+    fun iptvTabFlow(): Flow<Boolean> =
+        store.data.map { it[K.IPTV_TAB] ?: false }
+
+    suspend fun iptvTab(): Boolean = iptvTabFlow().first()
+
+    suspend fun setIptvTab(shown: Boolean) {
+        write("IPTV_TAB") { it[K.IPTV_TAB] = shown }
+    }
+
+    /** Shape of the IPTV tab's tiles ([TileShapes] key; poster by default). */
+    fun iptvShapeFlow(): Flow<String> =
+        store.data.map { TileShapes.normalize(it[K.IPTV_SHAPE]) }
+
+    suspend fun setIptvShape(shape: String) {
+        write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
     }
 
     // ---- Per-extension auto-translate (WebView pages → English) ----

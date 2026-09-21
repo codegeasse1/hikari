@@ -64,8 +64,15 @@ object IptvPlaylist {
      * Parses [text] into channels, in playlist order. Duplicate stream URLs are
      * dropped (mirrors of the same channel are common), keeping the first name
      * seen for a URL.
+     *
+     * [base] is where the playlist itself was read from (its URL, or the local
+     * file path). A playlist's `tvg-logo` is not always absolute — plenty of
+     * panels write `//cdn.example.com/x.png`, `/logos/x.png`, or a bare relative
+     * path — and every one of those was DISCARDED (the old rule was "must start
+     * with http"), which left those channels on the placeholder icon forever.
+     * With the playlist's own address to resolve against they all load.
      */
-    fun parse(text: String, max: Int = 20_000): List<IptvChannel> {
+    fun parse(text: String, max: Int = 20_000, base: String = ""): List<IptvChannel> {
         val out = ArrayList<IptvChannel>()
         val seen = HashSet<String>()
         var pending: Pending? = null
@@ -95,10 +102,13 @@ object IptvPlaylist {
                             .takeIf { it.isNotBlank() }
                         val group = attrs["group-title"].orEmpty()
                             .ifBlank { attrs["group"].orEmpty() }
-                        val logo = attrs["tvg-logo"].orEmpty()
-                            .ifBlank { attrs["logo"].orEmpty() }
-                            .ifBlank { attrs["tvg-logo-small"].orEmpty() }
-                            .takeIf { it.startsWith("http") }
+                        val logo = resolveLogo(
+                            attrs["tvg-logo"].orEmpty()
+                                .ifBlank { attrs["logo"].orEmpty() }
+                                .ifBlank { attrs["tvg-logo-small"].orEmpty() }
+                                .ifBlank { attrs["logo-small"].orEmpty() },
+                            base,
+                        )
                         pending = Pending(name, logo, group, attrs["tvg-id"]?.takeIf { it.isNotBlank() })
                     }
                     // The group can also sit on its own line AFTER the #EXTINF.
@@ -133,6 +143,50 @@ object IptvPlaylist {
     /** The group a channel is listed under, with the playlists that declare no
      *  group at all collected in one place. */
     fun groupOf(c: IptvChannel): String = c.group.ifBlank { "Ungrouped" }
+
+    /**
+     * Turns a playlist's `tvg-logo` value into a URL that can actually be
+     * fetched, using [base] (where the playlist came from) for the relative
+     * forms. Null when there is nothing usable at all — the caller then draws
+     * its own tile (see [com.hikari.app.ui.IptvArt]).
+     *
+     * Spaces are percent-encoded: panels routinely ship `tvg-logo="http://host/my
+     * logo.png"`, and an unencoded space makes the image request fail outright.
+     */
+    fun resolveLogo(raw: String, base: String = ""): String? {
+        val v = raw.trim().replace(" ", "%20")
+        if (v.isEmpty()) return null
+        if (v.startsWith("http://") || v.startsWith("https://")) return v
+        if (v.startsWith("data:")) return v
+        // Protocol-relative ("//cdn.example.com/x.png"): inherit our own scheme,
+        // which is what a browser does with it.
+        if (v.startsWith("//")) return schemeOf(base) + v
+        // Root-relative ("/logos/x.png"): the playlist's own host.
+        if (v.startsWith("/")) return originOf(base)?.plus(v)
+        if (v.contains('/')) {
+            val first = v.substringBefore('/')
+            // "cdn.example.com/x.png" is a host with no scheme; "logos/x.png" is
+            // a path on the playlist's host.
+            return if (first.contains('.')) "http://$v" else originOf(base)?.plus("/$v")
+        }
+        // A bare filename has no host to resolve against — unusable on its own.
+        return null
+    }
+
+    /** "https:" / "http:" for [base], defaulting to https when unknown. */
+    private fun schemeOf(base: String): String =
+        if (base.trim().startsWith("http://", true)) "http:" else "https:"
+
+    /** "scheme://host[:port]" of [base], or null when [base] is not a URL. */
+    private fun originOf(base: String): String? {
+        val b = base.trim()
+        val i = b.indexOf("://")
+        if (i <= 0) return null
+        val rest = b.substring(i + 3)
+        val host = rest.substringBefore('/').substringBefore('?').substringBefore('#')
+        if (host.isBlank()) return null
+        return b.substring(0, i + 3) + host
+    }
 
     /** A channel name for a URL line that carried no `#EXTINF`: its last path
      *  segment, with the extension trimmed, else the host. */

@@ -1655,11 +1655,37 @@ class ContentRepository(private val manager: ProviderManager) {
      * end of the list. The concurrency gates/timeouts match [homeRows] so a
      * weak device still can't be flooded with requests.
      */
-    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> = flow {
+    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> =
+        homeRowsStreamingWhere { providerId == null || it.config.id == providerId }
+
+    /**
+     * The same feed for a MULTI pick: every selected provider's catalogs, in one
+     * feed (Home's provider pill long-press → several sources at once). Rows
+     * from different providers keep their own keys, and the curation order is
+     * the same [interleaveByProviderType] the single pick uses — so the feed
+     * reads exactly like a single-source one, only wider.
+     */
+    fun homeRowsStreamingFor(ids: Set<String>): Flow<List<CatalogRow>> =
+        homeRowsStreamingWhere { it.config.id in ids }
+
+    /**
+     * The one implementation behind [homeRowsStreaming] and
+     * [homeRowsStreamingFor]: rows are handed to the UI the moment EACH catalog
+     * lands instead of after every provider has finished. With several installs,
+     * waiting for all of them used to leave Home on a bare spinner for 20-25s;
+     * now the first fast provider paints in a few seconds and the rest fill in
+     * underneath.
+     *
+     * Rows are keyed by (providerIndex, catalogIndex) and emitted in that
+     * curated order, so late arrivals slot into place instead of jumping to the
+     * end of the list. The concurrency gates/timeouts match [homeRows] so a
+     * weak device still can't be flooded with requests.
+     */
+    private fun homeRowsStreamingWhere(
+        match: (ContentProvider) -> Boolean,
+    ): Flow<List<CatalogRow>> = flow {
         val active = interleaveByProviderType(
-            manager.providers.value.filter {
-                it.config.enabled && (providerId == null || it.config.id == providerId)
-            }
+            manager.providers.value.filter { it.config.enabled && match(it) }
         )
         if (active.isEmpty()) {
             emit(emptyList())

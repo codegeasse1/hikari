@@ -235,6 +235,11 @@ object Ratings {
      * the cache, and [ensure] is what warms it for titles nobody has opened.
      */
     fun cachedBadge(item: MediaItem): String? {
+        // A live TV channel has no review scores anywhere — and its cache key is
+        // its name, which can collide with a film's ("Obsession", "Premier").
+        // Returning null here is what keeps an IPTV row from borrowing a film's
+        // score badge.
+        if (IptvMark.of(item)) return null
         val key = cacheKey(item)
         val list = memory[key] ?: readDisk(key)?.also { memory[key] = it } ?: return null
         list.firstOrNull { it.source == RatingSource.IMDB }
@@ -299,6 +304,10 @@ object Ratings {
      *         refused and never retried stays blank for as long as it lives.
      */
     fun ensure(item: MediaItem): Boolean {
+        // IPTV: nothing to look up, and nothing a lookup could find would be
+        // right. Reported as "answered" so the poster cell stops asking (see
+        // [com.hikari.app.data.IptvMark]).
+        if (IptvMark.of(item)) return true
         val key = cacheKey(item)
         val cached = memory[key] ?: readDisk(key)?.also { memory[key] = it }
         // A score on file is the whole point of this call.

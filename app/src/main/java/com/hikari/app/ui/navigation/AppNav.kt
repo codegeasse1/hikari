@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -109,6 +110,19 @@ object Routes {
     const val DOWNLOADS = "downloads"
     /** Titles saved with the player's heart (the favourites store). */
     const val LIBRARY = "library"
+    /**
+     * The IPTV tab. Hidden by default — it appears in the taskbar only once the
+     * user switches it on in Settings → Taskbar buttons (see
+     * [com.hikari.app.data.AppStore.iptvTabFlow]), because most installs have no
+     * playlist at all and an eighth button costs every one of them room.
+     */
+    const val IPTV = "iptv"
+    /** One playlist's own page: its groups, each opening a paged channel grid. */
+    const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
+
+    /** Opens one IPTV playlist's group list. */
+    fun iptvPlaylist(providerId: String): String =
+        "iptv-playlist?pid=${Uri.encode(providerId)}"
     /**
      * Same Search screen, but pre-filled with a query (genre tags, "show all",
      * search suggestions…) and/or scoped to one provider (Home's "Search this
@@ -704,6 +718,7 @@ val BottomTabs = listOf(
     BottomTab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
     BottomTab(Routes.HISTORY, "History", Icons.Filled.History),
     BottomTab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
+    BottomTab(Routes.IPTV, "IPTV", Icons.Filled.LiveTv),
     BottomTab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -730,6 +745,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // Which taskbar buttons to draw (Settings → App Layout → Taskbar buttons).
     val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
+    // The IPTV button has its OWN switch and is OFF by default (see
+    // AppStore.iptvTabFlow): an install with no playlist should not carry an
+    // eighth button, and "off unless asked for" cannot be expressed as an entry
+    // in the hidden-tabs list, which only the user can write. Feeding it into
+    // the same set the bar filters on keeps every other part of the taskbar (the
+    // rail on a TV, the "never empty" rule) working unchanged.
+    val iptvTabFlow = remember { app.store.iptvTabFlow() }
+    val iptvTabOn by iptvTabFlow.collectAsState(initial = false)
+    val visibleTabs = if (iptvTabOn) hiddenTabs else hiddenTabs + Routes.IPTV
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
     val navStyle by navStyleFlow.collectAsState(initial = NavStyles.ANIMATED)
@@ -938,6 +962,16 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
             composable(Routes.HISTORY) { HistoryScreen(nav) }
             composable(Routes.LIBRARY) { LibraryScreen(nav) }
             composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
+            composable(Routes.IPTV) { IptvScreen(nav) }
+            composable(
+                route = Routes.IPTV_PLAYLIST,
+                arguments = listOf(
+                    navArgument("pid") { type = NavType.StringType },
+                )
+            ) { entry ->
+                val pid = Uri.decode(entry.arguments?.getString("pid").orEmpty())
+                IptvPlaylistScreen(nav, pid)
+            }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(Routes.COLLECTIONS) {
@@ -1041,7 +1075,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         if (showBar && !isTv) {
             AppBottomBar(
                 currentRoute = tabRoute,
-                hidden = hiddenTabs,
+                hidden = visibleTabs,
                 navStyle = navStyle,
                 expanded = barExpanded,
                 showLabels = showTabLabels,
@@ -1055,7 +1089,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
         if (showBar && isTv) {
             TvNavRail(
                 currentRoute = tabRoute,
-                hidden = hiddenTabs,
+                hidden = visibleTabs,
                 onNavigate = { route -> Routes.navigateTab(nav, route) },
                 modifier = Modifier.align(Alignment.CenterStart),
             )

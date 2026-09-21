@@ -613,11 +613,18 @@ private fun CollectionBlock(
  * the most room to read as a wide tile; a poster keeps its 2:3 proportions in a
  * narrower column; a square sits between the two. Heights follow from the
  * shape ([TileShapes.aspect]), so the row stays even.
+ *
+ * These are deliberately SMALL. At the old sizes (178/134/124dp) a phone showed
+ * barely two folder tiles at once, each one wrapped in its own glass panel with
+ * two lines of text under the cover — reported as "showing 2 poster only in
+ * screen, it's taking too much space because it wraps into glass box". A
+ * folder's tile is a bookmark, not a poster: three fit on a phone now, the
+ * covers are a little smaller, and the panel's padding is tighter.
  */
-private fun folderTileWidth(shape: String): Dp = when (TileShapes.normalize(shape)) {
-    TileShapes.WIDE -> 178.dp
-    TileShapes.SQUARE -> 134.dp
-    else -> 124.dp
+fun folderTileWidth(shape: String): Dp = when (TileShapes.normalize(shape)) {
+    TileShapes.WIDE -> 150.dp
+    TileShapes.SQUARE -> 112.dp
+    else -> 102.dp
 }
 
 /** The collection editor: name, its folders, and Save. */
@@ -3543,7 +3550,9 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             return@Column
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(150)),
+            // Three tiles on a phone, not two: the same "make it small" the
+            // folder rows got (a folder tile is a bookmark, not a poster).
+            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(100)),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3571,9 +3580,11 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
 }
 
 /** One folder tile: its cover (or the collection's, when the folder has none of
- *  its own), name and catalog count. */
+ *  its own), name and catalog count. Public because Home draws the same tile
+ *  for a personal catalog's folders (see
+ *  [com.hikari.app.ui.screens.CollectionFoldersOnHome] in HomeScreen.kt). */
 @Composable
-private fun FolderTile(
+fun FolderTile(
     folder: CollectionFolder,
     inheritedKind: String = CoverKinds.NONE,
     inheritedValue: String = "",
@@ -3593,7 +3604,7 @@ private fun FolderTile(
             .background(tokens.fillTop)
             .border(1.dp, tokens.border, GlassShape)
             .clickable(onClick = onClick)
-            .padding(10.dp),
+            .padding(7.dp),
     ) {
         CoverArt(
             kind = if (ownCover) folder.coverKind else inheritedKind,
@@ -3602,25 +3613,25 @@ private fun FolderTile(
             name = folder.name,
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
             folder.name,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 6.dp),
+            modifier = Modifier.padding(horizontal = 3.dp),
         )
         Text(
             folder.sources.firstOrNull()?.title?.let { first ->
                 if (folder.sources.size > 1) "$first +${folder.sources.size - 1}"
                 else first
             } ?: tr("Empty folder"),
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 6.dp),
+            modifier = Modifier.padding(horizontal = 3.dp),
         )
     }
 }

@@ -67,6 +67,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  fetch itself keeps running and still fills the cache if it lands). */
         private const val MANIFEST_TIMEOUT_MS = 15_000L
 
+        /** How long a subtitle lookup may spend resolving a title to an
+         *  IMDb/TMDB id before it gives up on that id route (the direct ids are
+         *  tried first and usually answer). */
+        private const val RESOLVE_TIMEOUT_MS = 8_000L
+
         /** How long a FAILED manifest fetch is remembered, so a dead host is not
          *  re-probed by every search/meta/episode/stream call in between. */
         private const val MANIFEST_RETRY_MS = 45_000L
@@ -708,6 +713,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     suspend fun subtitlesFor(item: MediaItem, episode: Episode?): List<SubtitleSource> {
         val m = loadManifest() ?: return emptyList()
         if (!hasResource(m, "subtitles")) return emptyList()
+        // What this track should be CALLED in the player's subtitle list: with
+        // several subtitle addons installed (OpenSubtitles v3 AND SubDL, say)
+        // two "English" rows are indistinguishable without it.
+        val addonName = m.optString("name").trim().ifBlank { config.name }
         val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
         val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
         val digits = item.id.takeWhile { it.isDigit() }
@@ -717,6 +726,15 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             TmdbBrowse.imdbId(digits, kind)?.let { candidates += it + epSuffix }
             candidates += "tmdb:$digits"
         }
+        // …and the ids the TITLE resolves to, which is the case that matters for
+        // an item that came from a SITE SCRAPER: a CloudStream item's id is a URL
+        // path on the site, an Aniyomi item's is a slug, and neither is anything a
+        // subtitle addon can answer for. The old code tried those ids (plus the
+        // digits of a TMDB id, which such an item does not have) and gave up, so
+        // an installed subtitle addon returned nothing at all — reported as "i
+        // added opensub but in player the subtitle from the added subtitle
+        // extension not showing in player".
+        resolvedCandidates(item, episode, kind).forEach { candidates += it }
         val segments = linkedSetOf(
             typeSegment(item.rawType, item.type),
             if (item.type == MediaType.SERIES) "series" else "movie",
@@ -726,9 +744,39 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             for (seg in segments) {
                 val json = getJson(resUrl("subtitles", seg, id)) ?: continue
                 val subs = parseSubs(json.optJSONArray("subtitles"))
-                if (subs.isNotEmpty()) return subs
+                if (subs.isNotEmpty()) {
+                    return subs.map { it.copy(name = addonName) }
+                }
             }
         }
         return emptyList()
     }
+
+    /**
+     * The IMDb/TMDB ids for [item] resolved from its NAME, as
+     * `/subtitles/{type}/{id}` ids (episode suffix included for a series).
+     *
+     * A site-scraper item has no id any addon recognises — its id belongs to the
+     * site it came from, not to a database — so the title is resolved through
+     * TMDB ([com.hikari.app.nuvio.TmdbResolver], the same resolver the rest of
+     * the app uses, cached and single-flight): the IMDb id first, because
+     * OpenSubtitles v3 declares `idPrefixes: ["tt"]` and answers nothing else,
+     * then the `tmdb:<id>` form SubDL is happiest with.
+     */
+    private suspend fun resolvedCandidates(
+        item: MediaItem,
+        episode: Episode?,
+        kind: String,
+    ): List<String> = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) {
+        val resolved = runCatching {
+            com.hikari.app.nuvio.TmdbResolver.resolve(item)
+        }.getOrNull() ?: return@withTimeoutOrNull emptyList()
+        val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
+        val media = resolved.mediaType.ifBlank { kind }
+        val out = ArrayList<String>(2)
+        val imdb = runCatching { TmdbBrowse.imdbId(resolved.tmdbId, media) }.getOrNull()
+        if (!imdb.isNullOrBlank()) out += imdb + epSuffix
+        out += "tmdb:" + resolved.tmdbId + epSuffix
+        out
+    }.orEmpty()
 }

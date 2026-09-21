@@ -34,6 +34,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
@@ -183,11 +184,31 @@ class PlayerActivity : ComponentActivity() {
      *  (OpenSubtitles v3, SubDL…), merged into the playing source's own tracks. */
     private var addonSubs: List<SubtitleSource> = emptyList()
 
+    /** True once [startAddonSubtitleFetch] has completed a pass for this title.
+     *  Opening the subtitle sheet asks the addons when they have not been asked
+     *  yet (the fetch usually races the user there), and never twice. */
+    private var addonSubsFetched = false
+
+    /** True while a pass is in flight, so opening the sheet twice cannot ask
+     *  every installed addon twice. */
+    private var addonSubsRunning = false
+
+    /** The subtitle sheet currently on screen, if any. The addons' tracks land
+     *  seconds into playback and attaching them rebuilds the whole track list,
+     *  so the sheet that is up (if it is) is laid out again with them — instead
+     *  of leaving the user looking at a list that is already out of date, which
+     *  is the "the subtitle from the added extension is not showing" report. */
+    private var subsDialog: Dialog? = null
+
     /** How many tracks the subtitle addons may contribute per session, and how
-     *  long one addon gets to answer. Both are deliberate: each track is a real
-     *  download when the source is prepared, and a subtitle addon that has
-     *  stopped answering must not be able to delay the attach. */
-    private val MAX_ADDON_SUBS = 10
+     *  long one addon gets to answer. Each track is a real download when the
+     *  source is prepared, but a subtitle addon answers per LANGUAGE — a film
+     *  routinely comes back with 30-odd tracks across a dozen languages — and a
+     *  cap of ten silently dropped everything the app's own language did not
+     *  sort to the front, which is half of the "only one or two subtitles show
+     *  up" report. The timeout is what protects the attach: an addon that has
+     *  stopped answering must not be able to hold playback hostage. */
+    private val MAX_ADDON_SUBS = 60
     private val ADDON_SUBTITLE_MS = 12_000L
 
     private var player: ExoPlayer? = null
@@ -656,6 +677,10 @@ class PlayerActivity : ComponentActivity() {
         val fileName: String,
         val text: String,
         val mime: String,
+        /** The ISO language the addon declared, for a track that was downloaded
+         *  from one — a file's NAME is what a hand-picked subtitle tells us,
+         *  but an addon states the language outright. */
+        val lang: String = "",
     ) {
         var uri: Uri? = null
         var forOffset: Long = Long.MIN_VALUE
@@ -3390,6 +3415,12 @@ class PlayerActivity : ComponentActivity() {
         iconRes: Int = 0,
         cancelable: Boolean = true,
         rowHosts: List<ViewGroup> = emptyList(),
+        /** Extra buttons for the sheet's own header line, as (iconRes, click)
+         *  pairs, drawn just before the ✕. A menu whose own rows are a long
+         *  list (subtitles: thirty tracks, then the appearance controls) needs a
+         *  way to reach its settings without scrolling to the bottom — this is
+         *  that way. */
+        headerActions: List<Pair<Int, () -> Unit>> = emptyList(),
     ): TextView? {
         val density = resources.displayMetrics.density
         // The halo is where the curved pane's neon blooms. A flat panel (every
@@ -3447,6 +3478,23 @@ class PlayerActivity : ComponentActivity() {
                 ).apply { marginEnd = (8 * density).toInt() })
             } else {
                 addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            }
+            headerActions.forEach { (icon, onClick) ->
+                addView(ImageView(this@PlayerActivity).apply {
+                    setImageResource(icon)
+                    imageTintList = ColorStateList.valueOf(0xE6FFFFFF.toInt())
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    background = ContextCompat.getDrawable(
+                        this@PlayerActivity, R.drawable.circle_glass_ripple
+                    )
+                    isClickable = true
+                    setPadding(
+                        (5 * density).toInt(), (5 * density).toInt(),
+                        (5 * density).toInt(), (5 * density).toInt()
+                    )
+                    setOnClickListener { onClick() }
+                }, LinearLayout.LayoutParams((24 * density).toInt(), (24 * density).toInt())
+                    .apply { marginEnd = (4 * density).toInt() })
             }
             if (cancelable) {
                 addView(TextView(this@PlayerActivity).apply {
@@ -4774,7 +4822,15 @@ class PlayerActivity : ComponentActivity() {
         }
         val params = p.trackSelectionParameters
         val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
-        val density = resources.displayMetrics.density
+
+        // Ask the subtitle addons for this title if they have not been asked
+        // yet. The fetch is fired at load as well, but it is a real network
+        // round trip (plus a TMDB resolve for a site-scraper item) and the user
+        // can open this sheet before it lands — which is exactly when the
+        // "installed OpenSubtitles but its subtitles aren't in the list" report
+        // comes from. Whichever of the two gets there first, the other is a
+        // no-op.
+        if (!addonSubsFetched && !addonSubsRunning) startAddonSubtitleFetch()
 
         val rows = mutableListOf<TrackRow>()
         var overrideSelected = false
@@ -4820,6 +4876,35 @@ class PlayerActivity : ComponentActivity() {
         // track list, and it is an action row like any other. The rows'
         // positions are captured here rather than written as literals below, so
         // adding one can never silently shift the meaning of another.
+        //
+        // Appearance/sync/POSITION used to be the last four rows of this list,
+        // which made them unreachable exactly when they were needed: a title
+        // with thirty subtitle tracks put them below thirty rows of scrolling
+        // (the reported "to change the caption style I have to scroll all the
+        // way down"). They are their own sheet now, reached from here AND from
+        // the gear in this panel's header — so they are one tap away no matter
+        // how long the track list is.
+        val settingsRow = options.size
+        options.add(
+            GlassOption(
+                I18n.t("Subtitle settings"),
+                I18n.t("Style, size, sync and position"),
+                iconRes = R.drawable.ic_settings,
+                marker = RowMarker.ICON,
+            )
+        )
+        // Subtitles this device does not have, from the subtitle addons: the
+        // addons answer per language, so this is how a second language or a
+        // better-timed release is found without leaving the player.
+        val searchRow = options.size
+        options.add(
+            GlassOption(
+                I18n.t("Load from internet"),
+                I18n.t("Search every subtitle addon"),
+                iconRes = R.drawable.ic_search,
+                marker = RowMarker.ICON,
+            )
+        )
         val addSubRow = options.size
         options.add(
             GlassOption(
@@ -4857,53 +4942,21 @@ class PlayerActivity : ComponentActivity() {
             )
         }
 
-        // Compact pill-shaped translucent +/- buttons, matching the app's glass
-        // theme. They MUST stay narrow: the dialog's content area is only a few
-        // hundred dp wide, and wider pills used to push the −/+ buttons past the
-        // dialog's edge where they got clipped (looked like the Sync row was
-        // "collapsing").
-        fun pill(text: String, onClick: () -> Unit): TextView {
-            val bg = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 999f
-                setColor(0x1AFFFFFF.toInt())
-                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.55f))
-            }
-            return TextView(this).apply {
-                this.text = text
-                dpText(11f)
-                setTextColor(0xFFFFFFFF.toInt())
-                gravity = Gravity.CENTER
-                background = bg
-                includeFontPadding = false
-                setPadding((9 * density).toInt(), (4 * density).toInt(), (9 * density).toInt(), (4 * density).toInt())
-                setOnClickListener { onClick() }
-            }
-        }
-        fun rowLabel(text: String): TextView = TextView(this).apply {
-            this.text = text
-            dpText(12f)
-            setTextColor(0xFFE6EAF3.toInt())
-            // The label keeps a fixed slice of the row so the controls' scroll
-            // area is the same on every row (and always the wider part).
-            maxWidth = (104 * density).toInt()
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        fun valueLabel(text: String): TextView = TextView(this).apply {
-            this.text = text
-            dpText(11f)
-            setTextColor(0xFF9AA5B5.toInt())
-            gravity = Gravity.CENTER
-            minWidth = (38 * density).toInt()
-        }
-        fun weightSpacer(): View = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        }
-
-        // Track rows use the shared accent list, then the three settings rows
-        // (size / sync / position) sit below them.
+        // Track rows use the shared accent list. Caption appearance, size, sync
+        // and position live in their own sheet now (see
+        // [showSubtitleSettingsDialog]) rather than after the tracks, where a
+        // long track list buried them.
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        // Only one subtitle sheet at a time: re-entry is how the addons' tracks
+        // are shown (they arrive after the sheet was built), and stacking a
+        // second copy on top of the first would leave the old one behind it.
+        subsDialog?.let { old ->
+            subsDialog = null
+            old.setOnDismissListener(null)
+            old.dismiss()
+        }
+        subsDialog = dialog
+        dialog.setOnDismissListener { if (subsDialog === dialog) subsDialog = null }
         val trackList = optionList()
         options.forEachIndexed { idx, option ->
             addOptionRow(trackList, option) {
@@ -4923,6 +4976,14 @@ class PlayerActivity : ComponentActivity() {
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                             .build()
+                    }
+                    settingsRow -> {
+                        dialog.dismiss()
+                        showSubtitleSettingsDialog()
+                    }
+                    searchRow -> {
+                        dialog.dismiss()
+                        showSubtitleSearchDialog()
                     }
                     addSubRow -> {
                         // Hand over to the system picker: whatever the user
@@ -4974,6 +5035,119 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(trackList, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+
+        // The whole panel scrolls (see presentGlass), so a long track list can
+        // never be cut off the bottom on a short screen.
+        presentGlass(
+            dialog,
+            "Subtitles",
+            root,
+            1000f,
+            hint = I18n.t("Applies while captions are on."),
+            iconRes = R.drawable.ic_subtitles,
+            rowHosts = listOf(trackList),
+            // Appearance/size/sync are one tap away from here no matter how many
+            // tracks the list holds — the gear is the answer to "I have to
+            // scroll all the way down to change the caption style".
+            headerActions = listOf(
+                R.drawable.ic_settings to {
+                    dialog.dismiss()
+                    showSubtitleSettingsDialog()
+                },
+                R.drawable.ic_search to {
+                    dialog.dismiss()
+                    showSubtitleSearchDialog()
+                },
+            ),
+        )
+    }
+
+    /**
+     * Subtitle appearance and timing: caption style, text size, sync offset and
+     * vertical position.
+     *
+     * These four rows used to be the tail of the subtitle sheet, which put them
+     * below the track list — and a film with thirty subtitle tracks (every
+     * subtitle addon answers per language) therefore put them thirty rows down,
+     * reachable only by scrolling the whole panel (the reported "if there are 15
+     * subtitles I have to scroll full down to change the caption style, text
+     * size and all"). They are a sheet of their own now: four rows, no track
+     * list, opened from the subtitle sheet's header gear or its "Subtitle
+     * settings" row.
+     */
+    private fun showSubtitleSettingsDialog() {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+
+        // Compact pill-shaped translucent +/- buttons, matching the app's glass
+        // theme. They MUST stay narrow: the dialog's content area is only a few
+        // hundred dp wide, and wider pills used to push the −/+ buttons past the
+        // dialog's edge where they got clipped (looked like the Sync row was
+        // "collapsing").
+        fun pill(text: String, onClick: () -> Unit): TextView {
+            val bg = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(0x1AFFFFFF.toInt())
+                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.55f))
+            }
+            return TextView(this).apply {
+                this.text = text
+                dpText(11f)
+                setTextColor(0xFFFFFFFF.toInt())
+                gravity = Gravity.CENTER
+                background = bg
+                includeFontPadding = false
+                setPadding((9 * density).toInt(), (4 * density).toInt(), (9 * density).toInt(), (4 * density).toInt())
+                setOnClickListener { onClick() }
+            }
+        }
+        fun rowLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            dpText(12f)
+            setTextColor(0xFFE6EAF3.toInt())
+            // The label keeps a fixed slice of the row so the controls' scroll
+            // area is the same on every row (and always the wider part).
+            maxWidth = (104 * density).toInt()
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        fun valueLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            dpText(11f)
+            setTextColor(0xFF9AA5B5.toInt())
+            gravity = Gravity.CENTER
+            minWidth = (38 * density).toInt()
+        }
+        fun weightSpacer(): View = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+        fun controlRow(label: String, vararg controls: View): LinearLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                clipToPadding = false
+                setPadding(
+                    (10 * density).toInt(), (6 * density).toInt(),
+                    (10 * density).toInt(), (6 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                    setColor(0x14FFFFFF.toInt())
+                }
+                addView(rowLabel(label))
+                addView(weightSpacer())
+                controls.forEach { addView(it) }
+            }
+
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
         fun applySize() {
             sizeValue.text = "${(subtitleScale * 100).toInt()}%"
@@ -4994,69 +5168,31 @@ class PlayerActivity : ComponentActivity() {
         }
         // Tapping the value restores the lifted default position.
         posValue.setOnClickListener { subtitlePosition = 0.14f; applyPos() }
-
         // Tapping the value resets it — cheaper than a whole extra "0" pill,
         // which was what pushed the −/+ buttons off the dialog's edge.
         syncValue.setOnClickListener { subtitleOffsetMs = 0L; applySync() }
 
-        fun controlRow(label: String, vararg controls: View): LinearLayout =
-            LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                clipToPadding = false
-                setPadding(
-                    (10 * density).toInt(), (6 * density).toInt(),
-                    (10 * density).toInt(), (6 * density).toInt()
-                )
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 999f
-                    setColor(0x14FFFFFF.toInt())
-                }
-                addView(rowLabel(label))
-                addView(weightSpacer())
-                controls.forEach { addView(it) }
-            }
-
-        // The three control rows live in their own container so the panel can
-        // bend them to the curve independently of the track list above them
-        // (see CurvedGlassPanel.bendHost). Registering a container AND one of
-        // its ancestors would bend the same rows twice.
-        val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(trackList, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-            addView(controls, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-        }
-        fun addControl(row: LinearLayout) {
-            controls.addView(row, LinearLayout.LayoutParams(
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun addRow(row: LinearLayout) {
+            list.addView(row, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                setMargins(
-                    (10 * density).toInt(), (7 * density).toInt(),
-                    (10 * density).toInt(), 0
-                )
+                setMargins((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), 0)
             })
         }
-        addControl(controlRow(
-            "Caption style",
+        addRow(controlRow(
+            I18n.t("Caption style"),
             valueLabel(subtitleStyle.summary()),
-            pill("Change") { dialog.dismiss(); showSubtitleStyleDialog() },
+            pill(I18n.t("Change")) { dialog.dismiss(); showSubtitleStyleDialog() },
         ))
-        addControl(controlRow(
-            "Text size",
+        addRow(controlRow(
+            I18n.t("Text size"),
             pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
             sizeValue,
             pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
         ))
-        addControl(controlRow(
-            "Sync",
+        addRow(controlRow(
+            I18n.t("Sync"),
             pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
             syncValue,
             pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
@@ -5064,23 +5200,297 @@ class PlayerActivity : ComponentActivity() {
         // Vertical position: "Higher" keeps more of the player's height
         // clear below the captions, lifting them off the bottom edge (and
         // out of the letterbox bar on a fitted/letterboxed video).
-        addControl(controlRow(
-            "Position",
-            pill("Lower") { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+        addRow(controlRow(
+            I18n.t("Position"),
+            pill(I18n.t("Lower")) { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
             posValue,
-            pill("Higher") { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+            pill(I18n.t("Higher")) { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
         ))
 
-        // The whole panel scrolls (see presentGlass), so the Track rows plus the
-        // size/sync controls can never be cut off the bottom on a short screen.
         presentGlass(
             dialog,
-            "Subtitles",
-            root,
-            1000f,
+            I18n.t("Subtitle settings"),
+            list,
+            620f,
             hint = I18n.t("Applies while captions are on."),
-            iconRes = R.drawable.ic_subtitles,
-            rowHosts = listOf(trackList, controls),
+            iconRes = R.drawable.ic_settings,
+            rowHosts = listOf(list),
+        )
+    }
+
+    /**
+     * "Load from internet": ask every installed subtitle addon for this title —
+     * the episode's, when what is playing is an episode — and apply whichever
+     * track the user taps.
+     *
+     * This is the manual half of what [startAddonSubtitleFetch] does on its own,
+     * and it exists because the automatic pass has to be conservative: it looks
+     * the title up by the name the item carries and takes whatever comes back.
+     * A release the database does not know under that name, or an episode of a
+     * show whose season numbering differs from the addon's, comes back empty —
+     * and then this, with the name typed the way the database has it, is what
+     * works. The field opens pre-filled with the title, so the common case is
+     * one tap on Search.
+     */
+    private fun showSubtitleSearchDialog() {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val status = TextView(this).apply {
+            dpText(10f)
+            setTextColor(0xFF9AA5B5.toInt())
+            includeFontPadding = false
+            visibility = View.GONE
+        }
+
+        val input = EditText(this).apply {
+            setText(favouriteItem?.title.orEmpty())
+            hint = I18n.t("Title to search for")
+            setHintTextColor(0x88FFFFFF.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            dpText(12f)
+            includeFontPadding = false
+            maxLines = 1
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(0x1AFFFFFF.toInt())
+                setStroke((1 * density).toInt().coerceAtLeast(1), 0x33FFFFFF)
+            }
+            setPadding(
+                (12 * density).toInt(), (8 * density).toInt(),
+                (12 * density).toInt(), (8 * density).toInt()
+            )
+        }
+
+        fun accentPill(text: String): TextView = TextView(this).apply {
+            this.text = text
+            dpText(11f)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 999f
+                setColor(withAlpha(accentMidColor, 0.22f))
+                setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.85f))
+            }
+            setPadding(
+                (14 * density).toInt(), (8 * density).toInt(),
+                (14 * density).toInt(), (8 * density).toInt()
+            )
+            isClickable = true
+            isFocusable = true
+        }
+
+        val searchBtn = accentPill(I18n.t("Search"))
+        val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        content.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(
+                    (10 * density).toInt(), (4 * density).toInt(),
+                    (10 * density).toInt(), (4 * density).toInt()
+                )
+                addView(input, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ).apply { marginEnd = (8 * density).toInt() })
+                addView(searchBtn)
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        content.addView(status, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(
+                (13 * density).toInt(), (8 * density).toInt(),
+                (13 * density).toInt(), 0
+            )
+        })
+        content.addView(results, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        fun setStatus(text: String?) {
+            status.text = text.orEmpty()
+            status.visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
+        }
+        fun setBusy(busy: Boolean) {
+            searchBtn.isEnabled = !busy
+            searchBtn.alpha = if (busy) 0.55f else 1f
+        }
+
+        val episode = currentEpisode()
+        fun runSearch() {
+            val query = input.text.toString().trim()
+            if (query.isBlank()) {
+                setStatus(I18n.t("Type a title to search for"))
+                return
+            }
+            results.removeAllViews()
+            setStatus(I18n.t("Searching…"))
+            setBusy(true)
+            val base = favouriteItem
+            lifecycleScope.launch {
+                val addons = runCatching {
+                    (applicationContext as HikariApp).providers.providers.value
+                        .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                        .filter { it.config.enabled }
+                }.getOrDefault(emptyList())
+                if (isFinishing || isDestroyed) return@launch
+                if (addons.isEmpty()) {
+                    setBusy(false)
+                    setStatus(I18n.t("No subtitle addon is installed"))
+                    return@launch
+                }
+                // The typed name IS the query: the item is rebuilt with no id and
+                // no original title so the addons resolve it by this name alone
+                // (a site-scraper item's id means nothing to them, and a
+                // localised display title would be looked up as-is).
+                val q = if (base != null) {
+                    base.copy(id = "", title = query, originalTitle = "", posterUrl = null)
+                } else {
+                    AppMediaItem(providerId = "", id = "", title = query, type = MediaType.MOVIE)
+                }
+                val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
+                val found = withContext(Dispatchers.IO) {
+                    addons.flatMap { addon ->
+                        runCatching {
+                            withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(q, episode) }
+                        }.getOrNull().orEmpty()
+                    }
+                        .distinctBy { it.url }
+                        .sortedByDescending { s ->
+                            val lang = s.lang.lowercase()
+                            when {
+                                wanted.isNotBlank() && lang.startsWith(wanted) -> 2
+                                lang.startsWith("en") -> 1
+                                else -> 0
+                            }
+                        }
+                }
+                if (isFinishing || isDestroyed) return@launch
+                setBusy(false)
+                results.removeAllViews()
+                if (found.isEmpty()) {
+                    setStatus(
+                        I18n.t("No subtitles found for \"%s\"").replace("%s", query) + " " +
+                            I18n.t("Try the title in English.")
+                    )
+                    return@launch
+                }
+                setStatus(I18n.t("Found %s tracks").replace("%s", "${found.size}"))
+                found.forEach { s ->
+                    addOptionRow(
+                        results,
+                        GlassOption(
+                            label = languageOf(s.lang) ?: s.lang.ifBlank { I18n.t("Subtitle") },
+                            sub = s.name.ifBlank { I18n.t("Subtitle addon") },
+                            iconRes = R.drawable.ic_download,
+                            marker = RowMarker.ICON,
+                        ),
+                    ) {
+                        dialog.dismiss()
+                        applyRemoteSubtitle(s)
+                    }
+                }
+            }
+        }
+        searchBtn.setOnClickListener { runSearch() }
+        input.setOnEditorActionListener { _, _, _ -> runSearch(); true }
+
+        presentGlass(
+            dialog,
+            I18n.t("Load from internet"),
+            content,
+            640f,
+            hint = if (episode != null) {
+                I18n.t("Season %s episode %s")
+                    .replaceFirst("%s", "${episode.season}")
+                    .replaceFirst("%s", "${episode.number}")
+            } else {
+                I18n.t("Searches every installed subtitle addon")
+            },
+            iconRes = R.drawable.ic_search,
+            rowHosts = listOf(results),
+        )
+        // The keyboard is the point of this panel: the user came here to type.
+        input.requestFocus()
+    }
+
+    /**
+     * Downloads one track a subtitle addon offered and starts showing it.
+     *
+     * The bytes get exactly the validation a hand-picked file gets — the same
+     * gzip/zip/UTF-16 decoding and the same "does it really carry cues" test —
+     * because an addon's URL can serve a landing page, a dead link or a
+     * cue-less stub just as easily as it can serve subtitles. Either way the
+     * user is TOLD: they asked for one specific track, so "nothing happened" is
+     * not an acceptable answer.
+     */
+    private fun applyRemoteSubtitle(s: SubtitleSource) {
+        if (s.url.isBlank()) return
+        val src = sources.getOrNull(currentIndex)
+        Toast.makeText(this, I18n.t("Downloading subtitle…"), Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val checked = withContext(Dispatchers.IO) {
+                fetchSubtitleText(s, src?.headers.orEmpty())
+            }
+            if (checked == null) {
+                Toast.makeText(
+                    this@PlayerActivity,
+                    I18n.t("That subtitle couldn't be downloaded"),
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@launch
+            }
+            val langName = languageOf(s.lang) ?: s.lang.ifBlank { I18n.t("Subtitle") }
+            val fileName = if (s.name.isNotBlank()) "$langName · ${s.name}" else langName
+            val label = USER_SUB_PREFIX + fileName
+            val mime = subtitleMimeOf(checked, s.url)
+            // Written now, off the main thread, so the re-prepare below is a pure
+            // in-memory step and the track is up in the same breath.
+            val written = withContext(Dispatchers.IO) {
+                writeSubtitleFile(shiftSubtitleText(checked, subtitleOffsetMs, s.url), s.url, mime)
+            }
+            if (written == null) {
+                Toast.makeText(this@PlayerActivity, I18n.t("Couldn't read that file"), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            userSubs.removeAll { it.label == label }
+            userSubs.add(UserSubtitle(label, fileName, checked, mime, s.lang).also {
+                it.uri = written
+                it.forOffset = subtitleOffsetMs
+            })
+            // Asked for by name, so it outranks a previous "Off" and the
+            // "the provider's subtitle broke playback" bail-out alike.
+            textOff = false
+            noSubsRetry = false
+            Toast.makeText(this@PlayerActivity, I18n.t("Subtitle added"), Toast.LENGTH_SHORT).show()
+            reattachSubtitles(label)
+        }
+    }
+
+    /**
+     * What the automatic pass asks the subtitle addons with, as (item, episode):
+     * the title being watched and, for a series, the episode the player was
+     * opened on. Kept in one place because both the automatic fetch and the
+     * "load from internet" search have to ask for exactly the same thing.
+     */
+    private fun currentEpisode(): Episode? {
+        val number = intent.getIntExtra("histEpisodeNumber", 0)
+        if (number <= 0) return null
+        return Episode(
+            number = number,
+            id = intent.getStringExtra("histEpisodeId").orEmpty(),
+            season = intent.getIntExtra("histEpisodeSeason", 0).coerceAtLeast(1),
         )
     }
 
@@ -6451,24 +6861,20 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun startAddonSubtitleFetch() {
         val item = favouriteItem ?: return
-        val epSeason = intent.getIntExtra("histEpisodeSeason", 0)
-        val epNumber = intent.getIntExtra("histEpisodeNumber", 0)
-        val episode = if (epNumber > 0) {
-            Episode(
-                number = epNumber,
-                id = intent.getStringExtra("histEpisodeId").orEmpty(),
-                season = epSeason.coerceAtLeast(1),
-            )
-        } else {
-            null
-        }
+        if (addonSubsFetched || addonSubsRunning) return
+        addonSubsRunning = true
+        val episode = currentEpisode()
         lifecycleScope.launch {
             val addons = runCatching {
                 (applicationContext as HikariApp).providers.providers.value
                     .filterIsInstance<com.hikari.app.providers.StremioAddon>()
                     .filter { it.config.enabled }
             }.getOrDefault(emptyList())
-            if (addons.isEmpty()) return@launch
+            if (addons.isEmpty()) {
+                addonSubsRunning = false
+                addonSubsFetched = true
+                return@launch
+            }
             val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
             val tracks = withContext(Dispatchers.IO) {
                 addons.flatMap { addon ->
@@ -6489,6 +6895,9 @@ class PlayerActivity : ComponentActivity() {
                     }
                     .take(MAX_ADDON_SUBS)
             }
+            addonSubsRunning = false
+            addonSubsFetched = true
+            if (isFinishing || isDestroyed) return@launch
             if (tracks.isEmpty()) return@launch
             addonSubs = tracks
             com.hikari.app.data.Logs.log(
@@ -6499,6 +6908,14 @@ class PlayerActivity : ComponentActivity() {
             // The user chose "Off": keep the tracks (the menu will list them)
             // but do not re-prepare the item just to add them.
             if (!textOff) reattachSubtitles(null)
+            // The sheet is open — and attaching the tracks has just rebuilt the
+            // whole track list under it, so what it is showing is stale. Lay it
+            // out again with them in it: opening the subtitle menu while the
+            // addons were still answering used to leave the user staring at a
+            // list that never gained them, which is the "I installed
+            // OpenSubtitles and its subtitles never show up in the player"
+            // report.
+            if (subsDialog != null) showSubsDialog(waitedForTracks = true)
         }
     }
 
@@ -7083,7 +7500,7 @@ class PlayerActivity : ComponentActivity() {
         // intermediate only works as long as every setter keeps returning the
         // concrete type — chaining to build() is what the provider-subtitle path
         // above already does, and is the shape that is guaranteed to compile.
-        val language = langFromFileName(sub.fileName)
+        val language = sub.lang.takeIf { it.isNotBlank() } ?: langFromFileName(sub.fileName)
         return if (language != null) {
             MediaItem.SubtitleConfiguration.Builder(uri)
                 .setMimeType(sub.mime)
@@ -7233,11 +7650,33 @@ class PlayerActivity : ComponentActivity() {
                 val shifted = shiftSubtitleText(raw, subtitleOffsetMs, s.url)
                 val mime = subtitleMimeOf(shifted, s.url)
                 val uri = writeSubtitleFile(shifted, s.url, mime) ?: return@mapNotNull null
-                MediaItem.SubtitleConfiguration.Builder(uri)
-                    .setMimeType(mime)
-                    .setLanguage(s.lang)
-                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                    .build()
+                // Two shapes rather than a stored builder: the setters'
+                // return type is media3's self-typed Builder, so keeping a
+                // reference to the intermediate only works as long as every
+                // setter keeps returning the concrete type — chaining to
+                // build() is the shape that is guaranteed to compile (see
+                // [userSubConfig]).
+                //
+                // The addon's NAME goes on the label: a subtitle addon answers
+                // per language, so a film routinely comes back with eight
+                // "English" rows and no way to tell a good release from a bad
+                // one — and with two addons installed (OpenSubtitles v3 AND
+                // SubDL) the user has no idea which of them found what. That is
+                // the one thing that makes a long track list usable.
+                if (s.name.isNotBlank()) {
+                    MediaItem.SubtitleConfiguration.Builder(uri)
+                        .setMimeType(mime)
+                        .setLanguage(s.lang)
+                        .setLabel(s.name)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                } else {
+                    MediaItem.SubtitleConfiguration.Builder(uri)
+                        .setMimeType(mime)
+                        .setLanguage(s.lang)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                }
             }
         }
 

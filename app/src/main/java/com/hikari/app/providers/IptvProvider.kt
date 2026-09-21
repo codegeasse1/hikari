@@ -71,6 +71,22 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         private const val ALL = "iptv-all"
         private const val GROUP_PREFIX = "iptv-group:"
 
+        /**
+         * The catalog id of a playlist's "all channels" shelf. Public, with
+         * [catalogIdForGroup], because the IPTV tab builds the same refs the
+         * provider hands out — a group tile then links straight to the paged
+         * channel grid instead of a second, parallel code path.
+         */
+        const val CATALOG_ALL = ALL
+
+        /** The catalog id of one group's shelf. */
+        fun catalogIdForGroup(group: String): String = GROUP_PREFIX + group
+
+        /** The group name inside a [catalogIdForGroup] id (null for anything
+         *  else, including [CATALOG_ALL]). */
+        fun groupOfCatalogId(id: String): String? =
+            id.takeIf { it.startsWith(GROUP_PREFIX) }?.removePrefix(GROUP_PREFIX)
+
         private val HEADERS = mapOf(
             "Accept" to "application/x-mpegurl, application/vnd.apple.mpegurl, text/plain, */*",
         )
@@ -93,7 +109,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             val text = readSource(url) ?: return@withContext Result.failure(
                 Exception("Could not download that playlist — check the link."),
             )
-            val list = IptvPlaylist.parse(text)
+            val list = IptvPlaylist.parse(text, base = url)
             val n = if (list.isEmpty() && url.startsWith("http")) 1 else list.size
             if (n == 0) return@withContext Result.failure(Exception("No channels found in that playlist."))
             previewCache[url] = n
@@ -158,7 +174,10 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             withTimeoutOrNull(FETCH_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
                     val text = readSource(selfCheckUrl)
-                    if (text == null) null else IptvPlaylist.parse(text)
+                    // The playlist's own address is handed to the parser so a
+                    // relative `tvg-logo` resolves to a real URL (see
+                    // IptvPlaylist.resolveLogo).
+                    if (text == null) null else IptvPlaylist.parse(text, base = selfCheckUrl)
                 }
             }
         }.getOrNull()

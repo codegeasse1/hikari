@@ -11,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +64,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -74,7 +78,9 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.Collection
+import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.ContentRepository
+import com.hikari.app.data.CoverKinds
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
@@ -101,6 +107,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * A Home pick is stored as one string in the `homeProvider` preference: either
@@ -124,16 +131,44 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
+    /**
+     * The saved Home pick(s), in the order they were picked.
+     *
+     * EMPTY means "All providers" (the default), ONE entry is the ordinary
+     * single pick, and SEVERAL entries are a MULTI pick — made by holding a row
+     * in the picker for 1.5s and ticking others (see [setSelection]). Every
+     * entry is the same string the picker stores a single pick under: an
+     * extension's id, or `collection:<id>` for a personal catalog, so one list
+     * carries both kinds of choice.
+     */
+    private val _selection = MutableStateFlow<List<String>>(emptyList())
+    val selection: StateFlow<List<String>> = _selection.asStateFlow()
+
+    /** The single pick, or null while the user is on All or on a multi pick —
+     *  what the source pill's label and the header actions act on. */
     private val _selectedProvider = MutableStateFlow<String?>(null)
     val selectedProvider: StateFlow<String?> = _selectedProvider.asStateFlow()
 
     val providers: StateFlow<List<ContentProvider>> = manager.providers
+
+    /** Sets both views of the same pick from one place, so they can never
+     *  disagree about what Home is showing. */
+    private fun applySelection(keys: List<String>) {
+        val clean = keys.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        _selection.value = clean
+        _selectedProvider.value = clean.singleOrNull()
+    }
 
     private var loadJob: kotlinx.coroutines.Job? = null
 
     /** The collection the current feed was built from — lets the collections
      *  store (edited in Settings) invalidate exactly the affected feed. */
     private var lastLoadedCollection: Collection? = null
+
+    /** The collections the CURRENT selection resolves to, as the store last
+     *  reported them. Any difference (a pick, an unpick, an edit, a delete)
+     *  rebuilds the feed (see the collectionsFlow watcher). */
+    private var watchedCollections: List<Collection> = emptyList()
 
     // Last successful home feed per selected-provider key ("all" when the user
     // is on the combined feed). Returning to Home, or re-picking the same
@@ -150,21 +185,30 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         viewModelScope.launch {
             // Restore the user's last pick ("All" when never picked). A pick can
             // be an installed extension OR a collection ("collection:<id>") —
-            // the same stored preference carries both.
-            _selectedProvider.value = store.homeProvider().ifBlank { null }
+            // the same stored string carries both — and there may be several of
+            // them (a multi pick lives in its own preference; the single one is
+            // the fallback for every install that predates multi-select).
+            val multi = store.homeProviders().toList()
+            applySelection(
+                if (multi.isNotEmpty()) multi
+                else listOfNotNull(store.homeProvider().ifBlank { null })
+            )
             loadInternal()
         }
         viewModelScope.launch {
             manager.providers.collect { ps ->
-                val sel = _selectedProvider.value
-                // Only an EXTENSION pick can be invalidated by the installed
-                // list changing; a collection pick is resolved against the
-                // collections store instead (see loadInternal).
-                if (sel != null && !isCollectionKey(sel) &&
-                    ps.none { it.config.enabled && it.config.id == sel }
-                ) {
-                    _selectedProvider.value = null
-                    store.setHomeProvider("")
+                val sel = _selection.value
+                // Only EXTENSION picks can be invalidated by the installed list
+                // changing; a collection pick is resolved against the
+                // collections store instead (see loadInternal). One extension
+                // being uninstalled drops just that pick, so the rest of a multi
+                // pick (and the user's other choices) survive it.
+                val valid = sel.filter { key ->
+                    isCollectionKey(key) || ps.any { it.config.enabled && it.config.id == key }
+                }
+                if (valid != sel) {
+                    applySelection(valid)
+                    viewModelScope.launch { store.setHomeProviders(valid.toSet()) }
                 }
                 loadInternal()
             }
@@ -175,10 +219,17 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // Watching the store means an edit (or a delete) lands on Home by
             // itself.
             store.collectionsFlow().collect { list ->
-                val sel = _selectedProvider.value
-                if (sel == null || !isCollectionKey(sel)) return@collect
-                val current = list.firstOrNull { it.id == collectionIdOf(sel) }
-                if (current != lastLoadedCollection) loadInternal()
+                val sel = _selection.value
+                val picked = sel.filter { isCollectionKey(it) }
+                    .mapNotNull { key -> list.firstOrNull { it.id == collectionIdOf(key) } }
+                if (picked != watchedCollections) {
+                    // A collection was picked, unpicked, edited or deleted: a
+                    // personal catalog picked on its own IS its folder tiles, and
+                    // inside a multi pick its shelves are baked into the feed, so
+                    // either way the screen has to be rebuilt from the store.
+                    watchedCollections = picked
+                    loadInternal()
+                }
             }
         }
         viewModelScope.launch {
@@ -200,10 +251,65 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     private fun collectionIdOf(key: String): String = key.removePrefix(COLLECTION_PREFIX)
 
     fun selectProvider(id: String?) {
-        if (_selectedProvider.value == id) return
-        _selectedProvider.value = id
-        viewModelScope.launch { store.setHomeProvider(id ?: "") }
+        setSelection(if (id == null) emptyList() else listOf(id))
+    }
+
+    /**
+     * Saves a pick of one or more sources (the picker's Done button), and
+     * rebuilds the feed from it. An EMPTY list is "All providers".
+     *
+     * The selection is what Home draws from, and it survives leaving the screen
+     * (and a restart) through [com.hikari.app.data.AppStore.setHomeProviders].
+     */
+    fun setSelection(ids: List<String>) {
+        val clean = ids.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (clean == _selection.value) return
+        applySelection(clean)
+        viewModelScope.launch { store.setHomeProviders(clean.toSet()) }
         viewModelScope.launch { loadInternal() }
+    }
+
+    /**
+     * The FILTERED row stream for the current pick(s).
+     *
+     * One collection picked on its own is NOT handled here: Home shows that
+     * collection's FOLDERS instead of its contents (see HomeScreen), because a
+     * personal catalog is a set of folders and collapsing them into shelves hid
+     * exactly what the user built ("in home it show same folder not its
+     * extracted catalog from inside").
+     *
+     * A multi pick merges: every extension's feed, plus one collection's rows per
+     * collection chosen — with the LATEST list from each source concatenated, so
+     * a fast extension's rows paint immediately while the slower ones are still
+     * arriving (merging the raw flows would flip-flop between partial lists).
+     */
+    private fun rowsFlowFor(
+        picks: List<String>,
+        saved: List<Collection>,
+    ): kotlinx.coroutines.flow.Flow<List<CatalogRow>> {
+        val extensionIds = picks.filterNot { isCollectionKey(it) }.toSet()
+        val pickedCollections = picks.filter { isCollectionKey(it) }
+            .mapNotNull { key -> saved.firstOrNull { it.id == collectionIdOf(key) } }
+        val parts = ArrayList<kotlinx.coroutines.flow.Flow<List<CatalogRow>>>()
+        if (extensionIds.isNotEmpty()) parts += repo.homeRowsStreamingFor(extensionIds)
+        pickedCollections.forEach { parts += collections.pickRows(it) }
+        if (parts.isEmpty()) return repo.homeRowsStreamingFor(emptySet())
+        if (parts.size == 1) return parts[0]
+        return kotlinx.coroutines.flow.channelFlow {
+            val latest = arrayOfNulls<List<CatalogRow>>(parts.size)
+            val lock = Any()
+            parts.forEachIndexed { i, part ->
+                launch {
+                    part.collect { rows ->
+                        val combined = synchronized(lock) {
+                            latest[i] = rows
+                            latest.filterNotNull().flatten()
+                        }
+                        send(combined)
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -214,23 +320,33 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
      */
     private suspend fun loadInternal(forceRefresh: Boolean = false) {
         loadJob?.cancel()
-        val pick = _selectedProvider.value
+        val picks = _selection.value
         // A collection pick resolves to a saved collection; when it has been
         // deleted (or its id is stale) fall back to All instead of leaving the
         // user on an empty screen.
-        var collection: Collection? = null
-        if (pick != null && isCollectionKey(pick)) {
-            collection = runCatching { store.collection(collectionIdOf(pick)) }.getOrNull()
-            if (collection == null) {
-                _selectedProvider.value = null
-                viewModelScope.launch { store.setHomeProvider("") }
-            }
+        val known = runCatching { store.collections() }.getOrDefault(emptyList())
+        val kept = picks.filter { key ->
+            !isCollectionKey(key) || known.any { it.id == collectionIdOf(key) }
         }
-        val pickedCollection = collection
-        val key = if (pickedCollection != null) COLLECTION_PREFIX + pickedCollection.id
-        else (_selectedProvider.value ?: "all")
-        lastLoadedCollection = pickedCollection
+        if (kept != picks) {
+            applySelection(kept)
+            viewModelScope.launch { store.setHomeProviders(kept.toSet()) }
+        }
+        // A collection picked ON ITS OWN: Home draws its folder tiles (below),
+        // not a feed, so no rows are loaded at all.
+        val folderCollection = kept.singleOrNull()
+            ?.takeIf { isCollectionKey(it) }
+            ?.let { key -> known.firstOrNull { it.id == collectionIdOf(key) } }
+        val key = if (kept.isEmpty()) "all" else kept.joinToString(",")
+        lastLoadedCollection = folderCollection
         val cached = homeCache[key]
+        if (folderCollection != null) {
+            // Folders are already in memory (the collections store), so the
+            // folder strip paints on the first frame; there is nothing to fetch.
+            _rows.value = emptyList()
+            _loading.value = false
+            return
+        }
         if (cached != null && !forceRefresh) {
             // Stale-while-revalidate: show the previous feed immediately (no
             // spinner) and refresh underneath.
@@ -252,12 +368,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         // [com.hikari.app.work.BackgroundWork].
         val work = com.hikari.app.work.BackgroundWork.begin(
             when {
-                pickedCollection != null -> "Loading " + pickedCollection.name
                 key == "all" -> "Loading Home catalogs"
-                else -> "Loading " + (manager.byId(key)?.config?.name ?: "catalog")
+                kept.size == 1 -> "Loading " + (manager.byId(kept[0])?.config?.name ?: "catalog")
+                else -> "Loading " + kept.size + " sources"
             }
         ) { loadJob?.cancel() }
-        val loadedCollection = pickedCollection
         loadJob = viewModelScope.launch {
             // Row key -> poster-tokenized copy, so a partial update only
             // tokenizes the rows that just arrived. MRDS/51CG catalogs carry
@@ -266,15 +381,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // disk-cache token ([PosterLoader.model] resolves it back to bytes).
             val tokenCache = HashMap<String, CatalogRow>()
             var latest: List<CatalogRow> = emptyList()
-            val rowFlow = if (loadedCollection != null) {
-                // A collection pick: one shelf per CATALOG when the collection
-                // has a single folder (the user grouped sources, not shelves),
-                // one shelf per folder when it has several. See
-                // [CollectionsRepository.pickRows].
-                collections.pickRows(loadedCollection)
-            } else {
-                repo.homeRowsStreaming(_selectedProvider.value)
-            }
+            // One stream per source of the pick(s): a plain tap gives one
+            // extension's feed, a multi pick gives every chosen extension's feed
+            // plus a personal catalog's shelves — see [rowsFlowFor].
+            val rowFlow = rowsFlowFor(kept, known)
             rowFlow.collect { rows ->
                 val tokenized = withContext(Dispatchers.IO) {
                     rows.map { row ->
@@ -330,6 +440,7 @@ fun HomeScreen(nav: NavHostController) {
     val rows by vm.rows.collectAsState()
     val loading by vm.loading.collectAsState()
     val selected by vm.selectedProvider.collectAsState()
+    val selection by vm.selection.collectAsState()
     val providers by vm.providers.collectAsState()
     // Every ENABLED provider is offered here, including Stremio addons whose
     // manifest declares no catalogs of its own. Those used to be filtered out
@@ -377,9 +488,12 @@ fun HomeScreen(nav: NavHostController) {
     val collections by collectionsFlow.collectAsState(initial = emptyList())
     val selectedCollection = collections.firstOrNull { selected == "$COLLECTION_PREFIX${it.id}" }
     // The picker's label for the current pick: the extension's name, the
-    // collection's name, or nothing (All).
-    val selectedName = providers.firstOrNull { it.config.id == selected }?.config?.name
-        ?: selectedCollection?.name
+    // collection's name, or nothing (All). Several picks are counted instead.
+    val selectedName = when {
+        selection.size > 1 -> I18n.t("%s sources").replace("%s", selection.size.toString())
+        else -> providers.firstOrNull { it.config.id == selected }?.config?.name
+            ?: selectedCollection?.name
+    }
     // The header's per-extension actions (translate, Cloudflare verify) and the
     // "search inside this extension?" prompt only make sense for an extension,
     // so a collection pick leaves the header in its plain "All" shape.
@@ -590,14 +704,38 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            if (loading) {
+            // A personal catalog picked on its own shows ITS OWN FOLDERS — the
+            // same tiles its page draws in Settings ("Your own folders of
+            // catalogs, shown on Home") — instead of shelves of everything
+            // inside them. Tapping a folder enters it, which is the hierarchy
+            // the user built when they made the catalog: "in home it show same
+            // folder … i can click animation to enter in that animation box and
+            // see all catalog".
+            val folderPick = selectedCollection
+            if (folderPick != null) {
+                item(key = "collection-folders") {
+                    CollectionFoldersOnHome(
+                        collection = folderPick,
+                        onOpenFolder = { folder ->
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.collectionView(folderPick.id, folder.id),
+                            )
+                        },
+                        onShowAll = {
+                            Routes.safeNavigate(nav, Routes.collectionGrid(folderPick.id))
+                        },
+                    )
+                }
+            }
+            if (loading && folderPick == null) {
                 items(4) { ShimmerRow() }
             }
             // Two rows can carry the same key when an extension offers the same
             // catalog twice (or two catalogs under one name): a duplicated Lazy
             // key is a crash in Compose, not a warning, so repeats are dropped
             // before the feed is built (see [uniqueRows]).
-            uniqueRows.forEach { row ->
+            if (folderPick == null) uniqueRows.forEach { row ->
                 item(
                     key = row.key.ifBlank { "${row.providerName}|${row.title}" },
                     // One content type for every shelf, so the LazyColumn can
@@ -638,7 +776,7 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            if (rows.isEmpty() && !loading) {
+            if (rows.isEmpty() && !loading && folderPick == null) {
                 item {
                     val collection = selectedCollection
                     if (collection != null) {
@@ -805,7 +943,7 @@ fun HomeScreen(nav: NavHostController) {
         ProviderPickerSheet(
             providers = activeProviders,
             collections = collections,
-            selectedId = selected,
+            selection = selection,
             filter = providerFilter,
             onFilter = { providerFilter = it },
             onManageCollections = {
@@ -815,6 +953,10 @@ fun HomeScreen(nav: NavHostController) {
             onPick = { id ->
                 showPicker = false
                 vm.selectProvider(id)
+            },
+            onDone = { ids ->
+                showPicker = false
+                vm.setSelection(ids)
             },
             onDismiss = { showPicker = false },
         )
@@ -900,19 +1042,103 @@ fun HomeScreen(nav: NavHostController) {
     }
 }
 
+/**
+ * The folder tiles of one personal catalog, drawn on Home.
+ *
+ * A personal catalog IS a tree: collections hold folders, folders hold catalogs.
+ * Home used to flatten that tree into one shelf per folder (every title the
+ * folder holds, all mixed together), so a catalog the user had organised by
+ * hand — Animation, Anime, Netflix, Amazon — reached Home as its contents and
+ * the folders themselves were nowhere. This draws the folders instead, using the
+ * very same tiles the catalog's own page draws (see [FolderTile]), and a tap
+ * ENTERS the folder: the same hierarchy, one level at a time, which is what the
+ * user asked for ("if i select it in home then show the folder … and i can click
+ * animation to enter in that animation box and see all catalog").
+ *
+ * "Show all" keeps the old flat view one tap away (every folder, every catalog,
+ * as one grid — see [CollectionGridScreen]).
+ */
+@Composable
+private fun CollectionFoldersOnHome(
+    collection: Collection,
+    onOpenFolder: (CollectionFolder) -> Unit,
+    onShowAll: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 10.dp, top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                collection.name,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onShowAll) { Text(tr("Show all")) }
+        }
+        if (collection.folders.isEmpty()) {
+            Text(
+                tr("No folders yet — add one in Settings → Personal Catalog creator."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+            )
+            return@Column
+        }
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(collection.folders, key = { it.id }) { f ->
+                // The shape the tile will actually wear: its own when it has a
+                // cover, otherwise the collection's (see FolderTile).
+                val ownCover = CoverKinds.normalize(f.coverKind) != CoverKinds.NONE &&
+                    f.coverValue.isNotBlank()
+                FolderTile(
+                    folder = f,
+                    inheritedKind = collection.coverKind,
+                    inheritedValue = collection.coverValue,
+                    inheritedShape = collection.tileShape,
+                    width = folderTileWidth(if (ownCover) f.tileShape else collection.tileShape),
+                    onClick = { onOpenFolder(f) },
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ProviderPickerSheet(
     providers: List<ContentProvider>,
     collections: List<Collection>,
-    selectedId: String?,
+    /** Every key currently picked (empty = All, one = the usual single pick,
+     *  several = a multi pick). */
+    selection: List<String>,
     filter: ProviderType?,
     onFilter: (ProviderType?) -> Unit,
     onManageCollections: () -> Unit,
+    /** A plain tap in single-select mode: this is now the only source. */
     onPick: (String?) -> Unit,
+    /** Multi-select's Done button: the keys to save. */
+    onDone: (List<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    // Multi-select is OFF until a row is HELD: that is the gesture the user
+    // asked for ("if i press one provider for more than 1.5 second it give me
+    // option to multi select like i can select more provider with it"). While it
+    // is on, a tap ticks a row into [working] instead of leaving the sheet, and
+    // the Done button beside the title saves the lot — dismissing the sheet
+    // saves nothing, so an accidental mode change can never change Home.
+    var multi by remember { mutableStateOf(false) }
+    var working by remember { mutableStateOf(selection) }
     // Engine filter: every kind that has at least one installed extension, in a
     // stable order, so a user with dozens of installs can narrow the list to
     // just their CloudStream plugins, just their Nuvio providers, and so on.
@@ -937,13 +1163,47 @@ private fun ProviderPickerSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    tr("Choose an extension"),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                // The Done button sits ABOVE the list ("add done button above
+                // in provider selection box"), which is where a thumb expects it
+                // and the only place a long list cannot hide it.
+                if (multi) {
+                    Button(
+                        onClick = { onDone(working) },
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(tr("Done"))
+                    }
+                }
+            }
             Text(
-                tr("Choose an extension"),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                tr("Only the selected extension's catalog is shown on Home."),
+                if (multi) {
+                    if (working.isEmpty()) tr("Tap the sources to show on Home, then Done.")
+                    else I18n.t("%s sources picked — tap more, then Done.")
+                        .replace("%s", working.size.toString())
+                } else {
+                    tr(
+                        "Only the selected extension's catalog is shown on Home. " +
+                            "Hold a source for a second to pick several."
+                    )
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
@@ -1006,14 +1266,29 @@ private fun ProviderPickerSheet(
                         PickerSectionLabel(tr("Collections"))
                     }
                     items(shownCollections, key = { "collection|${it.id}" }) { c ->
+                        val key = "$COLLECTION_PREFIX${c.id}"
+                        val ticked = key in working
                         PickerRow(
                             label = c.name,
-                            isSelected = selectedId == "$COLLECTION_PREFIX${c.id}",
+                            isSelected = if (multi) ticked else selection.contains(key),
+                            multi = multi,
                             supporting = if (c.folders.isEmpty()) tr("No folders yet")
                             else c.folders.joinToString(" · ") { it.name },
-                        ) {
-                            onPick("$COLLECTION_PREFIX${c.id}")
-                        }
+                            onLongClick = {
+                                if (!multi) {
+                                    multi = true
+                                    working = (selection + key).distinct()
+                                }
+                            },
+                            onClick = {
+                                if (multi) {
+                                    working = if (ticked) working - key
+                                    else working + key
+                                } else {
+                                    onPick(key)
+                                }
+                            },
+                        )
                     }
                     item {
                         PickerRow(
@@ -1029,9 +1304,18 @@ private fun ProviderPickerSheet(
                     PickerSectionLabel(tr("Providers"))
                 }
                 item {
-                    PickerRow("All providers", isSelected = selectedId == null) {
-                        onPick(null)
-                    }
+                    PickerRow(
+                        label = "All providers",
+                        isSelected = if (multi) working.isEmpty() else selection.isEmpty(),
+                        multi = multi,
+                        onLongClick = {
+                            if (!multi) {
+                                multi = true
+                                working = emptyList()
+                            }
+                        },
+                        onClick = { if (multi) working = emptyList() else onPick(null) },
+                    )
                 }
                 items(filtered.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     // A stream-only addon is named with its engine so the row
@@ -1039,9 +1323,12 @@ private fun ProviderPickerSheet(
                     // TMDB (see TmdbBrowse).
                     val streamOnly =
                         com.hikari.app.providers.StremioAddon.streamOnlyAddons[p.config.id] == true
+                    val key = p.config.id
+                    val ticked = key in working
                     PickerRow(
                         label = p.config.name,
-                        isSelected = selectedId == p.config.id,
+                        isSelected = if (multi) ticked else selection.contains(key),
+                        multi = multi,
                         supporting = when {
                             streamOnly -> I18n.t("%s addon · browses TMDB").replace(
                                 "%s",
@@ -1049,9 +1336,20 @@ private fun ProviderPickerSheet(
                             )
                             else -> null
                         },
-                    ) {
-                        onPick(p.config.id)
-                    }
+                        onLongClick = {
+                            if (!multi) {
+                                multi = true
+                                working = (selection + key).distinct()
+                            }
+                        },
+                        onClick = {
+                            if (multi) {
+                                working = if (ticked) working - key else working + key
+                            } else {
+                                onPick(key)
+                            }
+                        },
+                    )
                 }
                 if (filtered.isEmpty() && query.isNotBlank()) {
                     item {
@@ -1121,6 +1419,15 @@ private fun PickerSectionLabel(text: String) {
  * [leadingIcon] is for the one row that does something rather than selects
  * ("Manage collections"); [showDivider] is turned off on the last row of a
  * section so the heading below it is not fenced off by two lines.
+ *
+ * In [multi] mode the tick box is drawn on EVERY row (empty ring when it is not
+ * picked), so a row says "I can be ticked" rather than only the ticked ones
+ * looking different.
+ *
+ * The row's own tap handling is [holdOrTap] rather than `clickable`, because the
+ * multi-select gesture is a deliberately LONG hold (1.5s — see [HOLD_MS]) and
+ * `clickable`/`combinedClickable` would fire at the platform's ~500ms. The price
+ * is the touch ripple, which a bottom-sheet row can do without.
  */
 @Composable
 private fun PickerRow(
@@ -1129,6 +1436,8 @@ private fun PickerRow(
     supporting: String? = null,
     leadingIcon: ImageVector? = null,
     showDivider: Boolean = true,
+    multi: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
@@ -1140,7 +1449,10 @@ private fun PickerRow(
                     if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                     else Color.Transparent
                 )
-                .clickable(onClick = onClick)
+                .then(
+                    if (onLongClick == null) Modifier.clickable(onClick = onClick)
+                    else Modifier.pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }
+                )
                 .padding(horizontal = 10.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1171,6 +1483,19 @@ private fun PickerRow(
                     )
                 }
             }
+            if (multi && !isSelected) {
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .border(
+                            1.5.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
+                            CircleShape,
+                        ),
+                )
+            }
             if (isSelected) {
                 Spacer(Modifier.width(10.dp))
                 Box(
@@ -1194,6 +1519,48 @@ private fun PickerRow(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 modifier = Modifier.padding(start = if (leadingIcon != null) 38.dp else 10.dp),
             )
+        }
+    }
+}
+
+/** How long a picker row must be held before multi-select starts. */
+private const val HOLD_MS = 1_500L
+
+/**
+ * "Tap, or HOLD for a moment".
+ *
+ * `combinedClickable` uses the platform's long-press timeout, which is around
+ * 500ms — short enough that a deliberate tap can trip it, and the user asked for
+ * a 1.5s hold for exactly that reason. So the press is timed here: released
+ * before [HOLD_MS] it is a tap, still down after it fires [onHold], and a drag
+ * (past the touch slop, or a change the enclosing scroller has already consumed)
+ * is left completely alone so the list still scrolls normally.
+ */
+private suspend fun PointerInputScope.holdOrTap(
+    onHold: () -> Unit,
+    onTap: () -> Unit,
+) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var tapped = false
+        val completed = withTimeoutOrNull(HOLD_MS) {
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (change.isConsumed) break
+                if (!change.pressed) {
+                    tapped = true
+                    break
+                }
+                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                    break
+                }
+            }
+            true
+        }
+        when {
+            completed == null -> onHold()
+            tapped -> onTap()
         }
     }
 }

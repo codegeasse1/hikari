@@ -1402,7 +1402,17 @@ private fun TaskbarCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val hiddenFlow = remember { app.store.hiddenTabsFlow() }
     val hidden by hiddenFlow.collectAsState(initial = emptySet())
-    val visible = BottomTabs.filter { it.route !in hidden }.ifEmpty { BottomTabs }
+    // The IPTV button is the one tab that is OFF until it is switched on here
+    // (see AppStore.iptvTabFlow) — every other tab is on unless switched off.
+    val iptvFlow = remember { app.store.iptvTabFlow() }
+    val iptvTab by iptvFlow.collectAsState(initial = false)
+    fun shown(tab: BottomTab): Boolean =
+        if (tab.route == Routes.IPTV) iptvTab else tab.route !in hidden
+    // The tabs that obey the "the last one cannot be switched off" rule. IPTV is
+    // not one of them: it is an extra page, so switching it on or off can never
+    // leave the user without a way around the app.
+    val coreVisible = BottomTabs.filter { it.route != Routes.IPTV && it.route !in hidden }
+    val visibleCount = coreVisible.size + if (iptvTab) 1 else 0
     val labelsFlow = remember { app.store.tabLabelsFlow() }
     val labels by labelsFlow.collectAsState(initial = true)
 
@@ -1410,7 +1420,7 @@ private fun TaskbarCard(app: HikariApp) {
         id = "nav.taskbar",
         icon = Icons.Filled.Tune,
         title = tr("Taskbar buttons"),
-        summary = visible.size.toString() + " / " + BottomTabs.size + " " + tr("buttons") + " · " +
+        summary = visibleCount.toString() + " / " + BottomTabs.size + " " + tr("buttons") + " · " +
             (if (labels) tr("labels on") else tr("labels off")),
     ) {
         SettingsToggle(
@@ -1424,7 +1434,7 @@ private fun TaskbarCard(app: HikariApp) {
         Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
         BottomTabs.forEach { tab ->
-            val shown = tab.route !in hidden
+            val isOn = shown(tab)
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1434,23 +1444,38 @@ private fun TaskbarCard(app: HikariApp) {
                 Icon(
                     tab.icon,
                     contentDescription = null,
-                    tint = if (shown) MaterialTheme.colorScheme.primary
+                    tint = if (isOn) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(12.dp))
-                Text(
-                    tr(tab.label),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        tr(tab.label),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (tab.route == Routes.IPTV) {
+                        Text(
+                            tr("Off by default — switch on to browse your playlists"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 Switch(
-                    checked = shown,
+                    checked = isOn,
                     // A hidden tab can always be brought back; a shown one only
-                    // while at least one other tab is still on.
-                    enabled = !shown || visible.size > 1,
-                    onCheckedChange = { on -> scope.launch { app.store.setTabHidden(tab.route, !on) } }
+                    // while at least one other tab is still on (IPTV excepted —
+                    // it is not one of the app's own core pages).
+                    enabled = if (tab.route == Routes.IPTV) true
+                    else !isOn || coreVisible.size > 1,
+                    onCheckedChange = { on ->
+                        scope.launch {
+                            if (tab.route == Routes.IPTV) app.store.setIptvTab(on)
+                            else app.store.setTabHidden(tab.route, !on)
+                        }
+                    }
                 )
             }
         }
