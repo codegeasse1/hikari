@@ -3450,6 +3450,18 @@ class PlayerActivity : ComponentActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        // The panel FLOATS on the video with all four rounded corners (and the
+        // light sweeping around them) visible. Its height is not decided here
+        // any more: the panel is WRAP_CONTENT and the scroll view below is
+        // capped against the room the dialog frame actually measured (see
+        // [MaxHeightScrollView] + applyHeightCap), which is the only number that
+        // cannot be wrong on a device whose window differs from its screen.
+        // [preferredHeightDp] is now only the STARTING cap — the height the panel
+        // opens at before the frame has been laid out, and an upper bound a short
+        // list shrinks below.
+        val panelH = (preferredHeightDp * density).toInt()
+            .coerceAtLeast((72 * density).toInt())
+
         // A permanent thin scrollbar makes it obvious the panel scrolls — the
         // old fixed-height panel hid its last rows with no affordance at all.
         val scroll = MaxHeightScrollView(this).apply {
@@ -3548,22 +3560,11 @@ class PlayerActivity : ComponentActivity() {
             // to reach it. That is the cut subtitle box a user reported.
             .coerceAtMost(roomW)
             .coerceAtLeast(minOf(minW, roomW).coerceAtLeast(1))
-        // The panel FLOATS on the video with all four rounded corners (and the
-        // light sweeping around them) visible. Its height is not decided here
-        // any more: the panel is WRAP_CONTENT and the scroll view inside it is
-        // capped against the room the dialog frame actually measured (see
-        // [MaxHeightScrollView] + applyHeightCap below), which is the only
-        // number that cannot be wrong on a device whose window differs from its
-        // screen. [preferredHeightDp] is now just the starting cap — the height
-        // the panel opens at before the frame has been laid out, and an upper
-        // bound a short list shrinks below.
-        val panelH = (preferredHeightDp * density).toInt()
-            .coerceAtLeast((72 * density).toInt())
         // The panel view carries its own halo, so its silhouette comes out
-        // exactly panelW x panelH in the middle of it. The HEIGHT is
-        // WRAP_CONTENT: the scroll view inside is capped instead (see
-        // [MaxHeightScrollView]), which is what keeps the panel's rounded
-        // bottom on screen and makes every row above it reachable.
+        // exactly panelW in the middle of it. The HEIGHT is WRAP_CONTENT: the
+        // scroll view inside is capped instead (see [MaxHeightScrollView]), which
+        // is what keeps the panel's rounded bottom on screen and makes every row
+        // above it reachable.
         root.addView(panel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -4942,7 +4943,15 @@ class PlayerActivity : ComponentActivity() {
                             I18n.t("Subtitle: %s").replace("%s", option.label),
                             Toast.LENGTH_SHORT,
                         ).show()
-                        p.post { applyStickyPicks(C.TRACK_TYPE_TEXT) }
+                        // Re-asserted a moment later, on the next loop pass: the
+                        // override is what the player renders, and a stream that
+                        // re-prepares right after the pick (a provider subtitle
+                        // being attached) can otherwise look as though the tap did
+                        // nothing. `player` is not a View, so this is a Handler.
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                            { applyStickyPicks(C.TRACK_TYPE_TEXT) },
+                            400L,
+                        )
                     }
                 }
                 dialog.dismiss()
@@ -5622,7 +5631,10 @@ class PlayerActivity : ComponentActivity() {
                     ),
                     Toast.LENGTH_SHORT,
                 ).show()
-                p.post { applyStickyPicks(C.TRACK_TYPE_AUDIO) }
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                    { applyStickyPicks(C.TRACK_TYPE_AUDIO) },
+                    400L,
+                )
             }
         }
     }
