@@ -399,7 +399,16 @@ object TmdbSources {
             TmdbSourceType.COLLECTION -> collection(spec)
             TmdbSourceType.PERSON -> person(spec, director = false)
             TmdbSourceType.DIRECTOR -> person(spec, director = true)
-            TmdbSourceType.COMPANY -> discover(spec, p, spec.media.ifBlank { "movie" }, "with_companies")
+            TmdbSourceType.COMPANY -> if (spec.isAll) {
+                // A studio makes films AND series, and TMDB has no endpoint that
+                // answers for both — so the two discover pages are merged into
+                // one, alternating, and neither kind can bury the other. This is
+                // what "tap a production and see everything it made" needs.
+                mergeMedia(
+                    discover(spec, p, "movie", "with_companies"),
+                    discover(spec, p, "tv", "with_companies"),
+                )
+            } else discover(spec, p, spec.media.ifBlank { "movie" }, "with_companies")
             TmdbSourceType.NETWORK -> discover(spec, p, "tv", "with_networks")
             TmdbSourceType.DISCOVER -> discover(spec, p, spec.media.ifBlank { "movie" }, null)
         }
@@ -424,6 +433,25 @@ object TmdbSources {
             item(data, kind)?.let { return listOf(it) }
         }
         return emptyList()
+    }
+
+    /**
+     * Two media kinds' pages as one row, alternating so neither kind buries the
+     * other. A company's own catalogue is the case: TMDB answers films and
+     * series from two different endpoints, and one page of the grid has to carry
+     * both.
+     */
+    private fun mergeMedia(a: List<MediaItem>, b: List<MediaItem>): List<MediaItem> {
+        if (a.isEmpty()) return b
+        if (b.isEmpty()) return a
+        val out = ArrayList<MediaItem>(a.size + b.size)
+        var i = 0
+        var j = 0
+        while (i < a.size || j < b.size) {
+            if (i < a.size) out.add(a[i++])
+            if (j < b.size) out.add(b[j++])
+        }
+        return out
     }
 
     private suspend fun list(spec: TmdbSpec, page: Int): List<MediaItem> {

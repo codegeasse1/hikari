@@ -105,6 +105,12 @@ object NuvioCatalogImport {
         return if (single != null) listOf(ImportedList(name, listOf(single))) else emptyList()
     }
 
+    /** Every title in a raw JSON array — for a caller that has already found the
+     *  array itself (a Nuvio collection's folder carries its titles inline under
+     *  `items`, rather than naming a catalog to fetch), instead of a whole
+     *  document for [parse]. */
+    fun itemsOf(arr: JSONArray): List<MediaItem> = itemsFromArray(arr, "", "")
+
     /** Every object in [arr] that carries titles, either as a named group or as
      *  a bare title. [groupKey] is the JSON key the array came from, used only to
      *  decide whether an element is a group or a title. */

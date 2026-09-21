@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -33,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.navigation.BottomTabs
 import com.hikari.app.ui.navigation.BottomTab
+import kotlinx.coroutines.launch
 
 /**
  * The television navigation rail: the left-hand strip of tabs that stands in
@@ -91,6 +95,19 @@ fun TvNavRail(
     val requesters = remember(tabs) { tabs.map { FocusRequester() } }
     var initialFocusPending by remember(tabs) { mutableStateOf(true) }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Bring a focused row into view ourselves. Compose usually does this for a
+    // lazy list, but only when the list is allowed to scroll — and a rail that
+    // looks like it fits but has its last rows past the bottom edge (the short
+    // 540dp/450dp viewports these boxes report) has to be walked down with the
+    // remote's Down button. A user reported exactly that: the Extensions tab
+    // could not be reached. Doing it explicitly means it happens whatever the
+    // platform version does on its own.
+    val bringIntoView: (Int) -> Unit = { index ->
+        scope.launch {
+            runCatching { listState.animateScrollToItem(index.coerceAtLeast(0)) }
+        }
+    }
 
     // Anchor the remote on the tab the user is actually on. Done once per
     // composition of the rail (not on every route change): after that, focus
@@ -148,6 +165,18 @@ fun TvNavRail(
         // Below ~62dp of slot there is no room for an icon AND a readable label,
         // so the strip goes icon-only rather than clipping every label in half.
         val compact = slot < 62.dp
+        // What one row really occupies once TvNavRailItem has applied its own
+        // floor (see there): used to decide whether the strip fits at all, so a
+        // short screen gets a SCROLLABLE strip instead of one whose last rows
+        // are painted below the screen edge with nothing to scroll.
+        val rowHeight = (slot - 6.dp).coerceAtLeast(38.dp)
+        val rowsTotal = (rowHeight + 6.dp) * tabs.size
+        val fits = rowsTotal <= room
+        // Centred while the tabs fit; top-aligned (and therefore scrollable)
+        // when they do not. `Arrangement.Center` on a lazy list that overflows
+        // leaves its leading space inside the scroll range, which is how the
+        // first rows end up needing to be scrolled UP to be seen.
+        val pad = if (fits) ((room - rowsTotal) / 2).coerceAtLeast(0.dp) else 0.dp
 
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -167,10 +196,10 @@ fun TvNavRail(
                     .fillMaxWidth()
                     .weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                // Centred while the tabs fit; once they do not, the list simply
-                // scrolls, and the focused tab is brought into view by the
-                // lazy list itself.
-                verticalArrangement = Arrangement.Center,
+                // Centred while the tabs fit (the padding takes the place of the
+                // arrangement, so an overflowing strip still starts at row 1);
+                // scrollable when they do not.
+                contentPadding = PaddingValues(vertical = pad),
             ) {
                 itemsIndexed(tabs, key = { _, tab -> tab.route }) { index, tab ->
                     TvNavRailItem(
@@ -180,6 +209,7 @@ fun TvNavRail(
                         slot = slot,
                         compact = compact,
                         onClick = { onNavigate(tab.route) },
+                        onFocus = { bringIntoView(index) },
                     )
                 }
             }
@@ -204,6 +234,7 @@ private fun TvNavRailItem(
     slot: Dp,
     compact: Boolean,
     onClick: () -> Unit,
+    onFocus: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(20.dp)
@@ -218,6 +249,9 @@ private fun TvNavRailItem(
                 if (selected) scheme.primary.copy(alpha = 0.18f) else Color.Transparent
             )
             .clickable(onClick = onClick)
+            // The row is what the remote walks; when it lands here the strip
+            // scrolls it into view (see TvNavRail).
+            .onFocusChanged { state -> if (state.isFocused) onFocus() }
             .focusRequester(requester)
             .padding(vertical = 6.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

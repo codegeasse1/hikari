@@ -1,6 +1,8 @@
 package com.hikari.app.player
 
+import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.Episode
+import com.hikari.app.data.MediaItem
 import com.hikari.app.data.StreamSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ConcurrentHashMap
@@ -16,6 +18,30 @@ object StreamsLive {
     private val episodes = ConcurrentHashMap<String, MutableStateFlow<Episode?>>()
     private val dones = ConcurrentHashMap<String, MutableStateFlow<Boolean>>()
     private val refreshes = ConcurrentHashMap<String, MutableStateFlow<Int>>()
+
+    /** The video's background-sweep hold key, per session (see
+     *  [ContentRepository.holdSweepFor]). */
+    private val sweepKeys = ConcurrentHashMap<String, String>()
+
+    /**
+     * Keep this session's background extension search off the loading screen.
+     *
+     * The pass's sweep — "keep asking every installed extension" — must not run
+     * while the user is looking at the loading cover waiting for the video: it
+     * cold-starts plugin runtimes and keeps a "searching extensions…" line
+     * alive over a screen whose question is "is my film starting?". It is held
+     * here and released by the player on its first rendered frame, with a
+     * backstop so unfinished work can never be stranded.
+     */
+    fun holdSweep(id: String, item: MediaItem, episode: Episode?) {
+        sweepKeys[id] = ContentRepository.holdSweepFor(item, episode)
+    }
+
+    /** Playback really started: let the held sweep run. */
+    fun releaseSweep(id: String?) {
+        if (id == null) return
+        ContentRepository.releaseHeldSweepKey(sweepKeys.remove(id))
+    }
 
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
         sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
@@ -107,11 +133,13 @@ object StreamsLive {
     }
 
     fun remove(id: String) {
+        releaseSweep(id)
         sessions.remove(id)
         episodes.remove(id)
         dones.remove(id)
         refreshes.remove(id)
         statuses.remove(id)
         originSettled.remove(id)
+        sweepKeys.remove(id)
     }
 }

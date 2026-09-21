@@ -1074,9 +1074,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val text = fetchRepoRaw(url, ANIYOMI_INDEX).getOrElse { throw it }
                 // Validate BEFORE storing: a wrong URL (or an HTML page) must
                 // not end up as a repo whose every open fails.
-                val arr = runCatching { JSONArray(text) }.getOrElse {
-                    throw Exception("Invalid $ANIYOMI_INDEX: ${it.message}")
-                }
+                val arr = com.hikari.app.aniyomi.AniyomiExtensionManager.indexEntries(text)
+                    ?: throw Exception("Invalid $ANIYOMI_INDEX: not a list of extensions")
                 if (arr.length() == 0) throw Exception("That $ANIYOMI_INDEX lists no extensions")
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
@@ -1665,9 +1664,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             // key), so it can't go through JSONObject below. Each entry's `apk`
             // is a filename served from `<repo root>/apk/`, and the icon from
             // `<repo root>/icon/<pkg>.png` — see AniyomiExtensionManager.repoPlugin.
-            val arr = runCatching { JSONArray(text) }.getOrElse {
-                throw Exception("Invalid $file: ${it.message}")
-            }
+            val arr = com.hikari.app.aniyomi.AniyomiExtensionManager.indexEntries(text)
+                ?: throw Exception("Invalid $file: not a list of extensions")
             val out = LinkedHashMap<String, Cs3RepoPlugin>()
             val trimmed = repo.url.trimEnd('/')
             val baseUrl = if (trimmed.endsWith("/$ANIYOMI_INDEX", ignoreCase = true))

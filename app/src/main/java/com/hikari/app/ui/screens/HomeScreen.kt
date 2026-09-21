@@ -663,6 +663,17 @@ fun HomeScreen(nav: NavHostController) {
                                 ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
                                 ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[selected]
                                 ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[selected]
+                                // Aniyomi was missing from this chain, so an
+                                // Aniyomi catalog that failed fell through to the
+                                // generic "check the WebView / it may be down"
+                                // line — which sent users looking for a
+                                // Cloudflare verification that was never the
+                                // problem. An Aniyomi extension that failed to
+                                // load has a real, specific reason ("none of its
+                                // sources could be loaded", a class-load failure,
+                                // an unsupported extension library) and it is
+                                // reported here now.
+                                ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[selected]
                         // No verification/Cloudflare story is ever told here: a
                         // provider whose site answers with a challenge is simply
                         // left out of searches (see ContentRepository.crossCfSkip),

@@ -113,8 +113,18 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return emptyList()
     }
 
+    /** Why this extension's sources are unavailable, in this extension's own
+     *  words.
+     *
+     *  The per-extension reason ([AniyomiExtensionManager.loadFailure]) comes
+     *  FIRST: it is the only one that describes THIS row, and it is a real cause
+     *  ("none of its sources could be loaded", "built against extensions-lib
+     *  19", a class-load failure) rather than a guess about the site. The global
+     *  lastError is the fallback for a reason recorded outside a load — a
+     *  hoster/video call that threw later. */
     private fun missingReason(): String =
-        AniyomiExtensionManager.lastError
+        AniyomiExtensionManager.loadFailure(extFile)
+            ?: AniyomiExtensionManager.lastError
             ?: "Extension file missing — reinstall this extension"
 
     // ---- Caches ----

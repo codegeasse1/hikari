@@ -404,6 +404,8 @@ object TmdbMeta {
             country = originCountryOf(d),
             language = d.optString("original_language").trim()
                 .takeIf { it.isNotBlank() }?.uppercase(),
+            releaseDate = (if (isMovie) d.optString("release_date") else d.optString("first_air_date"))
+                .trim().takeIf { it.length >= 10 },
             director = directors.takeIf { it.isNotEmpty() }?.joinToString(", "),
             writers = writers,
             imdbId = d.optJSONObject("external_ids")
@@ -481,11 +483,90 @@ object TmdbMeta {
         ranked.sortByDescending { it.score }
         val trailers = ranked.take(12).map { it.trailer }
 
+        // ---- Production companies / networks ----
+        //
+        // Both live in the SAME response (`append_to_response` is not needed for
+        // them), so the Production row costs nothing extra. A movie's studios
+        // are `production_companies`; a series has both studios and networks, and
+        // a network is a different TMDB entity with its own query, which is why
+        // [CompanyRef.isNetwork] rides along.
+        val companies = ArrayList<CompanyRef>(8)
+        fun addCompanies(key: String, isNetwork: Boolean) {
+            val arr = d.optJSONArray(key) ?: return
+            for (i in 0 until arr.length()) {
+                if (companies.size >= 10) return
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").trim()
+                val name = o.optString("name").trim()
+                if (id.isBlank() || name.isBlank()) continue
+                if (companies.any { it.id == id && it.isNetwork == isNetwork }) continue
+                companies.add(
+                    CompanyRef(
+                        id = id,
+                        name = name,
+                        logoUrl = o.tmdbPath("logo_path")?.let { IMG + it },
+                        isNetwork = isNetwork,
+                    )
+                )
+            }
+        }
+        addCompanies("production_companies", isNetwork = false)
+        addCompanies("networks", isNetwork = true)
+
+        // ---- The franchise ("Shrek Collection") ----
+        //
+        // `belongs_to_collection` is in the details response too (movies only),
+        // but it names the collection and carries no parts — those are one more
+        // request, made ONLY when a collection actually exists.
+        val collection = run {
+            val coll = d.optJSONObject("belongs_to_collection") ?: return@run null
+            val collId = coll.optString("id").trim()
+            if (collId.isBlank()) return@run null
+            val cd = TmdbResolver.apiGet("/collection/$collId", emptyMap()) ?: return@run null
+            val parts = cd.optJSONArray("parts") ?: return@run null
+            val items = ArrayList<MediaItem>(parts.length())
+            for (i in 0 until parts.length()) {
+                val o = parts.optJSONObject(i) ?: continue
+                val id = o.optString("id").trim()
+                val name = o.optString("title").ifBlank { o.optString("name") }.trim()
+                if (id.isBlank() || name.isBlank()) continue
+                val poster = o.tmdbPath("poster_path")?.let { IMG + it }
+                val backdrop = o.tmdbPath("backdrop_path")?.let { IMG_WIDE + it }
+                items.add(
+                    MediaItem(
+                        providerId = "tmdb",
+                        id = id,
+                        title = name,
+                        type = MediaType.MOVIE,
+                        posterUrl = poster,
+                        backdropUrl = backdrop,
+                        year = yearOf(o),
+                        overview = o.optString("overview").takeIf { it.isNotBlank() },
+                        rawType = "tmdb",
+                        rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                        originalTitle = o.optString("original_title").trim()
+                            .takeIf { it.isNotBlank() && it != "null" }.orEmpty(),
+                    )
+                )
+            }
+            if (items.isEmpty()) return@run null
+            TitleCollection(
+                id = collId,
+                name = cd.optString("name").trim()
+                    .ifBlank { coll.optString("name").trim() },
+                // Oldest first: a franchise is a series, and "Shrek" then
+                // "Shrek 2" is how its own row reads in the reference client.
+                items = items.sortedBy { it.year ?: 9999 },
+            )
+        }
+
         return TitleExtras(
             details = details,
             cast = displayCast,
             trailers = trailers,
             castIsCharacters = castIsCharacters,
+            companies = companies,
+            collection = collection,
             // The same response that was localized for the page also carries the
             // original name — so the two names a provider lookup needs arrive
             // together, for free, in the call the page already makes.

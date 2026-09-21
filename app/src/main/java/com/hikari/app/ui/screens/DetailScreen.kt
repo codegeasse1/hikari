@@ -106,6 +106,7 @@ import com.hikari.app.R
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.ContentRepository.StreamLookup
 import com.hikari.app.data.CastMember
+import com.hikari.app.data.CompanyRef
 import com.hikari.app.data.Episode
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.LibraryCategory
@@ -121,6 +122,8 @@ import com.hikari.app.data.TitleDetails
 import com.hikari.app.data.TitleExtras
 import com.hikari.app.data.TitleRating
 import com.hikari.app.data.TmdbMeta
+import com.hikari.app.data.TmdbSourceType
+import com.hikari.app.data.TmdbSpec
 import com.hikari.app.data.Trailer
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
@@ -504,7 +507,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 remapMissingProvider(providerId, lookupNames) ?: providerId
             }
             _activeProviderId.value = activeProvider
-            if (manager.byId(activeProvider) == null) {
+            if (manager.byId(activeProvider) == null && !isTmdbRow) {
                 // Only reached when the remap above could not find the title in
                 // any installed provider either — i.e. the extension really is
                 // gone. Say what to do about it instead of a bare "not found".
@@ -516,6 +519,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _episodesLoaded.value = true
                 return@launch
             }
+            // A TMDB row with no matching extension keeps its page. It was NEVER
+            // from an extension — it is an imported list, a TMDB catalog, a
+            // franchise or a Similar cell — so "the extension this title came
+            // from is no longer installed" is not just unhelpful, it is untrue,
+            // and it dead-ended the page on top of a record the app already has
+            // in full: poster, overview, details, ratings, cast, trailers, the
+            // franchise and Related/Similar all come from TMDB and none of them
+            // needs a provider. The source search below is not affected either:
+            // a lookup for an item whose provider is not installed still asks
+            // EVERY other installed extension by title (see ContentRepository's
+            // cross pass), so a server is still found whenever one of them
+            // carries the title — and when none does, the page reports the
+            // ordinary "no playable server found" rather than a claim about an
+            // extension that never existed.
             // The catalog row already carries the poster — render the page
             // immediately instead of waiting on the origin's /meta (which may
             // be slow or minimal). rawType keeps the addon's own type string
@@ -1541,6 +1558,12 @@ fun DetailScreen(
         val payload = playerPayload(playable)
         if (payload == null) return@launchPlayer false
         playerLaunched = true
+        // Keep the background extension sweep off the loading cover: it is held
+        // from here and released the moment the player has a frame on screen
+        // (see StreamsLive.releaseSweep). The servers it looks for are only ever
+        // ADDED to a list that is already playing, so nothing is lost by
+        // waiting, and "searching extensions…" no longer races the video.
+        m?.let { StreamsLive.holdSweep(liveId, it, ep) }
         // History context rides along so the player can record resume position
         // and remember which server this video was last played with (so a
         // replay continues on that server and starts instantly).
@@ -2669,6 +2692,28 @@ fun DetailScreen(
                         )
                     }
                 }
+                // Production companies / networks — one tap opens everything
+                // that studio or network made (a TMDB entity grid; see the
+                // TmdbSourceType.COMPANY/NETWORK queries). It sits ABOVE the cast
+                // row, the order the reference client uses.
+                extras?.companies?.takeIf { it.isNotEmpty() }?.let { companies ->
+                    item {
+                        ProductionRow(companies) { c ->
+                            val spec = TmdbSpec(
+                                type = if (c.isNetwork) TmdbSourceType.NETWORK
+                                else TmdbSourceType.COMPANY,
+                                id = c.id,
+                                // A network only ever has series; a studio has
+                                // both, and "all" makes the grid merge its films
+                                // and its shows into one row.
+                                media = if (c.isNetwork) "tv" else "all",
+                                sort = "popularity.desc",
+                                title = c.name,
+                            )
+                            Routes.safeNavigate(nav, Routes.tmdbGridSpec(spec.encode(), c.name))
+                        }
+                    }
+                }
                 // Cast + Trailers sit ABOVE the episode list — the order the
                 // Nuvio/Stremio detail page uses. Below it they were buried under
                 // a 30-episode season (or below the fold of a long overview) and
@@ -2865,6 +2910,26 @@ fun DetailScreen(
                                 )
                             }
                         }
+                    }
+                }
+                // The franchise this title belongs to — TMDB's own
+                // `belongs_to_collection`, shown the way the reference client
+                // shows it ("Shrek Collection"), with its other parts in release
+                // order. It sits directly above Related/Similar: a collection is
+                // the closest thing to "more of exactly this".
+                extras?.collection?.takeIf { it.items.isNotEmpty() }?.let { coll ->
+                    item {
+                        ShelfRow(
+                            heading = coll.name.ifBlank { tr("Collection") },
+                            shelf = coll.items,
+                            onClick = { openShelfItem(it) },
+                            onSearchHere = {
+                                Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
+                            },
+                            onGlobalSearch = {
+                                Routes.safeNavigate(nav, Routes.searchQuery(it.title))
+                            },
+                        )
                     }
                 }
                 // Same-title shelves from TMDB — the Nuvio detail page's
@@ -4048,6 +4113,86 @@ private fun Hero(
     }
 }
 
+/**
+ * The Production row: the studios and networks behind this title, as tappable
+ * logo tiles. Tapping one opens every title that company made (a TMDB entity
+ * grid), which is what "clicking production loads all the series and movies from
+ * that production" asks for.
+ *
+ * A company with no logo on TMDB still gets a tile — its initials on the app's
+ * own surface — because the NAME is the useful part and a missing logo must not
+ * remove a studio from the row.
+ */
+@Composable
+private fun ProductionRow(
+    companies: List<CompanyRef>,
+    onClick: (CompanyRef) -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.padding(top = 12.dp)) {
+        Text(
+            tr("Production companies"),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            val keyed = companies.distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
+            items(keyed, key = { (if (it.isNetwork) "n" else "c") + "|" + it.id }) { c ->
+                Column(
+                    Modifier
+                        .width(92.dp)
+                        .clip(shape)
+                        .clickable { onClick(c) }
+                        .padding(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(58.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(scheme.onSurface.copy(alpha = 0.06f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val logo = c.logoUrl
+                        if (logo != null) {
+                            AsyncImage(
+                                model = logo,
+                                contentDescription = c.name,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.84f)
+                                    .height(42.dp)
+                            )
+                        } else {
+                            Text(
+                                c.name.trim().take(2).uppercase(),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = scheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        c.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** A horizontal "Related"/"Similar" shelf of poster cells under the detail
  *  page's episode list (the Nuvio detail page's Related/Similar tabs, inline). */
 @Composable
@@ -4199,10 +4344,12 @@ private fun DetailsBlock(
     }
 
     val meta = ArrayList<String>(4)
-    d.status?.let { meta.add(it) }
+    d.status?.let { meta.add(trStatus(it)) }
     d.country?.let { meta.add(it) }
     d.language?.let { meta.add(it) }
-    d.voteCount?.takeIf { it > 0 }?.let { meta.add("$it votes") }
+    d.voteCount?.takeIf { it > 0 }?.let {
+        meta.add(tr("%s votes").replace("%s", it.toString()))
+    }
 
     val cert = d.certification?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -4256,6 +4403,18 @@ private fun DetailsBlock(
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
+        // The full release date, the way the reference client's "Release Info"
+        // row prints it. The stat line above carries only the year, which is all
+        // a poster strip needs — but a date is what "when did this come out"
+        // actually asks.
+        d.releaseDate?.takeIf { it.isNotBlank() }?.let { iso ->
+            Text(
+                tr("Release date: %s").replace("%s", formatReleaseDate(iso)),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
         if (!d.director.isNullOrBlank()) {
             Text(
                 tr("Director: %s").replace("%s", d.director),
@@ -4273,6 +4432,49 @@ private fun DetailsBlock(
             )
         }
     }
+}
+
+/**
+ * TMDB's `status` is always English — "Released", "Returning Series" — because
+ * it is an enum rather than prose, so it is the one metadata field the app can
+ * and must translate itself. The dictionary carries every value TMDB uses; a
+ * status it invents later passes through untranslated, which is still better
+ * than hiding the row.
+ */
+@Composable
+private fun trStatus(status: String): String = when (status.trim().lowercase()) {
+    "released" -> tr("Released")
+    "returning series" -> tr("Ongoing series")
+    "ended" -> tr("Ended")
+    "canceled", "cancelled" -> tr("Canceled")
+    "in production" -> tr("In production")
+    "planned" -> tr("Planned")
+    "post production" -> tr("Post production")
+    "rumored" -> tr("Rumored")
+    "pilot" -> tr("Pilot")
+    else -> status
+}
+
+/**
+ * TMDB's ISO release date, printed the way the device's/app's language prints a
+ * date — "18 May 2001", "18 مايو 2001". The parsing and the formatting both go
+ * through `java.text` (available on every API this app supports) rather than
+ * `java.time`, which would need core-library desugaring.
+ *
+ * Anything unexpected is handed back exactly as TMDB sent it: a date the app
+ * cannot format is still a date, and showing "2001-05-18" beats showing nothing.
+ */
+private fun formatReleaseDate(iso: String): String {
+    val parsed = runCatching {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(iso)
+    }.getOrNull() ?: return iso
+    val formatted = runCatching {
+        val tag = I18n.currentTag
+        val locale = if (tag.isBlank()) java.util.Locale.getDefault()
+        else java.util.Locale.forLanguageTag(tag)
+        java.text.DateFormat.getDateInstance(java.text.DateFormat.LONG, locale).format(parsed)
+    }.getOrNull()
+    return formatted ?: iso
 }
 
 /** The age rating ("PG-13", "R", "TV-MA") as a pill in the same tinted-glass

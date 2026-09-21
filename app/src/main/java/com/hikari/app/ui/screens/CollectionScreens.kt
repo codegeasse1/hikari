@@ -2302,6 +2302,14 @@ private suspend fun importCollections(
             val built = lists.mapNotNull { group ->
                 val json = NuvioCatalogImport.encode(group.items)
                 if (json.isEmpty()) return@mapNotNull null
+                // The folder's own cover: the imported file has none, so the
+                // FIRST title's poster stands in. An imported list that arrived
+                // as a nameless grey tile reads as "the import did nothing"
+                // (it is the reported "no thumbnail"), while the poster of the
+                // first thing in the list says exactly what the folder holds.
+                val cover = group.items
+                    .firstOrNull { !it.posterUrl.isNullOrBlank() }
+                    ?.posterUrl
                 CollectionFolder(
                     id = app.store.newId("fld"),
                     name = group.name.ifBlank { I18n.t("Imported list") },
@@ -2319,6 +2327,8 @@ private suspend fun importCollections(
                             uid = app.store.newId("items"),
                         )
                     ),
+                    coverKind = if (cover != null) CoverKinds.URL else CoverKinds.NONE,
+                    coverValue = cover.orEmpty(),
                 )
             }
             if (built.isNotEmpty()) {
@@ -2328,6 +2338,13 @@ private suspend fun importCollections(
                             id = app.store.newId("col"),
                             name = lists.first().name.ifBlank { I18n.t("Imported list") },
                             folders = built,
+                            // Same reasoning as the folders above: the collection
+                            // card takes the first cover it can find, so the
+                            // import is visible the moment it is added.
+                            coverKind = built.firstOrNull { it.coverKind == CoverKinds.URL }
+                                ?.let { CoverKinds.URL } ?: CoverKinds.NONE,
+                            coverValue = built.firstOrNull { it.coverKind == CoverKinds.URL }
+                                ?.coverValue ?: "",
                         )
                     )
                 }

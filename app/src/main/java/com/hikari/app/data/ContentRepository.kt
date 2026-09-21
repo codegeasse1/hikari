@@ -644,6 +644,61 @@ class ContentRepository(private val manager: ProviderManager) {
 
         val pendingWork = ConcurrentHashMap<String, PendingWork>()
 
+        /**
+         * Videos whose background sweep is being HELD by the player — the sweep
+         * may not start until the video is actually playing.
+         *
+         * The sweep is the "keep asking every installed extension" half of a
+         * pass, and it is deliberately loud: it keeps the picker's status line
+         * alive and it cold-starts plugin runtimes. Starting it the instant a
+         * pass ended meant every play was accompanied by a background extension
+         * search racing the buffering video — the user sees "searching
+         * extensions…" on the LOADING screen, where what they are waiting for is
+         * the video, not a search. The servers it finds are only ever added to a
+         * list that is already playing from, so nothing is lost by waiting.
+         *
+         * Held from the moment the player is launched ([holdSweepFor], called by
+         * [StreamsLive.holdSweep]) and released on the first frame that really
+         * renders ([releaseHeldSweepKey]). A wall-clock backstop releases it
+         * regardless, so a video that never starts (no servers at all, a dead
+         * link, a player torn down early) cannot strand its unfinished work.
+         */
+        private val heldSweepKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** How long a held sweep waits for playback to begin before it starts
+         *  anyway. Generous: it only has to cover the load of a video the user
+         *  is actually waiting to watch. */
+        const val SWEEP_HOLD_MAX_MS = 30_000L
+
+        /** What a held sweep needs in order to run once it is released: the
+         *  video, the snapshot the pass had already found, and everyone who
+         *  asked to hear about new results. Declared at file level (see
+         *  [HeldSweep]) so both this object and the repository can name it. */
+        private val heldSweeps = ConcurrentHashMap<String, HeldSweep>()
+
+        /** Hold this video's background sweep until the player releases it (see
+         *  [heldSweepKeys]). Returns the key to release it with. */
+        fun holdSweepFor(item: MediaItem, episode: Episode?): String {
+            val key = streamsRememberedKey(item, episode)
+            if (!heldSweepKeys.add(key)) return key
+            HikariApp.instance.appScope.launch {
+                delay(SWEEP_HOLD_MAX_MS)
+                releaseHeldSweepKey(key)
+            }
+            return key
+        }
+
+        /** Start whatever [holdSweepFor] held back for this key. Safe to call
+         *  twice, and safe to call for a key that was never actually held. */
+        fun releaseHeldSweepKey(key: String?) {
+            if (key == null) return
+            if (!heldSweepKeys.remove(key)) return
+            val held = heldSweeps.remove(key) ?: return
+            // Any instance will do: every sweep's state is process-wide (the
+            // maps above) and a ContentRepository holds nothing but its manager.
+            ContentRepository(HikariApp.instance.providers).releaseHeldSweep(held)
+        }
+
         /** How many automatic sweeps may retry one video's unfinished work
          *  before it is left for the next real lookup. Each try spends its own
          *  per-provider budget, so this is what stops a provider that is wedged
@@ -691,6 +746,12 @@ class ContentRepository(private val manager: ProviderManager) {
          *  Safe to call from anywhere: it is a plain map read. */
         fun sweepBusyFor(item: MediaItem, episode: Episode?): Boolean {
             val key = streamsRememberedKey(item, episode)
+            // HELD: the sweep is not running and is not about to — the player is
+            // deliberately keeping it off the loading screen (see [holdSweepFor]).
+            // Reporting "still searching" here would put "searching the remaining
+            // extensions in the background…" back on the cover the hold exists to
+            // clear, and it would be untrue: nothing is being asked right now.
+            if (key in heldSweepKeys) return false
             val sweep = sweeps[key]
             if (sweep != null && sweep.job?.isActive == true && sweepIsFresh(sweep)) return true
             // Nothing is running for this video right now, but work for it is on
@@ -3040,20 +3101,46 @@ class ContentRepository(private val manager: ProviderManager) {
     ) {
         val key = streamsRememberedKey(item, episode)
         synchronized(sweeps) {
-            val recorded = pendingWork[key] ?: return
-            if (recorded.byTitle.isEmpty() && recorded.direct.isEmpty()) {
-                pendingWork.remove(key)
-                return
-            }
-            val running = sweeps[key]
-            if (running != null && running.job?.isActive == true) {
-                if (sink != null) running.sinks += sink
-                val have = running.current
+            // JOIN FIRST. Whether a sweep is already running for this video is
+            // the most specific fact about it, and the ledger below is allowed
+            // to be empty while one is (its ids were consumed when it started).
+            // Asking the ledger first meant a second caller was answered
+            // "nothing to do" and its sink was dropped — which is exactly what a
+            // held sweep must not do when the player finally releases it.
+            val joinable = sweeps[key]
+            if (joinable != null && joinable.job?.isActive == true) {
+                if (sink != null) joinable.sinks += sink
+                val have = joinable.current
                 if (sink != null && have.isNotEmpty()) {
                     HikariApp.instance.appScope.launch {
                         cancellableCatching { sink(have) }
                     }
                 }
+                return
+            }
+            val recorded = pendingWork[key] ?: return
+            if (recorded.byTitle.isEmpty() && recorded.direct.isEmpty()) {
+                pendingWork.remove(key)
+                return
+            }
+            // HELD until the video is playing (see [holdSweepFor]): keep what
+            // this call would have searched with, and who was waiting to hear
+            // about the results, and start nothing.
+            if (key in heldSweepKeys) {
+                val held = heldSweeps.computeIfAbsent(key) {
+                    HeldSweep(item, episode, emptyList())
+                }
+                if (snapshot.isNotEmpty()) {
+                    held.snapshot = (held.snapshot + snapshot)
+                        .distinctBy { it.infoHash ?: it.url }
+                }
+                if (sink != null) held.sinks += sink
+                com.hikari.app.data.Logs.log(
+                    "Search",
+                    "sweep \"" + item.title + "\" held until the video is playing (" +
+                        (recorded.byTitle.size + recorded.direct.size) +
+                        " provider(s) unfinished)",
+                )
                 return
             }
             if (!allowExhausted && recorded.tries >= SWEEP_MAX_TRIES) return
@@ -3136,6 +3223,29 @@ class ContentRepository(private val manager: ProviderManager) {
                 "sweep \"" + item.title + "\" → ${units.size} provider(s) the pass never finished " +
                     "(${direct.size} of them asked directly): searching in the background",
             )
+        }
+    }
+
+    /** Start whatever the player was holding back for this video — see
+     *  [holdSweepFor]. One launch per registered sink, so every caller that was
+     *  waiting still hears about the results; the first carries the snapshot
+     *  the pass had already found. */
+    private fun releaseHeldSweep(held: HeldSweep) {
+        val sinks = held.sinks.toList()
+        val unfinished = pendingWork[streamsRememberedKey(held.item, held.episode)]
+        com.hikari.app.data.Logs.log(
+            "Search",
+            "sweep \"" + held.item.title + "\" released — playback started" +
+                (if (unfinished == null) " (nothing left to search)"
+                else " (" + (unfinished.byTitle.size + unfinished.direct.size) +
+                    " provider(s) to ask)"),
+        )
+        if (sinks.isEmpty()) {
+            launchSweepFor(held.item, held.episode, held.snapshot, null)
+            return
+        }
+        sinks.forEachIndexed { i, s ->
+            launchSweepFor(held.item, held.episode, if (i == 0) held.snapshot else emptyList(), s)
         }
     }
 
@@ -4861,3 +4971,19 @@ object SearchResultsCache {
         synchronized(map) { map.clear() }
     }
 }
+
+/**
+ * What a background sweep the player is HOLDING needs in order to run once it is
+ * released: the video, the snapshot the pass had already found, and every caller
+ * that asked to hear about new results.
+ *
+ * File level on purpose: the hold's state lives in [ContentRepository]'s
+ * companion object (it is process-wide, like every other sweep's), while the
+ * launch that consumes it is a repository method.
+ */
+private class HeldSweep(
+    val item: MediaItem,
+    val episode: Episode?,
+    @Volatile var snapshot: List<StreamSource>,
+    val sinks: MutableList<suspend (List<StreamSource>) -> Unit> = mutableListOf(),
+)

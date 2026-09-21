@@ -175,6 +175,28 @@ data class Trailer(
     val thumbnailUrl: String? = null,
 )
 
+/** A production company or a TV network of a title — one tile of the detail
+ *  page's Production row, and the entity its grid is opened with.
+ *
+ *  [isNetwork] decides which TMDB query the grid runs: a network's shows are
+ *  filed under `/discover/tv?with_networks=`, a studio's films and shows under
+ *  `/discover/{movie,tv}?with_companies=`. */
+data class CompanyRef(
+    val id: String,
+    val name: String,
+    val logoUrl: String? = null,
+    val isNetwork: Boolean = false,
+)
+
+/** A franchise: TMDB's `belongs_to_collection` plus the parts of that
+ *  collection — "Shrek Collection" and its films, in the reference client's own
+ *  row on the detail page. */
+data class TitleCollection(
+    val id: String,
+    val name: String,
+    val items: List<MediaItem> = emptyList(),
+)
+
 /** The "Show Details" metadata block on the detail page, from a TMDB
  *  `/movie/{id}` or `/tv/{id}` response. Every field is optional: TMDB omits
  *  plenty of them, and a missing field simply drops out of the UI. */
@@ -187,6 +209,10 @@ data class TitleDetails(
     val certification: String? = null,
     val country: String? = null,
     val language: String? = null,
+    /** TMDB's `release_date`/`first_air_date` as it publishes it ("2001-05-18").
+     *  The year alone is in [year]; this is the full date the reference client
+     *  prints as "Release Info". */
+    val releaseDate: String? = null,
     val director: String? = null,
     val writers: List<String> = emptyList(),
     /** TMDB's `external_ids.imdb_id` — the key the ratings lookup uses for
@@ -234,6 +260,10 @@ data class TitleExtras(
      * provider's text only ever fills a blank.
      */
     val overview: String? = null,
+    /** The title's production companies and networks — the Production row. */
+    val companies: List<CompanyRef> = emptyList(),
+    /** The franchise this title belongs to, with its other parts. */
+    val collection: TitleCollection? = null,
 )
 
 /** A single watch-history entry — what the user played and where they left off. */

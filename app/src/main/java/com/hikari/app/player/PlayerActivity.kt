@@ -2975,10 +2975,36 @@ class PlayerActivity : ComponentActivity() {
         val label: String?,
         val index: Int,
     ) {
-        fun matches(format: androidx.media3.common.Format, i: Int): Boolean {
-            if (!lang.isNullOrBlank() && format.language == lang) return true
-            if (!label.isNullOrBlank() && format.label == label) return true
-            return lang.isNullOrBlank() && label.isNullOrBlank() && i == index
+        /**
+         * True when [format] IS the track this pick names.
+         *
+         * The identity is the track's own NAME plus its language and its position
+         * — never the language alone. A release with three Hindi subtitle tracks
+         * (full / SDH / forced) has ONE language and three tracks, and matching on
+         * the language did two wrong things: it marked all three rows as the
+         * user's choice ("selecting one hindi sub selecting all three"), and
+         * [applyStickyPicks] then re-applied whichever of them came first, so
+         * picking "Hindi SDH" could land on the plain Hindi track. The label is
+         * the discriminating half whenever the provider or manifest named the
+         * track; the position separates tracks that carry no name at all.
+         *
+         * [loose] is for matching a pick against a REBUILT track list (the media
+         * item is re-prepared when provider subtitles are attached or Sync is
+         * pressed, and a manifest can renumber its renditions): the same track
+         * still comes back with the same name or language, so those are accepted
+         * without the position rather than losing the user's choice entirely.
+         */
+        fun matches(format: androidx.media3.common.Format, i: Int, loose: Boolean = false): Boolean {
+            if (loose) {
+                if (!label.isNullOrBlank() && format.label == label) return true
+                if (!lang.isNullOrBlank() && format.language == lang) return true
+                return lang.isNullOrBlank() && label.isNullOrBlank() && i == index
+            }
+            return when {
+                !label.isNullOrBlank() -> format.label == label && i == index
+                !lang.isNullOrBlank() -> format.language == lang && i == index
+                else -> i == index
+            }
         }
     }
 
@@ -3331,9 +3357,10 @@ class PlayerActivity : ComponentActivity() {
      * panel itself carries only the scrollable [content] — no title bar and no
      * footer button — so the rows ARE the dialog.
      *
-     * The panel is capped to the screen (see [preferredHeightDp]) and the window
-     * is WRAP_CONTENT + centred, so a long list scrolls inside a panel that
-     * always fits instead of running off the top and bottom of the video.
+     * The panel is capped to the room the dialog frame actually measures (see
+     * [MaxHeightScrollView]) and the window fills the frame, so a long list
+     * scrolls inside a panel that always fits instead of running off the top and
+     * bottom of the video.
      *
      * Returns the hint [TextView] so a caller can keep its text live (the
      * "server too slow" countdown), or null when no hint was requested.
@@ -3425,8 +3452,16 @@ class PlayerActivity : ComponentActivity() {
 
         // A permanent thin scrollbar makes it obvious the panel scrolls — the
         // old fixed-height panel hid its last rows with no affordance at all.
-        val scroll = ScrollView(this).apply {
+        val scroll = MaxHeightScrollView(this).apply {
             addView(content)
+            // The panel is WRAP_CONTENT tall and THIS view is what caps the
+            // height, so the rows a long server list cannot show scroll inside a
+            // panel that is always fully on screen. The old arrangement sized
+            // the panel itself and let a WRAP_CONTENT dialog window be taller
+            // than the screen — the window is centred, so the extra height went
+            // off BOTH ends and the last rows were unreachable: that is the
+            // "last two servers not scrolling into view" report.
+            maxHeightPx = panelH
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
@@ -3463,7 +3498,7 @@ class PlayerActivity : ComponentActivity() {
             // signature; only a container can hold loose children.
             (content as? ViewGroup)?.let { bendLoose(it) }
         }
-        panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         // Rows are bent to the curve at their CURRENT height inside the panel, so
         // a scroll changes which part of the curve each one sits on. Re-bend on
         // every scroll: without this a row that scrolls up into the panel keeps
@@ -3513,47 +3548,48 @@ class PlayerActivity : ComponentActivity() {
             // to reach it. That is the cut subtitle box a user reported.
             .coerceAtMost(roomW)
             .coerceAtLeast(minOf(minW, roomW).coerceAtLeast(1))
-        // The panel must FLOAT on the video with all four rounded corners (and
-        // the light sweeping around them) visible: it is capped against the hint
-        // line plus the halo's own room above it, and against a fraction of the
-        // window, so it never runs off the top/bottom edge — which used to clip
-        // its bottom curve and hide the last rows. Anything longer scrolls.
-        //
-        // 104dp of chrome rather than 96: the hint line above the panel can run
-        // to four lines (see the cross-extension tally), and it is the ROOT —
-        // hint plus panel — that has to fit the window, so the reserve has to
-        // cover the tallest hint it will actually draw.
-        val chrome = (104 * density).toInt()
-        val fitsScreen = (win.y - chrome).coerceAtLeast((72 * density).toInt())
-        // Taller too: a server list scrolled four rows at a time is the other
-        // half of "there isn't room" — the panel's own rounded bottom stays on
-        // screen, and anything longer still scrolls.
-        val maxFraction = (win.y * if (flatPanel) 0.76f else 0.66f).toInt()
-        val minPanel = (110 * density).toInt()
-        // The floor has to give way to the ceiling, or a window shorter than
-        // 110dp + its chrome asks for a panel that cannot exist: `coerceIn`
-        // then throws "Cannot coerce value to an empty range: maximum 256 is
-        // less than minimum 272" from fitToContent — the crash a user reported
-        // (the panel's own onLayoutChange listener runs it, so it took the whole
-        // player down).
-        val hardCap = minOf(fitsScreen, maxFraction)
-        val softFloor = minOf(minPanel, hardCap)
+        // The panel FLOATS on the video with all four rounded corners (and the
+        // light sweeping around them) visible. Its height is not decided here
+        // any more: the panel is WRAP_CONTENT and the scroll view inside it is
+        // capped against the room the dialog frame actually measured (see
+        // [MaxHeightScrollView] + applyHeightCap below), which is the only
+        // number that cannot be wrong on a device whose window differs from its
+        // screen. [preferredHeightDp] is now just the starting cap — the height
+        // the panel opens at before the frame has been laid out, and an upper
+        // bound a short list shrinks below.
         val panelH = (preferredHeightDp * density).toInt()
-            .coerceAtMost(hardCap)
-            .coerceAtLeast(softFloor)
+            .coerceAtLeast((72 * density).toInt())
         // The panel view carries its own halo, so its silhouette comes out
-        // exactly panelW x panelH in the middle of it.
+        // exactly panelW x panelH in the middle of it. The HEIGHT is
+        // WRAP_CONTENT: the scroll view inside is capped instead (see
+        // [MaxHeightScrollView]), which is what keeps the panel's rounded
+        // bottom on screen and makes every row above it reachable.
         root.addView(panel, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, panelH + 2 * halo
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        // The root (hint + close button + panel) sits inside a full-height
+        // frame, centred. The frame is what reports the room that really
+        // exists — the panel's cap is computed from ITS measured height, so a
+        // window inset, a split screen or an unusual aspect ratio can never
+        // produce a panel taller than the space it was given.
+        val outer = FrameLayout(this).apply {
+            clipToPadding = false
+            clipChildren = false
+            addView(root, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+
         dialog.setContentView(
-            root,
+            outer,
             ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        com.hikari.app.ui.AppFonts.applyToViewTree(root, com.hikari.app.ui.AppFonts.appTypeface(this))
+        com.hikari.app.ui.AppFonts.applyToViewTree(outer, com.hikari.app.ui.AppFonts.appTypeface(this))
         dialog.window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         dialog.setCanceledOnTouchOutside(cancelable)
         dialog.setCancelable(cancelable)
@@ -3581,79 +3617,89 @@ class PlayerActivity : ComponentActivity() {
             val wantW = (panelW + 2 * halo).coerceAtMost(maxW).coerceAtLeast(1)
             if (wantW == appliedWinW) return
             appliedWinW = wantW
-            dialog.window?.setLayout(wantW, WindowManager.LayoutParams.WRAP_CONTENT)
+            dialog.window?.setLayout(wantW, WindowManager.LayoutParams.MATCH_PARENT)
         }
         dialog.window?.apply {
-            setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(panelW + 2 * halo, WindowManager.LayoutParams.MATCH_PARENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+        // The window now fills the screen (it has to, for the frame to measure
+        // the room that really exists), so a tap in the dim area lands INSIDE
+        // the window and the platform's own "canceled on touch outside" never
+        // fires. Dismiss by hand when the tap misses the root — i.e. the hint
+        // line and the panel together — so tapping the video still closes the
+        // sheet exactly as it did before.
+        outer.setOnTouchListener { _, ev ->
+            if (cancelable && ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                val hit = android.graphics.Rect()
+                root.getHitRect(hit)
+                if (!hit.contains(ev.x.toInt(), ev.y.toInt())) {
+                    dialog.dismiss()
+                    return@setOnTouchListener true
+                }
+            }
+            false
+        }
 
         // A cap TALLER than the rows it holds is just empty glass: the panel's
         // bottom keeps its curve while the rows stop well above it, which is
-        // what a bare band of panel between two groups of rows is. Measure the
-        // content at the panel's own width and shrink the panel onto it — the
-        // cap above stays as an upper bound, and anything longer still scrolls.
-        val panelLp = panel.layoutParams as? LinearLayout.LayoutParams
-        var appliedSil = -1
-        fun fitToContent() {
-            if (panelLp == null) return
-            // The panel's own padding is what the content is laid out inside —
-            // not just the halo. A flat panel adds its side gap (and the corner
-            // clearance) on top of the halo (see CurvedGlassPanel.onSizeChanged),
-            // so measuring the content at `width - 2*halo` handed it a column
-            // ~16dp wider than it will actually get, under-counting the wrapped
-            // lines and closing the panel before its last row. The curved pane
-            // keeps the old, deliberately narrow measure: its rows are bent in
-            // from that width, so measuring wide there under-counts too.
-            val innerW = if (flatPanel) {
-                panel.width - panel.paddingLeft - panel.paddingRight
-            } else {
-                panel.width - 2 * halo
-            }
-            if (innerW <= 0 || panel.height - 2 * halo <= 0) return
-            content.measure(
-                View.MeasureSpec.makeMeasureSpec(innerW, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
-            )
-            val contentH = content.measuredHeight
-            if (contentH <= 0) return
-            // The panel's own padding (halo + row gap, top and bottom) is part
-            // of the silhouette, so the wanted height is the rows plus it — the
-            // halo is added AROUND the silhouette, not inside it.
-            val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
-                panel.paddingTop + panel.paddingBottom
-            // The caps are re-derived from the window as it is NOW, not as it
-            // was when the dialog was shown: a rotation or a window resize moves
-            // the real budget, and the size captured at show time is exactly what
-            // used to leave a grown panel hanging off the screen. And the floor
-            // yields to the ceiling (see `softFloor`), so the pair can never be
-            // an empty range — `coerceIn` threw on that
-            // ("maximum 256 is less than minimum 272"), from THIS listener,
-            // which is the crash a user reported.
-            val now = windowSize()
-            val liveH = if (now.y > 0) minOf(win.y, now.y) else win.y
-            val cap = minOf(
-                (liveH - chrome).coerceAtLeast((72 * density).toInt()),
-                (liveH * if (flatPanel) 0.76f else 0.66f).toInt(),
-            )
-            val floor = minOf(minPanel, cap)
-            val sil = wanted.coerceAtMost(cap).coerceAtLeast(floor)
-            if (sil == appliedSil) {
+        // what a bare band of panel between two groups of rows is. The panel is
+        // WRAP_CONTENT, so it shrinks onto its rows by itself — all that is left
+        // to do is CAP it, and the number to cap it against is the room the
+        // dialog really has (the frame's measured height), not a guess made from
+        // the window size at show time.
+        var appliedCap = -1
+        fun applyHeightCap() {
+            val avail = outer.height
+            if (avail <= 0) return
+            // Everything outside the scroll view: the hint line + its inset, and
+            // the panel's own padding (the halo plus the row gap on both sides).
+            // The hint row is root's FIRST child — measuring root itself would
+            // make the budget shrink as the panel grows, i.e. a panel that
+            // collapses under its own height.
+            val hintRow = root.getChildAt(0)
+            val hintH = if (hintRow != null && hintRow.height > 0) hintRow.height else 0
+            val panelPad = (panel.paddingTop + panel.paddingBottom).takeIf { it > 0 }
+                ?: (2 * (halo + (13 * density).toInt()))
+            // The budget keeps the halo's room top and bottom, and a little air
+            // so the glow has somewhere to fade. The floor yields to the ceiling
+            // — an empty range is exactly the crash a user reported
+            // ("Cannot coerce value to an empty range: maximum 256 is less than
+            // minimum 272") and it is never worth a crash to keep a minimum.
+            val chromeNow = 2 * halo + (8 * density).toInt()
+            val ceiling = minOf(
+                (avail - hintH - chromeNow).coerceAtLeast((72 * density).toInt()),
+                (avail * if (flatPanel) 0.94f else 0.86f).toInt(),
+            ).coerceAtLeast(1)
+            val cap = (ceiling - panelPad).coerceIn(1, ceiling)
+            // A few pixels of jitter are not worth a relayout: the panel's own
+            // padding is recomputed when IT is resized (see CurvedGlassPanel), so
+            // the cap can move by a pixel or two between passes. Settling rather
+            // than chasing that is what keeps this from re-laying the panel out
+            // on every frame.
+            if (appliedCap > 0 && kotlin.math.abs(cap - appliedCap) <= (3 * density).toInt()) {
                 sizeDialogWindow()
                 return
             }
-            appliedSil = sil
-            panelLp.height = sil + 2 * halo
-            panel.layoutParams = panelLp
+            if (cap == appliedCap) {
+                sizeDialogWindow()
+                return
+            }
+            appliedCap = cap
+            scroll.maxHeightPx = cap
+            scroll.requestLayout()
+            panel.requestLayout()
             sizeDialogWindow()
         }
-        // Widths only exist after the dialog is shown, and the rows can change
-        // height while it is up (a server landing mid-search), so fit now and
-        // again on every content layout change.
-        scroll.post { fitToContent() }
-        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitToContent() }
+        // The frame's height only exists after the dialog is shown, and the rows
+        // can change height while it is up (a server landing mid-search), so cap
+        // now and again on every layout change of the frame and the panel.
+        outer.post { applyHeightCap() }
+        outer.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         return hintView
     }
 
@@ -4034,6 +4080,12 @@ class PlayerActivity : ComponentActivity() {
         // tap: nothing plays, and the pick starts the download instead (see
         // [downloadPickMode]).
         if (sources.isEmpty() && !startMode) return
+        // Opening the source list — or being handed it on play — means the user
+        // is asking for servers, so the background sweep is released right here
+        // and not only on the first frame. A held sweep is invisible on the
+        // loading cover, which is the point, but it must never be invisible in
+        // the one place the user is actually looking for servers.
+        if (!startMode) liveSessionId?.let { StreamsLive.releaseSweep(it) }
         if (startMode) {
             // Present the start chooser at most once per Activity: the live
             // search keeps growing the list, and re-opening the chooser after
@@ -4570,7 +4622,7 @@ class PlayerActivity : ComponentActivity() {
                     f.width.takeIf { it > 0 }?.let { "${it}px" },
                 ).joinToString(" \u00B7 ").ifBlank { "Track ${i + 1}" }
                 val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
-                if (isTrackSelected(p, group, i)) overrideSelected = true
+                if (overrideSelects(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
                         label = label,
@@ -4600,7 +4652,7 @@ class PlayerActivity : ComponentActivity() {
                     label = row.label,
                     sub = row.sub,
                     badge = row.badge,
-                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                    selected = overrideSelected && overrideSelects(p, row.group, row.index),
                 )
             )
         }
@@ -4625,20 +4677,34 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** True when [group]'s track [index] is the one explicitly selected. */
-    private fun isTrackSelected(player: ExoPlayer, group: Tracks.Group, index: Int): Boolean {
-        val mediaGroup = group.mediaTrackGroup
-        val override = player.trackSelectionParameters.overrides[mediaGroup]
-        if (override != null && override.trackIndices.any { it == index }) return true
-        // A rebuilt media item invalidates the override until [applyStickyPicks]
-        // re-applies it a moment later — read the remembered pick as well, so
-        // the sheet never claims the user's choice was forgotten.
-        val pick = when (group.type) {
-            C.TRACK_TYPE_TEXT -> pickText
-            C.TRACK_TYPE_AUDIO -> pickAudio
-            else -> null
-        } ?: return false
-        return pick.matches(mediaGroup.getFormat(index), index)
+    /**
+     * True when [group]'s track [index] is the one an explicit OVERRIDE names.
+     *
+     * An override is the authoritative answer (it is what the player is really
+     * rendering); a remembered [TrackPick] is only the fallback used while a
+     * rebuilt track list settles. See [pickedRow] for the fallback half.
+     */
+    private fun overrideSelects(player: ExoPlayer, group: Tracks.Group, index: Int): Boolean {
+        val override = player.trackSelectionParameters.overrides[group.mediaTrackGroup]
+            ?: return false
+        return override.trackIndices.any { it == index }
+    }
+
+    /**
+     * The ONE row a remembered pick names, out of the rows a menu is currently
+     * showing — exact identity first (name + language + position), then the
+     * loose match for a track list that has been rebuilt since the pick was made.
+     *
+     * A menu decides its radio marks per ROW, and this is the row that owns the
+     * mark: without it every track of the chosen language lit up at once.
+     */
+    private fun pickedRow(rows: List<TrackRow>, pick: TrackPick?): TrackRow? {
+        if (pick == null) return null
+        return rows.firstOrNull { r ->
+            pick.matches(r.group.mediaTrackGroup.getFormat(r.index), r.index)
+        } ?: rows.firstOrNull { r ->
+            pick.matches(r.group.mediaTrackGroup.getFormat(r.index), r.index, loose = true)
+        }
     }
 
     /**
@@ -4652,9 +4718,31 @@ class PlayerActivity : ComponentActivity() {
      * position (Lower/Higher, lifts the captions off the bottom edge so
      * fullscreen subtitles no longer sit in the letterbox bar).
      */
-    private fun showSubsDialog() {
+    private fun showSubsDialog(waitedForTracks: Boolean = false) {
         val p = player ?: return
         val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        // The text tracks of an HLS/DASH manifest — and the ones a provider
+        // attaches while it resolves — only exist in the track list once the
+        // media has been parsed. Opening this sheet during the first buffer
+        // therefore used to offer only Off/Auto on a stream that really carries
+        // subtitles, or nothing at all, which is the "many times subtitle not
+        // showing" report. This is the same moment the audio sheet already gives
+        // the player before it answers.
+        if (groups.isEmpty() && !waitedForTracks && p.playbackState != Player.STATE_READY) {
+            lifecycleScope.launch {
+                for (i in 0 until 12) {
+                    val done = player?.let { pl ->
+                        pl.playbackState == Player.STATE_READY ||
+                            pl.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT }
+                    } ?: true
+                    if (done) break
+                    delay(200)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                showSubsDialog(waitedForTracks = true)
+            }
+            return
+        }
         // A server can advertise subtitles that all failed to fetch or carried
         // no cues — with them filtered out the picker would silently show only
         // Off/Auto, which reads as "the app lost my subtitles". Say so instead.
@@ -4687,7 +4775,7 @@ class PlayerActivity : ComponentActivity() {
                     else -> lang ?: trackLabel(f.label ?: f.id, i)
                 }
                 val sub = if (userFile != null) lang else trackSub(primary, f.label, f.id)
-                if (!textDisabled && isTrackSelected(p, group, i)) overrideSelected = true
+                if (!textDisabled && overrideSelects(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
                         label = primary,
@@ -4699,6 +4787,10 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
         }
+        // The single row the remembered pick names: a track list with three
+        // Hindi subtitles must mark the one the user chose, not the language.
+        val pickRow = pickedRow(rows, pickText)
+        if (!textDisabled && pickRow != null) overrideSelected = true
         val options = mutableListOf(
             GlassOption(I18n.t("Off"), I18n.t("Hide captions completely"), selected = textDisabled && !overrideSelected),
             GlassOption(
@@ -4742,7 +4834,8 @@ class PlayerActivity : ComponentActivity() {
                     label = row.label,
                     sub = row.sub,
                     badge = row.badge,
-                    selected = !textDisabled && isTrackSelected(p, row.group, row.index),
+                    selected = !textDisabled &&
+                        (overrideSelects(p, row.group, row.index) || row === pickRow),
                 )
             )
         }
@@ -4839,6 +4932,17 @@ class PlayerActivity : ComponentActivity() {
                                 TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
                             )
                             .build()
+                        // Say what was chosen and re-assert it on the next loop
+                        // pass: "I tapped the subtitle and nothing appeared" is
+                        // the other half of the same report, and a silent pick
+                        // on a stream that then re-prepares looks exactly like a
+                        // tap that did nothing.
+                        Toast.makeText(
+                            this,
+                            I18n.t("Subtitle: %s").replace("%s", option.label),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        p.post { applyStickyPicks(C.TRACK_TYPE_TEXT) }
                     }
                 }
                 dialog.dismiss()
@@ -5428,7 +5532,7 @@ class PlayerActivity : ComponentActivity() {
                 val f = mediaGroup.getFormat(i)
                 val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
                 val sub = trackSub(label, f.label, f.id)
-                if (isTrackSelected(p, group, i)) overrideSelected = true
+                if (overrideSelects(p, group, i)) overrideSelected = true
                 rows.add(
                     TrackRow(
                         label = label,
@@ -5440,6 +5544,10 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
         }
+        // Only the ONE row the remembered pick names gets the radio mark — a
+        // release with three Hindi audio tracks must not light all three up.
+        val pickRow = pickedRow(rows, pickAudio)
+        if (pickRow != null) overrideSelected = true
         val indexMap = HashMap<Int, Pair<Tracks.Group, Int>>()
         val options = mutableListOf(
             GlassOption(
@@ -5455,7 +5563,7 @@ class PlayerActivity : ComponentActivity() {
                     label = row.label,
                     sub = row.sub,
                     badge = row.badge,
-                    selected = overrideSelected && isTrackSelected(p, row.group, row.index),
+                    selected = overrideSelects(p, row.group, row.index) || row === pickRow,
                 )
             )
         }
@@ -5503,6 +5611,18 @@ class PlayerActivity : ComponentActivity() {
                         TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
                     )
                     .build()
+                // Confirm the switch and re-assert it on the next loop pass —
+                // a select that produces no visible/sonorous change reads as a
+                // dead row on a stream with several languages.
+                Toast.makeText(
+                    this,
+                    I18n.t("Audio: %s").replace(
+                        "%s",
+                        languageOf(format.language) ?: trackLabel(format.label ?: format.id, ti),
+                    ),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                p.post { applyStickyPicks(C.TRACK_TYPE_AUDIO) }
             }
         }
     }
@@ -7142,6 +7262,10 @@ class PlayerActivity : ComponentActivity() {
             // Real video is on screen — retract any "your connection looks slow"
             // verdict, measured or not.
             SlowNetTip.onFirstFrame()
+            // Playback really started: let the background extension sweep that the
+            // detail screen held back run now. Its finds are only ever ADDED to
+            // this playing server list, so the wait costs nothing.
+            liveSessionId?.let { StreamsLive.releaseSweep(it) }
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             hideLoadingBanner()
@@ -7186,6 +7310,7 @@ class PlayerActivity : ComponentActivity() {
                 // Audio-only streams never fire onRenderedFirstFrame, so the same
                 // "playback really did start" signal applies here.
                 SlowNetTip.onFirstFrame()
+                liveSessionId?.let { StreamsLive.releaseSweep(it) }
                 // Fallback: audio-only streams never fire onRenderedFirstFrame,
                 // so drop the title card shortly after playback is ready.
                 bufferingWatchdog.postDelayed({ hideLoadingBanner() }, 1200L)
@@ -7209,6 +7334,10 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onPlayerError(error: PlaybackException) {
             hideLoadingBanner(immediate = true)
+            // This server is not playing, so there is nothing left to protect
+            // from the background search — and the sweep is exactly what may
+            // supply the server that does play.
+            liveSessionId?.let { StreamsLive.releaseSweep(it) }
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             val details = buildString {
@@ -7950,6 +8079,9 @@ class PlayerActivity : ComponentActivity() {
             loadingSpinner?.visibility != View.VISIBLE
         ) showLoadingCover()
         Toast.makeText(this, I18n.t("Looking for other servers…"), Toast.LENGTH_SHORT).show()
+        // A refresh is a fresh search by definition (the user is asking for new
+        // servers), so a held sweep must not be kept back by it.
+        StreamsLive.releaseSweep(session)
         StreamsLive.requestRefresh(session)
         lifecycleScope.launch {
             val deadline = System.currentTimeMillis() + REFRESH_WAIT_MS
@@ -8672,6 +8804,35 @@ class PlayerActivity : ComponentActivity() {
             "https://tracker.gbitt.info:443/announce",
             "http://tracker.openbittorrent.com:80/announce",
         )
+    }
+}
+
+/**
+ * A [ScrollView] that never measures taller than [maxHeightPx].
+ *
+ * A dialog that wants "as tall as the content, but never taller than the room I
+ * have" cannot express that with a window size: the dialog window is centred, so
+ * a WRAP_CONTENT window taller than the screen loses the same amount off the TOP
+ * and the BOTTOM — the last rows of a long list end up outside the window, where
+ * no amount of scrolling reaches them. That is the server panel whose bottom two
+ * entries could not be scrolled into view.
+ *
+ * Capping the SCROLL VIEW keeps the panel itself WRAP_CONTENT: a short list stays
+ * short, a long one stops exactly at the cap, and the panel that holds it is
+ * always inside the frame it was given.
+ */
+private class MaxHeightScrollView(context: android.content.Context) : ScrollView(context) {
+    var maxHeightPx = 0
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (maxHeightPx > 0) {
+            super.onMeasure(
+                widthMeasureSpec,
+                MeasureSpec.makeMeasureSpec(maxHeightPx, MeasureSpec.AT_MOST),
+            )
+        } else {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        }
     }
 }
 

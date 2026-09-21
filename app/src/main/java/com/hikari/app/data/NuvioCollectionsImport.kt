@@ -62,6 +62,12 @@ object NuvioCollectionsImport {
         val emoji: String,
         val shape: String,
         val sources: List<DraftSource>,
+        /** Titles the folder carries ITSELF, rather than naming a catalog to
+         *  fetch. A Nuvio export can do either: a folder holding a catalog
+         *  descriptor has `sources`, and a folder holding actual titles has
+         *  `items`. Ignoring the second shape is why an imported file that
+         *  plainly contained titles produced folders that loaded nothing. */
+        val items: List<MediaItem> = emptyList(),
     )
 
     /** One collection in the file. */
@@ -132,6 +138,7 @@ object NuvioCollectionsImport {
                         emoji = firstString(f, "coverEmoji", "emoji"),
                         shape = firstString(f, "tileShape"),
                         sources = sourcesOf(f),
+                        items = itemsOf(f),
                     )
                 }
             }
@@ -145,6 +152,18 @@ object NuvioCollectionsImport {
             )
         }
         return out
+    }
+
+    /** The titles a folder carries inline (a Nuvio export that puts actual titles
+     *  in a folder instead of naming a catalog). Empty for the catalog-descriptor
+     *  shape, which is what the reference export uses for its own rows. */
+    private fun itemsOf(folder: JSONObject): List<MediaItem> {
+        for (key in listOf("items", "titles", "metas", "results", "entries", "list")) {
+            val arr = folder.optJSONArray(key) ?: continue
+            val items = NuvioCatalogImport.itemsOf(arr)
+            if (items.isNotEmpty()) return items
+        }
+        return emptyList()
     }
 
     private fun sourcesOf(folder: JSONObject): List<DraftSource> {
@@ -206,7 +225,31 @@ object NuvioCollectionsImport {
         for (draft in plan.collections) {
             val folders = ArrayList<CollectionFolder>(draft.folders.size)
             for (fd in draft.folders) {
-                val sources = ArrayList<CatalogSource>(fd.sources.size)
+                val sources = ArrayList<CatalogSource>(fd.sources.size + 1)
+                // Titles the folder carries itself come FIRST: they are the
+                // folder's own content, and (unlike a catalog descriptor) they
+                // need nothing installed to load. This is the shape a Nuvio
+                // export uses when a folder holds titles directly, and dropping
+                // it is why such a file imported "successfully" into folders
+                // that showed nothing at all.
+                if (fd.items.isNotEmpty()) {
+                    val json = NuvioCatalogImport.encode(fd.items)
+                    if (json.isNotEmpty()) {
+                        sources += CatalogSource(
+                            kind = CatalogSourceKind.ITEMS,
+                            title = fd.title.ifBlank { I18n.t("Imported list") },
+                            itemsJson = json,
+                            type = if (fd.items.any { it.type == MediaType.SERIES }) {
+                                MediaType.SERIES
+                            } else {
+                                MediaType.MOVIE
+                            },
+                            rawType = "import",
+                            uid = newId("items"),
+                        )
+                        catalogs++
+                    }
+                }
                 for (sd in fd.sources) {
                     val mapped = when (sd.provider) {
                         "tmdb" -> tmdbSource(sd)
@@ -222,25 +265,32 @@ object NuvioCollectionsImport {
                         else -> addons++
                     }
                 }
+                // No cover in the file: the first title's poster stands in, so
+                // the imported folder is recognisable instead of a grey tile.
+                val inheritedCover = fd.coverUrl.takeIf { it.isNotBlank() }
+                    ?: fd.items.firstOrNull { !it.posterUrl.isNullOrBlank() }?.posterUrl
                 folders += CollectionFolder(
                     id = newId("fld"),
                     name = fd.title.ifBlank { I18n.t("Folder") },
                     sources = sources.distinctBy { it.key },
                     coverKind = when {
-                        fd.coverUrl.isNotBlank() -> CoverKinds.URL
+                        inheritedCover != null -> CoverKinds.URL
                         fd.emoji.isNotBlank() -> CoverKinds.EMOJI
                         else -> CoverKinds.NONE
                     },
-                    coverValue = if (fd.coverUrl.isNotBlank()) fd.coverUrl else fd.emoji,
+                    coverValue = inheritedCover ?: fd.emoji,
                     tileShape = shapeOf(fd.shape),
                 )
             }
+            val inheritedCollectionCover = draft.coverUrl.takeIf { it.isNotBlank() }
+                ?: folders.firstOrNull { it.coverKind == CoverKinds.URL }?.coverValue
             collections += Collection(
                 id = newId("col"),
                 name = draft.title.ifBlank { I18n.t("Imported") },
                 folders = folders,
-                coverKind = if (draft.coverUrl.isNotBlank()) CoverKinds.URL else CoverKinds.NONE,
-                coverValue = draft.coverUrl,
+                coverKind = if (inheritedCollectionCover != null) CoverKinds.URL
+                else CoverKinds.NONE,
+                coverValue = inheritedCollectionCover.orEmpty(),
                 tileShape = shapeOf(draft.shape),
             )
         }

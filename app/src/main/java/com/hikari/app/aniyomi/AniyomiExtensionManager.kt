@@ -22,6 +22,7 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.util.system.ChildFirstPathClassLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -190,12 +191,18 @@ object AniyomiExtensionManager {
     private const val META_IS_TORRENT = "aniyomix.torrent"
 
     /**
-     * extensions-lib versions Hikari can host. 14 and 16 are the older APK
-     * layouts (still the bulk of the ecosystem), 17 is current. A version
-     * outside this list is refused up front with the number in the message
-     * rather than failing later with an inscrutable linkage error.
+     * The extensions-lib MAJOR versions Hikari can host. 14 and 16 are the older
+     * APK layouts (still the bulk of the ecosystem), 17 is current, and 18 is
+     * accepted ahead of time.
+     *
+     * Compared by MAJOR, never as a whole number. The metadata
+     * (`aniyomix.extensionLib`) is an integer major, but the fallback is the
+     * APK's `versionName`, which is a full version — "16.1", "14.4" — so an
+     * exact compare rejected every extension built against a point release,
+     * which is most of them. A 16.1 extension speaks the same lib as a 16.0 one.
      */
-    private val SUPPORTED_LIB_VERSIONS = listOf(14.0, 16.0, 17.0)
+    private val MIN_LIB_MAJOR = 14
+    private val MAX_LIB_MAJOR = 18
 
     /** A failed load is negative-cached for this long (see [extensionOf]). */
     private const val FAIL_RETRY_MS = 60_000L
@@ -437,6 +444,49 @@ object AniyomiExtensionManager {
         )
     }
 
+    /**
+     * The entries of an Aniyomi `index.min.json`, however the repo serves them.
+     *
+     * The official repo serves a BARE ARRAY. Community repos (and mirrors)
+     * commonly wrap the same entries in an object — `{"extensions":[…]}`,
+     * `{"plugins":[…]}` — or key them by package name. Demanding an array threw
+     * "Invalid index.min.json: Value {…} of type JSONObject cannot be converted
+     * to JSONArray" at the user, which is the error people hit adding an Aniyomi
+     * repo whose index is perfectly valid. Returns null when the text really is
+     * not an index.
+     */
+    fun indexEntries(text: String): JSONArray? {
+        val trimmed = text.trim().removePrefix("\uFEFF").trim()
+        if (trimmed.isEmpty()) return null
+        runCatching { JSONArray(trimmed) }.getOrNull()?.let { return it }
+        val root = runCatching { JSONObject(trimmed) }.getOrNull() ?: return null
+        // An array under one of the names these indexes use.
+        for (key in listOf("extensions", "plugins", "items", "data", "list", "apks", "scrapers")) {
+            root.optJSONArray(key)?.let { if (it.length() > 0) return it }
+        }
+        // …or an object keyed by package name whose VALUES are the entries.
+        val keyed = JSONArray()
+        val names = root.keys()
+        while (names.hasNext()) {
+            val value = root.opt(names.next())
+            if (value is JSONObject &&
+                (value.has("apk") || value.has("sources") || value.has("pkg"))
+            ) {
+                keyed.put(value)
+            }
+        }
+        if (keyed.length() > 0) return keyed
+        // One more level: `{"data":{"extensions":[…]}}`.
+        for (key in listOf("data", "repo", "index")) {
+            root.optJSONObject(key)?.let { nested ->
+                for (inner in listOf("extensions", "plugins", "items", "list")) {
+                    nested.optJSONArray(inner)?.let { if (it.length() > 0) return it }
+                }
+            }
+        }
+        return null
+    }
+
     /** The host of the first `sources[].baseUrl` of an index entry, if any —
      *  the key for the favicon fallback icon. */
     private fun firstSourceHost(o: JSONObject): String? {
@@ -517,6 +567,34 @@ object AniyomiExtensionManager {
     var lastError: String? = null
         private set
 
+    /**
+     * Why THIS extension could not be loaded, keyed by its APK path.
+     *
+     * [lastError] is one global slot that whichever load finishes last
+     * overwrites, and several extensions load concurrently (Home asks every
+     * installed row at once). It therefore cannot answer "why is this one
+     * blank?", which is exactly the question the Home empty state asks when
+     * every Aniyomi row is missing. The per-extension reason is what turned
+     * "check the WebView, it may be a Cloudflare check" into a real cause.
+     */
+    private val loadFailures = ConcurrentHashMap<String, String>()
+
+    /** The load failure recorded for this extension's own APK, or null when it
+     *  loaded (or has not been tried yet). */
+    fun loadFailure(context: Context, config: ProviderConfig): String? =
+        loadFailure(extensionFile(context, packageOf(config)))
+
+    /** As above, for a caller that already resolved the APK itself (the
+     *  provider prefers the path recorded at install time). */
+    fun loadFailure(file: File): String? {
+        val path = file.absolutePath
+        if (cache.containsKey(path)) return null
+        return loadFailures[path]
+    }
+
+    /** The reason [load] is about to fail with, on the loading thread. */
+    private val loadError = ThreadLocal.withInitial<String?> { null }
+
     /** Per-thread detail of the load in progress (same contract as
      *  [com.hikari.app.cs3.Cs3PluginManager]). */
     private val errorDetails = ThreadLocal.withInitial { StringBuilder() }
@@ -548,6 +626,7 @@ object AniyomiExtensionManager {
         if (Looper.myLooper() == Looper.getMainLooper()) return null
         if (!file.exists()) {
             lastError = "Extension file missing — reinstall this extension"
+            loadFailures[path] = lastError!!
             return null
         }
         if (!force) {
@@ -575,8 +654,14 @@ object AniyomiExtensionManager {
             if (ext != null) {
                 cache[path] = ext
                 lastFail.remove(path)
+                loadFailures.remove(path)
             } else {
                 lastFail[path] = System.currentTimeMillis()
+                // The reason THIS extension failed, captured on the thread that
+                // ran the load (see [loadFailures]).
+                loadFailures[path] = loadError.get()
+                    ?: lastError
+                    ?: "The extension could not be loaded"
             }
             return ext
         } finally {
@@ -650,6 +735,7 @@ object AniyomiExtensionManager {
 
     private fun load(context: Context, file: File): Extension? {
         errorDetails.get().setLength(0)
+        loadError.set(null)
         lastError = null
         // Android 14+ refuses to load a writable dex file; an extension
         // restored from a backup (or one whose copy lost its mode) must still
@@ -675,11 +761,11 @@ object AniyomiExtensionManager {
                 "Can't tell which extensions-lib this was built against " +
                     "(its versionName is \"$versionName\") — refusing to load it"
             )
-        if (libVersion !in SUPPORTED_LIB_VERSIONS) {
+        val libVersionMajor = libVersion.toInt()
+        if (libVersionMajor !in MIN_LIB_MAJOR..MAX_LIB_MAJOR) {
             return failReason(
                 "Built against extensions-lib ${libVersion.toString().removeSuffix(".0")} — " +
-                    "Hikari supports " +
-                    SUPPORTED_LIB_VERSIONS.joinToString { it.toString().removeSuffix(".0") }
+                    "Hikari supports $MIN_LIB_MAJOR to $MAX_LIB_MAJOR"
             )
         }
 
@@ -807,10 +893,15 @@ object AniyomiExtensionManager {
     }
 
     /** The extensions-lib the APK was built against: the `aniyomix.extensionLib`
-     *  metadata, else the major of its `versionName` (Aniyomi's own fallback). */
+     *  metadata, else the MAJOR of its `versionName` (Aniyomi's own fallback). */
     private fun libVersionOf(info: PackageInfo): Double? {
         metaInt(info, META_EXT_LIB).takeIf { it != 0 }?.let { return it.toDouble() }
-        return info.versionName?.substringBeforeLast('.')?.toDoubleOrNull()
+        val name = info.versionName ?: return null
+        // The first segment is the major. `substringBeforeLast('.')` read
+        // "16.1.2" as 16.1 and "1.4.36" as 1.4 — the second is not a lib
+        // version at all, and only the major is ever compared (see
+        // [MIN_LIB_MAJOR]).
+        return name.substringBefore('.').toDoubleOrNull()
     }
 
     /** The extension's display name: `aniyomix.name`, else the app label with
@@ -840,6 +931,7 @@ object AniyomiExtensionManager {
 
     private fun failReason(msg: String, e: Throwable? = null): Extension? {
         lastError = msg
+        loadError.set(msg)
         record(msg, e)
         return null
     }
