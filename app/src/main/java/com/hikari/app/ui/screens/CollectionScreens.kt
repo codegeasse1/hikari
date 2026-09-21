@@ -304,7 +304,9 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                                 )
                                 Toast.makeText(
                                     context,
-                                    tr("Collections JSON copied"),
+                                    // I18n.t, not tr(): this runs from a click
+                                    // callback, outside composition.
+                                    I18n.t("Collections JSON copied"),
                                     Toast.LENGTH_SHORT,
                                 ).show()
                             }
@@ -656,6 +658,12 @@ private fun CollectionBlock(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onOpenFolder: (CollectionFolder) -> Unit,
+    /** The reorder pair the collection row carries (see [CollectionListRow]):
+     *  a collection's position in the store IS its position on Home. */
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth()) {
         CollectionListRow(
@@ -663,6 +671,10 @@ private fun CollectionBlock(
             onOpen = onOpen,
             onEdit = onEdit,
             onDelete = onDelete,
+            canMoveUp = canMoveUp,
+            canMoveDown = canMoveDown,
+            onMoveUp = onMoveUp,
+            onMoveDown = onMoveDown,
         )
         if (collection.folders.isEmpty()) return@Column
         LazyRow(
