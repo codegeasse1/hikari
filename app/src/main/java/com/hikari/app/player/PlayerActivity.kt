@@ -7214,7 +7214,7 @@ class PlayerActivity : ComponentActivity() {
      * panel is for, where nothing is downloaded until it is tapped.
      */
     private suspend fun autoSiteTracks(
-        item: MediaItem,
+        item: AppMediaItem,
         episode: Episode?,
         wanted: String,
     ): List<SubtitleSource> = withContext(Dispatchers.IO) {

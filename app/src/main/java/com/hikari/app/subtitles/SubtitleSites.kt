@@ -592,12 +592,12 @@ private object SubdlSite : SubtitleSite {
         val out = ArrayList<SiteTrack>()
         val langAt = Regex("data-language=\"([a-z0-9\\-]+)\"\\s+data-language-name=\"([^\"]*)\"")
             .findAll(page)
-            .map { it.range.first to (it.groupValues[1] to H.clean(it.groupValues[2])) }
+            .map { Triple(it.range.first, it.groupValues[1], H.clean(it.groupValues[2])) }
             .toList()
-        for ((index, pair) in langAt.withIndex()) {
-            val end = langAt.getOrNull(index + 1)?.first ?: page.length
-            val block = page.substring(index, minOf(end, page.length))
-            val lang = SubtitleLang.of(pair.second.ifBlank { pair.first })
+        for ((n, span) in langAt.withIndex()) {
+            val end = langAt.getOrNull(n + 1)?.first ?: page.length
+            val block = page.substring(span.first, minOf(end, page.length))
+            val lang = SubtitleLang.of(span.third.ifBlank { span.second })
             for (row in block.split("<li").drop(1)) {
                 val tag = row.substringBefore('>')
                 val downloads = Regex("data-downloads=\"(\\d+)\"").find(tag)?.groupValues?.get(1)
