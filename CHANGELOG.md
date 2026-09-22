@@ -1,3 +1,12 @@
+## 0.10.3
+
+Returning to Home can no longer draw a *different* provider's catalogs than the one you picked: your pick is read back from the store before anything is allowed to load, and a feed load that started under an older pick can never paint its rows over a newer one.
+
+### Fixed
+
+- **Home showed every provider's catalogs again after coming back from the player.** Reproduced from the report "I pick 1Shows, play a movie, load a subtitle from the internet, close the player and come back, and it is showing all providers again instead of 1Shows" — with the floating pill still reading **1Shows** while the shelves on screen were MovieBox's, which is what made this look like a lost pick when the pick was never lost at all. Closing the player can leave Android to recreate the activity (it does whenever the process was trimmed in the background), and the new Home screen built a fresh view model: its coroutine that watches the installed extensions ran before the coroutine that reads the saved pick back out of the store, saw a still-empty selection, and started an **all-providers** load. That load's rows then landed on screen — over the picked provider's own feed — while the pill (which reads the pick, not the rows) kept saying 1Shows. The pick is now read *first* and every other load waits for it; a load that is superseded by a newer one discards its rows instead of painting them (both cases are logged: "load superseded before it started" / "pick=… superseded by a newer load"); and an installed-extension list that has not been built yet (the first seconds of a process) is no longer mistaken for "this extension was uninstalled", which could have forgotten a pick outright.
+- **Coming back from the player paints your pick instantly again.** The last feed of every pick is now remembered for the whole app session rather than inside the Home view model, so the activity recreation above cannot empty it — Home returns to the picked provider's rows from the cache instead of a spinner and a full re-fetch of catalogs you were already looking at.
+
 ## 0.10.2
 
 Search gets the year filter it should always have had — a scrollable, multi-select strip you pick **before** searching — an IPTV channel is now searched only inside its own playlist, the provider pill and the Home feed can no longer disagree about what is on screen, and the subtitle search box is always pre-filled with the title.

@@ -179,7 +179,40 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     // to any provider is always instant. Each row holds poster-cache tokens
     // rather than full images ([tokenizePoster] below), so the whole map stays
     // cheap no matter how many extensions were browsed.
-    private val homeCache = LinkedHashMap<String, List<CatalogRow>>()
+    //
+    // It lives on [HomeFeedCache] — the WHOLE PROCESS, not this view model —
+    // because returning from the player can recreate the activity and with it
+    // this view model, and a fresh empty map would mean a spinner plus a full
+    // re-fetch of the picked provider every single time the user came back.
+    private val homeCache get() = HomeFeedCache.rows
+
+    /**
+     * Every [loadInternal] call takes a ticket, and only the NEWEST ticket may
+     * paint rows or write the cache.
+     *
+     * Cancelling the previous job is not enough on its own: `loadJob` holds the
+     * LAST job ASSIGNED, and a load interrupted between reading the selection and
+     * assigning its job can end up assigned after — and therefore outliving — a
+     * load that started later. That is how an all-providers feed could paint
+     * itself over a picked provider's rows.
+     */
+    private var loadToken = 0
+
+    /**
+     * Completes once the saved pick has been read back from the store.
+     *
+     * Everything else in [init] waits on it. A feed must never be loaded — and a
+     * pick must never be judged "gone" — while the selection is still the empty
+     * default. The new HomeViewModel a returning activity creates used to start
+     * its provider watcher before the restore coroutine had read the preference:
+     * the watcher then saw an empty selection, started an ALL-providers load, and
+     * that feed painted itself over the picked provider's rows. That is the
+     * reported "I pick 1Shows, play a movie, load a subtitle from the internet,
+     * close the player and come back — and Home is showing every provider's
+     * catalog again", with the pill still reading "1Shows", because the pick
+     * itself was never lost.
+     */
+    private val restored = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     init {
         viewModelScope.launch {
@@ -188,32 +221,45 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // the same stored string carries both — and there may be several of
             // them (a multi pick lives in its own preference; the single one is
             // the fallback for every install that predates multi-select).
-            val multi = store.homeProviders().toList()
+            // A store read that fails must not leave the watchers below waiting
+            // forever: the selection simply stays at its default ("All").
+            val multi = runCatching { store.homeProviders().toList() }.getOrDefault(emptyList())
+            val single = runCatching { store.homeProvider() }.getOrDefault("")
             applySelection(
-                if (multi.isNotEmpty()) multi
-                else listOfNotNull(store.homeProvider().ifBlank { null })
+                if (multi.isNotEmpty()) multi else listOfNotNull(single.ifBlank { null })
             )
+            // From here on the selection is real, so the watchers below may act.
+            restored.complete(Unit)
             loadInternal()
         }
         viewModelScope.launch {
+            restored.await()
             manager.providers.collect { ps ->
                 val sel = _selection.value
-                // Only EXTENSION picks can be invalidated by the installed list
-                // changing; a collection pick is resolved against the
-                // collections store instead (see loadInternal). One extension
-                // being uninstalled drops just that pick, so the rest of a multi
-                // pick (and the user's other choices) survive it.
-                val valid = sel.filter { key ->
-                    isCollectionKey(key) || ps.any { it.config.enabled && it.config.id == key }
-                }
-                if (valid != sel) {
-                    applySelection(valid)
-                    viewModelScope.launch { store.setHomeProviders(valid.toSet()) }
+                // An EMPTY installed list means the list has not been built yet
+                // (the first seconds of a process, or a refresh in flight). It is
+                // not evidence that the picked extension is gone, so nothing is
+                // dropped and no feed is rebuilt from it — otherwise a pick could
+                // be forgotten in the instant before the extensions load.
+                if (ps.isNotEmpty()) {
+                    // Only EXTENSION picks can be invalidated by the installed
+                    // list changing; a collection pick is resolved against the
+                    // collections store instead (see loadInternal). One extension
+                    // being uninstalled drops just that pick, so the rest of a
+                    // multi pick (and the user's other choices) survive it.
+                    val valid = sel.filter { key ->
+                        isCollectionKey(key) || ps.any { it.config.enabled && it.config.id == key }
+                    }
+                    if (valid != sel) {
+                        applySelection(valid)
+                        viewModelScope.launch { store.setHomeProviders(valid.toSet()) }
+                    }
                 }
                 loadInternal()
             }
         }
         viewModelScope.launch {
+            restored.await()
             // Collections are edited in Settings; re-picking the same one from
             // the picker would otherwise show the OLD folders from the cache.
             // Watching the store means an edit (or a delete) lands on Home by
@@ -318,11 +364,28 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
      */
     private suspend fun loadInternal(forceRefresh: Boolean = false) {
         loadJob?.cancel()
+        // Only the newest load may touch the screen or the cache — see
+        // [loadToken]. The check below is repeated after the one suspension
+        // point that precedes the first write, because a load that started
+        // earlier can be resumed after a newer one and would otherwise paint
+        // rows the current pick never asked for.
+        val token = ++loadToken
         val picks = _selection.value
         // A collection pick resolves to a saved collection; when it has been
         // deleted (or its id is stale) fall back to All instead of leaving the
         // user on an empty screen.
         val known = runCatching { store.collections() }.getOrDefault(emptyList())
+        if (token != loadToken) {
+            // A load that started earlier (possibly with an out-of-date, even
+            // empty, selection) must not paint anything. Logged so a report can
+            // tell this apart from "the pick really was dropped".
+            com.hikari.app.data.Logs.log(
+                "Home",
+                "load superseded before it started (pick=" +
+                    (if (picks.isEmpty()) "all" else picks.joinToString(",")) + ")",
+            )
+            return
+        }
         val kept = picks.filter { key ->
             !isCollectionKey(key) || known.any { it.id == collectionIdOf(key) }
         }
@@ -388,6 +451,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // plus a personal catalog's shelves — see [rowsFlowFor].
             val rowFlow = rowsFlowFor(kept, known)
             rowFlow.collect { incoming ->
+                if (token != loadToken) return@collect
                 // A pick of exactly ONE extension shows that extension's
                 // catalog rows and NOTHING else. This is the promise the
                 // provider pill makes ("4K HDHUB" over a screen that really is
@@ -425,9 +489,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 // EVERY provider finished (the 20-25s wait). A refresh keeps the
                 // cached feed on screen and swaps it in one go at the end.
                 if (cached == null) {
+                    if (token != loadToken) return@collect
                     _rows.value = tokenized
                     _loading.value = false
                 }
+            }
+            if (token != loadToken) {
+                com.hikari.app.data.Logs.log(
+                    "Home",
+                    "pick=" + (if (key == "all") "all" else key) +
+                        " superseded by a newer load — its rows were discarded",
+                )
+                return@launch
             }
             if (latest.isNotEmpty()) {
                 homeCache[key] = latest
@@ -1744,4 +1817,19 @@ private fun HomeHeader(
             }
         }
     }
+}
+/**
+ * The Home feed cache: one entry per pick key ("all" for the combined feed, the
+ * joined pick keys otherwise), holding rows whose posters have already been
+ * collapsed into disk-cache tokens.
+ *
+ * It is deliberately a PROCESS-WIDE object rather than a field of
+ * [HomeViewModel]. Returning from the player can recreate the activity, and with
+ * it the view model; a per-instance map would then be empty on every return and
+ * Home would fall back to a spinner and a full re-fetch of the provider the user
+ * is already on. Every access happens on the main thread (the loader's own
+ * dispatcher), so it needs no locking.
+ */
+private object HomeFeedCache {
+    val rows = LinkedHashMap<String, List<CatalogRow>>()
 }
