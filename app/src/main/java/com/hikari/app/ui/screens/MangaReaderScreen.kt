@@ -79,6 +79,7 @@ import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
@@ -174,7 +175,7 @@ fun MangaReaderScreen(
         pages = emptyList()
         val p = app.providers.byId(providerId) as? MangaProvider
         if (p == null) {
-            error = tr("This manga engine is not installed.")
+            error = I18n.t("This manga engine is not installed.")
             loading = false
             return@LaunchedEffect
         }
@@ -197,7 +198,7 @@ fun MangaReaderScreen(
         }
         if (pages.isEmpty()) {
             error = MangaProvider.lastOutcome[providerId]
-                ?: tr("This chapter returned no pages. Tap to try again.")
+                ?: I18n.t("This chapter returned no pages. Tap to try again.")
         }
         loading = false
     }

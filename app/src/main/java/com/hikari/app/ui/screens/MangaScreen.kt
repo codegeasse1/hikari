@@ -355,11 +355,16 @@ private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
                     Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    EngineAction(tr("Popular")) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, tr("Popular"))
+                    // The labels are read HERE (a composable position) and passed
+                    // into the click lambdas: `tr` is itself composable, so it
+                    // cannot be called from inside an onClick.
+                    val popular = tr("Popular")
+                    val latest = tr("Latest")
+                    EngineAction(popular) {
+                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popular)
                     }
-                    EngineAction(tr("Latest")) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, tr("Latest"))
+                    EngineAction(latest) {
+                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, latest)
                     }
                 }
             }
@@ -474,7 +479,7 @@ private fun MangaSection(
 
 /** One "continue reading" card: the cover, the chapter, and the page pair. */
 @Composable
-private fun ContinueCard(p: MangaProgress, onClick: () -> Unit) {
+private fun ContinueCard(progress: MangaProgress, onClick: () -> Unit) {
     Column(
         Modifier
             .width(116.dp)
@@ -490,8 +495,8 @@ private fun ContinueCard(p: MangaProgress, onClick: () -> Unit) {
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
             AsyncImage(
-                model = PosterLoader.model(p.posterUrl),
-                contentDescription = p.title,
+                model = PosterLoader.model(progress.posterUrl),
+                contentDescription = progress.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
@@ -514,7 +519,7 @@ private fun ContinueCard(p: MangaProgress, onClick: () -> Unit) {
                     )
                     Spacer(Modifier.width(2.dp))
                     Text(
-                        p.pageLabel,
+                        progress.pageLabel,
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.White,
                         maxLines = 1,
@@ -523,7 +528,7 @@ private fun ContinueCard(p: MangaProgress, onClick: () -> Unit) {
             }
         }
         Text(
-            p.title,
+            progress.title,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Medium,
             maxLines = 2,
@@ -531,7 +536,7 @@ private fun ContinueCard(p: MangaProgress, onClick: () -> Unit) {
             modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
         )
         Text(
-            p.chapterName,
+            progress.chapterName,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

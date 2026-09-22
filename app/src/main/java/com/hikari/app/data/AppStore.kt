@@ -1242,19 +1242,19 @@ class AppStore(private val ctx: Context) {
     /** How pages advance: paged left-to-right, paged right-to-left, or one long
      *  vertical strip (see [com.hikari.app.manga.MangaReadMode]). */
     fun mangaReadModeFlow(): Flow<String> =
-        store.data.map { MangaReadMode.normalize(it[K.MANGA_READ_MODE]) }
+        store.data.map { com.hikari.app.manga.MangaReadMode.normalize(it[K.MANGA_READ_MODE]) }
 
     suspend fun setMangaReadMode(mode: String) {
-        write("MANGA_READ_MODE") { it[K.MANGA_READ_MODE] = MangaReadMode.normalize(mode) }
+        write("MANGA_READ_MODE") { it[K.MANGA_READ_MODE] = com.hikari.app.manga.MangaReadMode.normalize(mode) }
     }
 
     /** How a page is fitted to the screen (see
      *  [com.hikari.app.manga.MangaFit]). */
     fun mangaFitFlow(): Flow<String> =
-        store.data.map { MangaFit.normalize(it[K.MANGA_FIT]) }
+        store.data.map { com.hikari.app.manga.MangaFit.normalize(it[K.MANGA_FIT]) }
 
     suspend fun setMangaFit(fit: String) {
-        write("MANGA_FIT") { it[K.MANGA_FIT] = MangaFit.normalize(fit) }
+        write("MANGA_FIT") { it[K.MANGA_FIT] = com.hikari.app.manga.MangaFit.normalize(fit) }
     }
 
     /** The reader's backdrop colour, so a bright page or a dark room both read

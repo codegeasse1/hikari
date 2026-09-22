@@ -54,6 +54,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaMark
@@ -119,7 +120,7 @@ fun MangaDetailScreen(
         error = null
         val provider = app.providers.byId(providerId) as? MangaProvider
         if (provider == null) {
-            error = tr("This manga engine is not installed.")
+            error = I18n.t("This manga engine is not installed.")
             loading = false
             return@LaunchedEffect
         }
@@ -147,7 +148,7 @@ fun MangaDetailScreen(
         chapters = list
         if (list.isEmpty()) {
             error = MangaProvider.lastOutcome[providerId]
-                ?: tr("This engine returned no chapters. Pull refresh to try again.")
+                ?: I18n.t("This engine returned no chapters. Pull refresh to try again.")
         }
         loading = false
     }

@@ -79,7 +79,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         return fallback
     }
 
-    private fun <T> gate(block: suspend () -> T): T =
+    private suspend fun <T> gate(block: suspend () -> T): T =
         ProviderGate.withProvider(config.id) { withContext(Dispatchers.IO) { block() } }
 
     // ---- Catalogues ----
@@ -165,7 +165,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                 Episode(
                     number = i + 1,
                     id = c.url,
-                    name = c.label,
+                    name = c.labelOf(),
                     image = null,
                     season = 1,
                 )
@@ -281,6 +281,12 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         dateUpload = date_upload,
         scanlator = scanlator,
     )
+
+    /** "Chapter 12", or the source's own chapter name when it has one — the same
+     *  rule [MangaChapter.label] applies, for the `Episode` label the reader's
+     *  chapter list is built from. */
+    private fun SChapter.labelOf(): String =
+        name.ifBlank { if (chapter_number >= 0f) "Chapter $chapter_number" else "Chapter" }
 
     /**
      * Newest-last, so the reader's "next chapter" walks forward in reading order.

@@ -436,7 +436,10 @@ object MangaExtensionManager {
             if (ext == null || ext.sources.isEmpty()) {
                 runCatching { target.delete() }
                 cache.remove(target.absolutePath)
-                return@withContext fail(lastError ?: "The extension could not be loaded", takeErrorDetails())
+                return@withContext fail(
+                    lastError ?: "The extension could not be loaded",
+                    details = takeErrorDetails(),
+                )
             }
             val icon = iconUrl
             val store = HikariApp.instance.store
@@ -542,7 +545,11 @@ object MangaExtensionManager {
 
     private fun fail(msg: String, e: Throwable? = null, details: String? = null): Result<Int> {
         lastError = msg
-        if (details != null) errorDetails.get().setLength(0).append(details)
+        if (details != null) {
+            val sb = errorDetails.get()
+            sb.setLength(0)
+            sb.append(details)
+        }
         if (e != null) record(msg, e)
         return Result.failure(IllegalStateException(msg))
     }
