@@ -3454,11 +3454,15 @@ class PlayerActivity : ComponentActivity() {
      *  while the landscape `y` (1080) — which the check could shrink — became the
      *  height. A square "window", and every number derived from it wrong:
      *
-     *   - `win.x` 1080 instead of 2460 made the panel `roomW`-wide, i.e. ~915px
-     *     (330dp) on a 2460px screen. The rows were laid out inside THAT, so the
-     *     right-hand column of a long row — the "Change" pill, the sync stepper,
-     *     a server's host — sat off the panel with no way to reach it, which is
-     *     the "the box is cut and it will not scroll sideways" report.
+     *   - `win.x` 1080 instead of 2460 made every WIDTH budget in the panel a
+     *     third of what the window had, i.e. a panel ~915px (330dp) wide on a
+     *     2460px screen. The rows were laid out inside THAT, so the right-hand
+     *     column of a long row — the "Change" pill, the sync stepper, a server's
+     *     host — sat off the panel with no way to reach it, which is the "the box
+     *     is cut and it will not scroll sideways" report. (The panel's width is
+     *     no longer taken from here at all — it comes out of the layout, see
+     *     [PanelWidthHost] — so that symptom cannot come back from this number;
+     *     the value below is what the HEIGHT caps use.)
      *   - `win.y` 1080 instead of 2460 (and, on the other devices, 2460 instead
      *     of 1080) is the axis every height cap is measured from, so the cap was
      *     taken from the wrong side of the screen and either never bit — the
@@ -3857,69 +3861,33 @@ class PlayerActivity : ComponentActivity() {
         // the same whether the strip is at its start or not.
         reach.setOnScrollChangeListener { _, x, _, _, _ -> panel.setRowOffsetX(x) }
 
-        val win = windowSize()
-        // Width of the PANEL's own silhouette (the halo is added around it), so
-        // the glass and the glow along it are sized against a known width.
-        // A flat panel can afford to be wider: the curved pane has to stay
-        // narrow for its bow to read as a pane rather than a wall, while a
-        // slab/deck/card is mostly a container for rows — and a wider one fits
-        // the longer option labels without clipping them.
+        // The panel's WIDTH is not computed here — not from the window, not from
+        // `windowSize()`, not from any number this method could get wrong. The
+        // panel is put inside [PanelWidthHost], which measures it against the
+        // room the LAYOUT gave the dialog, and the rule it applies is written
+        // there. That is the fix for the box that kept coming out a third of the
+        // screen wide with half the picture empty beside it: every formula that
+        // fed the old estimate read a number that can answer in the display's
+        // natural orientation (so in landscape it measured ~1080px of a 2460px
+        // window), and the panel's width came out of a number rather than out of
+        // the room it was actually standing in.
         //
-        // This is only the OPENING estimate — [applyPanelWidth] replaces it with
-        // the width the dialog frame really measured before the first frame is
-        // drawn. That is the rule the whole shell follows: a panel's size is
-        // measured, never assumed. `windowSize()` can answer in the display's
-        // natural orientation (see there), and a panel whose width is taken from
-        // a wrong number and then never re-checked is exactly the box that came
-        // out a third of the screen wide with its right-hand column out of reach.
-        // The width budget the panel's own silhouette can actually use inside
-        // the window (the halo is painted around it, and a few dp are kept on
-        // each side so the glow has somewhere to fade).
-        val roomW = win.x - 2 * halo - (8 * density).toInt()
-        val minW = (140 * density).toInt()
-        val panelW = minOf(
-            // Wider than it used to be, for both the pane and the flat slabs:
-            // the rows, the engine chips ("All / CloudStream / Hikari / Nuvio /
-            // SkyStream") and the longer server names are all laid out inside
-            // this width, and at 0.86 the glass pane was clipping the leading
-            // edge of its own rows and pushing the last chip off the strip.
-            // Raised again on the user's report that the server box wants to be
-            // LONGER so everything under it reads perfectly ("make it length
-            // longer"): a long engine name, its quality and its host all have to
-            // fit on one row, and the panel is the only place that width can
-            // come from. Still short of the window so the panel keeps floating
-            // with both its rounded sides visible.
-            (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
-            // The height axis is deliberately NOT a width cap any more. It used
-            // to be (`win.y * 0.93`), as a "do not become a wall" guard — but the
-            // LANDSCAPE player is three times wider than it is tall, so this term
-            // always won there and clamped every panel to ~93% of the SCREEN
-            // HEIGHT as its WIDTH. That is the cut subtitle/source/audio box the
-            // user reported: the right-hand column of each row (the "Change"
-            // pill, the A+/− steppers, the +0.5s button) sat beyond that edge
-            // with no way to reach it ("the subtitle box is showing cut … and it
-            // is not horizontally scrollable"). Height is capped where it
-            // belongs — the scroll view below measures the real room and caps
-            // the LIST (see [MaxHeightScrollView]), and the panel itself is
-            // WRAP_CONTENT, so a tall list can never spill off the screen.
-            (620 * density).toInt(),
-        )
-            // The floor must never win over the room that exists: on a small
-            // window (split screen, a phone-sized television box, a window that
-            // has not settled yet) 140dp of "minimum width" made the panel
-            // WIDER than the screen, and the right-hand column of every row —
-            // the "Change" button, the sync stepper — was sliced off with no way
-            // to reach it. That is the cut subtitle box a user reported.
-            .coerceAtMost(roomW)
-            .coerceAtLeast(minOf(minW, roomW).coerceAtLeast(1))
-        // The panel view carries its own halo, so its silhouette comes out
-        // exactly panelW in the middle of it — which is why the VIEW is asked
-        // for panelW + a halo on each side. The HEIGHT is WRAP_CONTENT: the
-        // scroll view inside is capped instead (see [MaxHeightScrollView]), which
-        // is what keeps the panel's rounded bottom on screen and makes every row
-        // above it reachable.
-        root.addView(panel, LinearLayout.LayoutParams(
-            (panelW + 2 * halo).coerceAtLeast(1),
+        // The halo is painted INSIDE the panel's own bounds, so the panel view
+        // IS the silhouette plus a halo on each side, and the host's width is
+        // what the panel view gets.
+        val panelHost = PanelWidthHost(this).apply {
+            fraction = if (flatPanel) 0.97f else 0.95f
+            designedPx = (620 * density).toInt()
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        root.addView(panelHost, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -3936,47 +3904,6 @@ class PlayerActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER,
             ))
-        }
-
-        /**
-         * Re-sizes the panel from the frame's own measured width.
-         *
-         * The frame is the dialog's content view, so its width IS the width the
-         * window really got — laid out by the platform, in whatever orientation
-         * the device is in, whatever the insets are. Nothing here has to reason
-         * about rotation at all, and nothing can be silently wrong: the panel is
-         * re-derived from a measurement every time the frame's layout changes.
-         *
-         * That self-correction is what was missing. The opening estimate above
-         * comes from [windowSize], which on some devices answers in the display's
-         * natural orientation — and the width was only ever set ONCE, from that
-         * number, so a wrong answer stayed wrong for the life of the panel: the
-         * box came out a third of the screen wide (915px of 2460px in the user's
-         * report) with the right-hand column of every row beyond its edge, and
-         * there was nothing to drag because the panel believed it was already as
-         * wide as it should be. Measured instead, the same panel comes out at
-         * 620dp — the width the rows were designed for.
-         */
-        var appliedPanelW = -1
-        fun applyPanelWidth() {
-            val room = if (outer.width > 0) outer.width else win.x
-            val roomForPanel = room - 2 * halo - (8 * density).toInt()
-            val target = minOf(
-                (room * if (flatPanel) 0.97f else 0.95f).toInt(),
-                (620 * density).toInt(),
-            )
-                .coerceAtMost(roomForPanel)
-                .coerceAtLeast(minOf(minW, roomForPanel).coerceAtLeast(1))
-            if (target == appliedPanelW) return
-            appliedPanelW = target
-            // The halo is painted INSIDE the panel's bounds (see
-            // [CurvedGlassPanel]), so the view is the silhouette plus a halo on
-            // each side.
-            panel.layoutParams = LinearLayout.LayoutParams(
-                (target + 2 * halo).coerceAtLeast(1),
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            panel.requestLayout()
         }
 
         dialog.setContentView(
@@ -4071,11 +3998,6 @@ class PlayerActivity : ComponentActivity() {
         var appliedCap = -1
         var barShown = false
         fun applyHeightCap() {
-            // The panel's WIDTH is re-derived first: the frame has been laid out
-            // by now, so its width is the real room (see [applyPanelWidth]) and
-            // everything below — the cap, the nested scrollers — is measured
-            // against the panel that is actually on screen.
-            applyPanelWidth()
             // A nested sideways scroller is sized against the panel's own inner
             // width (see [boundNestedHScrollers]) before anything is measured
             // from the heights below: the room the panel was given decides that
@@ -10119,6 +10041,86 @@ class PlayerActivity : ComponentActivity() {
  * short, a long one stops exactly at the cap, and the panel that holds it is
  * always inside the frame it was given.
  */
+/**
+ * The box a player panel's WIDTH comes out of.
+ *
+ * A dialog's width is the one number this file has repeatedly got wrong, and
+ * every way of getting it wrong has been tried: from the window metrics (which
+ * can answer in the display's natural orientation, so a 2460px landscape window
+ * reported 1080), from the configuration (same disease), from the frame's
+ * measured width (right, but only once the frame exists), and as a bare fraction
+ * of the screen HEIGHT (which in landscape is a third of the width). Every one of
+ * them produced the same report: a box a third of the screen wide with the rest
+ * of the video empty beside it and the right-hand column of each row out of
+ * reach.
+ *
+ * So the width is no longer computed at all — it is MEASURED, by the layout. This
+ * view is given MATCH_PARENT inside the dialog's root, so the width it is
+ * measured with IS the width the window really gave the dialog, in whatever
+ * orientation, whatever the insets, on every device; and it then measures its one
+ * child with that room, minus a margin. Nothing here can answer in the wrong
+ * orientation, because nothing here is a number the platform did not take from
+ * this window.
+ *
+ * The numbers it does use are about the LOOK, not about the room:
+ *
+ *  - [designedPx] is the width the rows were designed for (620dp) — the ceiling a
+ *    panel stops at on a room much bigger than a phone's screen (a tablet, a
+ *    television box, a desktop window), so an option list does not become a wall
+ *    of text with the whole display as its margin.
+ *  - [fraction] is the most of the room the panel may use, so it keeps floating
+ *    with both its rounded sides visible.
+ *  - the FLOOR is [FLOOR_FRACTION] of the room, and on a phone that is the term
+ *    that decides: 620dp is a "designed width" whose px value depends entirely on
+ *    the density the device reports, and on a 2460px-wide landscape window it is
+ *    what left half the screen empty. The room is right there; the panel uses it,
+ *    up to the ceiling above.
+ */
+private class PanelWidthHost(context: android.content.Context) : FrameLayout(context) {
+
+    /** The widest the panel may ever be, in px: the width its rows were designed
+     *  for (see the class note). 0 means "no ceiling but the room itself". */
+    var designedPx: Int = 0
+
+    /** The most of the room the panel may use. */
+    var fraction: Float = 0.95f
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val room = MeasureSpec.getSize(widthMeasureSpec)
+        val child = getChildAt(0)
+        if (child == null || room <= 0 || MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+            // No room to measure against — a host that was never given a width,
+            // which a dialog window always has. Fall back to what a FrameLayout
+            // does, so this can never be the thing that breaks a panel.
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
+        val byRoom = (room * fraction).toInt()
+        val floor = (room * FLOOR_FRACTION).toInt()
+        val cap = minOf(byRoom, maxOf(designedPx, floor)).coerceAtLeast(1)
+        // EXACTLY, not AT_MOST: the panel is a WRAP_CONTENT-in-height LinearLayout
+        // whose own width is MATCH_PARENT, and an AT_MOST measure would have it
+        // answer with the width of its content instead of taking the room.
+        child.measure(
+            MeasureSpec.makeMeasureSpec(cap, MeasureSpec.EXACTLY),
+            getChildMeasureSpec(
+                heightMeasureSpec,
+                paddingTop + paddingBottom,
+                child.layoutParams.height,
+            ),
+        )
+        setMeasuredDimension(
+            resolveSize(cap + paddingLeft + paddingRight, widthMeasureSpec),
+            resolveSize(child.measuredHeight + paddingTop + paddingBottom, heightMeasureSpec),
+        )
+    }
+
+    private companion object {
+        /** The least of the room a panel may use (see the class note). */
+        const val FLOOR_FRACTION = 0.72f
+    }
+}
+
 private class MaxHeightScrollView(context: android.content.Context) : ScrollView(context) {
     var maxHeightPx = 0
 

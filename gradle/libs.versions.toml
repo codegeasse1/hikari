@@ -11,13 +11,6 @@ media3 = "1.7.1"
 okhttp = "4.12.0"
 jsoup = "1.17.2"
 coil = "2.6.0"
-# The Tachiyomi fork of SubsamplingScaleImageView (JitPack commit build). It is
-# what the reader draws pages with: it region-decodes a page file so a webtoon
-# strip can be any height without ever becoming one bitmap (see
-# app/src/main/java/com/hikari/app/manga/SubsamplingPageView.kt). Same artifact
-# and version as this app's manga sibling Nekoread uses, so the reader's drawing
-# path there and here are the same code.
-subsamplingScaleImageView = "66e0db195d"
 splashscreen = "1.0.1"
 serializationJson = "1.11.0"
 jackson = "2.17.2"
@@ -60,7 +53,6 @@ androidx-splashscreen = { group = "androidx.core", name = "core-splashscreen", v
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
-subsampling-scale-image-view = { group = "com.github.tachiyomiorg", name = "subsampling-scale-image-view", version.ref = "subsamplingScaleImageView" }
 coil-svg = { group = "io.coil-kt", name = "coil-svg", version.ref = "coil" }
 coil-gif = { group = "io.coil-kt", name = "coil-gif", version.ref = "coil" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }

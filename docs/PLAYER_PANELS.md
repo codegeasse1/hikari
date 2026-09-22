@@ -74,30 +74,36 @@ is cut and it will not scroll sideways" report.
   is dragged. Bounded, the strip scrolls **inside** the panel, which is what it
   is for, and the rows stay the panel's width.
 
-## The panel's width is MEASURED, never assumed — `applyPanelWidth`
+## The panel's width comes out of the LAYOUT — `PanelWidthHost`
 
-The width comes from the **frame** (`outer`, the dialog's content view) as soon as
-it has been laid out: its width IS the width the window really got, in whatever
-orientation the device is in, insets and all. `applyPanelWidth` re-derives the
-panel from that measurement on every layout change, so the wrong answer cannot
-survive:
+The width is not computed anywhere any more. The panel is put inside
+`PanelWidthHost`, a one-child `FrameLayout` that is `MATCH_PARENT` in the dialog's
+root, so the width it is measured with IS the width the window really gave the
+dialog — in whatever orientation, whatever the insets are, on every device. It
+then measures the panel with that room, EXACTLY:
 
 ```
-room   = outer.width                       // the real width, or windowSize() before layout
-panel  = min(room * 0.95|0.97, 620dp)      // never wider than the room, never a wall
-         .coerceAtMost(room - 2*halo - 8dp) // the glow needs somewhere to fade
-         .coerceAtLeast(min(140dp, room))   // the floor yields to the room
-panel.view.width = panel + 2*halo           // the halo is painted INSIDE the panel
+room  = the width the layout gave this host   // the one number that cannot be wrong
+panel = min(room * 0.95|0.97,                 // never a wall: the pane keeps floating
+            max(620dp, room * 0.72))          // ...and never that box again
+panel.view.width = panel                      // the halo is painted INSIDE the panel
 ```
 
-`windowSize()` is only the **opening estimate** now, and that is deliberate: it can
-answer in the display's natural orientation (see there), and the width used to be
-taken from it ONCE and never re-checked, so a wrong answer was wrong for the life
-of the panel. That is the box that came out a third of the screen wide (915px of
-2460px) with the right-hand column of every row beyond its edge, and nothing to
-drag because the panel believed it was already as wide as it should be. Measured
-from the frame instead, the same panel comes out at 620dp — the width the rows
-were designed for — on every device and in both orientations.
+Both numbers are about the LOOK, not about the room, and the `0.72` term is the
+one that decides on a phone. Every earlier version derived the width from a
+NUMBER — `windowSize()`, the configuration, a fraction of the screen height — and
+each of those can be right about the wrong axis: in the landscape player they
+answer 1080×2460 inside a 2460×1080 window, which is how the panel came out ~915px
+(330dp) wide with the rest of the video empty beside it and the right-hand column
+of every row beyond its edge. A dp cap alone does not fix that either: 620dp is a
+width whose pixel value depends entirely on the density the device reports, and
+where that comes out small the panel is a narrow box on a wide screen. So the
+panel takes the room it was given, up to the ceiling above.
+
+Nothing re-measures it afterwards and nothing has to: a measure pass happens on
+every layout change by itself — both orientations, a split-screen resize, a fold,
+a television box — and the panel is sized by that pass. `windowSize()` is now used
+only for the HEIGHT caps and for the opening height estimate.
 
 ## The WINDOW is left to the window manager
 
@@ -117,7 +123,8 @@ inside it.
 
 ## `windowSize()`
 
-It is a **best-effort opening estimate** (see `applyPanelWidth`), and it has three
+It is a **best-effort opening estimate** — for the panel's opening HEIGHT only,
+never its width (see `PanelWidthHost`), and it has three
 sources (the decor, `currentWindowMetrics`, `getRealSize`) that can each answer in
 the display's NATURAL orientation. Before any axis is compared with its
 configuration twin, they are **swapped when the orientation disagrees with the
@@ -130,6 +137,7 @@ ever SHRANK an axis) could not put them back the right way round. The height cap
 were measured against the wrong axis, so they never bit and the panel grew past
 the bottom of the video.
 
-Nothing depends on it being right any more, which is the point: the caps come from
-`visibleRoomPx` (the frame and the display area really visible to this window) and
-the width from the frame.
+Nothing depends on it being right any more, which is the point: the HEIGHT caps
+come from `visibleRoomPx` (the frame and the display area really visible to this
+window) and the WIDTH from the layout (`PanelWidthHost`) — neither of which can
+answer in the wrong orientation.

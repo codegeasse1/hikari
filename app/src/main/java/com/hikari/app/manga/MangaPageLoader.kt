@@ -79,29 +79,20 @@ sealed class MangaPageState {
  * A page is fetched at most ONCE per URL: [load] is single-flight, so the
  * preloader, the pager and a retry cannot race each other into three downloads.
  *
- * **Why the decode is NOT here.** A page that is on disk still has to become
- * pixels, and that step used to belong to this class: it decoded the file,
- * downsampled it to the reader's width, and kept the bitmap in a byte-budgeted
- * LRU. That is the step that produced "the image in the reader is breaking", and
- * no amount of care inside it could have avoided it — a decoded page is a bitmap,
- * a bitmap handed to the compositor is a GPU texture, and a page taller than the
- * device's `GL_MAX_TEXTURE_SIZE` is then drawn by Skia's tile fallback with its
- * tiles' source rectangles misplaced (see [com.hikari.app.manga.SubsamplingPageView],
- * which has the whole story). Memory was the smaller half of the problem: a
- * webtoon page is up to a 20MB allocation, and the reader wanted several of them
- * alive at once.
+ * **Why the decode lives next door.** A page that is on disk still has to become
+ * pixels, and this class deliberately stops at the FILE: fetched, validated,
+ * retried, sized, on disk. The pixels are [PageBitmaps]' job, and the split is
+ * the point — a fetch is long, retried, network-shaped and worth remembering; a
+ * decode is quick, repeatable, heap-shaped and worth throwing away. They also
+ * have opposite failure modes: a failed fetch is a page that never arrived (a
+ * retry ladder, a Failed row), and a failed decode is a file that arrived and
+ * cannot be read (drop the file, fetch it again) — which is why the second one
+ * comes back here through [markUndecodable].
  *
- * So this loader stops at the FILE — fetched, validated, retried, on disk — and
- * the reader draws that file with a view that region-decodes only the part on
- * screen ([SubsamplingPageView]). Nothing is ever materialised whole, nothing is
- * decoded twice (the view keeps what it decoded, and a half-scrolled-away page
- * keeps its tiles while it is composed), and the memory a page costs is its
- * compressed bytes rather than its pixels.
- *
- * [plan] still PRELOADS the pages around the reader, so they are on disk before
- * the thumb arrives — the part that makes the next page instant — and a page
- * that cannot be fetched at all still ends up as [MangaPageState.Failed] with a
- * retry row of its own.
+ * [plan] PRELOADS the pages around the reader, so they are on disk before the
+ * thumb arrives — the part that makes the next page instant — and a page that
+ * cannot be fetched at all still ends up as [MangaPageState.Failed] with a retry
+ * row of its own.
  */
 object MangaPageLoader {
 
@@ -201,10 +192,10 @@ object MangaPageLoader {
      * format) and reads the header for the page's size, but a JPEG can pass every
      * one of those checks with damaged scan data — and the file that fails to
      * DECODE is a file that would otherwise sit in the reader as a page that
-     * never appears. The drawing view reports that here (see
-     * [SubsamplingPageView.onPageFailed]), so the page ends up on the same
-     * [MangaPageState.Failed] row as a page that never arrived, with the same
-     * retry button, and the file is dropped so the retry really re-fetches.
+     * never appears. The decoder reports that here (see [PageBitmaps]), so the
+     * page ends up on the same [MangaPageState.Failed] row as a page that never
+     * arrived, with the same retry button, and the file is dropped so the retry
+     * really re-fetches.
      */
     fun markUndecodable(url: String) {
         if (url.isBlank()) return
@@ -257,12 +248,13 @@ object MangaPageLoader {
         order += behind
         order += forward
         order += restBehind
-        // Every page is pulled onto the DISK, in that order. There is nothing
-        // else to warm: the reader draws a page by region-decoding its file (see
-        // [SubsamplingPageView]), so a page whose bytes are here is a page that
-        // appears the moment the thumb reaches it — there is no second, decoded
-        // form to prepare in advance, and nothing to evict when the chapter is
-        // long.
+        // Every page is pulled onto the DISK, in that order — this is the part
+        // that costs seconds, so it is the part worth doing ahead. The reader
+        // warms the PIXELS of the single page it is about to show itself (see
+        // `PageBitmaps.prefetch`, called from the reader's report), because a
+        // decoded page is worth a few hundred milliseconds on an ordinary page
+        // and megabytes of heap on a big one: warming ten of those ahead would
+        // evict the page on screen to make room for pages nobody is looking at.
         for (i in order) load(pages[i].url, pages[i].headers)
     }
 
@@ -354,10 +346,9 @@ object MangaPageLoader {
             // now and this attempt counts as a failure, which is retried like any
             // other. The full decode that used to run here is deliberately gone —
             // it existed only to feed the bitmap cache (and, on the side, to
-            // catch damaged scan data). The drawing view region-decodes the file
-            // and reports a file it cannot open through [markUndecodable], so
-            // that case still ends on a retry row instead of a page that never
-            // appears.
+            // catch damaged scan data). The reader's decoder reports a file it
+            // cannot read through [markUndecodable], so that case still ends on a
+            // retry row instead of a page that never appears.
             if (bounds.first <= 0 || bounds.second <= 0) {
                 file.delete()
                 files.remove(url, file)

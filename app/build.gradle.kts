@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 181
-    versionName = "0.10.10"
+    versionCode = 182
+    versionName = "0.10.11"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -282,11 +282,6 @@ dependencies {
     // Animated GIF decoding, for collection/folder covers ("Animated GIF URL"
     // in the cover editor): without it Coil draws only the first frame.
     implementation(libs.coil.gif)
-    // The reader's page drawing view. Region-decoding the page FILE is what
-    // replaced the old decode-whole-page-and-draw-a-bitmap path, which is what
-    // broke on any page taller than the device's maximum texture size (see
-    // app/src/main/java/com/hikari/app/manga/SubsamplingPageView.kt).
-    implementation(libs.subsampling.scale.image.view)
     implementation(libs.kotlinx.serialization.json)
     // Two kotlinx.serialization modules nothing in Hikari's own source touches,
     // added because ANIYOMI EXTENSIONS link against them BY NAME:

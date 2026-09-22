@@ -1,3 +1,20 @@
+## 0.10.11
+
+Both of the things in the screenshots, fixed at the root this time: the reader no
+longer draws a page in PIECES of any kind, and a player panel's width no longer
+comes out of a number.
+
+### Fixed
+
+- **The reader draws a page as ONE whole bitmap, and every "draw it in pieces" path is gone for good.** Two builds tried to draw a page in pieces — 0.10.9 cut a decoded page into 2048px slices and stacked them, 0.10.10 handed the file to a region-decoding subsampling view (the Tachiyomi/yomi "tall strip" reader) — and on your phone both came out as the same thing: artwork scattered in displaced blocks across a white field. The lesson is not that the tile size was wrong. A page drawn in pieces depends on the PLATFORM getting tile placement, texture limits and region rectangles right, and that is not something this app can verify or promise on someone else's phone; a whole bitmap depends on none of it, because there is nothing to mis-place when the pixels arrive in one piece. So `manga/PageBitmaps` decodes the file ONCE — at most at the width the screen can show (an ~800px source is never upscaled to a 1080px screen) and at most ~44MB, which for a page bigger than that means the next power-of-two reduction down: a 1080×20000 manhwa strip becomes 540×10000, the sharpest COMPLETE copy a phone can hold — and the page is drawn by an ordinary Compose `Image`, the same thing every poster in this app is drawn with. The subsampling library, its JitPack dependency and the view that used it are deleted, so there is no second drawing path left to reach for.
+- **A page starts drawing a few hundred milliseconds sooner, because the page the thumb is heading for is now DECODED ahead, not only downloaded.** The loader's preload window still warms the bytes of ten pages ahead (that is the slow half — seconds), and the reader warms the PIXELS of exactly the next page (`PageBitmaps.prefetch`): one page, because a decoded page is worth a few hundred milliseconds on an ordinary page and megabytes of heap on a big one, and warming ten of them would evict the page on screen to make room for pages nobody is looking at. The pre-warm gives up rather than queue in front of a decode that is already running, so it can never make the page under your thumb slower.
+- **A player panel is as wide as the room the dialog is actually standing in.** The panel's width used to be computed from a number — first the window metrics, then the configuration, then a fraction of the screen height — and all of those can be right about the WRONG AXIS: in the landscape player they answer 1080×2460 inside a 2460×1080 window, which is why every panel came out ~915px (330dp) wide on a 2460px screen with half the picture empty beside it and the right-hand column of each row beyond the edge. A dp cap alone could not fix it either: 620dp is a width whose pixel value depends entirely on the density a device reports, and where that is small the panel is a narrow box on a wide screen. There is no number any more. The panel sits in a one-child `PanelWidthHost` that is `MATCH_PARENT` in the dialog's root, so the width it is measured with IS the width the window gave the dialog — any orientation, any insets, any device — and the panel takes that room, up to 95% of it (97% for the flat skins) and up to the ceiling the rows were designed for. Nothing re-measures it afterwards; the layout pass does it, by itself, on every layout change there is.
+
+### Notes
+
+- Nothing was published to the main release: this build is on the **continuous** release, like every push to `main`.
+- Section 4a of `docs/READER.md` is the full story of why a page is one bitmap, including the two shapes that were tried and failed — read it before touching the reader's image path.
+
 ## 0.10.10
 
 Two things were still wrong after 0.10.9, and both are fixed at the root this time.

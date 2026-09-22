@@ -68,11 +68,12 @@ reported by name.
   against the chapter and page the surface REPORTED. The settings sheet SCROLLS:
   a `Column` in a `ModalBottomSheet` that overflows is clipped, not scrolled, and
   a sliced row reads to the user as a duplicated control.
-* Page images are fetched, validated, retried AND decoded by
-  `manga/MangaPageLoader` (ten attempts, then a per-page Retry button; decoded
-  pages live in its byte-budgeted cache, which is what keeps the strip smooth).
-  `Enhance images` in the settings is a draw-time `ColorFilter`, never a second
-  copy of the page.
+* Page images are fetched, validated and retried by `manga/MangaPageLoader` (ten
+  attempts, then a per-page Retry button) and decoded by `manga/PageBitmaps`,
+  whose byte-budgeted cache is what keeps the strip smooth. A page is ONE bitmap,
+  never tiles or slices — `docs/READER.md` section 4a is the whole story, and it
+  is required reading before touching the image path. `Enhance images` in the
+  settings is a draw-time `ColorFilter`, never a second copy of the page.
 
 ## Cloudflare and manga sites
 

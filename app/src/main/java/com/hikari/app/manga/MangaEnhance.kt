@@ -1,9 +1,5 @@
 package com.hikari.app.manga
 
-import android.graphics.ColorFilter
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-
 /**
  * The reader's "Enhance" look, as a colour matrix.
  *
@@ -14,11 +10,13 @@ import android.graphics.ColorMatrixColorFilter
  * holes. Nothing is sharpened: an unsharp mask would need a second pass over
  * every page and would ring on line art.
  *
- * It lives here, next to the reader's drawing code, rather than beside either
- * caller, because BOTH drawing paths need the same numbers: the platform filter
- * [mangaEnhanceColorFilter] that [SubsamplingPageView] applies to the page it
- * draws, and the Compose filter the reader uses for the few places that still
- * draw a bitmap directly. One matrix, one look.
+ * It lives here, next to the reader's drawing code, rather than in the screen
+ * that turns it into a filter, because the matrix is the *look*: the reader
+ * draws every page through it (see `mangaEnhanceFilter` in the reader, which is
+ * the only filter used now that the page is one ordinary bitmap like any other
+ * image in the app), and anything that ever needs the same numbers again should
+ * get them from this one place rather than inventing a second, slightly
+ * different "enhance".
  */
 internal fun mangaEnhanceMatrix(): FloatArray {
     val sat = 1.16f
@@ -44,13 +42,6 @@ internal fun mangaEnhanceMatrix(): FloatArray {
     // levels ∘ saturation: the page is desaturated-onto-saturated first, then
     // levelled — the order that keeps the luma weights meaningful.
     return multiplyColorMatrix(levels, saturation)
-}
-
-/** [mangaEnhanceMatrix] as a plain platform filter, for a view that draws through
- *  a Canvas (see [SubsamplingPageView.pageFilter]). Built once: the matrix is a
- *  constant, so there is no reason to re-allocate it per page. */
-internal val mangaEnhanceColorFilter: ColorFilter by lazy {
-    ColorMatrixColorFilter(ColorMatrix(mangaEnhanceMatrix()))
 }
 
 /** `a ∘ b` in Android/Compose's 4×5 row-major colour-matrix layout: apply [b]
