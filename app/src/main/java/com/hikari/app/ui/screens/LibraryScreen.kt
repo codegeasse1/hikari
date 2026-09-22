@@ -64,6 +64,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
+import com.hikari.app.ui.rememberVisibleItems
 import kotlinx.coroutines.launch
 
 /**
@@ -114,6 +115,10 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         val id = activeCategory
         if (id == null) saved else saved.filter { filed[it.uniqueId].orEmpty().contains(id) }
     }
+    // The saved items the adult-content switch allows (see [NsfwGate]): the grid
+    // AND its empty state read this, so hiding an adult title cannot leave a blank
+    // grid under a heading that says otherwise.
+    val visibleSaved = rememberVisibleItems(shown)
 
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
@@ -203,7 +208,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                     action = { Routes.navigateTab(nav, Routes.HOME) },
                 )
             }
-        } else if (shown.isEmpty()) {
+        } else if (visibleSaved.isEmpty()) {
             item(key = "library-none", span = { GridItemSpan(maxLineSpan) }) {
                 Box(
                     Modifier
@@ -222,7 +227,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             // Saved titles can repeat (the same film filed twice, or stored
             // twice by an older build): a duplicated Lazy key is a crash, so the
             // grid is built from the distinct set.
-            items(shown.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
+            items(visibleSaved, key = { it.uniqueId }) { item ->
                 LibraryCard(
                     item = item,
                     style = style,

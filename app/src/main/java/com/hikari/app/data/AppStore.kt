@@ -176,6 +176,18 @@ class AppStore(private val ctx: Context) {
          */
         val MANGA_ENHANCE = booleanPreferencesKey("mangaEnhance")
         /**
+         * May adult material be shown (Settings → Content → NSFW)?
+         *
+         * ON by default, which is the app as it has always been: every installed
+         * extension is listed and every title a provider returns is shown. OFF, the
+         * app hides the extensions whose own metadata is tagged 18+ and filters
+         * adult titles out of every catalogue, shelf, search result and grid —
+         * [com.hikari.app.data.NsfwGate] is the single rule and the single place
+         * that decides, and it is applied where lists are DRAWN so flipping the
+         * switch is instant and cannot leave a stale row on screen.
+         */
+        val NSFW_ENABLED = booleanPreferencesKey("nsfwEnabled")
+        /**
          * The three sections of the merged "My Stuff" tab (Library, History,
          * Downloads), each switchable in Settings → Taskbar buttons.
          *
@@ -1339,6 +1351,24 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setMangaEnhance(on: Boolean) {
         write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
+    }
+
+    // ---- Adult content (Settings → Content) ----
+
+    /**
+     * May adult material be shown? ON by default — see [K.NSFW_ENABLED].
+     *
+     * Read synchronously on the draw path through
+     * [com.hikari.app.data.NsfwGate.enabled] (kept in step with this flow at
+     * start-up); this flow is what the Settings switch itself renders.
+     */
+    fun nsfwEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.NSFW_ENABLED] ?: true }
+
+    suspend fun nsfwEnabled(): Boolean = nsfwEnabledFlow().first()
+
+    suspend fun setNsfwEnabled(on: Boolean) {
+        write("NSFW_ENABLED") { it[K.NSFW_ENABLED] = on }
     }
 
     /** One of the reader's three backdrops; anything unknown means black. */

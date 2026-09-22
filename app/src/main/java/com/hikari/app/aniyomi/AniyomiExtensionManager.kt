@@ -596,6 +596,9 @@ object AniyomiExtensionManager {
             iconHost = firstSourceHost(o),
             contentKind = contentKindOf(o),
             pkg = pkg,
+            // The repo's own 18+ tag (see ExtensionNsfw.repoEntryNsfw) — what
+            // the adult-content switch hides from the installable list.
+            nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o),
         )
     }
 

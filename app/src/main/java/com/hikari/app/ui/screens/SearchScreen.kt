@@ -80,6 +80,7 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.ui.rememberVisibleItems
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -703,7 +704,7 @@ fun SearchScreen(
                 // recomposition and opened a DataStore collection per poster on
                 // screen, which is a lot of subscriptions for one grid (see
                 // [com.hikari.app.ui.components.MediaRow]).
-                val gridItems = remember(filtered) { filtered.distinctBy { it.uniqueId } }
+                val gridItems = rememberVisibleItems(filtered)
                 val style = rememberPosterStyle()
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(TvUi.gridColumns(4)),

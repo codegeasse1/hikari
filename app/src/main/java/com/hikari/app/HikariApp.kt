@@ -314,7 +314,7 @@ class HikariApp : Application() {
             }
         }
         Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
-        providers = ProviderManager(store)
+        providers = ProviderManager(store, this)
         // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
         // verification page opens only when the user taps the WebView (globe)
         // button themselves (see CloudflareVerifier).
@@ -428,6 +428,25 @@ class HikariApp : Application() {
         // know the value synchronously while its controller is being inflated.
         appScope.launch {
             store.playerSkinFlow().collect { com.hikari.app.player.PlayerSkins.setCurrent(it) }
+        }
+        // Adult content (Settings → Content → NSFW): mirrored into [NsfwGate]
+        // because the gate is read on the DRAW path — a list being composed cannot
+        // await DataStore. Seeded with a first read of the flow so a screen that
+        // opens before the first emission already sees the stored value, not the
+        // default.
+        //
+        // A change also rebuilds the provider list: an 18+ extension is kept out
+        // of it while the switch is off (see
+        // [com.hikari.app.providers.ProviderManager.refresh]), so the switch has
+        // to be what puts it back or takes it away — the stored configs are never
+        // rewritten, which is what makes the change instant and reversible.
+        appScope.launch {
+            runCatching { com.hikari.app.data.NsfwGate.setEnabled(store.nsfwEnabled()) }
+            store.nsfwEnabledFlow().collect { on ->
+                val changed = on != com.hikari.app.data.NsfwGate.enabled
+                com.hikari.app.data.NsfwGate.setEnabled(on)
+                if (changed) runCatching { providers.refresh() }
+            }
         }
         // "Allowed redirect links" (Settings → Privacy & Browsing → WebView
         // safety): mirrored in memory so a WebView being redirected right now —

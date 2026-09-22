@@ -91,6 +91,7 @@ import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -271,6 +272,17 @@ private enum class SettingsFolder(
         "Sources & Extensions",
         "Installed extensions, userscripts & verification",
         Icons.Filled.Extension,
+    ),
+    // What the app is willing to SHOW, as opposed to what it can reach: the
+    // adult-content switch lives here (see NsfwGate). Its own folder rather than
+    // a corner of Sources & Extensions, because the switch hides both titles and
+    // extensions and a user looking for it thinks of it as "content", not as an
+    // extension they installed.
+    CONTENT(
+        "content",
+        "Content & Filters",
+        "Adult content & what the app shows you",
+        Icons.Filled.Visibility,
     ),
     DOWNLOADS(
         "downloads",
@@ -610,6 +622,9 @@ fun SettingsScreen(nav: NavHostController) {
                     // extension is allowed to do, and that is the folder a user
                     // opens to look for it.
                     item { SettingsCard { ExtensionVerifyCard(app) } }
+                }
+                SettingsFolder.CONTENT -> {
+                    item { SettingsCard(top = 2.dp) { AdultContentCard(app) } }
                 }
                 SettingsFolder.DOWNLOADS -> {
                     item { SettingsCard(top = 2.dp) { DownloadSettingsCard(app) } }
@@ -1172,6 +1187,57 @@ private fun GifAnimCard(app: HikariApp) {
             Switch(
                 checked = on,
                 onCheckedChange = { v -> scope.launch { runCatching { app.store.setGifAnim(v) } } },
+            )
+        }
+    }
+}
+
+/**
+ * The adult-content switch (Settings → Content & Filters).
+ *
+ * ON is the default and the app as it has always been. OFF is a single rule the
+ * whole app reads at draw time ([com.hikari.app.data.NsfwGate]) plus the provider
+ * list ([com.hikari.app.providers.ProviderManager]): adult and
+ * R-rated titles leave every catalogue, shelf, grid, search result and
+ * collection, and 18+-tagged extensions stop being listed — installed ones stop
+ * being used at all, and store listings stop offering them.
+ *
+ * The caption says what OFF does rather than what the switch is called, because
+ * this is the one setting whose name ("NSFW") is understood differently by
+ * different users: what matters is that nothing adult is reachable while it is
+ * off, and that nothing was deleted while it was on.
+ */
+@Composable
+private fun AdultContentCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.nsfwEnabledFlow() }
+    val on by flow.collectAsState(initial = true)
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Adult content"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    tr(
+                        "On (the default) shows everything your extensions publish. Off " +
+                            "hides adult and R-rated titles and 18+ extensions — their " +
+                            "catalogues, shelves and search results stay away until you " +
+                            "turn it back on."
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = on,
+                onCheckedChange = { v ->
+                    scope.launch { runCatching { app.store.setNsfwEnabled(v) } }
+                },
             )
         }
     }

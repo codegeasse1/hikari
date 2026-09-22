@@ -3605,6 +3605,52 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
+     * Makes the panel's CONTENT exactly [widthPx] wide, and hands every nested
+     * horizontal scroller inside it that same width.
+     *
+     * This is the fix for the report that the pills in the server list and the
+     * subtitle list "are not fit" and that there is no way to scroll to them, and
+     * the reason is a measurement rule that is easy to miss:
+     *
+     *  * A row is built as `[marker][label column, weight 1][pill][chevron]` (see
+     *    [glassRow] and [serverOption]). The weight-1 column only SHRINKS when the
+     *    row is measured against a BOUNDED width — under an unbounded measure a
+     *    weighted child is handed its full intrinsic width instead, which is
+     *    whatever the label needs.
+     *  * The panel puts the content inside a horizontal scroller ([reach]) so a
+     *    genuinely too-wide row is at least draggable, and a horizontal scroller
+     *    measures its child with an UNSPECIFIED width (that is what makes the
+     *    drag possible at all).
+     *
+     * So every row was measured at its label's full intrinsic width: a server row
+     * ("Provider (Repo) · Plugin · 1080p") came out wider than the panel, the "HLS"
+     * / "DASH" / "SUB" pill and the chevron landed past the panel's right edge, and
+     * the only way to see them was a sideways drag inside a vertically scrolling
+     * list — which is the "the pills are cut off and it will not scroll" report.
+     * Giving the content the panel's own inner width restores the bound the layout
+     * was written for: labels ellipsize at the end (every row text already asks for
+     * that), and the trailing pills are always inside the glass, on every row, with
+     * no drag needed. The chip strip keeps its own sideways scroll (a strip that
+     * really can be longer than the panel), which is what [boundNestedHScrollers]
+     * is for.
+     *
+     * The width is only known once the panel has been laid out (its padding comes
+     * from its own size), which is why this runs from [applyHeightCap] rather than
+     * at build time. It converges: the width is only rewritten when it really
+     * differs.
+     */
+    private fun fitContentToPanel(content: View, widthPx: Int): Boolean {
+        var changed = boundNestedHScrollers(content, widthPx)
+        val lp = content.layoutParams
+        if (lp != null && lp.width != widthPx) {
+            lp.width = widthPx
+            content.layoutParams = lp
+            changed = true
+        }
+        return changed
+    }
+
+    /**
      * Room a glass panel keeps inside its own bounds for the neon edge to bloom
      * into. The panel paints that glow along its own silhouette (see
      * [CurvedGlassPanel]), so a dialog is just the panel plus this much space
@@ -4026,13 +4072,14 @@ class PlayerActivity : ComponentActivity() {
             // split-screen resize or a not-yet-settled window changes it after
             // the dialog was already shown (see [sizeDialogWindow]).
             sizeDialogWindow()
-            // A nested sideways scroller is sized against the panel's own inner
-            // width (see [boundNestedHScrollers]) before anything is measured
-            // from the heights below: the room the panel was given decides that
-            // width, so a chip strip that is wider than the panel scrolls inside
-            // it instead of stretching every row to its own width.
+            // The content is fitted to the panel's own inner width before anything
+            // is measured from the heights below: a row built with a weighted text
+            // column only shrinks when it is measured against a bounded width, and
+            // inside the panel's horizontal strip it is measured against none — so
+            // this is what keeps each row's trailing pills inside the glass instead
+            // of past its right edge (see [fitContentToPanel]).
             val innerW = panel.width - panel.paddingLeft - panel.paddingRight
-            if (innerW > 0 && boundNestedHScrollers(content, innerW)) {
+            if (innerW > 0 && fitContentToPanel(content, innerW)) {
                 scroll.requestLayout()
                 panel.requestLayout()
             }

@@ -1,3 +1,33 @@
+## 0.10.13
+
+The reader is the ported one FOR REAL this time, the player's server/subtitle
+rows fit inside their box, and there is a single switch for adult content.
+
+### Added
+
+- **Settings → Content & Filters → Adult content (on by default).** On, the app is
+  exactly as it has always been. Off, adult and R-rated titles leave every
+  catalogue, shelf, search result, collection grid and "Continue watching" row, and
+  18+ extensions disappear — installed ones stop being used at all (they are not
+  even instantiated), and store listings stop offering them for install. Nothing is
+  deleted or rewritten: flip it back on and everything is there again. What counts
+  as adult is deliberately specific — an explicit marker (TMDB's `adult`, a
+  provider's own `TvType.NSFW`), an 18+/adult genre tag, a whole-word title match,
+  and the film certificates the trade calls adults-only (`R`, `NC-17`, `X`, `18`…);
+  TV-MA is excluded on purpose, because hiding every TV-MA show would empty the
+  shelves of someone who only meant to turn off adult material. `docs/CONTENT_FILTERS.md`
+  is the whole rule.
+
+### Fixed
+
+- **The reader is Nekoread's real chunked renderer, ported — their `WebtoonChunkedImageView`, not a token fix.** 0.10.12's routing rule was right and the file it routed to was worthless: `WebtoonSubsamplingItem` is dead code in Nekoread (nothing in that app calls it), and an ordinary comic page (~1.8–2× its width) never matched `h > 3w` anyway, so the user saw literally no change. This build ports the file Nekoread actually draws strips with: the page's FILE is region-decoded into chunks of at most 2048px, nearest-to-the-viewport first (two workers per page, three decodes at once across all pages), decoded chunks are kept for the page's lifetime, only the far ones are recycled past a 64MB budget, and `onDraw` draws just the chunk range overlapping the viewport plus one chunk of margin. Nothing it hands the compositor is ever bigger than one chunk, however tall the page is — which is the one property the page-sized bitmaps never had. A chunk that fails is retried once when it enters the window, and a chunk the reader is looking at that fails reports the page broken, so a damaged file becomes the reader's Retry row instead of a black band. The short-page half was brought down to Nekoread's own budgets too (`1_000_000` px, `2048` on either axis — the old 11M-pixel budget permitted a 1080×10000 page, which is still not a texture), and the now-unused `SubsamplingScaleImageView` dependency is gone from the build.
+- **The player's server and subtitle pills fit inside the panel, with no sideways drag to find them.** Each row is `[marker][label, weight 1][pill][chevron]`, and a weighted label only shrinks when it is measured against a BOUNDED width — but the panel's reach measures its content with an unspecified width (that is what makes a horizontal drag possible at all), so every row was measured at its label's full intrinsic width, the trailing pills landed past the panel's right edge, and a sideways drag inside a vertically scrolling list was the only way to reach them. `applyHeightCap` now pins the content to the panel's inner width (and bounds the nested chip strip from the same call), so labels ellipsize and the pills stay in the glass on every row.
+
+### Notes
+
+- Nothing is published to the main release: this build is on the **continuous** release, like every push to `main`.
+- `docs/READER.md` section 4a is rewritten around the chunked renderer (and lists all five shapes that were tried); `docs/PLAYER_PANELS.md` gains the content-width rule; `docs/CONTENT_FILTERS.md` is new. Read them before touching those paths.
+
 ## 0.10.12
 
 The reader is the ported one now, the player's boxes are the ones you screenshotted

@@ -128,6 +128,8 @@ object TmdbPresets {
             // app's TMDB language is still searched for in the extensions under
             // the name their sites use (see MediaItem.originalTitle).
             originalTitle = originalOf(o),
+            // TMDB's own adult marker (see MediaItem.nsfw).
+            nsfw = o.optBoolean("adult", false),
         )
     }
 

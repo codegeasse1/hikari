@@ -180,6 +180,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.shape
+import com.hikari.app.ui.rememberVisibleItems
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -4566,6 +4567,10 @@ fun TmdbGridScreen(
     val preset = remember(presetKey) { TmdbPresets.byKey(presetKey) }
     val name = title.ifBlank { spec?.let { TmdbSources.fallbackName(it) } ?: preset?.name ?: presetKey }
     val style = rememberPosterStyle()
+    // The adult-content switch filters this grid too (see [NsfwGate]): a catalog
+    // page is a grid of items, and it would otherwise be the one screen where a
+    // hidden title survived.
+    val gridItems = rememberVisibleItems(items)
 
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState) {
@@ -4592,7 +4597,7 @@ fun TmdbGridScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (items.isEmpty()) {
+        } else if (gridItems.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = tr("Nothing here right now"),
@@ -4608,7 +4613,7 @@ fun TmdbGridScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(items.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
+                items(gridItems, key = { it.uniqueId }) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,

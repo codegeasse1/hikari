@@ -342,6 +342,7 @@ object NuvioPluginManager {
                 .ifBlank { null },
             version = version,
             tvTypes = types,
+            nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o, types),
         )
     }
 }

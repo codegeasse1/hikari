@@ -75,6 +75,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberVisibleItems
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -161,6 +162,12 @@ fun MangaScreen(nav: NavHostController) {
         results = found.distinctBy { it.uniqueId }
         searching = false
     }
+
+    // The adult-content switch filters these results too (see
+    // [com.hikari.app.data.NsfwGate]). It has to run HERE, above the grid rather
+    // than inside it: a lazy grid's builder is not a composable scope, so the
+    // gate's composable helper cannot be called from within it.
+    val visibleResults = rememberVisibleItems(results)
 
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
@@ -258,7 +265,7 @@ fun MangaScreen(nav: NavHostController) {
                     }
                 }
             } else {
-                items(results, key = { "res-" + it.uniqueId }) { item ->
+                items(visibleResults, key = { "res-" + it.uniqueId }) { item ->
                     MangaPosterCard(
                         posterUrl = item.posterUrl,
                         title = item.title,

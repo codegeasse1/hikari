@@ -114,6 +114,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.LocalTaskbarInset
+import com.hikari.app.ui.rememberNsfwEnabled
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.CoroutineScope
@@ -2061,6 +2062,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { o.getJSONArray(key) }.getOrNull()
                 ?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx).ifBlank { null } } }
                 ?: emptyList()
+        val tvTypes = strings("tvTypes")
         return Cs3RepoPlugin(
             name = name,
             description = PromoGuard.cleanText(o.optString("description")),
@@ -2074,8 +2076,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 .ifBlank { null },
             authors = strings("authors"),
             version = o.optInt("version", 1),
-            tvTypes = strings("tvTypes"),
+            tvTypes = tvTypes,
             fileHash = o.optString("fileHash").ifBlank { null },
+            // The repo's own 18+ tag — a CloudStream plugin declares it in
+            // `tvTypes` (see ExtensionNsfw.repoEntryNsfw). What the
+            // adult-content switch hides from the store lists.
+            nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o, tvTypes),
         )
     }
 
@@ -2489,7 +2495,18 @@ fun ExtensionsScreen() {
     val successMsg by vm.successMsg.collectAsState()
 
     val repos by vm.repos.collectAsState()
-    val pluginsByRepo by vm.pluginsByRepo.collectAsState()
+    val everyPlugin by vm.pluginsByRepo.collectAsState()
+    // The adult-content switch (see [NsfwGate]) hides 18+ extensions from every
+    // store list — the installed section reads the provider list, which is
+    // already filtered, and the installable entries are dropped here, at the one
+    // place the whole screen reads them from, so no tab (or its "Install all")
+    // can bypass it. Repos keep their keys, so a repo whose entire listing is
+    // hidden still reports as loaded instead of refetching forever.
+    val nsfwOn = rememberNsfwEnabled()
+    val pluginsByRepo = remember(everyPlugin, nsfwOn) {
+        if (nsfwOn) everyPlugin
+        else everyPlugin.mapValues { (_, list) -> list.filterNot { it.nsfw } }
+    }
     val installed by vm.installedUrls.collectAsState()
     val outdated by vm.outdatedUrls.collectAsState()
     // Bumped when a playlist has been read (or re-read): the IPTV rows show their

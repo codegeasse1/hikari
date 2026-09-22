@@ -1,7 +1,9 @@
 package com.hikari.app.providers
 
+import android.content.Context
 import com.hikari.app.cs3.Cs3MainApiProvider
 import com.hikari.app.data.AppStore
+import com.hikari.app.data.ExtensionNsfw
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import kotlinx.coroutines.Dispatchers
@@ -11,13 +13,28 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-class ProviderManager(private val store: AppStore) {
+class ProviderManager(private val store: AppStore, private val context: Context) {
 
     private val _providers = MutableStateFlow<List<ContentProvider>>(emptyList())
     val providers: StateFlow<List<ContentProvider>> = _providers.asStateFlow()
 
+    /**
+     * Builds the provider list from the stored configs.
+     *
+     * The adult-content switch is applied HERE, at the source, rather than in
+     * each screen that lists providers (see [com.hikari.app.data.NsfwGate]): a
+     * provider that is not in this list is not instantiated, not asked for
+     * catalogues, not searched, and not shown — so with the switch off an 18+
+     * extension's titles cannot reach Home, a collection, the search queue or
+     * the "Continue watching" shelf by any route. Filtering the drawn lists
+     * instead would leave every one of those paths intact behind the UI.
+     *
+     * Flipping the switch is therefore the one thing that makes an adult
+     * provider appear or disappear mid-session, and
+     * [com.hikari.app.HikariApp] re-runs this when the preference changes.
+     */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        val configs = store.providers()
+        val configs = ExtensionNsfw.filter(context, store.providers())
         _providers.value = configs.mapNotNull { instantiate(it) }
     }
 

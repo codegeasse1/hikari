@@ -381,6 +381,8 @@ object TmdbMeta {
                         .trim()
                         .takeIf { it.isNotBlank() && it != "null" }
                         .orEmpty(),
+                    // TMDB's own adult marker (see MediaItem.nsfw).
+                    nsfw = o.optBoolean("adult", false),
                 )
             )
         }
@@ -597,6 +599,8 @@ object TmdbMeta {
                         rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
                         originalTitle = o.optString("original_title").trim()
                             .takeIf { it.isNotBlank() && it != "null" }.orEmpty(),
+                        // TMDB's own adult marker (see MediaItem.nsfw).
+                        nsfw = o.optBoolean("adult", false),
                     )
                 )
             }

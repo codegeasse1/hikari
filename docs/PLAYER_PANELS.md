@@ -74,6 +74,31 @@ is cut and it will not scroll sideways" report.
   is dragged. Bounded, the strip scrolls **inside** the panel, which is what it
   is for, and the rows stay the panel's width.
 
+### …and the content ITSELF is pinned to the panel's inner width
+
+`applyHeightCap` hands the content to `fitContentToPanel(content, innerW)` on every
+pass, and that is the fix for the report that the pills under the server/subtitle
+lines "are not fit" and that there is no way to scroll to them:
+
+* A row is built as `[marker][label column, weight 1][pill][chevron]` (`glassRow`,
+  `serverOption`). A weighted child only SHRINKS when it is measured against a
+  BOUNDED width; under an unbounded measure it is handed its full intrinsic width
+  instead — whatever the label needs.
+* The reach measures its child with an UNSPECIFIED width (that is what makes a
+  sideways drag possible at all), so every row was measured at its label's full
+  intrinsic width. A server row ("Provider (Repo) · Plugin · 1080p") came out
+  wider than the panel, the `HLS`/`DASH`/`SUB` pill and the chevron landed past the
+  panel's right edge, and the only way to see them was a sideways drag inside a
+  vertically scrolling list.
+* `fitContentToPanel` therefore sets the content's own `layoutParams.width` to the
+  panel's inner width **and** runs `boundNestedHScrollers` (which is now called
+  only from there, so the two rules cannot drift apart). Labels ellipsize at the
+  end — every row text already asks for that — and the trailing pills are inside
+  the glass on every row with no drag. The chip strip keeps its own sideways
+  scroll, because that is a strip that really can be longer than the panel.
+* It is idempotent (the width is only rewritten when it differs), so calling it on
+  every layout pass converges instead of looping.
+
 ## The panel's width — the restored geometry
 
 The width is the size of the box the dialog floats as, so it is a number this file

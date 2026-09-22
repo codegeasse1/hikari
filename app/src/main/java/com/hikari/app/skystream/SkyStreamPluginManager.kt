@@ -344,6 +344,7 @@ object SkyStreamPluginManager {
             tvTypes = types,
             iconManifest = addons.firstOrNull(),
             iconHost = iconHostOf(o),
+            nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o, types),
         )
     }
 

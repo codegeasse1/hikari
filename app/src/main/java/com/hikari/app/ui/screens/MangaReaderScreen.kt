@@ -1075,6 +1075,7 @@ private fun PagedBody(
                 source = pages[i],
                 fit = fit,
                 enhance = enhance,
+                label = "page ${i + 1}",
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -1174,6 +1175,7 @@ private fun WebtoonRunBody(
                                 // scrolls as one column.
                                 fitWidth = true,
                                 enhance = enhance,
+                                label = "page ${item.page + 1}",
                             )
                         }
                     }
@@ -1240,6 +1242,7 @@ private fun PageImage(
     source: StreamSource,
     fit: String,
     enhance: Boolean = false,
+    label: String = "",
     modifier: Modifier = Modifier,
 ) {
     val state = rememberPageState(source)
@@ -1266,6 +1269,7 @@ private fun PageImage(
                         source = source,
                         fitWidth = true,
                         enhance = enhance,
+                        label = label,
                     )
                 }
             }
@@ -1276,6 +1280,7 @@ private fun PageImage(
                     source = source,
                     fitWidth = false,
                     enhance = enhance,
+                    label = label,
                 )
             }
         }
@@ -1322,12 +1327,13 @@ internal val mangaEnhanceFilter: ColorFilter by lazy {
  *
  *  * **h ≤ 3w** — the ordinary page and the ordinary manhwa page. One bitmap
  *    from [PageBitmaps], drawn by an ordinary Compose `Image`, the same thing
- *    every poster and cover in this app is drawn with. One bitmap is provably
- *    safe at this shape (it cannot be taller than 3 × the screen's width), and
- *    [PageBitmaps] says why that bound is the whole argument.
- *  * **h > 3w** — a webtoon strip. Drawn by [NekoPageView], the ported
- *    subsampling reader, which region-decodes the file and never builds a
- *    bitmap the height of the page. This is the shape that used to come out as
+ *    every poster and cover in this app is drawn with. A bitmap is only provably
+ *    safe at this shape because [PageBitmaps] holds it to a budget a single page
+ *    can be one texture within — that budget, not the shape, is the part that
+ *    makes this safe.
+ *  * **h > 3w** — a webtoon strip. Drawn by [NekoPageView], the ported CHUNKED
+ *    renderer ([ChunkedPageView]): the page is decoded into bounded chunks and
+ *    never exists as one bitmap at all. This is the shape that came out as
  *    displaced blocks, because a page that tall cannot be one texture.
  *
  * [fitWidth] is a property of the MODE, not of the page: the webtoon strip and
@@ -1344,25 +1350,44 @@ private fun PageContent(
     source: StreamSource,
     fitWidth: Boolean,
     enhance: Boolean = false,
+    label: String = "",
 ) {
     when (state) {
         is MangaPageState.Ready -> {
             if (PageBitmaps.isTallPage(state.width, state.height)) {
-                // A STRIP (h > 3w): drawn by the ported subsampling reader, not
-                // by a bitmap. Nothing here decodes the page at all — the view
-                // region-decodes the file it is given, which is the only shape
-                // that survives a webtoon's height (see [NekoPageView], and
-                // [PageBitmaps.TALL_RATIO] for why the rule is 3×).
+                // A STRIP (h > 3w): drawn by the ported chunked renderer, never by a
+                // bitmap. Nothing here decodes the page as one image at all — the
+                // view region-decodes the file it is given into bounded chunks,
+                // which is the only shape that survives a webtoon's height (see
+                // [ChunkedPageView] for the algorithm, and [PageBitmaps.TALL_RATIO]
+                // for why the rule is 3x).
                 //
-                // The box around this is already the page's own aspect ratio, so
-                // the strip occupies exactly the space it should and the list
-                // scrolls through it; the view ignores touch, so the list keeps
-                // every gesture.
-                NekoPageView(
-                    file = state.file,
-                    sourceUrl = source.url,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                // The box around this is already the page's own aspect ratio (the
+                // strip mode) or the viewport (the fit modes), so the page occupies
+                // exactly the space it should and the list scrolls through it; the
+                // view never consumes a gesture, so the list keeps every one.
+                var chunkReady by remember(state.file.absolutePath) { mutableStateOf(false) }
+                Box(Modifier.fillMaxSize()) {
+                    NekoPageView(
+                        file = state.file,
+                        sourceUrl = source.url,
+                        // A strip fills the box's width; a paged fit mode scales the
+                        // whole page into the box (see ChunkedPageView.fitInside).
+                        fitInside = !fitWidth,
+                        label = label,
+                        onReady = { chunkReady = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    // The chunked view draws nothing until its first chunk lands, so
+                    // the spinner sits on top and goes the moment there is something
+                    // to look at — the same "a page that is coming shows a spinner"
+                    // contract the bitmap path below has.
+                    if (!chunkReady) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
+                        }
+                    }
+                }
             } else {
             // Keyed on the file's own (unique-per-fetch) path, so a retry that
             // lands a good page decodes THAT file and nothing else changes. The

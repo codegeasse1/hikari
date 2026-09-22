@@ -84,6 +84,7 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.ui.rememberVisibleItems
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -148,7 +149,13 @@ fun MediaRow(
         // literal repeats dropped before they are drawn. Deduped ONCE per row
         // rather than on every recomposition of it (a row recomposes on every
         // scroll step): this is a fresh list otherwise.
-        val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
+        val uniqueItems = rememberVisibleItems(items)
+        // The adult-content gate is applied where the row is DRAWN (see
+        // [NsfwGate] and [rememberVisibleItems]): every shelf in the app funnels
+        // through this composable — Home, collections, the detail page's
+        // shelves — and applying it here rather than in the stores is what makes
+        // the Settings switch take effect on the next frame, with no re-fetch and
+        // no stale cached row to trip over.
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1176,6 +1183,17 @@ fun ContinueWatchingRow(
     if (entries.isEmpty()) return
     // Defensive dedupe: a duplicate Compose key would crash the whole row.
     val unique = remember(entries) { entries.distinctBy { it.uniqueKey } }
+    // Adult titles are hidden here too (see [NsfwGate]): Continue Watching is fed
+    // from the same watch history as the History tab, so something watched before
+    // the switch was turned off would otherwise come straight back onto the Home
+    // feed. A history entry carries no genre list or provider flag, so the name is
+    // what this can judge on — and [rememberNsfwEnabled] is what makes the row drop
+    // those cards the moment the switch is flipped.
+    val nsfwOn = com.hikari.app.ui.rememberNsfwEnabled()
+    val shown = remember(unique, nsfwOn) {
+        if (nsfwOn) unique
+        else unique.filter { !com.hikari.app.data.NsfwGate.isAdultText(it.title, emptyList()) }
+    }
     Column(Modifier.padding(top = 16.dp)) {
         Text(
             tr("Continue Watching"),
@@ -1188,7 +1206,7 @@ fun ContinueWatchingRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(unique, key = { it.uniqueKey }) { h ->
+            items(shown, key = { it.uniqueKey }) { h ->
                 ContinueWatchingCard(
                     h = h,
                     backdrop = backdropOf(h),

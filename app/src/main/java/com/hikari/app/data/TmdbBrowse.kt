@@ -210,6 +210,8 @@ object TmdbBrowse {
             originalTitle = o.optString(if (series) "original_name" else "original_title")
                 .takeIf { it.isNotBlank() && it != title }
                 ?: "",
+            // TMDB's own adult marker (see MediaItem.nsfw).
+            nsfw = o.optBoolean("adult", false),
         )
     }
 

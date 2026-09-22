@@ -681,6 +681,10 @@ object TmdbSources {
             // The name the extensions index this title under, when the app's
             // TMDB language has renamed it (see MediaItem.originalTitle).
             originalTitle = originalOf(o),
+            // TMDB's own adult marker (see [MediaItem.nsfw]) — the one signal a
+            // catalogue response carries, and what the NSFW gate hides when the
+            // user has turned adult material off.
+            nsfw = o.optBoolean("adult", false),
         )
     }
 

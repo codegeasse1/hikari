@@ -1094,6 +1094,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             type = mt,
             posterUrl = posterUrl,
             year = year,
+            // The provider's own type IS the marker: CloudStream gives adult
+            // extensions their own TvType, so a result from one is adult material
+            // regardless of what its name looks like (see MediaItem.nsfw).
+            nsfw = type == TvType.NSFW,
         ).also { recordPosterHeaders(posterUrl, posterHeaders) }
     }
 

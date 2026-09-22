@@ -109,6 +109,18 @@ data class Cs3RepoPlugin(
      * manga engine and which as an anime one.
      */
     val pkg: String = "",
+    /**
+     * Whether the extension itself is tagged 18+ by the repo that publishes it —
+     * CloudStream's `tvTypes` containing `NSFW`, a Mihon/Aniyomi index entry's
+     * `nsfw`/`contentWarning` (see the manager that parses it).
+     *
+     * The listing is the only place this is knowable BEFORE an install, and it
+     * is what the adult-content switch hides from the store lists: with the
+     * switch off an 18+ extension is not offered for install in the first place
+     * (see [NsfwGate], and [com.hikari.app.data.ExtensionNsfw] for the check on
+     * ones that are already installed).
+     */
+    val nsfw: Boolean = false,
 )
 
 /** Per-repo plugin-list loading state shown in the Extensions screen. */
@@ -169,6 +181,17 @@ data class MediaItem(
      * its sites use.
      */
     val originalTitle: String = "",
+    /**
+     * The source says this item IS adult material — TMDB's `adult` flag, or a
+     * provider whose own type/metadata says so (CloudStream's `TvType.NSFW`).
+     *
+     * Only the explicit markers live here; the rest of the rule (18+/adult genre
+     * tags, the name itself, an adults-only certificate) is applied by
+     * [com.hikari.app.data.NsfwGate], which is also where the setting and the
+     * reasoning live. Keeping the flag on the item means a catalogue page, a
+     * search result and a cached shelf all carry their own answer.
+     */
+    val nsfw: Boolean = false,
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
 

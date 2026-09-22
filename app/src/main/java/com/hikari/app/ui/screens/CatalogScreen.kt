@@ -73,6 +73,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.VerificationNudge
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.rememberVisibleItems
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -417,7 +418,7 @@ fun CatalogScreen(
             // Deduped and styled once for the whole grid rather than once per
             // cell — a cell doing its own read opened one DataStore collection
             // per poster on screen (see MediaRow).
-            val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
+            val uniqueItems = rememberVisibleItems(items)
             val style = rememberPosterStyle()
             LazyVerticalGrid(
                 // Same small-tile, clearly-gapped look as the search results

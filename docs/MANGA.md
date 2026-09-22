@@ -72,8 +72,11 @@ reported by name.
   attempts, then a per-page Retry button). What DRAWS a page is decided by the
   page's own proportions, and by nothing else: h ≤ 3w is one bitmap from
   `manga/PageBitmaps` drawn by an ordinary `Image`, h > 3w is a strip drawn by
-  `manga/NekoPageView` (the ported Nekoread/Tachiyomi subsampling reader, which
-  region-decodes the file and never builds a page-sized bitmap).
+  `manga/NekoPageView` → `manga/ChunkedPageView` (the ported Nekoread/Tachiyomi
+  `WebtoonChunkedImageView`, which region-decodes the file into at most-2048px
+  chunks and never builds a page-sized bitmap). The short page's budget is
+  Nekoread's too: `MAX_PAGE_PIXELS = 1_000_000` and `MAX_DECODE_HEIGHT = 2048`,
+  because a bitmap is only safe when it is provably ONE texture.
   `docs/READER.md` section 4a is the whole story, and it is required reading
   before touching the image path. `Enhance images` in the settings is a draw-time
   `ColorFilter` on a short page's `Image` (the strip view has no equivalent).
