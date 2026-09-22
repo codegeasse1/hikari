@@ -1722,6 +1722,9 @@ private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     // extension's own source (`baseUrl`/`siteUrl`, else its source class name).
     ProviderType.ANIYOMI ->
         com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(p.config)
+    // And a manga extension's `url` is its local .ext path too.
+    ProviderType.MANGA ->
+        com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
     ProviderType.CS3 -> runCatching {
         val file = java.io.File(p.config.url)
         if (!file.exists()) return@runCatching null

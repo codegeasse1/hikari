@@ -60,7 +60,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-fun DownloadsScreen(nav: NavHostController) {
+fun DownloadsScreen(nav: NavHostController, embedded: Boolean = false) {
     val context = LocalContext.current
     val tasks by DownloadsRepository.tasks.collectAsState()
     LaunchedEffect(Unit) { DownloadsRepository.ensureLoaded(context) }
@@ -78,13 +78,17 @@ fun DownloadsScreen(nav: NavHostController) {
             bottom = LocalTaskbarInset.current + 16.dp,
         )
     ) {
-        item {
-            Text(
-                tr("Downloads"),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
+        // Inside the merged My Stuff tab the strip names the section, so the
+        // page title is only drawn when this screen stands on its own.
+        if (!embedded) {
+            item {
+                Text(
+                    tr("Downloads"),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
         }
         if (tasks.isEmpty()) {
             item {

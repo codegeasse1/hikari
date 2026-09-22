@@ -1,7 +1,16 @@
 package com.hikari.app.data
 
 enum class ProviderType {
-    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, IPTV;
+    STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, IPTV,
+    /**
+     * A MANGA extension — a Mihon/Tachiyomi-format `.apk` (keiyoushi and the
+     * other mirrors of that repo). It speaks the same `eu.kanade.tachiyomi.*`
+     * API the Aniyomi side does, but its catalogues are titles, its "episodes"
+     * are chapters and its "streams" are page images, which is why the reader
+     * and the manga detail screen are the screens that open on them (see
+     * com.hikari.app.manga).
+     */
+    MANGA;
 
     /**
      * Which section of the player's server chooser a source from this engine
@@ -18,6 +27,7 @@ enum class ProviderType {
             CS3 -> "CloudStream"
             SKYSTREAM -> "SkyStream"
             ANIYOMI -> "Aniyomi"
+            MANGA -> "Manga"
             IPTV -> "IPTV"
             HIKARI, UNIVERSAL -> "Hikari"
         }

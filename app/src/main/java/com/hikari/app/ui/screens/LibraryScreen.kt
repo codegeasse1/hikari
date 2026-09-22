@@ -76,7 +76,7 @@ import kotlinx.coroutines.launch
  * picker can invent a new category on the spot.
  */
 @Composable
-fun LibraryScreen(nav: NavHostController) {
+fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
@@ -99,6 +99,10 @@ fun LibraryScreen(nav: NavHostController) {
     var moving by remember { mutableStateOf<MediaItem?>(null) }
     var managing by remember { mutableStateOf(false) }
     val style = rememberPosterStyle()
+    // Followed manga share this page (see the shelf below). Read through the
+    // store's revision so following/unfollowing a title anywhere updates it.
+    val mangaRev = rememberMangaRevision()
+    val hasManga = remember(mangaRev) { com.hikari.app.manga.MangaStore.library().isNotEmpty() }
 
     // A category that was just deleted must not keep filtering the grid.
     LaunchedEffect(categories) {
@@ -129,11 +133,16 @@ fun LibraryScreen(nav: NavHostController) {
             Column(Modifier.padding(bottom = 2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            tr("Library"),
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        // [embedded] = drawn inside the merged My Stuff tab,
+                        // whose strip already names the section. The big title
+                        // would be a second heading over the same word.
+                        if (!embedded) {
+                            Text(
+                                tr("Library"),
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                         Text(
                             if (saved.isEmpty()) I18n.t("Titles you save from the player show up here.")
                             else I18n.t(if (saved.size == 1) "%s title saved" else "%s titles saved").replace("%s", saved.size.toString()),
@@ -149,6 +158,15 @@ fun LibraryScreen(nav: NavHostController) {
                         )
                     }
                 }
+            }
+        }
+        if (hasManga) {
+            // Followed manga, beside the video library: "My Stuff" is where the
+            // things that are yours live, and a manga is one of them. Only added
+            // when there is something to show, so an install with no manga keeps
+            // the video library exactly as it was.
+            item(key = "library-manga", span = { GridItemSpan(maxLineSpan) }) {
+                MangaLibraryShelf(nav)
             }
         }
         if (saved.isNotEmpty()) {

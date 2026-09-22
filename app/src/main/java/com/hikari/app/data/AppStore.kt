@@ -131,6 +131,18 @@ class AppStore(private val ctx: Context) {
          * there.
          */
         val IPTV_TAB = booleanPreferencesKey("showIptvTab")
+        val MANGA_TAB = booleanPreferencesKey("showMangaTab")
+        /** Reading mode of the manga reader ([com.hikari.app.manga.MangaReadMode]:
+         *  paged left-to-right, paged right-to-left, or vertical webtoon). */
+        val MANGA_READ_MODE = stringPreferencesKey("mangaReadMode")
+        /** How a page is fitted in the reader ([com.hikari.app.manga.MangaFit]):
+         *  width / height / whole page. */
+        val MANGA_FIT = stringPreferencesKey("mangaFit")
+        /** The reader's backdrop: "black", "grey" or "white". */
+        val MANGA_READER_BG = stringPreferencesKey("mangaReaderBg")
+        /** Keep the screen on while reading, and print "12 / 40" over the page. */
+        val MANGA_KEEP_AWAKE = booleanPreferencesKey("mangaKeepAwake")
+        val MANGA_SHOW_PAGE_NUMBER = booleanPreferencesKey("mangaShowPageNumber")
         /** Shape of the tiles on the IPTV tab's playlist/group grids (see
          *  [TileShapes]: poster / square / wide). */
         val IPTV_SHAPE = stringPreferencesKey("iptvTileShape")
@@ -1199,6 +1211,84 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setIptvShape(shape: String) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
+    }
+
+    // ---- The Manga tab (off by default; Settings → Taskbar buttons) ----
+
+    /**
+     * True when the Manga button has been switched on in the taskbar settings.
+     *
+     * Off by default for the same reason the IPTV button is: an install with no
+     * manga extension has no use for it, and a button costs every profile room.
+     * With it on, the tab is a reading-first home — continue reading, the
+     * followed titles, and one entry per manga extension to browse.
+     */
+    fun mangaTabFlow(): Flow<Boolean> =
+        store.data.map { it[K.MANGA_TAB] ?: false }
+
+    suspend fun mangaTab(): Boolean = mangaTabFlow().first()
+
+    suspend fun setMangaTab(shown: Boolean) {
+        write("MANGA_TAB") { it[K.MANGA_TAB] = shown }
+    }
+
+    // ---- The manga reader's own settings ----
+    //
+    // Kept here (not in a private file) so they are part of the same store as
+    // every other preference — backed up with it and readable from anywhere,
+    // which is what lets the reader's chrome, the TV remote's page turn and a
+    // future Settings section all agree on one value.
+
+    /** How pages advance: paged left-to-right, paged right-to-left, or one long
+     *  vertical strip (see [com.hikari.app.manga.MangaReadMode]). */
+    fun mangaReadModeFlow(): Flow<String> =
+        store.data.map { MangaReadMode.normalize(it[K.MANGA_READ_MODE]) }
+
+    suspend fun setMangaReadMode(mode: String) {
+        write("MANGA_READ_MODE") { it[K.MANGA_READ_MODE] = MangaReadMode.normalize(mode) }
+    }
+
+    /** How a page is fitted to the screen (see
+     *  [com.hikari.app.manga.MangaFit]). */
+    fun mangaFitFlow(): Flow<String> =
+        store.data.map { MangaFit.normalize(it[K.MANGA_FIT]) }
+
+    suspend fun setMangaFit(fit: String) {
+        write("MANGA_FIT") { it[K.MANGA_FIT] = MangaFit.normalize(fit) }
+    }
+
+    /** The reader's backdrop colour, so a bright page or a dark room both read
+     *  well. Stored as a word, not a colour — the reader maps it to a theme. */
+    fun mangaReaderBgFlow(): Flow<String> =
+        store.data.map { normalizeReaderBg(it[K.MANGA_READER_BG]) }
+
+    suspend fun setMangaReaderBg(bg: String) {
+        write("MANGA_READER_BG") { it[K.MANGA_READER_BG] = normalizeReaderBg(bg) }
+    }
+
+    /** Keep the screen awake while reading (default ON — a reader is looked at,
+     *  not tapped, and the OS timeout blanks the page mid-chapter otherwise). */
+    fun mangaKeepAwakeFlow(): Flow<Boolean> =
+        store.data.map { it[K.MANGA_KEEP_AWAKE] ?: true }
+
+    suspend fun setMangaKeepAwake(on: Boolean) {
+        write("MANGA_KEEP_AWAKE") { it[K.MANGA_KEEP_AWAKE] = on }
+    }
+
+    /** Print "12 / 40" over the page while reading (default OFF: the chrome
+     *  already shows it, and an always-on label over artwork is unwanted). */
+    fun mangaShowPageNumberFlow(): Flow<Boolean> =
+        store.data.map { it[K.MANGA_SHOW_PAGE_NUMBER] ?: false }
+
+    suspend fun setMangaShowPageNumber(on: Boolean) {
+        write("MANGA_SHOW_PAGE_NUMBER") { it[K.MANGA_SHOW_PAGE_NUMBER] = on }
+    }
+
+    /** One of the reader's three backdrops; anything unknown means black. */
+    fun normalizeReaderBg(raw: String?): String = when (raw?.lowercase()) {
+        "grey", "gray" -> "grey"
+        "white" -> "white"
+        else -> "black"
     }
 
     // ---- Animated covers on tiles ----

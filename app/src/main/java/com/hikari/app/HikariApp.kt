@@ -493,6 +493,13 @@ class HikariApp : Application() {
             runCatching {
                 com.hikari.app.aniyomi.AniyomiExtensionManager.seedDefaults(this@HikariApp, store)
             }
+            // First run: seed the manga extension repo (keiyoushi's index) so
+            // manga extensions are installable without hunting for a repo URL.
+            // It is the same bare-array index format the Aniyomi repo uses,
+            // which is why it can be added through the same add-repo flow.
+            runCatching {
+                com.hikari.app.manga.MangaExtensionManager.seedDefaults(this@HikariApp, store)
+            }
             // First run only: add the bundled Hikari (.hiki) and CloudStream
             // extension repos, so the Extensions screen ("Sources, repos &
             // providers") is never empty on a fresh install and the built-in

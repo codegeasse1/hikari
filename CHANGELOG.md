@@ -1,3 +1,25 @@
+## 0.10.4
+
+The taskbar loses two buttons and gains a reader. **Library, History and Downloads are now one button — "My Stuff"** — with a three-way strip at the top of the page, and the room that frees up is spent on a **Manga tab**: Tachiyomi/Mihon extensions (Keiyoushi and its mirrors) install through the same Extensions screen as every other engine, each title opens a detail page with its chapter list and a follow button, and the chapters open in a reader with **paged left-to-right, paged right-to-left and webtoon** modes.
+
+### Added
+
+- **Manga, end to end.** A manga engine is installed exactly like an Aniyomi extension — the two are the same file format listed by the same `index.min.json`, so the Keiyoushi repo is added through the existing **Add Aniyomi repo** box and its extensions install through the same buttons. What is new is everything after that: a **Manga** tab (Continue reading · your library · one card per engine with its **Popular** and **Latest** lists · a search box that asks every installed engine at once), a detail page per title (cover, description, genres, **Follow**, and the full chapter list with the chapter you are on marked), and a reader.
+- **The reader.** Paged **left-to-right** (comics, manhwa), paged **right-to-left** (Japanese manga — including the arrow keys and tap zones being mirrored with it), or **webtoon**, one continuous vertical strip for releases drawn with no page gaps. Three fits (**fit width** and scroll a tall page, **fit height** for a spread, **fit the screen**), three backdrops (black / dark grey / white), keep-the-screen-awake (on by default) and an optional floating page number. Tap the middle of the page for the controls — slider, `12 / 40`, previous/next chapter — tap a side to turn the page, and on a television the D-pad does the same (◀ ▶ turn, OK hides the bars). Reading position is saved as you go, so the detail page, the Manga tab and My Stuff all resume on the exact page.
+- **A manga engine's own request headers are replayed for its page images.** Manga CDNs routinely answer a hotlink with a 403; the extension's User-Agent/Referer/cookies now travel with every page request, so the reader shows the same images the site does.
+- **"My Stuff" — one taskbar button for Library, History and Downloads.** They are all *your* things rather than "find something to watch", and three buttons for them left the bar with no room for a reader. The three are a small equal-width pill strip at the top of the page (the Nekoread History|Updates idiom), and **each keeps its own route** — every existing link to History or Downloads, from an empty state's "Browse" to a Continue-watching "See all", still lands on the right section. Hiding one of them in Settings → Taskbar buttons hides the button, as before.
+- **Manga in the places you already look.** Followed titles appear as a shelf in **My Stuff → Library**, and what you were reading appears at the top of **My Stuff → History**, both drawing nothing at all when there is no manga.
+
+### Changed
+
+- **The Manga tab is off by default.** Like IPTV, it has its own switch in **Settings → Taskbar buttons → Manga** ("Off by default — switch on to read comics"): an install with no manga engine has no use for it, and a button costs every install room. The switch never counts towards the "you cannot hide the last tab" rule, exactly like IPTV's.
+- **Home never shows a manga engine's rows.** A manga engine has its own tab and its own detail page; a manga row on Home would open the video detail screen, which has nothing to play. Manga engines are also left out of the video cross-extension server search for the same reason.
+- **A manga repo is browsed in Extensions like any other.** Manga extensions list under the same repo group as Aniyomi's (one index format, one parser), install through the same format-aware path — the APK's own manifest decides which engine loads it — and uninstall through it too, removing the extension file only once nothing references it.
+
+### Notes
+
+- Chapter **downloads** and a manga source's own **settings screen** are not part of this release: the reader streams pages and caches them in memory/Coil's disk cache only. A source that publishes a preferences screen (`ConfigurableSource`) is loaded but its settings page is not surfaced yet.
+
 ## 0.10.3
 
 Returning to Home can no longer draw a *different* provider's catalogs than the one you picked: your pick is read back from the store before anything is allowed to load, and a feed load that started under an older pick can never paint its rows over a newer one.

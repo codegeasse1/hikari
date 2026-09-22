@@ -265,12 +265,22 @@ fun CatalogScreen(
             ) {
                 items(uniqueItems, key = { it.uniqueId }) { item ->
                     CatalogCard(item, style) {
+                        // A manga engine's "catalog" is its Popular/Latest list
+                        // and its items are manga, not video: those open the
+                        // manga detail page (the provider tags its catalogs with
+                        // rawType "manga" — see MangaProvider.catalogs).
                         Routes.safeNavigate(
                             nav,
-                            Routes.detail(
-                                item.providerId, item.type, item.id,
-                                item.title, item.posterUrl, item.rawType
-                            )
+                            if (rawType == "manga") {
+                                Routes.mangaDetail(
+                                    item.providerId, item.id, item.title, item.posterUrl
+                                )
+                            } else {
+                                Routes.detail(
+                                    item.providerId, item.type, item.id,
+                                    item.title, item.posterUrl, item.rawType
+                                )
+                            }
                         )
                     }
                 }

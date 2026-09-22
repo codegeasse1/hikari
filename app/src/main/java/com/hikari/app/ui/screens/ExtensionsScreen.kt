@@ -671,10 +671,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        // Aniyomi extensions live in `filesDir/aniyomi/exts` and are shared by
-        // every source they publish — only the last referencing provider takes
-        // the `.ext` with it.
-        if (target != null && target.type == ProviderType.ANIYOMI &&
+        // Aniyomi and manga extensions live in `filesDir/<engine>/exts` and are
+        // shared by every source they publish — only the last referencing
+        // provider takes the `.ext` with it.
+        if (target != null &&
+            (target.type == ProviderType.ANIYOMI || target.type == ProviderType.MANGA) &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
         ) {
             val stillUsed = store.providers().any { it.url == target.url }
@@ -902,7 +903,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
                     ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
-                    ProviderType.ANIYOMI -> extra
+                    ProviderType.ANIYOMI, ProviderType.MANGA -> extra
                     ProviderType.HIKARI -> extra.substringBeforeLast('|')
                     else -> return@forEach
                 }
@@ -1091,6 +1092,41 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
+    /**
+     * Installs an extension package, whichever kind of engine it turns out to be.
+     *
+     * Aniyomi anime extensions and Mihon/keiyoushi MANGA extensions are the same
+     * file type listed by the same index format (`index.min.json`), so the user
+     * pastes either into the same box (and a keiyoushi repo is added as an
+     * "Aniyomi" repo for exactly that reason — see RepoKind.ANIYOMI). The
+     * package's own manifest says which one it is: a manga extension declares a
+     * source class/factory in its metadata. Routing every install through here
+     * is why a manga extension does not need its own folder, its own repo kind
+     * or its own Install button.
+     */
+    private suspend fun installExtension(
+        bytes: ByteArray,
+        sourceUrl: String? = null,
+        iconUrl: String? = null,
+    ): Result<Int> {
+        val app = getApplication<Application>()
+        return if (com.hikari.app.manga.MangaExtensionManager.isMangaApk(app, bytes)) {
+            com.hikari.app.manga.MangaExtensionManager.install(
+                app,
+                bytes,
+                sourceUrl = sourceUrl,
+                iconUrl = iconUrl,
+            )
+        } else {
+            com.hikari.app.aniyomi.AniyomiExtensionManager.install(
+                app,
+                bytes,
+                sourceUrl = sourceUrl,
+                iconUrl = iconUrl,
+            )
+        }
+    }
+
     suspend fun installAniyomiPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
             // Aniyomi extensions are a couple of MB at most, but the biggest
@@ -1100,30 +1136,33 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 ?: return@withContext Result.failure(
                     Exception("Download timed out — check your connection")
                 )
-            com.hikari.app.aniyomi.AniyomiExtensionManager.install(
-                getApplication<Application>(),
+            installExtension(
                 bytes,
                 sourceUrl = plugin.url,
                 iconUrl = plugin.iconUrl,
             ).also { manager.refresh(); reloadInstalled() }
         }
 
-    /** Removes every ANIYOMI provider that came from [pluginUrl] (and the `.ext`
-     *  itself once nothing references it). */
+    /** Removes every ANIYOMI/MANGA provider that came from [pluginUrl] (and the
+     *  `.ext` itself once nothing references it). Both managers are asked,
+     *  because the same repo index serves both kinds of engine and only one of
+     *  them will recognise the URL. */
     suspend fun uninstallAniyomiPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
         // The manager removes by exact source URL, so hand it the spelling each
         // installed provider actually stored — a repo build can move the file
         // (a new branch, the jsDelivr mirror) between listing and uninstall.
-        val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
-            p.type == ProviderType.ANIYOMI && sourceMatches(p, s)
+        val targets = uninstallTargets(store.providers(), pluginUrl) { p, s ->
+            (p.type == ProviderType.ANIYOMI || p.type == ProviderType.MANGA) && sourceMatches(p, s)
         }
+        val stored = targets
             .mapNotNull { it.extra }
             .distinct()
             .ifEmpty { listOf(pluginUrl) }
         var removed = 0
         for (source in stored) {
             removed += com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
+            removed += com.hikari.app.manga.MangaExtensionManager.uninstall(app, source)
         }
         manager.refresh()
         reloadInstalled()
@@ -1137,23 +1176,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(clean) }
             ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
-        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
-            getApplication<Application>(),
-            bytes,
-            sourceUrl = clean,
-        ).also { manager.refresh(); reloadInstalled() }
+        installExtension(bytes, sourceUrl = clean).also { manager.refresh(); reloadInstalled() }
     }
 
-    /** Installs a local `.apk`/`.ext` the user picked (an Aniyomi extension
-     *  downloaded from a browser has no repo URL at all). */
+    /** Installs a local `.apk`/`.ext` the user picked (an Aniyomi or manga
+     *  extension downloaded from a browser has no repo URL at all). */
     suspend fun installAniyomiFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
         val bytes = runCatching {
             getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
-        com.hikari.app.aniyomi.AniyomiExtensionManager.install(
-            getApplication<Application>(),
-            bytes,
-        ).also { manager.refresh(); reloadInstalled() }
+        installExtension(bytes).also { manager.refresh(); reloadInstalled() }
     }
 
     suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
@@ -5145,17 +5177,30 @@ private fun pluginStatus(p: ContentProvider, iptvTick: Int = 0): String? {
         ) return null
         return err?.take(200)
     }
-    if (p.config.type == ProviderType.ANIYOMI) {
-        if (com.hikari.app.aniyomi.AniyomiExtensionManager.fileMissing(p.config)) {
+    if (p.config.type == ProviderType.ANIYOMI || p.config.type == ProviderType.MANGA) {
+        val manga = p.config.type == ProviderType.MANGA
+        val missing = if (manga) {
+            com.hikari.app.manga.MangaExtensionManager.fileMissing(p.config)
+        } else {
+            com.hikari.app.aniyomi.AniyomiExtensionManager.fileMissing(p.config)
+        }
+        if (missing) {
             return "Extension file missing — reinstall this extension"
         }
-        val err = com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id]
+        val err = if (manga) {
+            com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
+        } else {
+            com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id]
+        }
         // Same rule as below: a browser check on the scraped site is never
         // reported as a scary, unactionable line.
         if (err != null &&
             com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)
         ) return null
-        return err?.take(200)
+        // Only a failure line is worth showing; the manga engine stores its
+        // successes in the same map ("✓ 24 chapter(s)") so the UI can show what
+        // a call produced, and those must not read as problems here.
+        return err?.takeIf { !it.startsWith("✓") }?.take(200)
     }
     if (p.config.type != ProviderType.CS3) return null
     val err = com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]

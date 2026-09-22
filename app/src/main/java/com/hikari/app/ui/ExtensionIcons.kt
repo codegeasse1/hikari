@@ -48,6 +48,10 @@ object ExtensionIcons {
                 com.hikari.app.skystream.SkyStreamPluginManager.iconFallback(config)
             ProviderType.ANIYOMI ->
                 com.hikari.app.aniyomi.AniyomiExtensionManager.iconFallback(config)
+            // A manga extension carries no artwork either — its only identity is
+            // the site it reads, so the favicon of that site is the icon.
+            ProviderType.MANGA ->
+                com.hikari.app.manga.MangaExtensionManager.iconFallback(config)
             else -> null
         }
     }

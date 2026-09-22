@@ -29,6 +29,7 @@ class ProviderManager(private val store: AppStore) {
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper(c)
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider(c)
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider(c)
+        ProviderType.MANGA -> com.hikari.app.manga.MangaProvider(c)
         ProviderType.IPTV -> IptvProvider(c)
     }
 

@@ -52,7 +52,7 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 @Composable
-fun HistoryScreen(nav: NavHostController) {
+fun HistoryScreen(nav: NavHostController, embedded: Boolean = false) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
@@ -66,6 +66,10 @@ fun HistoryScreen(nav: NavHostController) {
     // uniqueKey, which would crash this LazyColumn on a duplicate Compose key.
     val shownEntries = remember(entries) { entries.distinctBy { it.uniqueKey } }
     val paused by pausedFlow.collectAsState(initial = false)
+    // Manga reading counts as history too (see the shelf below). Read through
+    // the manga store's revision so a chapter read elsewhere appears instantly.
+    val mangaRev = rememberMangaRevision()
+    val hasMangaProgress = remember(mangaRev) { com.hikari.app.manga.MangaStore.progress().isNotEmpty() }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -84,12 +88,18 @@ fun HistoryScreen(nav: NavHostController) {
                     .padding(bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    tr("History"),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                // Inside the merged My Stuff tab the strip already says
+                // "History", so only the pause switch stays on this row.
+                if (!embedded) {
+                    Text(
+                        tr("History"),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
                 Text(
                     tr("Pause history"),
                     style = MaterialTheme.typography.bodySmall,
@@ -110,6 +120,16 @@ fun HistoryScreen(nav: NavHostController) {
                 )
             }
             Spacer(Modifier.height(8.dp))
+        }
+        if (hasMangaProgress) {
+            // What you were READING is history in the same sense as what you
+            // were watching, so it sits at the top of this list (see
+            // MangaContinueShelf). The shelf draws nothing when empty, and the
+            // item is only added when it will draw something.
+            item(key = "history-manga") {
+                MangaContinueShelf(nav)
+                Spacer(Modifier.height(12.dp))
+            }
         }
         if (shownEntries.isEmpty()) {
             item {

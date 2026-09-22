@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
@@ -93,6 +95,11 @@ import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.IptvPlaylistScreen
 import com.hikari.app.ui.screens.IptvScreen
 import com.hikari.app.ui.screens.LibraryScreen
+import com.hikari.app.ui.screens.MangaDetailScreen
+import com.hikari.app.ui.screens.MangaReaderScreen
+import com.hikari.app.ui.screens.MangaScreen
+import com.hikari.app.ui.screens.MyStuff
+import com.hikari.app.ui.screens.MyStuffScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.screens.TmdbGridScreen
@@ -121,6 +128,58 @@ object Routes {
     const val IPTV = "iptv"
     /** One playlist's own page: its groups, each opening a paged channel grid. */
     const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
+
+    /**
+     * The Manga tab — the same kind of extra page as [IPTV]: OFF by default and
+     * switched on in Settings → Taskbar buttons (see
+     * [com.hikari.app.data.AppStore.mangaTabFlow]), because an install with no
+     * manga engine has no use for it and a button costs every install room.
+     */
+    const val MANGA = "manga"
+    /** One manga: cover, description, follow button, chapter list. */
+    const val MANGA_DETAIL =
+        "manga-detail?providerId={providerId}&url={url}&title={title}&poster={poster}"
+    /**
+     * The reader. A destination of its own rather than a mode of the detail
+     * screen, so the system back button returns to the chapter list, the page
+     * survives a rotation, and the whole page list travels in the route exactly
+     * the way a video's episode does.
+     */
+    const val MANGA_READER =
+        "manga-reader?providerId={providerId}&url={url}&chapter={chapter}&title={title}&poster={poster}"
+
+    /** Opens one manga. [url] is the source's own url for the title (its id). */
+    fun mangaDetail(
+        providerId: String,
+        url: String,
+        title: String,
+        posterUrl: String? = null,
+    ): String {
+        // Same sanitizing as detail(): extension-supplied text can carry
+        // control characters that crash the route parser.
+        val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ").trim().take(500)
+        var s = "manga-detail?providerId=${Uri.encode(providerId)}" +
+            "&url=${Uri.encode(url)}&title=${Uri.encode(safeTitle)}"
+        val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
+        if (poster != null) s += "&poster=${Uri.encode(poster)}"
+        return s
+    }
+
+    /** Opens the reader on one chapter of a manga. */
+    fun mangaReader(
+        providerId: String,
+        url: String,
+        chapterUrl: String,
+        title: String,
+        posterUrl: String? = null,
+    ): String {
+        val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ").trim().take(500)
+        var s = "manga-reader?providerId=${Uri.encode(providerId)}&url=${Uri.encode(url)}" +
+            "&chapter=${Uri.encode(chapterUrl)}&title=${Uri.encode(safeTitle)}"
+        val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
+        if (poster != null) s += "&poster=${Uri.encode(poster)}"
+        return s
+    }
 
     /** Opens one IPTV playlist's group list. */
     fun iptvPlaylist(providerId: String): String =
@@ -258,7 +317,14 @@ object Routes {
      *  Search tab). Returns null when the route isn't a tab. */
     fun tabBaseOf(route: String?): String? {
         val base = route?.substringBefore('?') ?: return null
-        return if (base == SEARCH_QUERY_BASE) SEARCH else base
+        return when (base) {
+            SEARCH_QUERY_BASE -> SEARCH
+            // History and Downloads are sections of the ONE merged taskbar
+            // button ("My Stuff"), so they highlight it and keep the bar on
+            // screen exactly as the scoped search route highlights Search.
+            HISTORY, DOWNLOADS -> LIBRARY
+            else -> base
+        }
     }
 
     /** Navigate the bottom bar reliably. A real back-stack pop is tried first,
@@ -717,9 +783,18 @@ data class BottomTab(
 val BottomTabs = listOf(
     BottomTab(Routes.HOME, "Home", Icons.Filled.Home),
     BottomTab(Routes.SEARCH, "Search", Icons.Filled.Search),
-    BottomTab(Routes.LIBRARY, "Library", Icons.Filled.Favorite),
-    BottomTab(Routes.HISTORY, "History", Icons.Filled.History),
-    BottomTab(Routes.DOWNLOADS, "Downloads", Icons.Filled.Download),
+    // Library + History + Downloads are ONE slot: they are all "my stuff"
+    // (saved titles, what you played, what you saved offline) rather than
+    // "find something to watch", and three buttons for them left the taskbar
+    // with no room for the manga reader. The three are a small segmented strip
+    // at the top of this page (see [com.hikari.app.ui.screens.MyStuffScreen]),
+    // and each keeps its own route so every existing link still lands right.
+    BottomTab(Routes.LIBRARY, "My Stuff", Icons.Filled.VideoLibrary),
+    // Manga sits beside it as its own tab, OFF by default (Settings → Taskbar
+    // buttons) — the same deal as IPTV. It is a whole reading surface (browse,
+    // follow, read) rather than "something to watch", so it does not belong in
+    // the merged My Stuff slot even though the two were designed together.
+    BottomTab(Routes.MANGA, "Manga", Icons.Filled.AutoStories),
     BottomTab(Routes.IPTV, "IPTV", Icons.Filled.LiveTv),
     BottomTab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
@@ -755,7 +830,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // rail on a TV, the "never empty" rule) working unchanged.
     val iptvTabFlow = remember { app.store.iptvTabFlow() }
     val iptvTabOn by iptvTabFlow.collectAsState(initial = false)
-    val visibleTabs = if (iptvTabOn) hiddenTabs else hiddenTabs + Routes.IPTV
+    // ...and neither is Manga (AppStore.mangaTabFlow) — most installs have no
+    // manga engine, so its button is off until the user asks for it.
+    val mangaTabFlow = remember { app.store.mangaTabFlow() }
+    val mangaTabOn by mangaTabFlow.collectAsState(initial = false)
+    val visibleTabs: Set<String> = buildSet {
+        addAll(hiddenTabs)
+        if (!iptvTabOn) add(Routes.IPTV)
+        if (!mangaTabOn) add(Routes.MANGA)
+    }
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
     val navStyle by navStyleFlow.collectAsState(initial = NavStyles.ANIMATED)
@@ -961,9 +1044,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 val provider = Uri.decode(entry.arguments?.getString("provider").orEmpty())
                 SearchScreen(nav, initialQuery = q, initialProvider = provider)
             }
-            composable(Routes.HISTORY) { HistoryScreen(nav) }
-            composable(Routes.LIBRARY) { LibraryScreen(nav) }
-            composable(Routes.DOWNLOADS) { DownloadsScreen(nav) }
+            // The three sections of the ONE merged taskbar button: each route
+            // opens the same screen on its own section (see MyStuffScreen), so
+            // every existing link to History/Downloads still lands correctly.
+            composable(Routes.LIBRARY) { MyStuffScreen(nav, MyStuff.LIBRARY) }
+            composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
+            composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
             composable(Routes.IPTV) { IptvScreen(nav) }
             composable(
                 route = Routes.IPTV_PLAYLIST,
@@ -975,6 +1061,40 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 IptvPlaylistScreen(nav, pid)
             }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
+            // ---- Manga (the off-by-default tab, its detail page and reader) ----
+            composable(Routes.MANGA) { MangaScreen(nav) }
+            composable(
+                route = Routes.MANGA_DETAIL,
+                arguments = listOf(
+                    navArgument("providerId") { type = NavType.StringType },
+                    navArgument("url") { type = NavType.StringType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("poster") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val providerId = entry.arguments?.getString("providerId").orEmpty()
+                val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
+                MangaDetailScreen(nav, providerId, url, title, poster)
+            }
+            composable(
+                route = Routes.MANGA_READER,
+                arguments = listOf(
+                    navArgument("providerId") { type = NavType.StringType },
+                    navArgument("url") { type = NavType.StringType },
+                    navArgument("chapter") { type = NavType.StringType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("poster") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val providerId = entry.arguments?.getString("providerId").orEmpty()
+                val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
+                val chapter = Uri.decode(entry.arguments?.getString("chapter").orEmpty())
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
+                MangaReaderScreen(nav, providerId, url, chapter, title, poster)
+            }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(Routes.COLLECTIONS) {
                 CollectionsScreen(nav, onBack = { nav.popBackStack() })

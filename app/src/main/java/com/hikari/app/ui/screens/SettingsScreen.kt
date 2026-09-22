@@ -1455,13 +1455,22 @@ private fun TaskbarCard(app: HikariApp) {
     // (see AppStore.iptvTabFlow) — every other tab is on unless switched off.
     val iptvFlow = remember { app.store.iptvTabFlow() }
     val iptvTab by iptvFlow.collectAsState(initial = false)
-    fun shown(tab: BottomTab): Boolean =
-        if (tab.route == Routes.IPTV) iptvTab else tab.route !in hidden
-    // The tabs that obey the "the last one cannot be switched off" rule. IPTV is
-    // not one of them: it is an extra page, so switching it on or off can never
-    // leave the user without a way around the app.
-    val coreVisible = BottomTabs.filter { it.route != Routes.IPTV && it.route !in hidden }
-    val visibleCount = coreVisible.size + if (iptvTab) 1 else 0
+    // The manga button works the same way and for the same reason: most
+    // installs have no manga engine at all, so it stays off until it is
+    // switched on here (see AppStore.mangaTabFlow).
+    val mangaFlow = remember { app.store.mangaTabFlow() }
+    val mangaTab by mangaFlow.collectAsState(initial = false)
+    fun shown(tab: BottomTab): Boolean = when (tab.route) {
+        Routes.IPTV -> iptvTab
+        Routes.MANGA -> mangaTab
+        else -> tab.route !in hidden
+    }
+    // The tabs that obey the "the last one cannot be switched off" rule. IPTV
+    // and Manga are not among them: they are extra pages, so switching either on
+    // or off can never leave the user without a way around the app.
+    val extras = setOf(Routes.IPTV, Routes.MANGA)
+    val coreVisible = BottomTabs.filter { it.route !in extras && it.route !in hidden }
+    val visibleCount = coreVisible.size + (if (iptvTab) 1 else 0) + (if (mangaTab) 1 else 0)
     val labelsFlow = remember { app.store.tabLabelsFlow() }
     val labels by labelsFlow.collectAsState(initial = true)
 
@@ -1511,18 +1520,28 @@ private fun TaskbarCard(app: HikariApp) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (tab.route == Routes.MANGA) {
+                        Text(
+                            tr("Off by default — switch on to read comics"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Switch(
                     checked = isOn,
                     // A hidden tab can always be brought back; a shown one only
-                    // while at least one other tab is still on (IPTV excepted —
-                    // it is not one of the app's own core pages).
-                    enabled = if (tab.route == Routes.IPTV) true
+                    // while at least one other tab is still on (IPTV and Manga
+                    // excepted — they are not among the app's core pages).
+                    enabled = if (tab.route in extras) true
                     else !isOn || coreVisible.size > 1,
                     onCheckedChange = { on ->
                         scope.launch {
-                            if (tab.route == Routes.IPTV) app.store.setIptvTab(on)
-                            else app.store.setTabHidden(tab.route, !on)
+                            when (tab.route) {
+                                Routes.IPTV -> app.store.setIptvTab(on)
+                                Routes.MANGA -> app.store.setMangaTab(on)
+                                else -> app.store.setTabHidden(tab.route, !on)
+                            }
                         }
                     }
                 )

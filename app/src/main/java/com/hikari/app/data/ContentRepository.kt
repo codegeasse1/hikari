@@ -1582,7 +1582,15 @@ class ContentRepository(private val manager: ProviderManager) {
         // not a warning — while its catalog was fetched twice for nothing.
         val active = interleaveByProviderType(
             manager.providers.value
-                .filter { it.config.enabled && (providerId == null || it.config.id == providerId) }
+                .filter {
+                    // Manga engines are left out of the Home feed entirely: they
+                    // have their own tab and their own browse screens, and a
+                    // manga row here would open the VIDEO detail page, which has
+                    // nothing to play (see com.hikari.app.manga.MangaProvider).
+                    it.config.enabled &&
+                        it.config.type != ProviderType.MANGA &&
+                        (providerId == null || it.config.id == providerId)
+                }
                 .distinctBy { it.config.id }
         )
         // GLOBAL gates shared by ALL providers (not per-provider): with dozens
@@ -1685,7 +1693,11 @@ class ContentRepository(private val manager: ProviderManager) {
         match: (ContentProvider) -> Boolean,
     ): Flow<List<CatalogRow>> = flow {
         val active = interleaveByProviderType(
-            manager.providers.value.filter { it.config.enabled && match(it) }
+            // Manga engines have their own tab, so they are not part of the Home
+            // feed (see the note in [homeRows]).
+            manager.providers.value.filter {
+                it.config.enabled && it.config.type != ProviderType.MANGA && match(it)
+            }
         )
         if (active.isEmpty()) {
             emit(emptyList())
@@ -4176,6 +4188,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
         ProviderType.IPTV -> IptvProvider.iptvErrors[p.config.id]
+        ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
     }
 
     /** Minimal head start for the repos of the origin's own family — extended
@@ -4581,6 +4594,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
             ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
             ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors
+            ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome
             ProviderType.IPTV -> IptvProvider.iptvErrors
         }
         if (message == null) map.remove(id) else map[id] = message
