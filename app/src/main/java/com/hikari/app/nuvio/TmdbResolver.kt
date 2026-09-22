@@ -331,19 +331,22 @@ object TmdbResolver {
                 val params = LinkedHashMap<String, String>(query)
                 if (lang.isNotBlank()) params["language"] = lang
                 // The adult-content switch, enforced AT THE REQUEST for a
-                // catalogue query. A /discover answer carries no certificate of
+                // catalogue query. A catalogue answer carries no certificate of
                 // its own — a row is a title, a poster and a year — so there is
                 // nothing in it to filter against, and asking TMDB to leave the
                 // films out is the only thing that keeps an R-rated title out of
-                // every row, grid and Production/Network catalogue at once (see
-                // [NsfwGate.capDiscoverCertification]). A no-op for every other
-                // endpoint and for every user with the switch on.
-                NsfwGate.capDiscoverCertification(path, params)
+                // every row, grid and Production/Network catalogue at once. This
+                // also rewrites the movie LIST endpoints (`/movie/popular`,
+                // `/trending/*`…) into the discover query that CAN be told, which
+                // is why turning the switch off changes those rows too (see
+                // [NsfwGate.restrictRequest]). A no-op for every other endpoint
+                // and for every user with the switch on.
+                val askPath = NsfwGate.restrictRequest(path, params)
                 params["api_key"] = key
                 val qs = params.entries.joinToString("&") { (k, v) ->
                     "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
                 }
-                val url = "$API_BASE$path?$qs"
+                val url = "$API_BASE$askPath?$qs"
                 val text = Http.getString(url, mapOf("Accept" to "application/json")) ?: continue
                 val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
                 if (obj.optString("status_message").contains("Invalid API key", true)) continue

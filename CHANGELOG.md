@@ -1,4 +1,91 @@
-## 0.10.14
+## 0.10.15
+
+**The manga reader is Nekoread's reader, ported whole** — its two native viewers,
+its on-device page cache, its Coil decoder and its chrome with every option on
+it. That is what the user asked for ("port whole nekoread reader … full copy
+means full copy"), and it is also the fix for what they were looking at: pages
+drawn in pieces, a blank gap between pages, and "fit screen" options that did
+nothing at all. Alongside it: every dialog in the player now really scrolls both
+ways, and the adult-content switch finally reaches the movie LIST endpoints.
+
+### Fixed
+
+- **A manga page is drawn by Nekoread's renderer, from a file, region-decoded.**
+  `ui/screens/MangaReaderScreen.kt` is now the shell and the reading is done by
+  `reader/ui/YomiWebtoonReader` (the continuous strip: a `RecyclerView` of
+  subsampling page frames, a chapter divider where each streamed chapter begins,
+  a trailer that reports the next chapter's loading/error/end state) and
+  `reader/ui/ChimahonPagerReader` (the paged modes: a `DirectionalViewPager` of
+  the same frames, so it can page vertically too). Both render every page from a
+  file in `reader/cache/WebtoonPageCache`, fetched **through the source's own
+  client** (`reader/source/HikariPageSource`, which replays the page's request
+  headers — this is the half that makes a hotlink-protected CDN answer) and
+  region-decoded from disk by `SubsamplingScaleImageView`. The old path — one
+  hand-decoded bitmap per page — and the sliced/chunked renderers with it are
+  **deleted** (`manga/PageBitmaps.kt`, `manga/MangaPageLoader.kt`,
+  `manga/MangaEnhance.kt`); that path is what drew the page as a grid of
+  fragments with grey seams, which is the user's screenshot.
+- **The strip is drawn at fill-width, always, and the page-fit setting is a PAGED
+  setting.** The "blank screen between images" was a paged fit (`Fit height`)
+  being applied to a continuous webtoon: every page was scaled to the screen's
+  height, leaving a screen-sized black band between pages. A strip is now always
+  fit-width (Nekoread's own rule — a strip fitted to the height leaves two thirds
+  of a phone screen empty beside every page), and what changes its look is the
+  Webtoon section's scale type / smart scale / side padding. In the paged modes
+  the fit picker now genuinely drives the renderer
+  (`SubsamplingScaleImageView.SCALE_TYPE_*`), and a change re-binds the page you
+  are on instead of waiting for a page turn — the report "clicking any option
+  from fit screen not doing anything" was both halves: the option was applied to
+  the wrong mode and, in the mode that ignored it, nothing was listening.
+- **Every reader option the reference app has is wired, and it persists.**
+  `reader/ui/YomiReaderChrome.kt` is yomi/chimahon's chrome copied in: reading
+  mode, page fit, orientation, crop borders (per mode), tap zones and their
+  inversion, smaller tap zones, side padding, page scale + gap smart scale, zoom
+  (double-tap and pinch), page transitions, auto-scroll and its speed, the
+  menu-hide threshold, custom brightness, colour filter, grayscale / inverted
+  colours / image enhance, image quality (50/75/100%, with RGB_565 for strips at
+  50%), the backdrop, the chapter list with a per-row thumbnail, and the
+  per-series mode override. All of it lives in **one JSON blob**
+  (`AppStore.MANGA_READER_SETTINGS` ↔ `reader/ReaderSettings`), and the old
+  per-key preferences are read once through `ReaderSettings.fromLegacy` so an
+  existing install keeps the mode/fit/backdrop/page-number it had picked.
+- **The player's boxes scroll, vertically and sideways — and only where there is
+  something to scroll.** The outer `HorizontalScrollView` ("the reach") is gone:
+  it claimed EVERY sideways drag anywhere in the panel the moment the finger
+  moved, because that is what the platform class does on touch slop — it does not
+  first ask whether it has anything to scroll to. Its own range was zero, so the
+  gesture went nowhere: the engine chip strip (All / CloudStream / Hikari / Nuvio
+  / Stremio / SkyStream) and every other sideways row never saw a drag. That is
+  the "I can't scroll horizontally to select Nuvio" report. `PanelReach` and
+  `fitContentToPanel` went with it, and the content is now the vertical
+  scroller's `MATCH_PARENT` child — a bounded width by construction, so labels
+  ellipsize and the trailing pills sit inside the glass with nothing pinned by
+  hand. A row that genuinely needs to move sideways owns a `SidewaysScrollView`,
+  which calls `requestDisallowInterceptTouchEvent(true)` once a motion is clearly
+  horizontal so nothing above it can take the gesture away.
+- **The panel's height cap is corrected against what the frame actually laid
+  out.** The silhouette's padding is derived from its own size, so a fixed
+  prediction of it drifts as the panel grows, and every pixel it drifts by is a
+  pixel below the bottom of the video where no drag can reach it — the
+  "subtitle box is unscrollable" report. `applyHeightCap` now compares the DIALOG
+  ROOT's measured height (hint line plus panel) with the room the dialog was
+  given and takes the excess off the list, re-running on every layout change of
+  the frame, the panel, the scroll view and the root, and bounded so the passes
+  can only ever shrink and so cannot chase each other.
+- **R-rated films leave the catalogues while the adult-content switch is off.**
+  The switch filtered items it could JUDGE, and a catalogue row carries no
+  certificate to judge — but only `/discover/movie` can be told to leave R-rated
+  films out, and Home's rows do not ask it: `/movie/popular`, `/movie/top_rated`,
+  `/movie/now_playing`, `/movie/upcoming` and the `/trending/all|movie/*` family
+  are plain LISTS that take no `certification` parameter at all (TMDB drops it).
+  So those rows came back identical with the switch on and off — exactly "I turn
+  off nsfw 18+ toggle, but still r rated movies showing". `NsfwGate.restrictRequest`
+  now REWRITES each of them into the equivalent `/discover/movie` query with
+  `certification_country=US&certification.lte=PG-13` and the same ordering (with a
+  `vote_count.gte=300` floor under a vote-average sort, so a "top rated" row is
+  not a wall of one-vote titles), and `rewritesToMovies` tells a rewritten MIXED
+  row's parser that the answer is movies. `/trending/person/*` is deliberately
+  left alone — its answer is people, not titles.
 
 **A webtoon page is drawn as ONE image again** — which is what the reference
 reader does, and the only shape that has ever come out right on these phones.

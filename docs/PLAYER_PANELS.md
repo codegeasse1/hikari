@@ -39,80 +39,65 @@ them.
    exactly as the server sent it"), which is the text that makes the choice
    possible.
 
-**The cap is corrected against the panel's own measured height.** The panel's
+**The cap is corrected against what the frame actually LAID OUT.** The panel's
 vertical padding is derived from its own size (`CurvedGlassPanel`), so a FIXED
 prediction of it drifts as the panel grows — and every pixel it drifts by is a
 pixel of the panel below the bottom of the video, where no drag can reach it (the
-"the subtitle box is unscrollable" report). `applyHeightCap` therefore reads the
-real padding back (`panel.height - scroll.height`, which IS that padding because the
-panel is `WRAP_CONTENT` around the scroll view) and, if the panel still came out
-taller than the room it was given, takes the excess off the list and lays out again.
-Each different measured height may correct once and never twice, so the passes
-cannot chase each other.
+"the subtitle box is unscrollable" report). `applyHeightCap` therefore:
+
+* reads the silhouette's padding back as `panel.height - scroll.height` (which IS
+  that padding, because `panel` is `WRAP_CONTENT` around `scroll`), and
+* compares the DIALOG ROOT's measured height — the hint line plus the panel — with
+  the room it was given (`visibleRoomPx(outer)`), and if the root still came out
+  taller, takes the excess off the list and lays out again.
+
+The root, not the panel, is the thing that has to fit: a long hint line wrapped
+onto one more line is just as much a row pushed past the bottom edge as a tall
+list is. `corrections` (12 passes) bounds the loop, and because the correction can
+only ever SHRINK, the passes converge. It re-runs on every layout change of the
+window outer frame, the panel, the scroll view and the root, plus three pre-draw
+passes.
 
 `presentGlass` has no height parameter on purpose. If a new caller "knows" how
 tall its content is, that knowledge belongs in the measurement, not in an
 argument.
 
-## Both axes scroll
+## Both axes scroll, and only where there is something to scroll
 
-The content is wrapped in a `HorizontalScrollView` (the *reach*) inside the
-`MaxHeightScrollView`, so a row that is genuinely wider than the panel can be
-dragged into view instead of being clipped with no way to reach it — the "the box
-is cut and it will not scroll sideways" report.
+The panel has **one** scroller: the vertical `MaxHeightScrollView`. Its content is
+added `MATCH_PARENT`, so it is measured against a BOUNDED width and a row built as
+`[marker][text column, weight 1][pill][chevron]` has its weighted column shrink,
+its label ellipsize and its trailing pills inside the glass — with nothing pinned
+or measured by hand.
 
-* **The reach is `PanelReach`, not a plain `HorizontalScrollView`**, because the
-  platform class measures its child with an UNSPECIFIED width on its own axis (that
-  is what makes a drag possible at all) and therefore IGNORES the width
-  `fitContentToPanel` pins on the content. `PanelReach` honours it: a child with an
-  explicit width is measured at exactly that width, so the rows are bounded by the
-  panel and their trailing pills stay inside the glass (see below).
-* `isFillViewport = true` still does the other half: a child narrower than the
-  viewport is stretched to it, so a short row looks exactly as it did before and
-  there is nothing to scroll. The horizontal scrollbar appears only when the strip
-  can really scroll (`canScrollHorizontally`).
-* Its layout direction is pinned **LTR**. In a right-to-left language the
-  platform mirrors a horizontal scroller's origin, so it opens scrolled to its
-  far end and shows its first pill sliced in half — the bug that made an earlier
-  version drop the horizontal scroller altogether.
-* The content's parent is the reach, not the scroll view. Anything that needs the
-  panel's list view (the server chooser keeps its scroll position across a
-  rebuild) must find it with `verticalScrollerOf(view)`, never with `v.parent`.
-* A sideways drag moves every row's edges in the panel's own coordinates, and
-  `CurvedGlassPanel` bends rows by those coordinates; `setRowOffsetX` feeds it
-  the strip's scroll so the stack does not visibly shrink while it is dragged.
-* A **nested** horizontal scroller (the source chooser's engine chip strip) needs
-  nothing handed to it any more: once the content is measured at the panel's width,
-  every row is a bounded parent, so a `MATCH_PARENT` strip comes out exactly as wide
-  as the row it sits in and scrolls **inside** it (which is what it is for). An
-  earlier version walked the tree in `boundNestedHScrollers` and pinned every nested
-  scroller to the panel's FULL inner width — wider than the space a strip actually
-  has once the row's own padding is taken off it, so the strip ran out under the
-  glass by exactly that padding. That walk is gone.
+A row that genuinely needs to move sideways owns its own `SidewaysScrollView`.
 
-### …and the content ITSELF is pinned to the panel's inner width
-
-`applyHeightCap` hands the content to `fitContentToPanel(content, innerW)` on every
-pass, and that is the fix for the report that the pills under the server/subtitle
-lines "are not fit" and that there is no way to scroll to them:
-
-* A row is built as `[marker][label column, weight 1][pill][chevron]` (`glassRow`,
-  `serverOption`). A weighted child only SHRINKS when it is measured against a
-  BOUNDED width; under an unbounded measure it is handed its full intrinsic width
-  instead — whatever the label needs.
-* The reach measures its child with an UNSPECIFIED width (that is what makes a
-  sideways drag possible at all), so every row was measured at its label's full
-  intrinsic width. A server row ("Provider (Repo) · Plugin · 1080p") came out
-  wider than the panel, the `HLS`/`DASH`/`SUB` pill and the chevron landed past the
-  panel's right edge, and the only way to see them was a sideways drag inside a
-  vertically scrolling list.
-* `fitContentToPanel` therefore sets the content's own `layoutParams.width` to the
-  panel's inner width, and `PanelReach` is what makes that width real. Labels
-  ellipsize at the end — every row text already asks for that — and the trailing
-  pills are inside the glass on every row with no drag. A nested strip keeps its own
-  sideways scroll, because that is a strip that really can be longer than its row.
-* It is idempotent (the width is only rewritten when it differs), so calling it on
-  every layout pass converges instead of looping.
+* **The old outer "reach" is gone.** A `HorizontalScrollView` around the whole
+  content claims EVERY sideways drag anywhere in the panel the moment the finger
+  moves — that is what it does on touch slop; it does not first ask whether it has
+  anything to scroll to. Its own range was zero, so the gesture went nowhere: the
+  engine chip strip (All / CloudStream / Hikari / Nuvio / Stremio / SkyStream) and
+  every other sideways row never saw a single drag. That is the "I cannot scroll
+  the chips to reach Nuvio" report, and it is why the reach was removed rather
+  than patched. `PanelReach` and `fitContentToPanel` went with it.
+* **`SidewaysScrollView` is what a nested strip is built from** (`sidewaysStrip`).
+  It is a plain `HorizontalScrollView` except for `dispatchTouchEvent`: once a
+  motion is clearly horizontal (`|dx| > slop` and `|dx| > |dy|`) it calls
+  `parent.requestDisallowInterceptTouchEvent(true)`, so the vertical scroller above
+  can no longer take the gesture away — and it gives it back (`false`) the moment
+  the motion is not. That one line is the whole difference between "the chips never
+  scroll" and "the chips always scroll".
+* `isFillViewport = true` does the other half in the strip: a child narrower than
+  the viewport is stretched to it, so a short strip looks exactly as it did before
+  and there is nothing to scroll. Its layout direction is pinned **LTR** — in a
+  right-to-left language the platform mirrors a horizontal scroller's origin, so it
+  would open scrolled to its far end showing its first pill sliced in half.
+* A sideways drag of a strip moves that strip's edges in the panel's own
+  coordinates, and `CurvedGlassPanel` bends rows by those coordinates;
+  `setRowOffsetX` feeds it the strip's scroll so the stack does not visibly shrink
+  while it is dragged.
+* The content's parent is now the scroll view, so `v.parent` is a truthful answer
+  for the panel's list; `verticalScrollerOf(view)` still finds it by walking up.
 
 ## The panel's width — the restored geometry
 

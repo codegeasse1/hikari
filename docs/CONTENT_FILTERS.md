@@ -110,21 +110,36 @@ predicate while the switch is off is told "not hidden" for everything — so
   "Continue watching" by any route. Filtering the DRAWN lists instead would leave
   every one of those paths intact behind the UI.
 * **The TMDB requests themselves** (`nuvio/TmdbResolver.apiGet`, through
-  `NsfwGate.capDiscoverCertification`) — every `/discover/movie` query carries
+  `NsfwGate.restrictRequest`) — every film catalogue query is made to carry
   `certification_country=US&certification.lte=PG-13` while the switch is off, so an
   R-rated film cannot reach a row in the first place. The drawn-list filter cannot
-  do this job: a `/discover/movie` answer is a title, a poster and a year, and
-  carries NO certificate — there is nothing on the item to test. Every shelf, browse
-  grid, preset and Production/Network/Person catalogue in the app IS a discover query
-  (`data/TmdbSources.kt`, `data/TmdbBrowse.kt`, `data/TmdbPresets.kt`), so one line
-  in the one place every TMDB request passes through covers them all. TV is
-  deliberately not capped — TV-MA is not in the adult set (see section 2), and a cap
-  that removed it would empty the shelves of someone who only meant to switch off
-  adult material. A query that names its own `certification`/`certification.lte` is
-  left alone: that is the user stating what they want, and the switch is not a licence
-  to override it. `HomeViewModel` drops its cached feed and rebuilds the moment the
-  switch moves, so the change lands on the feed the user is already looking at — the
-  one case a request-level rule cannot fix on its own.
+  do this job: a catalogue item is a title, a poster and a year, and carries NO
+  certificate — there is nothing on the item to test. Two cases:
+  * a `/discover/movie` query (every shelf, browse grid, preset and
+    Production/Network/Person catalogue in the app IS one — `data/TmdbSources.kt`,
+    `data/TmdbBrowse.kt`, `data/TmdbPresets.kt`) simply gets the ceiling added. One
+    line in the one place every TMDB request passes through covers them all. A
+    query that names its own `certification`/`certification.lte` is left alone:
+    that is the user stating what they want.
+  * a **plain movie LIST** is REWRITTEN into the equivalent discover query, because
+    those endpoints are not filters and take no `certification` parameter at all —
+    TMDB drops it on the floor. That was the hole: `/movie/popular`,
+    `/movie/top_rated`, `/movie/now_playing`, `/movie/upcoming` and the
+    `/trending/all|movie/*` family are what Home's rows actually ask for, so those
+    rows came back identical with the switch on and off ("I turned 18+ off and it
+    still shows all the same R-rated catalogue"). `MOVIE_LIST_AS_DISCOVER` is the
+    table, and `rewritesToMovies` is what a row's parser asks so a rewritten MIXED
+    row (`/trending/all/week` answers with movies AND series) knows the answer is
+    movies. `/trending/person/*` is deliberately not in the table: its answer is
+    people, not titles. Sort is preserved (`popularity.desc`, `vote_average.desc`
+    with a `vote_count.gte=300` floor — discover's own vote-average ordering with
+    no floor is a wall of one-vote titles).
+
+    TV is deliberately not capped — TV-MA is not in the adult set (see section 2),
+    and a cap that removed it would empty the shelves of someone who only meant to
+    switch off adult material. `HomeViewModel` drops its cached feed and rebuilds
+    the moment the switch moves, so the change lands on the feed the user is
+    already looking at — the one case a request-level rule cannot fix on its own.
 * **Every drawn list** through `rememberVisibleItems` / `rememberVisibleRows`:
   `MediaRow` (every shelf: Home, collections, the detail page), `CatalogScreen`'s
   grid, `SearchScreen`'s grid, `LibraryScreen` (the grid AND its empty state, so a

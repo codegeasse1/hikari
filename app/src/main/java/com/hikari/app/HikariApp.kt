@@ -1006,6 +1006,13 @@ class HikariApp : Application() {
                 // all render their real logo.
                 .components {
                     add(coil.decode.SvgDecoder.Factory())
+                    // PAGE IMAGES, when the manga reader asked for its borders to be
+                    // cropped: Nekoread's own Coil decoder (ported with the reader)
+                    // decodes the page, measures the blank margins and cuts them, and
+                    // it is registered for the whole app because the reader's photo
+                    // pages go through this same loader. Opt-in per request (see
+                    // `cropBorders` on the builder), so nothing else is affected.
+                    add(com.hikari.app.reader.coil.TachiyomiReaderDecoder.Factory())
                     // Animated GIF covers (collections/folders): Coil's default
                     // decoders only ever draw the first frame. ImageDecoder
                     // handles GIFs on API 28+ (and is what the platform

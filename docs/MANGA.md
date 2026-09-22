@@ -47,37 +47,45 @@ surfaced as "Manga — continue reading" in **My Stuff → History** and on the
 
 ## The reader (`ui/screens/MangaReaderScreen.kt`)
 
-**Read [READER.md](READER.md) before changing anything in it** — the request lane
-(`ScrollRequest`/`ReaderMover`), the webtoon *run* of chapters, the page loader
-and "webtoon is the default mode" are four rules that each map to a bug the user
-reported by name.
+The reader is **Nekoread's reader, ported whole** — its two native viewers, its
+page cache, its Coil decoder and its chrome — with this app's provider plumbing
+as the only seam. `MangaReaderScreen` is the shell: it loads the chapter list,
+fetches a chapter's pages, seeds the strip, writes progress, and hands the page
+surface to the viewers. **Read [READER.md](READER.md) before changing anything in
+it.**
 
-* Top bar: back, title, **chapter list** (`ChapterSheet` — reading order,
-  scrolled to the current chapter, searchable, keyed by position because a
-  source can repeat a chapter URL), **the globe** (this engine's site in the
-  verification WebView — a site can gate the CHAPTER list, not just the catalog)
-  and reader settings.
-* Bottom bar: chapter ◀ ▶ (walking `navChapters`, one entry per chapter NUMBER —
-  see `dedupeChapters`), the chapter label, the page readout, and
-  `ReaderScrubber` — **one dot per page**, drag or tap to land on an exact page
-  (through a `ScrollRequest`, never by setting `page` and hoping). Not a
-  `Slider`: a thumb has no relationship to a page number.
-* Three read modes (`MangaReadMode`) and three fits (`MangaFit`), stored in
-  `AppStore` (**webtoon is the default** — see `MangaReadMode.normalize`);
-  progress is written debounced on every page change and once more on dispose,
-  against the chapter and page the surface REPORTED. The settings sheet SCROLLS:
-  a `Column` in a `ModalBottomSheet` that overflows is clipped, not scrolled, and
-  a sliced row reads to the user as a duplicated control.
-* Page images are fetched, validated and retried by `manga/MangaPageLoader` (ten
-  attempts, then a per-page Retry button), and every page is drawn the same way:
-  ONE whole-page SOFTWARE bitmap from `manga/PageBitmaps`, drawn by an ordinary
-  `Image`. There is no second path — no chunked renderer, no slices, no
-  `BitmapRegionDecoder` (all four were tried and all four drew the page in
-  pieces). The budget depends on the page's own shape: `MAX_PAGE_PIXELS` =
-  `1_000_000` for an ordinary page, `TALL_PAGE_BYTES` = 48MB for a webtoon strip,
-  with the width halved only when a monster strip needs it and never below 256px.
-  `docs/READER.md` section 4a is the whole story, and it is required reading
-  before touching the image path.
+* The reading itself is done by `reader/ui/YomiWebtoonReader` (the continuous
+  strip — a `RecyclerView` of subsampling page frames, chapter dividers between
+  streamed chapters, a trailing item reporting the next chapter's
+  loading/error/end state) and `reader/ui/ChimahonPagerReader` (the paged modes —
+  a `DirectionalViewPager` of the same page frames, so it can page vertically
+  too). Both render every page **from an on-device file** in
+  `reader/cache/WebtoonPageCache`, downloaded once **through the source's own
+  client** (`reader/source/HikariPageSource`, which carries the page's request
+  headers) and region-decoded from disk by
+  `SubsamplingScaleImageView` — the same memory-bounded renderer the reference
+  app uses. There is no second path: no tiled bitmap, no chunked view, no
+  whole-page bitmap held in the heap.
+* Every option lives in `reader/ui/YomiReaderChrome` (yomi/chimahon's own
+  settings sheets): reading mode, page fit, orientation, crop borders (per
+  mode), tap zones and their inversion, side padding, page scale, double-tap and
+  pinch zoom, page transitions, auto-scroll and its speed, the hide threshold,
+  custom brightness, colour filter, grayscale / invert / enhance, image quality,
+  the backdrop, the chapter list and the per-series mode override.
+* Reader settings are stored as **one JSON blob** (`AppStore.MANGA_READER_SETTINGS`
+  ↔ `reader/ReaderSettings`), because they travel together: a reset, a backup and
+  the chrome's "Reset settings" row all mean that object. The older per-key
+  preferences are read once, through `ReaderSettings.fromLegacy`, so an existing
+  install keeps the mode/fit/backdrop/page-number it had picked. The per-series
+  override is a second blob (`MANGA_SERIES_MODES`, `mangaKey -> ReaderMode name`)
+  — the key being present IS the override being on.
+* Progress is written into `MangaStore` from a `snapshotFlow` on the page (so a
+  page turn does not recompose the screen), debounced 700 ms, and once more on
+  dispose.
+* The reader's own way past a Cloudflare check: the globe in the top bar opens
+  the engine's site in the verification WebView (`WebViewActivity`, auto-closing
+  once the clearance is in the cookie jar) and re-fetches the chapter on the way
+  back; a chapter whose page list never arrives also shows `VerificationNudge`.
 
 ## Browse: finding an engine, and keeping the two you read
 

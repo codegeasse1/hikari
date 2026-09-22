@@ -169,12 +169,26 @@ class AppStore(private val ctx: Context) {
          * Off by default (a scan is the artist's own colour, and "enhancing" it
          * behind the reader's back would be a surprising default), but one tap
          * away in the reader's settings and applied at DRAW time — a colour
-         * matrix on the GPU, see [com.hikari.app.ui.screens.mangaEnhanceFilter] —
-         * so it costs no extra decode, no extra memory and no frame time: the
+         * matrix on the GPU (see [com.hikari.app.reader.ReaderSettings.imageEnhance])
+         * — so it costs no extra decode, no extra memory and no frame time: the
          * user asked for exactly that ("enhance all image real time without any
          * load on phone, not make laggy").
          */
         val MANGA_ENHANCE = booleanPreferencesKey("mangaEnhance")
+    /**
+     * The reader's whole settings surface, as one JSON blob — Nekoread's chrome
+     * ported whole brought thirty-odd options with it, and they travel together
+     * (see [com.hikari.app.reader.ReaderSettings]). The per-key preferences
+     * above seed it on first run, so an existing install keeps its mode and
+     * background.
+     */
+    val MANGA_READER_SETTINGS = stringPreferencesKey("mangaReaderSettings")
+    /**
+     * Per-series reading modes, as `mangaKey -> ReaderMode name` JSON: what the
+     * reader's "use different settings for this series" switch writes (see
+     * [mangaSeriesModesFlow]).
+     */
+    val MANGA_SERIES_MODES = stringPreferencesKey("mangaSeriesModes")
     /** Engine ids the reader pinned to the top of the Manga tab's Browse list. */
     val PINNED_MANGA_ENGINES = stringSetPreferencesKey("pinnedMangaEngines")
         /**
@@ -1407,6 +1421,44 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setMangaEnhance(on: Boolean) {
         write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
+    }
+
+    /**
+     * The reader's whole settings surface, as one JSON blob (see
+     * [com.hikari.app.reader.ReaderSettings]).
+     *
+     * The reader has thirty-odd options now — Nekoread's chrome, ported whole —
+     * and one key rather than thirty is what makes a reset, a backup and "add one
+     * more option" all one-line changes. The per-key preferences above are read
+     * ONCE as the seed for the fields they cover (see
+     * [com.hikari.app.reader.ReaderSettings.fromLegacy]), so an install that had
+     * picked a reading mode or a background keeps it; from then on the blob is the
+     * authority.
+     *
+     * Null means "never written" — the reader then seeds from the legacy keys
+     * instead of the hard defaults.
+     */
+    fun mangaReaderSettingsJsonFlow(): Flow<String?> =
+        store.data.map { it[K.MANGA_READER_SETTINGS] }
+
+    suspend fun setMangaReaderSettingsJson(json: String) {
+        write("MANGA_READER_SETTINGS") { it[K.MANGA_READER_SETTINGS] = json }
+    }
+
+    /**
+     * Per-series reading modes, as a JSON object of `mangaKey -> ReaderMode name`
+     * (see [K.MANGA_SERIES_MODES]).
+     *
+     * The reader's own "use different settings for this series" switch: with it
+     * on for a title, picking a reading mode changes the mode for THAT title
+     * instead of every title. A series with no entry reads with the global mode,
+     * which is also what deleting the entry means.
+     */
+    fun mangaSeriesModesFlow(): Flow<String?> =
+        store.data.map { it[K.MANGA_SERIES_MODES] }
+
+    suspend fun setMangaSeriesModesJson(json: String) {
+        write("MANGA_SERIES_MODES") { it[K.MANGA_SERIES_MODES] = json }
     }
 
     /**

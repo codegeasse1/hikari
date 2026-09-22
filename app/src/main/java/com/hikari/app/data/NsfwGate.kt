@@ -177,9 +177,9 @@ object NsfwGate {
      * poster and a year, and the rating lives behind a second request per title
      * that no row can afford. TMDB's own `certification.lte` filter is therefore
      * the only way to keep an R-rated film out of a row — and every row, browse
-     * grid, preset and Production/Network/Person catalogue in this app IS a
-     * discover query (see [com.hikari.app.data.TmdbSources] and
-     * [com.hikari.app.data.TmdbBrowse]).
+     * grid, preset and Production/Network/Person catalogue in this app is either
+     * a discover query already or is REWRITTEN into one (see
+     * [MOVIE_LIST_AS_DISCOVER] and [restrictRequest]).
      *
      * PG-13, and not `R`: the filter is "less than or equal", so asking for R would
      * keep exactly what the user asked to hide. TV is deliberately NOT capped — see
@@ -196,21 +196,88 @@ object NsfwGate {
     private const val DISCOVER_MOVIE_CEILING = "PG-13"
 
     /**
-     * Adds TMDB's certification ceiling to a discover query while the switch is
-     * off, so an R-rated film cannot reach a row at all (see
-     * [DISCOVER_MOVIE_CEILING]).
+     * How a plain movie LIST is re-asked as a discover query while the switch is
+     * off, and the sort that keeps it the same row (see [restrictRequest]).
+     *
+     * Those endpoints are the hole the switch used to have. `/movie/popular`,
+     * `/movie/top_rated`, `/movie/now_playing` and the whole `/trending` family are not filters
+     * and take no `certification` parameter — TMDB drops it on the floor — so a
+     * row asked through one of them came back with the same R-rated titles with
+     * the switch on and off. That is the report: "I turned 18+ off and it still
+     * shows all the same R-rated catalogue".
+     *
+     * `/discover/movie` is the one endpoint that can be told to leave them out, so
+     * each of these is asked as the discover query with the same ordering. The
+     * translation is not perfect and cannot be: `/trending/all` is movies AND
+     * series, and discover is one of the two, so that row becomes a movie row
+     * while the switch is off (series have no certificate ceiling — see the class
+     * doc on TV-MA). A shorter, safer row is the trade the switch is asking for.
+     *
+     * `/trending/person/*` is deliberately NOT here: its answer is PEOPLE, not
+     * titles, and rewriting it into a movie row would replace a row of actors with
+     * a row of films — a bug the switch has no business introducing. A person has
+     * no certificate to cap.
+     */
+    private val MOVIE_LIST_AS_DISCOVER = mapOf(
+        "/movie/popular" to "popularity.desc",
+        "/movie/top_rated" to "vote_average.desc",
+        "/movie/now_playing" to "primary_release_date.desc",
+        "/movie/upcoming" to "primary_release_date.desc",
+        "/trending/all/day" to "popularity.desc",
+        "/trending/all/week" to "popularity.desc",
+        "/trending/movie/day" to "popularity.desc",
+        "/trending/movie/week" to "popularity.desc",
+    )
+
+    /**
+     * Applies the switch to one TMDB request, returning the path to ask.
      *
      * Called from the one place every TMDB request passes through
      * ([com.hikari.app.nuvio.TmdbResolver.apiGet]), so no caller has to remember
-     * it — including callers written later. A query that names its own
-     * certification is left alone: that is the user stating what they want, and
-     * the switch is not a licence to override it.
+     * it — including callers written later. Two cases, and the second one is what
+     * closes the hole described at [MOVIE_LIST_AS_DISCOVER]:
+     *
+     *  * a `/discover/movie` query gets the ceiling ADDED, and a query that
+     *    already names its own certification is left alone — that is the user
+     *    stating what they want, and the switch is not a licence to override it;
+     *  * a plain movie list is REWRITTEN into the equivalent discover query with
+     *    the ceiling, since the endpoint itself has no way to be told.
+     *
+     * Everything else (a detail lookup, a season, a TV row, a search) is
+     * returned untouched — see the class doc for why TV and search are not
+     * capped.
      */
-    fun capDiscoverCertification(path: String, params: MutableMap<String, String>) {
-        if (enabled) return
-        if (!path.startsWith("/discover/movie")) return
-        if (params.containsKey("certification.lte") || params.containsKey("certification")) return
+    fun restrictRequest(path: String, params: MutableMap<String, String>): String {
+        if (enabled) return path
+        if (path.startsWith("/discover/movie")) {
+            if (params.containsKey("certification.lte") || params.containsKey("certification")) {
+                return path
+            }
+            params["certification_country"] = "US"
+            params["certification.lte"] = DISCOVER_MOVIE_CEILING
+            return path
+        }
+        val sort = MOVIE_LIST_AS_DISCOVER[path] ?: return path
+        params["sort_by"] = sort
         params["certification_country"] = "US"
         params["certification.lte"] = DISCOVER_MOVIE_CEILING
+        // A "top rated" list is only meaningful with a floor under it: discover's
+        // own vote-average ordering without one is a wall of one-vote titles.
+        if (sort.startsWith("vote_average")) params["vote_count.gte"] = "300"
+        return "/discover/movie"
     }
+
+    /**
+     * True when [path] is one of the movie lists [restrictRequest] rewrites into a
+     * discover query while the switch is off.
+     *
+     * The one thing a caller still has to know, because the ROW it asked for may
+     * have been a mixed one: `/trending/all/week` answers with movies AND series
+     * and each item carries its own `media_type`, so its parser reads the type off
+     * the item — and discover answers with movies only, where no item carries one.
+     * A row that asked for "whatever is there" has to be told the answer is
+     * movies, or every item is dropped and the row comes back empty.
+     */
+    fun rewritesToMovies(path: String): Boolean =
+        !enabled && MOVIE_LIST_AS_DISCOVER.containsKey(path)
 }

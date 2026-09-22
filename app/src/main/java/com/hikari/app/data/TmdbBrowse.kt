@@ -150,10 +150,16 @@ object TmdbBrowse {
             params["page"] = page.coerceAtLeast(1).toString()
             val data = TmdbResolver.apiGet(row.path, params) ?: return@withContext emptyList()
             val results = data.optJSONArray("results") ?: return@withContext emptyList()
+            // A mixed row (`/trending/all/*`) is answered by discover while the
+            // adult-content switch is off (see [NsfwGate.restrictRequest]), and a
+            // discover item carries no `media_type` of its own — so the row's own
+            // "whatever is in there" type has to come out as the movie the answer
+            // actually is, or every item is dropped and Trending comes back empty.
+            val fallback = if (NsfwGate.rewritesToMovies(row.path)) MediaType.MOVIE else row.type
             val out = ArrayList<MediaItem>()
             for (i in 0 until results.length()) {
                 val o = results.optJSONObject(i) ?: continue
-                toItem(o, providerId, row.type)?.let { out += it }
+                toItem(o, providerId, fallback)?.let { out += it }
             }
             out.distinctBy { it.uniqueId }.take(40)
         }

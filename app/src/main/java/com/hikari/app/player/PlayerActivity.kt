@@ -3547,11 +3547,11 @@ class PlayerActivity : ComponentActivity() {
      *
      * A dialog that needs to keep its scroll position across a rebuild (the
      * server chooser, whose list grows while the user reads it) cannot ask for
-     * `v.parent`: the content now hangs inside the panel's horizontal reach
-     * first (see presentGlass), so one `parent` up is the wrong view and the
-     * saved offset would come back as 0 and yank the list to the top on every
-     * server that landed. Walking up finds the right one whatever the panel
-     * wraps its content in.
+     * `v.parent`: the row may sit inside a container of its own (a chip strip,
+     * a sub-list) and one `parent` up would then be the wrong view, so the saved
+     * offset would come back as 0 and yank the list to the top on every server
+     * that landed. Walking up finds the panel's own scroller whatever the row is
+     * wrapped in.
      */
     private fun verticalScrollerOf(v: View): ScrollView? {
         var p: ViewParent? = v.parent
@@ -3563,54 +3563,32 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Makes the panel's CONTENT exactly [widthPx] wide.
+     * Puts [child] in a horizontal strip that actually receives the sideways drag
+     * (see [SidewaysScrollView]) — the one arrangement a too-wide row needs.
      *
-     * This is the fix for the report that the pills in the server list "do not
-     * fit" and that there is no way to scroll to them, and the reason is a
-     * measurement rule that is easy to miss:
+     * Used for every row that can be wider than the panel: the engine chip strip
+     * in the server chooser, the tab strips in the subtitle/audio sheets, the
+     * quality and dub chip rows. Everything else is a normal row inside the
+     * panel's vertical list, where the rows are bounded by the glass and their
+     * trailing pills are inside it without any dragging at all.
      *
-     *  * A row is built as `[marker][label column, weight 1][pill][chevron]` (see
-     *    [glassRow] and [serverOption]). The weight-1 column only SHRINKS when the
-     *    row is measured against a BOUNDED width — under an unbounded measure a
-     *    weighted child is handed its full intrinsic width instead, which is
-     *    whatever the label needs.
-     *  * The panel puts the content inside a horizontal scroller ([reach]) so a
-     *    genuinely too-wide row is at least draggable, and a horizontal scroller
-     *    measures its child with an UNSPECIFIED width (that is what makes the drag
-     *    possible at all) — so the width pinned here only becomes real because
-     *    [PanelReach] honours it.
-     *
-     * So every row was measured at its label's full intrinsic width: a server row
-     * ("Provider (Repo) · Plugin · 1080p") came out wider than the panel, the "HLS"
-     * / "DASH" / "SUB" pill and the chevron landed past the panel's right edge, and
-     * the only way to see them was a sideways drag inside a vertically scrolling
-     * list — which is the "the pills are cut off and it will not scroll" report.
-     * Giving the content the panel's own inner width restores the bound the layout
-     * was written for: labels ellipsize at the end (every row text already asks for
-     * that), and the trailing pills are always inside the glass, on every row, with
-     * no drag needed.
-     *
-     * Nothing has to be handed down the tree by hand for that: a nested scroller is
-     * now measured by its own parent against the parent's real width, so a chip
-     * strip that is MATCH_PARENT comes out exactly as wide as the row it sits in and
-     * scrolls INSIDE it (which is what it was built for), while a wrap-content one
-     * is clamped to the space it was given. The version before this walked the tree
-     * and pinned every nested scroller to the panel's FULL inner width instead — a
-     * width a strip does not have once the row's own padding is taken off it, so the
-     * strip ran out under the glass by exactly that padding.
-     *
-     * The width is only known once the panel has been laid out (its padding comes
-     * from its own size), which is why this runs from [applyHeightCap] rather than
-     * at build time. It converges: the width is only rewritten when it really
-     * differs.
+     * The layout direction is pinned LTR for the reason it always was: in a
+     * right-to-left language the platform mirrors a horizontal scroller's origin,
+     * so the strip opens scrolled to its far end with its first chip sliced in
+     * half. Pinned, x = 0 is the start of the row in every language.
      */
-    private fun fitContentToPanel(content: View, widthPx: Int): Boolean {
-        val lp = content.layoutParams ?: return false
-        if (lp.width == widthPx) return false
-        lp.width = widthPx
-        content.layoutParams = lp
-        return true
-    }
+    private fun sidewaysStrip(child: View): SidewaysScrollView =
+        SidewaysScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_ALWAYS
+            isFillViewport = false
+            clipToPadding = false
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            addView(child, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
 
     /**
      * Room a glass panel keeps inside its own bounds for the neon edge to bloom
@@ -3771,53 +3749,32 @@ class PlayerActivity : ComponentActivity() {
                 - 2 * halo - (8 * density).toInt()
             ).coerceAtLeast((72 * density).toInt())
 
-        // Sideways first, so the vertical cap below is applied to the finished
-        // stack. A row can be wider than the panel — the engine chips, a server
-        // name with its host beside it, a hint line with one long token in it —
-        // and a row that does not fit is a row the user cannot read and cannot
-        // reach: the old panel clipped it at its own edge and there was nothing
-        // to drag, which is the "the box is cut and it will not scroll
-        // sideways" report.
+        // The rows live in ONE vertical scroller, and this is the arrangement that
+        // deliberately replaced the two-scroller stack (a horizontal one inside a
+        // vertical one) this panel carried for several builds:
         //
-        // A horizontal scroller is the ONE parent type that measures its child
-        // with an unspecified width on its own axis — that is what makes a drag
-        // possible at all — and so a plain one IGNORES the width
-        // [fitContentToPanel] pins on the content: a row built as
-        // `[marker][text column, weight 1][pill][check]` reports its label's full
-        // intrinsic width under that measure (a weighted column only shrinks
-        // against a BOUNDED width), the content comes out wider than the glass,
-        // and the row's trailing pills end up past the curved edge — the "the
-        // pills do not fit and there is nothing to drag" report this panel has
-        // carried for several builds. [PanelReach] is the missing half of
-        // `isFillViewport`: it measures the child at the width it was pinned to,
-        // so the rows are measured against the panel's own width, their labels
-        // ellipsize (every row text already asks for that) and the pills sit
-        // inside the glass. A child that was NOT pinned (a width of 0, i.e. one
-        // that asked for wrap-content) is measured exactly as the platform
-        // measures it, and `isFillViewport` still stretches anything narrower than
-        // the panel — so a short row is unchanged.
-        //
-        // Its layout direction is pinned LTR. In a right-to-left language the
-        // platform mirrors a horizontal scroller's origin, so the strip opens
-        // scrolled to its far end and its first pill comes up sliced in half —
-        // the report that made an earlier version drop the horizontal scroller
-        // from the subtitle sheet altogether. Pinned, x = 0 is the start of the
-        // row in every language and the strip opens at the start.
-        val reach = PanelReach(this).apply {
-            isFillViewport = true
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            addView(content)
-        }
-
-        // A thin scrollbar makes it obvious the panel scrolls — the old
-        // fixed-height panel hid its last rows with no affordance at all. It is
-        // switched OFF again by applyHeightCap whenever the list turns out not to
-        // scroll, because a scrollbar beside a list that cannot scroll reads as a
-        // list with something hidden in it.
+        //  * A vertical [ScrollView] measures a MATCH_PARENT child with a BOUNDED
+        //    width, which is exactly what a row built as
+        //    `[marker][text column, weight 1][pill][chevron]` needs: the weighted
+        //    column shrinks, the label ellipsizes and the trailing pills — the
+        //    "HLS"/"DASH" badge, a server's host, the checkmark — stay inside the
+        //    glass. Nothing has to be pinned or measured by hand for that.
+        //  * A [HorizontalScrollView] around the whole content (the old outer
+        //    "reach") claimed EVERY sideways drag anywhere in the panel the moment
+        //    the finger moved, because that is what HorizontalScrollView does on
+        //    touch slop — it does not first ask whether it has anything to scroll
+        //    to. Its own range was zero (the content was pinned to the panel's
+        //    width), so the gesture went nowhere: the engine chip strip
+        //    (All / CloudStream / Hikari / Nuvio / Stremio / SkyStream) and every
+        //    other sideways row inside the panel never saw a single drag, which is
+        //    the "I cannot scroll the chips to reach Nuvio" report. A row that
+        //    genuinely needs to move sideways owns its own [SidewaysScrollView]
+        //    now, and nothing above it can take that drag away.
         val scroll = MaxHeightScrollView(this).apply {
-            addView(reach)
+            addView(content, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ))
             // The panel is WRAP_CONTENT tall and THIS view is what caps the
             // height, so the rows a long server list cannot show scroll inside a
             // panel that is always fully on screen. The old arrangement sized
@@ -3870,15 +3827,6 @@ class PlayerActivity : ComponentActivity() {
         // the bowed edges slice it — which is what cut the lower quality rows
         // ("1080p" -> "0p") in a list long enough to scroll.
         scroll.setOnScrollChangeListener { _, _, _, _, _ -> panel.rebend() }
-        // A sideways drag moves every row's edges in the panel's own coordinates,
-        // and the bend reads those coordinates to decide how far in each row has
-        // to come to clear the bowed glass. Without this the bend would treat a
-        // scrolled-away row as one hanging over the panel's left edge and pull it
-        // in by its 22% cap — i.e. the rows would visibly shrink as the user
-        // dragged sideways. Telling the panel how far the content has been
-        // scrolled sideways puts that back before the maths runs, so the bend is
-        // the same whether the strip is at its start or not.
-        reach.setOnScrollChangeListener { _, x, _, _, _ -> panel.setRowOffsetX(x) }
 
         // ---- The panel's WIDTH ----
         //
@@ -4039,26 +3987,21 @@ class PlayerActivity : ComponentActivity() {
         // supposed to know" half of the same report.
         var appliedCap = -1
         var barShown = false
-        // The last panel height the excess correction was taken at (see below), so
-        // one height can never be corrected twice.
-        var correctedAt = -1
+        // How many measured corrections this dialog has taken (see below). The
+        // correction can only shrink, so a few passes always converge; the counter
+        // is what guarantees that even a silhouette that keeps re-measuring itself
+        // can never turn the correction into a loop.
+        var corrections = 0
         fun applyHeightCap() {
             // The window's own width is re-asserted on every pass as well: the
             // panel's width is what the window is built from, and a rotation, a
             // split-screen resize or a not-yet-settled window changes it after
             // the dialog was already shown (see [sizeDialogWindow]).
             sizeDialogWindow()
-            // The content is fitted to the panel's own inner width before anything
-            // is measured from the heights below: a row built with a weighted text
-            // column only shrinks when it is measured against a bounded width, and
-            // inside the panel's horizontal strip it is measured against none — so
-            // this is what keeps each row's trailing pills inside the glass instead
-            // of past its right edge (see [fitContentToPanel]).
-            val innerW = panel.width - panel.paddingLeft - panel.paddingRight
-            if (innerW > 0 && fitContentToPanel(content, innerW)) {
-                scroll.requestLayout()
-                panel.requestLayout()
-            }
+            // NOTHING is pinned to the panel's width here any more: the content is
+            // the vertical scroller's MATCH_PARENT child, so the scroller bounds it
+            // and every weighted row shrinks into the glass by construction (see
+            // the arrangement note in [presentGlass]).
             val avail = visibleRoomPx(outer)
             if (avail <= 0) return
             // Everything outside the scroll view: the hint line + its inset, and
@@ -4086,31 +4029,31 @@ class PlayerActivity : ComponentActivity() {
             // ("Cannot coerce value to an empty range: maximum 256 is less than
             // minimum 272") and it is never worth a crash to keep a minimum.
             val chromeNow = 2 * halo + (8 * density).toInt()
-            val ceiling = minOf(
-                (avail - hintH - chromeNow).coerceAtLeast((72 * density).toInt()),
-                (avail * if (flatPanel) 0.94f else 0.86f).toInt(),
-            ).coerceAtLeast(1)
-            // The panel's own vertical padding is taken off the LIST, so the
-            // panel (WRAP_CONTENT, list + padding) comes out at `ceiling` — and
-            // `ceiling` is already inside the room, so the hint + the whole panel
-            // always add up to less than the room and nothing can hang off the
-            // bottom. The floor keeps a list of a couple of rows usable on a
-            // very short window, and never wins over the room.
-            var cap = (ceiling - panelPad).coerceIn(1, minOf(ceiling, avail))
-            // …and the panel's measured height has the last word on it. Whatever
-            // the arithmetic above came out at, a panel taller than the room it was
-            // given is a panel whose last rows sit below the bottom of the video,
-            // where no drag can bring them up: the excess comes off the list and the
-            // next pass lays out again. Each DIFFERENT measured height may correct
-            // once (never twice), so the passes cannot chase each other — with a
-            // stable padding the first correction is already exact, and the guard is
-            // what keeps a silhouette that keeps re-measuring from becoming a loop.
-            if (panel.height > 0 && panel.height != correctedAt) {
-                val over = panel.height - ceiling.coerceAtMost(avail)
-                if (over > (1 * density).toInt()) {
-                    correctedAt = panel.height
-                    cap = (cap - over).coerceAtLeast(1)
-                }
+            // The whole panel — the hint line above it plus the panel (list +
+            // its own halo padding) — has to fit inside `avail`. The arithmetic
+            // below is a first guess at the LIST height that achieves that; the
+            // measured correction underneath it is what makes it true on any
+            // device, whatever the metrics answer.
+            val ceiling = (avail - hintH - chromeNow - panelPad).coerceAtLeast((48 * density).toInt())
+            // A dialog that is already open keeps the cap it settled on: the rows
+            // can grow while it is up (a server landing mid-search), and re-deriving
+            // the cap on every layout pass would make the panel breathe. It shrinks
+            // only through the measured correction below, which is monotonic.
+            var cap = if (appliedCap > 0) minOf(appliedCap, ceiling) else ceiling
+            // THE CORRECTION, and the reason the "unscrollable box" report is over:
+            // the number that decides is not any of the estimates above but the
+            // height the frame ACTUALLY laid out. A panel taller than the room it
+            // was given is centred, so it hangs off the top AND the bottom of the
+            // video, and its last rows sit below the display where no drag can ever
+            // bring them up — the user's screenshot is exactly that: a subtitle
+            // list running off the bottom edge of the screen with its scrollbar
+            // visible, i.e. the list was scrollable and the PANEL was too tall. So
+            // the excess comes off the list, and the layout this schedules calls
+            // this function again: each pass shrinks toward the room and the pass
+            // after it finds nothing left to take.
+            if (root.height > 0 && root.height > avail && corrections < 12) {
+                corrections++
+                cap = (cap - (root.height - avail)).coerceAtLeast((24 * density).toInt())
             }
             if (cap != appliedCap) {
                 appliedCap = cap
@@ -4128,10 +4071,6 @@ class PlayerActivity : ComponentActivity() {
                 barShown = wantBar
                 scroll.isVerticalScrollBarEnabled = wantBar
             }
-            val canReach = reach.canScrollHorizontally(1) || reach.canScrollHorizontally(-1)
-            if (reach.isHorizontalScrollBarEnabled != canReach) {
-                reach.isHorizontalScrollBarEnabled = canReach
-            }
         }
         // The frame's height only exists after the dialog is shown, and the rows
         // can change height while it is up (a server landing mid-search), so cap
@@ -4142,7 +4081,12 @@ class PlayerActivity : ComponentActivity() {
         outer.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         scroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
-        reach.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        // The hint line and the panel are the two things whose heights make up
+        // `root`, and `root.height` is what the measured correction reads — so the
+        // correction has to be re-run when either of them changes height, not only
+        // when a scroller does (a long hint line wrapped onto one more line, a row
+        // that grew a wrapped label).
+        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         // …and once more in the window's own pre-draw pass, which is the first
         // moment the frame has a height AND the rows have a measured one. Without
         // it the first drawn frame can still be the opening cap — the panel the
@@ -4607,16 +4551,7 @@ class PlayerActivity : ComponentActivity() {
         // this there was no way to reach the chips past the edge — and no hint
         // that anything was out there. OVER_SCROLL_ALWAYS adds the stretch glow
         // that says "this row moves".
-        val chipScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_ALWAYS
-            isFillViewport = false
-            clipToPadding = false
-            addView(chipRow, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ))
-        }
+        val chipScroll = sidewaysStrip(chipRow)
         // One container for the chip strip, the headers AND the rows: the panel
         // bends a registered host's children to the glass's curve, so the strip
         // has to be one of them. Kept outside the list it was measured against
@@ -6313,17 +6248,12 @@ class PlayerActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                 ))
                 addView(
-                    android.widget.HorizontalScrollView(this@PlayerActivity).apply {
-                        isHorizontalScrollBarEnabled = false
-                        overScrollMode = View.OVER_SCROLL_NEVER
-                        clipToPadding = false
-                        // …and the scroller itself, for the reason above.
-                        layoutDirection = LinearLayout.LAYOUT_DIRECTION_LTR
-                        addView(pills, LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ))
-                    },
+                    // The steppers sit in a sideways strip: the row shares its
+                    // width between them, and a language with longer words (or a
+                    // system font scale turned up) can still need more room than
+                    // the panel has — that strip is the one that gets the drag
+                    // (see [sidewaysStrip]).
+                    sidewaysStrip(pills),
                     LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -10134,79 +10064,43 @@ private class MaxHeightScrollView(context: android.content.Context) : ScrollView
 }
 
 /**
- * The horizontal scroller a glass panel's content sits in (see [presentGlass]).
+ * A [HorizontalScrollView] for a row that is genuinely wider than the panel —
+ * the engine chip strip in the server chooser, the quality/dub chip rows, the
+ * tab strips — and which therefore has to be the view that gets the sideways
+ * drag (see [PlayerActivity.sidewaysStrip]).
  *
- * It exists for one reason: [HorizontalScrollView] measures its child with an
- * UNSPECIFIED width on its own axis — that is what makes a sideways drag of a
- * genuinely too-wide row possible at all — and there is no way to tell it not to.
- * The width [presentGlass] pins on the content with [fitContentToPanel] was
- * therefore IGNORED: every row was measured against no width at all, a weighted
- * text column was handed its label's full intrinsic width instead of shrinking,
- * the content came out wider than the glass, and each row's trailing pills (the
- * "HLS"/"DASH" badge, the checkmark) landed past the curved edge, reachable only
- * by a sideways drag that nothing announced — the "the pills do not fit and it
- * will not scroll" report.
- *
- * This class is the missing half of `isFillViewport`: a child that has been given
- * an explicit width (as [fitContentToPanel] does) is measured at EXACTLY that
- * width, so the rows are bounded by the panel and their pills stay inside the
- * glass. Everything else is left to the platform — a child that asks for
- * wrap-content, the stretch of a narrow child up to the viewport, the sideways
- * drag inside a nested strip — so a panel behaves exactly as it did everywhere
- * the pinned width does not apply.
+ * The platform's own [HorizontalScrollView] already claims a drag once the
+ * finger has moved past the touch slop, but it does so only while the gesture
+ * reaches IT: a finger that comes down on a chip hands the DOWN to that chip,
+ * and the up-the-tree decision is left to the ancestors — which is how the
+ * panel's own vertical list (and, in the arrangement this class replaced, a
+ * full-width horizontal scroller around the whole panel) used to take the
+ * gesture and leave the strip standing still. This class asks for the drag at
+ * the first touch it sees, and only once the movement is clearly sideways and
+ * clearly bigger than the vertical part of it, so a finger that starts on a
+ * chip can still push the list up and down.
  */
-private class PanelReach(context: android.content.Context) : HorizontalScrollView(context) {
+private class SidewaysScrollView(context: android.content.Context) : HorizontalScrollView(context) {
 
-    override fun measureChildWithMargins(
-        child: View,
-        parentWidthMeasureSpec: Int,
-        widthUsed: Int,
-        parentHeightMeasureSpec: Int,
-        heightUsed: Int,
-    ) {
-        if (measurePinned(child, parentHeightMeasureSpec, heightUsed)) return
-        super.measureChildWithMargins(
-            child, parentWidthMeasureSpec, widthUsed, parentHeightMeasureSpec, heightUsed
-        )
-    }
+    private val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
 
-    override fun measureChild(
-        child: View,
-        parentWidthMeasureSpec: Int,
-        parentHeightMeasureSpec: Int,
-    ) {
-        if (measurePinned(child, parentHeightMeasureSpec, 0)) return
-        super.measureChild(child, parentWidthMeasureSpec, parentHeightMeasureSpec)
-    }
-
-    /**
-     * Measures [child] at the width its own layout params ask for — when they ask
-     * for one — and reports whether it did.
-     *
-     * Only the WIDTH is taken over. The height keeps the platform's own rule for
-     * this class (the child's height params against the spec this view was given,
-     * less its padding and the margins already spent), because the vertical half
-     * of the layout is not what this scroller takes away.
-     */
-    private fun measurePinned(child: View, parentHeightMeasureSpec: Int, heightUsed: Int): Boolean {
-        val lp = child.layoutParams ?: return false
-        if (lp.width <= 0) return false
-        val margins = lp as? ViewGroup.MarginLayoutParams
-        val pad = paddingTop + paddingBottom + heightUsed +
-            (margins?.topMargin ?: 0) + (margins?.bottomMargin ?: 0)
-        val parentH = View.MeasureSpec.getSize(parentHeightMeasureSpec)
-        val heightSpec = when {
-            lp.height >= 0 ->
-                View.MeasureSpec.makeMeasureSpec(lp.height, View.MeasureSpec.EXACTLY)
-            View.MeasureSpec.getMode(parentHeightMeasureSpec) == View.MeasureSpec.UNSPECIFIED ->
-                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-            else -> View.MeasureSpec.makeMeasureSpec(
-                (parentH - pad).coerceAtLeast(0), View.MeasureSpec.AT_MOST
-            )
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = ev.x
+                downY = ev.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = kotlin.math.abs(ev.x - downX)
+                val dy = kotlin.math.abs(ev.y - downY)
+                if (dx > slop && dx > dy) parent?.requestDisallowInterceptTouchEvent(true)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                parent?.requestDisallowInterceptTouchEvent(false)
         }
-        val width = lp.width + (margins?.leftMargin ?: 0) + (margins?.rightMargin ?: 0)
-        child.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), heightSpec)
-        return true
+        return super.dispatchTouchEvent(ev)
     }
 }
 

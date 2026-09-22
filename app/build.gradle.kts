@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 185
-    versionName = "0.10.14"
+    versionCode = 186
+    versionName = "0.10.15"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -282,6 +282,28 @@ dependencies {
     // Animated GIF decoding, for collection/folder covers ("Animated GIF URL"
     // in the cover editor): without it Coil draws only the first frame.
     implementation(libs.coil.gif)
+    // ---- The manga reader (Nekoread's reader, ported whole) ----
+    //
+    // Three libraries the ported viewer stack is built on, all of them the exact
+    // artifacts Nekoread itself uses (a JitPack commit for the Tachiyomi fork of
+    // SubsamplingScaleImageView — the view that region-decodes a long strip from
+    // its cache file instead of holding a page-sized bitmap in memory — and the
+    // Tachiyomi fork of DirectionalViewPager, which is the ONE view that can page
+    // vertically as well as horizontally, i.e. the "paged vertical" reading mode).
+    //
+    // recyclerview is explicit rather than assumed: the webtoon viewer IS a
+    // RecyclerView (with Nekoread's own WebtoonLayoutManager, which subclasses
+    // LinearLayoutManager), and a reader that only compiled because a Compose
+    // dependency happened to bring RecyclerView along would break the day it did
+    // not.
+    implementation("com.github.tachiyomiorg:subsampling-scale-image-view:66e0db195d")
+    implementation("com.github.tachiyomiorg:DirectionalViewPager:1.0.0") {
+        // DirectionalViewPager re-exports an older androidx.viewpager; keep only
+        // the version pinned below, or the two copies fight over DuplicateClass.
+        exclude(group = "androidx.viewpager", module = "viewpager")
+    }
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
+    implementation("androidx.viewpager:viewpager:1.1.0")
     implementation(libs.kotlinx.serialization.json)
     // Two kotlinx.serialization modules nothing in Hikari's own source touches,
     // added because ANIYOMI EXTENSIONS link against them BY NAME:
