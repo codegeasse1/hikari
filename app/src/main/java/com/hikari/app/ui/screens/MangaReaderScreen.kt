@@ -105,6 +105,7 @@ import com.hikari.app.web.WebViewActivity
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
 import com.hikari.app.manga.mangaEnhanceMatrix
+import com.hikari.app.manga.NekoPageView
 import com.hikari.app.manga.PageBitmaps
 import com.hikari.app.manga.MangaPageLoader
 import com.hikari.app.manga.MangaPageState
@@ -1227,6 +1228,12 @@ private fun ChapterCard(label: String) {
  * platform — so the two shapes only differ in the BOX they give it and in how
  * that bitmap is scaled into it: `MangaFit.WIDTH` lays the page out at its real
  * height inside a vertical scroll, and the fit modes give it the viewport.
+ *
+ * A page TALLER than 3× its width is the exception, and it is a deliberate one:
+ * it is not a bitmap at all but a strip, drawn region-by-region by
+ * [NekoPageView] (see [PageBitmaps.TALL_RATIO]). The box is the same either way
+ * — the page's own aspect ratio — which is what keeps "the strip scrolls at the
+ * right speed" true for both shapes.
  */
 @Composable
 private fun PageImage(
@@ -1305,18 +1312,23 @@ internal val mangaEnhanceFilter: ColorFilter by lazy {
 }
 
 /**
- * The page itself: one bitmap, drawn with the fit the MODE asked for — a spinner
- * while it is coming, or, once the loader has spent all ten attempts, a row that
- * says so and offers one more try on THAT page alone, so a single bad page never
- * costs the reader the whole chapter.
+ * The page itself, drawn with the fit the MODE asked for — a spinner while it is
+ * coming, or, once the loader has spent all ten attempts, a row that says so and
+ * offers one more try on THAT page alone, so a single bad page never costs the
+ * reader the whole chapter.
  *
- * The bitmap comes from [PageBitmaps] (see there for why the page is decoded
- * whole instead of region-decoded in slices — it is the single biggest decision
- * in the reader, and the one that decides whether pages draw or come out as
- * displaced bands), and it is drawn by an ordinary Compose `Image`: the same
- * thing every poster and cover in this app is drawn with. There is no page view
- * of our own, no tiles, no region decoding and no second drawing code path — one
- * bitmap, scaled by the platform, from the file the loader vouched for.
+ * There are exactly TWO drawing shapes, and which one a page gets is decided by
+ * its own proportions (see [PageBitmaps.TALL_RATIO]):
+ *
+ *  * **h ≤ 3w** — the ordinary page and the ordinary manhwa page. One bitmap
+ *    from [PageBitmaps], drawn by an ordinary Compose `Image`, the same thing
+ *    every poster and cover in this app is drawn with. One bitmap is provably
+ *    safe at this shape (it cannot be taller than 3 × the screen's width), and
+ *    [PageBitmaps] says why that bound is the whole argument.
+ *  * **h > 3w** — a webtoon strip. Drawn by [NekoPageView], the ported
+ *    subsampling reader, which region-decodes the file and never builds a
+ *    bitmap the height of the page. This is the shape that used to come out as
+ *    displaced blocks, because a page that tall cannot be one texture.
  *
  * [fitWidth] is a property of the MODE, not of the page: the webtoon strip and
  * `MangaFit.WIDTH` draw the page at its full width (at its real height, inside a
@@ -1335,6 +1347,23 @@ private fun PageContent(
 ) {
     when (state) {
         is MangaPageState.Ready -> {
+            if (PageBitmaps.isTallPage(state.width, state.height)) {
+                // A STRIP (h > 3w): drawn by the ported subsampling reader, not
+                // by a bitmap. Nothing here decodes the page at all — the view
+                // region-decodes the file it is given, which is the only shape
+                // that survives a webtoon's height (see [NekoPageView], and
+                // [PageBitmaps.TALL_RATIO] for why the rule is 3×).
+                //
+                // The box around this is already the page's own aspect ratio, so
+                // the strip occupies exactly the space it should and the list
+                // scrolls through it; the view ignores touch, so the list keeps
+                // every gesture.
+                NekoPageView(
+                    file = state.file,
+                    sourceUrl = source.url,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
             // Keyed on the file's own (unique-per-fetch) path, so a retry that
             // lands a good page decodes THAT file and nothing else changes. The
             // first value is the cache peek: a page that is already decoded (it
@@ -1376,6 +1405,7 @@ private fun PageContent(
                         CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
                     }
                 }
+            }
             }
         }
         is MangaPageState.Failed -> Column(

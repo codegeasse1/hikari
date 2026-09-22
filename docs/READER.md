@@ -112,95 +112,84 @@ the likeliest reason a later attempt gets the same one is a CDN edge holding it
 written under a FRESH name on every fetch, because a decoder keeps what it read
 keyed by the file — the same path with new bytes would keep serving the old page.
 
-### 4a. A page is ONE bitmap — this is the whole reader
+### 4a. Two drawing shapes, decided by the page's own proportions — this is the whole reader
 
 Every version of "the image in the reader is breaking" came from a page being
-drawn in PIECES, and none of them could be fixed from the fetch side: the bytes
-were always fine. All three shapes were tried, in this order:
+drawn in a shape the platform cannot draw. The bytes were always fine, and the
+fetch side could never fix it. The four shapes that were tried, in order:
 
-* **A decoded page drawn by the platform** (0.9x). A bitmap handed to the
+* **A decoded page drawn by the platform, whole** (0.9x). A bitmap handed to the
   compositor becomes a GPU texture, and a page taller than the device's
-  `GL_MAX_TEXTURE_SIZE` is then drawn by Skia's tile fallback — the one whose
-  tiles' source rectangles are mis-placed on the drivers these phones have. What
-  the reader showed was bands of the page displaced sideways, artwork repeated at
-  a fixed offset and a white seam at every tile boundary.
+  `GL_MAX_TEXTURE_SIZE` **cannot be one texture** — the fallback the compositor
+  uses instead splits it, and on these phones the split comes out as artwork
+  scattered into displaced blocks with black tiles where art should be. That is
+  what the screenshots show.
 * **A decoded page cut into slices by us** (0.10.9): decode the page, cut it into
   2048px slices, stack them. It did not hold, because "smaller than the limit" is
   not a property of the page — a webtoon page is still 1600×8000, and the phones
-  that report a 2048 limit are exactly the ones the slices have to satisfy.
-* **A page region-decoded by a subsampling view** (0.10.10): hand the file to
-  `SubsamplingScaleImageView` (the Tachiyomi/yomi reader's own view) and let it
-  decode the tiles the viewport needs. This is the shape the reference readers
-  use, and on the pages this reader opens it came out as the same scattered
-  blocks on a white field — the reader's sibling Nekoread says as much in its own
-  comments, where the chunked and region-decoded paths are the ones that "came
-  out black", and where the fix was to decode the whole strip into ONE bitmap.
+  that report a small limit are exactly the ones the slices have to satisfy.
+* **A page region-decoded by a subsampling view, configured by us** (0.10.10):
+  the right library, our own view, our own settings — and the page still drawn as
+  a bitmap in Compose-land. It changed nothing.
+* **A page decoded whole at a big budget** (0.10.11): the same failure as the
+  first one, because a "budget" of 11M pixels permits a 1080×10000 page, which is
+  still not a texture.
 
-The lesson is not "the tile size was wrong". It is that a page drawn in pieces
-depends on the platform — tile placement, texture limits, region rectangles —
-being right, and that is not something this app can verify or promise on someone
-else's phone. **A whole bitmap depends on none of it: there is nothing to
-mis-place, because the pixels arrive in one piece.**
+The fix is not another size. It is the reader design of this app's manga sibling
+**Nekoread** — whose reader loads these exact pages correctly on the phones where
+this one did not, and which the user asked to have ported. Nekoread draws a page
+one of exactly two ways, and the page's own proportions decide which:
 
-So `PageBitmaps` decodes the page once, at a size the process can hold, and the
-compositor scales that bitmap into whatever box the mode gives it:
-
-* at most the width the screen can show (a ~800px source is never upscaled to a
-  1080px screen — that adds bytes, not detail), and at most one halving more when
-  the source is wider than the screen;
-* at most `MAX_PAGE_PIXELS` (~44MB): a page too big for that is decoded at the
-  next power-of-two reduction down. A 1080×20000 manhwa strip becomes 540×10000 —
-  the sharpest copy of it a phone can hold, and, more to the point, a COMPLETE one
-  instead of a scrambled one. That trade is the same one Nekoread's reader makes
-  (48MB per strip); softness on a pathological strip costs the reader nothing
-  permanent, a broken page costs it the chapter.
+* **h ≤ 3w — the ordinary page, and the ordinary manhwa page.** One bitmap,
+  decoded at the screen's own width and drawn by an ordinary Compose `Image`
+  (`PageBitmaps`). The bound is arithmetic, not taste: at that shape a page drawn
+  at the screen's width is at most 3×1080 = 3240px tall, under the 4096px texture
+  limit essentially every phone reports. `PageBitmaps` holds that with two
+  ceilings (`MAX_DECODE_HEIGHT`, and never wider than the screen), which is also
+  what covers the device the ratio rule alone cannot — a tablet wide enough that
+  3× its width is itself past the limit.
+* **h > 3w — a webtoon strip.** `NekoPageView`:
+  `SubsamplingScaleImageView` (the Tachiyomi fork,
+  `com.github.tachiyomiorg:subsampling-scale-image-view`, commit `66e0db195d` —
+  the same artifact and commit Nekoread uses) inside an `AndroidView`, given the
+  page FILE. It region-decodes: a downsampled base layer plus the tiles the
+  viewport needs, never a bitmap the height of the page. The settings are
+  Nekoread's, unchanged — `SCALE_TYPE_FIT_WIDTH`, `PAN_LIMIT_INSIDE`,
+  `setMinimumTileDpi(180)`, `setMinimumDpi(1)`, zoom off,
+  `setEagerLoadingEnabled(false)`, a `FileInputStream` provider, and touch
+  ignored so the reader's list keeps every gesture.
 
 Consequences to respect:
 
-* **Never** add a second drawing path: no tiles, no slices, no chunked view, no
-  region decoding, no "draw only the visible part" optimisation. Every one of them
-  has been here, and each one is a page that can come out as blocks. The whole
-  bitmap is the fix, not a stepping stone.
+* **Never draw a strip as a bitmap.** `PageBitmaps.page` refuses a tall page (and
+  logs it) rather than decode one; `prefetch` skips strips entirely — the file on
+  disk IS the warm-up for them, and a decoded strip would be exactly the
+  page-sized bitmap the strip path exists to avoid.
+* **Never widen a decoded page.** The decoded width is the screen's width and no
+  more; that is what makes the 3× rule true on the phone, and it is what keeps a
+  bitmap inside one texture. The decode logs the page's size and the bitmap it
+  produced ("page 800x1600 → bitmap 800x1600 (sample 1)"), which is the fastest
+  way to see which shape a page took.
 * The file is the unit. A page's pixels come from `MangaPageState.Ready.file` and
   nowhere else, and a FILE is never mutated in place (the loader writes a fresh
   name per fetch) — which is what makes the decoded-bitmap cache safe to key on
-  the file's path.
+  the file's path, and what makes a retry visible to the view (it keys on the
+  path, not on the page).
 * `fitWidth` is a `ContentScale` on an ordinary `Image`: full width for the
   webtoon strip and `MangaFit.WIDTH` (inside a box of the page's own aspect
   ratio), fitted inside the viewport for the paged fit modes. It is a property of
   the MODE, decided by the container, which is the thing that knows how much room
-  the page was given.
+  the page was given. A strip is unaffected: the view is always FIT_WIDTH inside
+  that same box.
 * The page's real size still comes from the loader's header read, which is what
   sizes each strip item BEFORE it is drawn — a strip of unknown-height boxes jumps
   under the reader's thumb as pages land.
 * Nothing in the drawing path takes touch events. The reader's own container owns
   every gesture (a tap toggles the chrome, a drag scrolls the strip or swipes the
-  pager), and an `Image` never competes for them.
-
-Things the loader also owns:
-
-* **the preload window** — `plan(pages, current)` asks for ten pages ahead, eight
-  behind, then the rest of the chapter forward, four at a time, and skips itself
-  when the reader has moved less than two pages since the last call (it runs on
-  every scroll step). It warms BYTES, which is the slow half (seconds). The
-  pixels of the single page the reader is about to reach are warmed separately
-  (`PageBitmaps.prefetch`, from `report`): a decoded page is worth a few hundred
-  milliseconds on an ordinary page and megabytes of heap on a big one, so warming
-  ten of them ahead would evict the page on screen to make room for pages nobody
-  is looking at. `prefetch` gives up rather than queue in front of a decode that
-  is already running.
-* **the page's real size**, read from the file header (`bounds`), which is what
-  lets the strip and the paged fit lay a page out at its true aspect ratio before
-  it is drawn.
-* **What the sheet's switches mean.** `Enhance images` is a colour matrix
-  (`manga/MangaEnhance.kt`) applied when the page is DRAWN, as the Compose
-  `ColorFilter` on the page's `Image` (and on the few chrome images), so it needs
-  no second decode and no extra bitmap — which is why it can stay on while the
-  strip scrolls.
-
-The page cache is capped (`CACHE_CAP_BYTES`, pruned least-recently-used at most
-once a minute; a pruned page's file and `Ready` state go together, so the page is
-fetched again rather than drawn blank).
+  pager), and neither an `Image` nor `NekoPageImageView` competes for them.
+* **`Enhance images` applies to short pages only.** It is a Compose `ColorFilter`
+  on the page's `Image`, and the subsampling view has no equivalent — a strip is
+  drawn by the view, unfiltered.
 
 ## 5. If you touch the reader
 
@@ -208,7 +197,10 @@ fetched again rather than drawn blank).
   Add a `ScrollRequest`.
 * Do not key a `LazyColumn` item by index. `RunItem.key` is the identity.
 * Do not pass a page URL to `AsyncImage` and do not decode a page file yourself
-  (see 4a). A page is one bitmap from `PageBitmaps`, drawn by an ordinary `Image`.
+  (see 4a). A page's drawing shape is decided by its proportions and by nothing
+  else: h ≤ 3w is one bitmap from `PageBitmaps` drawn by an ordinary `Image`,
+  h > 3w is `NekoPageView`. Never a third path, and never our own subsampling
+  settings.
 * `MangaReaderScreen`'s reader-mode/fit/background preferences are declared near
   the TOP of the composable (before the run): which mode is in force decides
   whether a run exists at all.

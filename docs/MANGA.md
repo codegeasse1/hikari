@@ -69,11 +69,14 @@ reported by name.
   a `Column` in a `ModalBottomSheet` that overflows is clipped, not scrolled, and
   a sliced row reads to the user as a duplicated control.
 * Page images are fetched, validated and retried by `manga/MangaPageLoader` (ten
-  attempts, then a per-page Retry button) and decoded by `manga/PageBitmaps`,
-  whose byte-budgeted cache is what keeps the strip smooth. A page is ONE bitmap,
-  never tiles or slices — `docs/READER.md` section 4a is the whole story, and it
-  is required reading before touching the image path. `Enhance images` in the
-  settings is a draw-time `ColorFilter`, never a second copy of the page.
+  attempts, then a per-page Retry button). What DRAWS a page is decided by the
+  page's own proportions, and by nothing else: h ≤ 3w is one bitmap from
+  `manga/PageBitmaps` drawn by an ordinary `Image`, h > 3w is a strip drawn by
+  `manga/NekoPageView` (the ported Nekoread/Tachiyomi subsampling reader, which
+  region-decodes the file and never builds a page-sized bitmap).
+  `docs/READER.md` section 4a is the whole story, and it is required reading
+  before touching the image path. `Enhance images` in the settings is a draw-time
+  `ColorFilter` on a short page's `Image` (the strip view has no equivalent).
 
 ## Cloudflare and manga sites
 

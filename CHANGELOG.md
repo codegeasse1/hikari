@@ -1,3 +1,22 @@
+## 0.10.12
+
+The reader is the ported one now, the player's boxes are the ones you screenshotted
+as correct, and the detail page draws its title the way the reference client does.
+
+### Fixed
+
+- **The reader IS Nekoread's reader, ported — the two-shape rule and the subsampling view, with that app's own settings.** The honest version of what was wrong: Nekoread's source has been in this repo's workspace for days, I read it, and then I reimplemented a reader anyway — three times — instead of porting the one that works on your phones. So now it is ported, and the port is the rule that makes the difference: **a page taller than 3× its own width is a strip and is never decoded into a bitmap at all.** It goes to `NekoPageView`: `SubsamplingScaleImageView` (the Tachiyomi fork, `com.github.tachiyomiorg:subsampling-scale-image-view`, commit `66e0db195d` — the same artifact and commit Nekoread uses) inside an `AndroidView`, given the page FILE, region-decoding a base layer plus the tiles the viewport needs. Every setting is theirs, unchanged: FIT_WIDTH, pan-inside, minimum tile DPI 180, minimum DPI 1, zoom off, eager loading off, a `FileInputStream` provider, and a view that ignores touch so the reader's list keeps every gesture. Everything at or under 3× the width is an ordinary page and stays one bitmap — and 3× is not taste, it is arithmetic: at the screen's own width that is at most 3×1080 = 3240px tall, under the 4096px texture limit every phone reports. `PageBitmaps` now holds exactly that (never wider than the screen, never taller than 3200px), refuses a strip outright, and logs the size it produced (`page 800x1600 → bitmap 800x1600 (sample 1)`) so the next report can say which shape a page took. `Enhance images` applies to short pages (the filter is a Compose colour filter and the view has no equivalent).
+- **The player's panels are back to the geometry you screenshotted as correct.** 0.10.6, 0.10.9 and 0.10.11 each tried to get the panel's width by MEASURING the layout instead of computing it, and each of them produced the same wrong box: ~72% of a 2460px screen, sitting left of centre, with the right of the video empty — because the window is sized FROM the panel, so the panel's width cannot be asked of the layout. The width is the smallest of three ceilings again: the window less the glow's margins, the window's HEIGHT × 0.93 (the term that binds in landscape, and what makes the box a floating pane rather than a wall), and 560dp — floored by 140dp but never over the room that exists. The panel goes straight into the dialog's root and the WINDOW is `panelW + 2*halo` wide, `MATCH_PARENT` tall and centred, with its width re-asserted on every layout pass so a rotation or a split-screen resize cannot leave it wrong. The layout-measuring host is deleted. Its height cap is unchanged: the panel itself stays wrap-content and the list inside it is capped against the room the frame really has, so a long list scrolls INSIDE a box that is always fully on screen.
+
+### Added
+
+- **The detail page draws the title as ART over the header, and keeps it on screen as the art scrolls away** — the reference client's header, which is what you asked for: the title is the title's own transparent wordmark from TMDB (`logo_path`, one cached request per title, the best-voted English logo with the language-neutral ones as fallback), drawn on the lower part of the header art; as you scroll, the art scrolls up and away while the wordmark does NOT move with it — it rises to the top of the page, shrinking a little, and stays there acting as the title. The title is never printed twice: the text title is drawn only for a title TMDB has no wordmark for, so this can only ever add to a page, and a back button takes over from the art's own once the art is mostly gone. `docs/DETAIL_HEADER.md` has the geometry and the rules.
+
+### Notes
+
+- Nothing is published to the main release: this build is on the **continuous** release, like every push to `main`.
+- `docs/READER.md` section 4a is rewritten around the two-shape rule; `docs/PLAYER_PANELS.md` around the restored width arithmetic. Read them before touching either path.
+
 ## 0.10.11
 
 Both of the things in the screenshots, fixed at the root this time: the reader no

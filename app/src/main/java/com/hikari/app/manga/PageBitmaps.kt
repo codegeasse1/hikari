@@ -12,41 +12,33 @@ import java.io.File
 import kotlin.math.max
 
 /**
- * The reader's page decoder: one bitmap per page, decoded from the file the
- * loader fetched, kept in a small byte-budgeted cache.
+ * The reader's SHORT-page decoder: one bitmap per page, decoded from the file
+ * the loader fetched, kept in a small byte-budgeted cache.
  *
- * **Why one whole bitmap is the safe shape.** Every other shape was tried here
- * first, and each of them is the reason pages came out as "broken" artwork:
+ * **Which page comes here, and which does not.** This object draws the pages
+ * that are *not* strips — h ≤ 3w, see [TALL_RATIO] — and it draws them as ONE
+ * bitmap at the width the screen can show, because for that shape one bitmap is
+ * provably safe: at most 3×1080 = 3240 px tall, under every phone's texture
+ * limit. A page taller than that is a webtoon strip, and a strip is NOT decoded
+ * here at all — it goes to [NekoPageView], the ported subsampling reader that
+ * region-decodes the file and never builds a page-sized bitmap. That split is
+ * the reader design of this app's manga sibling Nekoread, whose reader loads
+ * these exact pages correctly on the phones where Hikari's did not.
  *
- *  - **A bitmap handed to the compositor** is a GPU texture, and a page taller
- *    than the device's `GL_MAX_TEXTURE_SIZE` is then drawn by Skia's tile
- *    fallback — the one whose tiles' source rectangles are mis-placed on the
- *    drivers these phones have, which is what produced displaced bands, artwork
- *    repeated at a fixed offset and a white seam at every tile boundary.
- *  - **Region-decoding the page with a subsampling view** (the Tachiyomi/yomi
- *    "tall strip" path) fixed nothing in practice: it is the same tile grid, one
- *    level down, and on the pages this reader opens it came out as exactly the
- *    same scattered blocks on a white field. The reference reader this app's
- *    sibling Nekoread borrows from says so in its own comments — the chunked and
- *    region-decoded paths are the ones that "came out black", and what fixed it
- *    there was to decode the WHOLE page into ONE bitmap and draw that.
+ * **Why the split, in one line.** Everything drawn here ends up as a GPU
+ * texture; a bitmap bigger than the device's maximum texture size cannot be one
+ * texture, and the fallback the compositor uses instead is what scattered pages
+ * into displaced blocks. No budget makes a 20 000 px strip safe; only never
+ * building it does. [NekoPageView]'s header has the full story of the four
+ * shapes tried here before this one.
  *
- * So there is exactly one drawing shape here: the page becomes one bitmap, and
- * that bitmap is drawn (and scaled) by the compositor, unchanged, for every fit,
- * every zoom level and every page length. It cannot come out as bands because
- * there is nothing to mis-place: the pixels arrive in one piece.
- *
- * **What "one whole bitmap" is allowed to be.** A page is decoded at most at the
- * width the screen can actually show (never upscaling a ~800px source to a
- * 1080px screen — that only adds bytes, not detail) and only while the result
- * stays inside [MAX_PAGE_PIXELS]. A page too big for that budget is decoded at
- * the next power-of-two reduction down, which is the cheapest thing
- * `BitmapFactory` can do: a 1080×20000 manhwa strip becomes 540×10000, i.e. the
- * sharpest copy of it a phone can hold — and, more to the point, a complete one
- * instead of a scrambled one. That trade is deliberate and it is the same one
- * Nekoread's reader makes (its own budget is 48MB per strip); softness on a
- * pathological strip costs the reader nothing permanent, a broken page costs it
- * the chapter.
+ * **What "one bitmap" is allowed to be.** Decoded at the screen's own width
+ * (never upscaling a ~800 px source onto a 1080 px screen — that buys bytes, not
+ * detail), never taller than [MAX_DECODE_HEIGHT], and never wider than the
+ * screen can show. A page that is too wide for its own good is decoded at the
+ * next power-of-two reduction down, which is the cheapest thing `BitmapFactory`
+ * can do — and then refined back up as far as those two ceilings allow, so a
+ * 3000 px scan lands at 1500 px rather than 750 px.
  *
  * **Why the loader is not the decoder.** The loader still owns fetching,
  * validating, retrying and caching the bytes ([MangaPageLoader]); this object
@@ -58,14 +50,48 @@ import kotlin.math.max
 internal object PageBitmaps {
 
     /**
+     * A page taller than this many times its own width is a STRIP — a webtoon
+     * page — and is not decoded here at all: it is drawn by the subsampling view
+     * (see [NekoPageView]), which region-decodes the file and never builds a
+     * bitmap the height of the page.
+     *
+     * The number and the rule are Nekoread's, verbatim (`WebtoonPageCache`'s
+     * `TALL_RATIO`, which is in turn yomi/mihon's `ImageUtil.isTallImage` rule).
+     * What the rule buys is arithmetic, not taste: a page this shape is at most
+     * 3× its width, so a page drawn at the screen's own width is at most 3×1080
+     * = 3240 px tall — under the 4096 px texture limit essentially every phone
+     * reports, which is the whole reason a "short" page can safely be one
+     * bitmap. Anything taller than that has no size at which it is safe, and the
+     * compositor's fallback for a bitmap it cannot hold is what turned pages into
+     * a grid of displaced blocks.
+     */
+    const val TALL_RATIO = 3f
+
+    /** True for a strip: h > 3w, i.e. drawn by the subsampling view, never
+     *  decoded as one bitmap (see [TALL_RATIO]). An unknown size counts as tall
+     *  — the safe answer, since the view can draw anything. */
+    fun isTallPage(width: Int, height: Int): Boolean =
+        if (width <= 0 || height <= 0) true else height > width * TALL_RATIO
+
+    /**
+     * The tallest a decoded page may be: kept well inside the 4096 px maximum
+     * texture size that every phone and tablet reports (GL_MAX_TEXTURE_SIZE),
+     * with room for the compositor's own scaling and rounding.
+     *
+     * This is the second half of the same rule as [TALL_RATIO] and it is the one
+     * that holds on a device the ratio rule cannot cover — a tablet wide enough
+     * that 3× its screen width would itself be past the limit. A page is never
+     * handed to the compositor taller than this.
+     */
+    private const val MAX_DECODE_HEIGHT = 3200
+
+    /**
      * The most pixels one page may occupy — ~44MB at four bytes a pixel.
      *
-     * The number is a ceiling on what a single page can cost the heap, not a
-     * target: an ordinary 800×1200 page is 1M pixels, and even a 1080×3000 page
-     * (3.2M) is nowhere near it. It exists for the strips: a manhwa page is
-     * routinely 8k-20k px tall, and "decode it whole" has to mean "decode it
-     * whole at a size this process can actually hold", which for those is the
-     * next power-of-two reduction down.
+     * A ceiling on what a single page can cost the heap, not a target: with the
+     * width and height rules above, an ordinary page lands at ~1-5M pixels and
+     * never reaches it. It is the last guard, for a page whose shape is odd
+     * enough that width and height alone do not bound it.
      */
     const val MAX_PAGE_PIXELS = 11_000_000
 
@@ -124,6 +150,13 @@ internal object PageBitmaps {
      */
     suspend fun page(file: File, hintWidth: Int = 0, hintHeight: Int = 0): Bitmap? {
         cached(file)?.let { return it }
+        // A strip is never decoded here — see [TALL_RATIO]. The reader routes it
+        // to [NekoPageView] instead; this guard is what keeps a caller that got
+        // that wrong from re-introducing the page-sized texture.
+        if (isTallPage(hintWidth, hintHeight)) {
+            Logs.log("Manga", "strip asked for a bitmap (${hintWidth}x${hintHeight}) — refused")
+            return null
+        }
         val target = targetWidthPx()
         val decoded = gate.withPermit {
             withContext(Dispatchers.Default) { decode(file, hintWidth, hintHeight, target) }
@@ -157,6 +190,11 @@ internal object PageBitmaps {
      */
     suspend fun prefetch(file: File, hintWidth: Int = 0, hintHeight: Int = 0) {
         if (cached(file) != null) return
+        // A strip has no bitmap to warm: its page is region-decoded from the file
+        // by the view when it is on screen, and the file is already on disk
+        // (which IS the warm-up). Decoding it here would be exactly the
+        // page-sized bitmap the strip path exists to avoid.
+        if (isTallPage(hintWidth, hintHeight)) return
         if (!gate.tryAcquire()) return
         try {
             val target = targetWidthPx()
@@ -195,15 +233,28 @@ internal object PageBitmaps {
     }
 
     /**
-     * One whole page as a bitmap, never larger than the screen needs and never
-     * larger than [MAX_PAGE_PIXELS].
+     * One page as a bitmap, never wider than the screen can show, never taller
+     * than [MAX_DECODE_HEIGHT] and never above [MAX_PAGE_PIXELS].
      *
-     * `inSampleSize` is the only reduction used, deliberately: it is what the
-     * platform decoder applies while it reads the file (so the full-size pixels
-     * are never allocated even for a moment), where an exact rescale would have
-     * to materialise the bigger bitmap first and then copy it — a page-sized
-     * spike of heap for a couple of percent of sharpness on the pages that are
-     * too big to decode whole at native width anyway.
+     * Three rules, in this order, and each one is a different failure:
+     *
+     *  1. **At or under the screen's own width.** The compositor scales the page
+     *     to the screen regardless, so source pixels past that are heap, not
+     *     detail — and they are what would push the height past what a texture
+     *     can hold. A page NARROWER than the screen is left alone: an ~800 px
+     *     manhwa source is not upscaled, because that buys bytes and no detail.
+     *  2. **Under the texture ceiling** ([MAX_DECODE_HEIGHT]). This is the rule
+     *     the ratio test cannot cover on a wide screen, and it is the one that
+     *     makes the bitmap drawable at all.
+     *  3. **As fine as those two allow.** Rule 1 drops a 3000 px scan to 750 px,
+     *     which is softer than it needs to be; this step walks the reduction back
+     *     up while both ceilings still hold, landing it at 1500 px.
+     *
+     * `inSampleSize` is the only reduction used, deliberately: the platform
+     * applies it while it reads the file, so the full-size pixels are never
+     * allocated even for a moment. An exact rescale would materialise the bigger
+     * bitmap first and then copy it — a page-sized spike of heap on the device
+     * least able to afford one.
      */
     private fun decode(file: File, hintWidth: Int, hintHeight: Int, targetWidth: Int): Bitmap? {
         var width = hintWidth
@@ -220,33 +271,37 @@ internal object PageBitmaps {
             Logs.log("Manga", "page header unreadable — ${file.name}")
             return null
         }
-        // The smallest power-of-two reduction that brings the page inside the
-        // budget, and never one step further than [MIN_DECODE_WIDTH] of source.
         var sample = 1
+        // (1) The screen's own width, or narrower.
+        while (sample < 64 && width / sample > max(targetWidth, MIN_DECODE_WIDTH)) {
+            sample *= 2
+        }
+        // (2) Inside the texture ceiling, whichever way the page is shaped.
         while (sample < 64 &&
-            pixels(width / (sample * 2), height / (sample * 2)) >= MAX_PAGE_PIXELS &&
-            width / (sample * 2) >= MIN_DECODE_WIDTH
+            (height / sample > MAX_DECODE_HEIGHT ||
+                pixels(width / sample, height / sample) > MAX_PAGE_PIXELS)
         ) {
             sample *= 2
         }
-        // A source page wider than the screen can show is worth one more step
-        // too: the compositor is going to scale it down to the screen anyway, so
-        // the only thing a full-width decode of a 2400px-wide scan buys is four
-        // times the heap. One halving keeps the decoded page inside twice the
-        // screen's width — still more detail than any screen can display, at a
-        // quarter of the bytes. A page NARROWER than the screen is left alone:
-        // that is the ~800px manhwa source every source here serves, and its own
-        // width is the sharpest copy that exists.
-        while (sample < 64 && width / sample > max(targetWidth, MIN_DECODE_WIDTH) * 2) {
-            sample *= 2
+        // (3) …and then back up towards the detail the two ceilings allow.
+        while (sample > 1 &&
+            height / (sample / 2) <= MAX_DECODE_HEIGHT &&
+            pixels(width / (sample / 2), height / (sample / 2)) <= MAX_PAGE_PIXELS &&
+            width / (sample / 2) >= MIN_DECODE_WIDTH
+        ) {
+            sample /= 2
         }
+        Logs.log(
+            "Manga",
+            "page ${width}x$height → bitmap ${width / sample}x${height / sample} (sample $sample)",
+        )
         val whole = decodeWith(file, sample)
         if (whole != null) return whole
-        // A decode that ran out of heap despite the budget (the budget is about
-        // THIS page, and other pages are alive beside it). One more halving is
-        // all that is offered: a file the platform cannot decode even
-        // downsampled is a file that is damaged, and the loader's retry is the
-        // right answer for that, not an ever-smaller bitmap.
+        // A decode that ran out of heap despite the ceilings (they are about THIS
+        // page, and other pages are alive beside it). One more halving is all
+        // that is offered: a file the platform cannot decode even downsampled is
+        // a file that is damaged, and the loader's retry is the right answer for
+        // that, not an ever-smaller bitmap.
         return decodeWith(file, (sample * 2).coerceAtMost(64))
     }
 

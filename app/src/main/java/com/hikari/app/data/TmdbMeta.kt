@@ -67,6 +67,44 @@ object TmdbMeta {
         return imdbArtwork(item)
     }
 
+    /**
+     * The title's LOGO: TMDB's own transparent wordmark for a movie or series
+     * (`/{seg}/{id}/images` → `logos`) — the art the detail page draws the title
+     * with, the way the reference client's header does.
+     *
+     * That header is what the user asked Hikari's page to look like: the title
+     * is that wordmark ON the header art, and it stays on screen as the art
+     * scrolls away. A title with no logo — every extension-only row, most
+     * non-English ones, anything TMDB has no art for — answers null, and the
+     * page keeps its text title, so this can only ever ADD to the page.
+     *
+     * One request per title, kept in memory afterwards (a logo never changes);
+     * the pick is the best-voted ENGLISH wordmark, with the language-neutral
+     * ones as the fallback — a text-free mark rather than a localized name,
+     * which is what TMDB's own clients prefer.
+     */
+    private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    suspend fun logo(item: MediaItem): String? {
+        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
+        val key = resolved.mediaType + "/" + resolved.tmdbId
+        logoCache[key]?.let { return it.takeIf { cached -> cached.isNotBlank() } }
+        val seg = segment(resolved.mediaType)
+        val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}/images", emptyMap())
+        val best = d?.optJSONArray("logos")?.let { arr ->
+            (0 until arr.length())
+                .mapNotNull { arr.optJSONObject(it) }
+                .filter { it.tmdbPath("file_path") != null }
+                .maxByOrNull { o ->
+                    o.optDouble("vote_average", 0.0) +
+                        (if (o.optString("iso_639_1").equals("en", true)) 10.0 else 0.0)
+                }
+        }
+        val url = best?.tmdbPath("file_path")?.let { IMG + it }
+        logoCache[key] = url.orEmpty()
+        return url
+    }
+
     /** Title shape for matching across sources: lowercase, punctuation dropped,
      *  word/digit forms unified. IMDb spells a sequel "Ramayana Part 2" while the
      *  catalog says "Ramayana: Part Two"; without this the suggestion result was

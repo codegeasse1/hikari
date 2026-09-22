@@ -29,18 +29,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -91,10 +96,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -145,6 +153,7 @@ import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -2475,20 +2484,72 @@ fun DetailScreen(
         }
     }
 
+    // ---- The header art, and the title drawn as ART over it ----
+    //
+    // The reference client's detail page draws the title as a transparent
+    // wordmark ON the header art, it keeps that wordmark ON SCREEN as the art
+    // scrolls up and away (so the title you are reading belongs to the thing you
+    // are looking at, at every scroll position), and it never repeats the title
+    // as text below. That is what this pair of things does:
+    //
+    //  * the header art is the first item of the page's own list, so it scrolls
+    //    with the page instead of sitting still above it;
+    //  * the wordmark is drawn OUTSIDE that list, at a position interpolated from
+    //    the scroll — over the lower part of the art when the page is at the top,
+    //    and at the top of the screen once the art has gone — which is exactly
+    //    "it does not move with the image, it stays over it".
+    //
+    // The art itself comes from TMDB (the title's own logo, `logo_path`), one
+    // background request per title, cached: a title whose logo is missing —
+    // every extension-only row, most non-English ones — keeps the plain text
+    // title exactly as before, so this can only ever ADD something.
+    var heroLogo by remember { mutableStateOf<String?>(null) }
+    var headerPx by remember { mutableStateOf(0) }
+    var logoSizePx by remember { mutableStateOf(0) }
+    val detailList = rememberLazyListState()
+    LaunchedEffect(m?.uniqueId) {
+        val item = m ?: return@LaunchedEffect
+        heroLogo = runCatching { TmdbMeta.logo(item) }.getOrNull()
+    }
+    val heroBlock: @Composable () -> Unit = {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                // The art's height is read from the layout, not from the style's
+                // aspect ratio: the five header shapes are different heights, one
+                // of them wraps its content, and the wordmark's travel is
+                // measured against the real thing.
+                .onSizeChanged { headerPx = it.height }
+        ) {
+            Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = detailHeroStyle)
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
+    val density = LocalDensity.current
+    // The status bar's height, in dp (a composable read, so it is taken here
+    // rather than inside the arithmetic that positions the wordmark).
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     Column(Modifier.fillMaxSize()) {
-        // Header renders immediately from the poster we already have, so the hero
-        // image shows at once instead of waiting for the slow meta fetch.
-        Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = detailHeroStyle)
         when {
-            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+            loading -> {
+                heroBlock()
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
             }
-            error != null && meta == null -> Box(Modifier.fillMaxSize()) {
-                EmptyState(tr("Something went wrong"), error.orEmpty(), tr("Back"), { nav.popBackStack() })
+            error != null && meta == null -> {
+                heroBlock()
+                Box(Modifier.fillMaxSize()) {
+                    EmptyState(tr("Something went wrong"), error.orEmpty(), tr("Back"), { nav.popBackStack() })
+                }
             }
             else -> {
-                LazyColumn(Modifier.fillMaxSize()) {
+                LazyColumn(state = detailList, modifier = Modifier.fillMaxSize()) {
+                    // The header art is the page's FIRST item, so it scrolls up
+                    // and away as the page is read — see the header note above
+                    // for what the wordmark drawn over it does while it does.
+                    item(key = "hero") { heroBlock() }
                     item {
                     // The first line of the page is spaced off the header art on
                     // purpose. It used to start flush against the artwork's
@@ -2498,11 +2559,17 @@ fun DetailScreen(
                     // user circled it on a screenshot). Styles that fade the art
                     // into the background need the gap most.
                     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
-                        Text(
-                            m?.title ?: title,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        // The title as TEXT is drawn only when there is no logo to
+                        // draw instead: the reference client never repeats the
+                        // title twice on one page, and the wordmark above is the
+                        // title at that point.
+                        if (heroLogo.isNullOrBlank()) {
+                            Text(
+                                m?.title ?: title,
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                         if (m?.year != null) {
                             Text(
                                 "${m.year}  ·  ${m.type.name.lowercase()}",
@@ -2993,6 +3060,73 @@ fun DetailScreen(
             }
         }
     }
+    }
+
+    // ---- What stays on screen while the header art leaves ----
+    //
+    // How far the art has scrolled away: 0 at the top of the page, 1 once it is
+    // gone. The art is the list's first item, so this is its own scroll distance
+    // over its own measured height (which is why the height is read from the
+    // layout rather than assumed from the style).
+    val headerScroll = if (detailList.firstVisibleItemIndex > 0) {
+        headerPx.coerceAtLeast(1)
+    } else {
+        detailList.firstVisibleItemScrollOffset
+    }
+    val headerProgress =
+        (headerScroll.toFloat() / headerPx.coerceAtLeast(1)).coerceIn(0f, 1f)
+
+    // The way OUT of the page is never allowed to scroll off: the header's own
+    // back button is drawn inside the art, so this one takes over from the same
+    // corner, at the same size, as soon as the art is mostly gone.
+    if (headerProgress > 0.6f) {
+        IconButton(
+            onClick = { nav.popBackStack() },
+            modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = tr("Back"),
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+
+    // The title as ART: it starts on the lower part of the header art (which is
+    // where the reference client puts it — its bottom edge a little above the
+    // art's gradient) and rises to the top of the screen as the art scrolls
+    // away, shrinking a little on the way so a full-bleed wordmark does not read
+    // as oversized once it is acting as the page's title. It is drawn HERE, in
+    // the page's own box rather than inside the scrolling list, which is what
+    // makes it "not move with the image": the art goes, the title stays.
+    val logoArt = heroLogo
+    if (!logoArt.isNullOrBlank()) {
+        val logoFrac = 0.62f + (0.34f - 0.62f) * headerProgress
+        // The wordmark's own height, read from the LAYOUT (its aspect ratio is
+        // whatever TMDB's art is, and there is no reason to guess it): the width
+        // only decides the height, never the other way round, so this settles on
+        // the first frame the image is laid out on.
+        val logoHPx = logoSizePx.toFloat()
+        val gapPx = with(density) { 10.dp.toPx() }
+        val topInsetPx = with(density) { statusBarTop.toPx() }
+        val pinnedTop = topInsetPx + gapPx / 2f
+        // Bottom-aligned inside the art's lower edge — but never above the pinned
+        // position, so a short header (or the no-art style) puts the wordmark
+        // straight at the top instead of somewhere off the screen.
+        val restTop = (headerPx - logoHPx - gapPx).coerceAtLeast(pinnedTop)
+        val topPx = restTop + (pinnedTop - restTop) * headerProgress
+        AsyncImage(
+            model = PosterLoader.model(logoArt),
+            // The title, for a screen reader: the visible title on this page IS
+            // this image once it is drawn (the text one is not repeated).
+            contentDescription = m?.title ?: title,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(logoFrac)
+                .onSizeChanged { logoSizePx = it.height }
+                .offset { IntOffset(0, topPx.roundToInt()) },
+        )
     }
 
     if (showLoadingBanner) {

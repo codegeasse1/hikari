@@ -74,57 +74,58 @@ is cut and it will not scroll sideways" report.
   is dragged. Bounded, the strip scrolls **inside** the panel, which is what it
   is for, and the rows stay the panel's width.
 
-## The panel's width comes out of the LAYOUT — `PanelWidthHost`
+## The panel's width — the restored geometry
 
-The width is not computed anywhere any more. The panel is put inside
-`PanelWidthHost`, a one-child `FrameLayout` that is `MATCH_PARENT` in the dialog's
-root, so the width it is measured with IS the width the window really gave the
-dialog — in whatever orientation, whatever the insets are, on every device. It
-then measures the panel with that room, EXACTLY:
+The width is the size of the box the dialog floats as, so it is a number this file
+COMPUTES from the window, and the smallest of three ceilings wins:
 
 ```
-room  = the width the layout gave this host   // the one number that cannot be wrong
-panel = min(room * 0.95|0.97,                 // never a wall: the pane keeps floating
-            max(620dp, room * 0.72))          // ...and never that box again
-panel.view.width = panel                      // the halo is painted INSIDE the panel
+room   = win.x - 2*halo - 8dp                  // the window, less the glow's margins
+panelW = min(win.x * 0.95|0.97,                // never a wall: the pane keeps floating
+             win.y * 0.93|0.97,                // landscape: this is the term that binds
+             560dp)                            // a tablet does not become a sheet
+           .coerceAtMost(room)                 // the floor never wins over the room
+           .coerceAtLeast(min(140dp, room))    // ...and never over the screen
 ```
 
-Both numbers are about the LOOK, not about the room, and the `0.72` term is the
-one that decides on a phone. Every earlier version derived the width from a
-NUMBER — `windowSize()`, the configuration, a fraction of the screen height — and
-each of those can be right about the wrong axis: in the landscape player they
-answer 1080×2460 inside a 2460×1080 window, which is how the panel came out ~915px
-(330dp) wide with the rest of the video empty beside it and the right-hand column
-of every row beyond its edge. A dp cap alone does not fix that either: 620dp is a
-width whose pixel value depends entirely on the density the device reports, and
-where that comes out small the panel is a narrow box on a wide screen. So the
-panel takes the room it was given, up to the ceiling above.
+`win.y * 0.93` is the term that decides on a phone held sideways: a landscape
+window is three times wider than it is tall, so the window's HEIGHT is the binding
+constraint and the panel comes out a ~41% box in the middle of the screen — which
+is what a dialog is supposed to look like.
 
-Nothing re-measures it afterwards and nothing has to: a measure pass happens on
-every layout change by itself — both orientations, a split-screen resize, a fold,
-a television box — and the panel is sized by that pass. `windowSize()` is now used
-only for the HEIGHT caps and for the opening height estimate.
+That is the geometry of the build the user screenshotted as correct. Three later
+versions (0.10.6-0.10.11) tried to MEASURE the width out of the layout instead of
+computing it — a `PanelWidthHost` that measured the panel against its own room,
+620dp caps, a 0.72-of-the-room floor — and every one of them produced the same
+wrong box: a panel at ~72% of a 2460px screen, sitting left of centre, with the
+right-hand half of the video empty beside it. The width is not a thing the layout
+can be asked for here, because the WINDOW is sized from the panel, not the other
+way round. The host is deleted.
 
-## The WINDOW is left to the window manager
+The halo is painted INSIDE the panel's own bounds, so the panel view IS the
+silhouette plus a halo on each side, and `panelW + 2*halo` is the width the WINDOW
+is given.
 
-`dialog.window` is asked for `MATCH_PARENT` in both axes, centred. The window
-manager is the only thing that knows the screen's real rect in the current
-orientation minus the insets, and it is what a dialog is supposed to ask for.
+## The WINDOW is as wide as the panel and as TALL as the screen
 
-Sizing the window by hand was actively harmful. An explicit height taken from
-`windowSize()` — which can answer in the display's natural orientation — asks for a
-window TALLER than the screen; the platform keeps the window's top on the display,
-the frame is then taller than the screen, and the panel, centred inside that
-frame, is drawn from the middle of the screen downwards: half of it, and its last
-rows, end up below the display. That is the "the boxes in the player go out of the
-player" report. `MATCH_PARENT` is the whole fix — the window can then never be
-bigger than the display — and every number the panel needs comes from the frame
-inside it.
+`dialog.window` is asked for `panelW + 2*halo` wide and `MATCH_PARENT` tall,
+centred. Only the WIDTH is ever explicit; the height is `MATCH_PARENT` on purpose.
+An explicit height taken from `windowSize()` — which can answer in the display's
+natural orientation — asks for a window TALLER than the screen, and the platform
+keeps a window's top on the display: the frame is then taller than the screen and
+the panel, centred inside it, is drawn from the middle downwards with its last rows
+below the display. That is the "the boxes in the player go out of the player"
+report, and `MATCH_PARENT` height is what makes it impossible.
+
+`sizeDialogWindow()` re-reads the window and re-asserts that width on every layout
+pass (cheap, and a no-op when the width has not changed), because a rotation, a
+split-screen resize or a window that has not settled yet changes the number after
+the dialog was already shown.
 
 ## `windowSize()`
 
 It is a **best-effort opening estimate** — for the panel's opening HEIGHT only,
-never its width (see `PanelWidthHost`), and it has three
+and only its opening HEIGHT is taken from it (the width is the arithmetic above; the caps are measured), and it has three
 sources (the decor, `currentWindowMetrics`, `getRealSize`) that can each answer in
 the display's NATURAL orientation. Before any axis is compared with its
 configuration twin, they are **swapped when the orientation disagrees with the
@@ -139,5 +140,5 @@ the bottom of the video.
 
 Nothing depends on it being right any more, which is the point: the HEIGHT caps
 come from `visibleRoomPx` (the frame and the display area really visible to this
-window) and the WIDTH from the layout (`PanelWidthHost`) — neither of which can
+window) and the WIDTH from the window arithmetic above — neither of which can
 answer in the wrong orientation.
