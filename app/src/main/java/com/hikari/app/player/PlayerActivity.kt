@@ -3799,10 +3799,13 @@ class PlayerActivity : ComponentActivity() {
         // gets NO limit ([MaxHeightScrollView] treats 0 as "no cap"), so the
         // panel is measured purely by its content and there is nothing left that
         // could slice the last option off — which is what "adjust automatically,
-        // however many options it holds, so none are cut off" asks for. `content`
-        // is measured by the scroll view with an UNSPECIFIED height, so its
-        // measured height is the rows' TRUE height even while the cap is on;
-        // comparing the two is therefore exact, not an estimate.
+        // however many options it holds, so none are cut off" asks for.
+        //
+        // The test for it is exact rather than a guess: `content` is measured
+        // against the cap (an AT_MOST spec), so a measurement equal to the
+        // natural height means the rows FIT and a measurement equal to the cap
+        // itself means they do not — one comparison answers the question, and
+        // there is no estimate of "a row is about 34dp" anywhere in this.
         var appliedCap = -1
         var capLifted = false
         fun applyHeightCap() {

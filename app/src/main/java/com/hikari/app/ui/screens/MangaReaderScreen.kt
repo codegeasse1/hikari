@@ -542,7 +542,12 @@ private fun ChapterSheet(
                     // thing being navigated).
                     .heightIn(max = 440.dp),
             ) {
-                items(shownIndices, key = { "sheet-ch-" + chapters[it].url }) { i ->
+                // Keyed by position, not by url: a source can list the same
+                // chapter twice (a site mid-rebuild publishes the same link under
+                // two names), and a repeated Lazy key is a hard crash in Compose,
+                // not a warning. The detail screen's own list keys on the url —
+                // this one is the defensive half.
+                items(shownIndices, key = { it }) { i ->
                     val c = chapters[i]
                     val isCurrent = c.url == currentUrl
                     Row(

@@ -138,14 +138,25 @@ class CatalogViewModel(
         _items.value = emptyList()
         _done.value = false
         _appliedQuery.value = q.trim()
+        // Always re-ask: a blank query goes back to the catalog's own list, and
+        // loadNext pages whichever of the two is in force (see it, and note that
+        // it flips the spinner on synchronously — the grid must never be shown
+        // empty, which is what "no matches" flashing before every search was).
+        // The flag is cleared first: the cancelled job above died with it set, and
+        // loadNext refuses to start while it is up.
         _loading.value = false
-        if (q.isBlank()) loadNext()
+        loadNext()
     }
 
     /** Loads the next page. Returns true when more pages may exist. */
     fun loadNext() {
         if (_loading.value || _done.value) return
         loadJob?.cancel()
+        // Set BEFORE the coroutine is launched, not inside it: the grid reads
+        // this to decide between the spinner and its empty state, and the frame
+        // between "the list was emptied" and "the coroutine ran" was long enough
+        // to show the empty state for a beat.
+        _loading.value = true
         // Keeps this page load running while the user is in another app (see
         // [com.hikari.app.work.BackgroundWork]) — otherwise the OS freezes the
         // process and the grid stops filling in until the app is reopened.
@@ -153,7 +164,6 @@ class CatalogViewModel(
             loadJob?.cancel()
         }
         loadJob = viewModelScope.launch {
-            _loading.value = true
             val provider: ContentProvider? = manager.byId(providerId)
             val ref = CatalogRef(providerId, type, catalogId, catalogName, rawType)
             val fresh = try {
