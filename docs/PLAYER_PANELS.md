@@ -39,6 +39,17 @@ them.
    exactly as the server sent it"), which is the text that makes the choice
    possible.
 
+**The cap is corrected against the panel's own measured height.** The panel's
+vertical padding is derived from its own size (`CurvedGlassPanel`), so a FIXED
+prediction of it drifts as the panel grows — and every pixel it drifts by is a
+pixel of the panel below the bottom of the video, where no drag can reach it (the
+"the subtitle box is unscrollable" report). `applyHeightCap` therefore reads the
+real padding back (`panel.height - scroll.height`, which IS that padding because the
+panel is `WRAP_CONTENT` around the scroll view) and, if the panel still came out
+taller than the room it was given, takes the excess off the list and lays out again.
+Each different measured height may correct once and never twice, so the passes
+cannot chase each other.
+
 `presentGlass` has no height parameter on purpose. If a new caller "knows" how
 tall its content is, that knowledge belongs in the measurement, not in an
 argument.
@@ -50,10 +61,16 @@ The content is wrapped in a `HorizontalScrollView` (the *reach*) inside the
 dragged into view instead of being clipped with no way to reach it — the "the box
 is cut and it will not scroll sideways" report.
 
-* `isFillViewport = true` is what makes it free: when the rows fit (the normal
-  case) the content is stretched to the viewport, so every row spans the panel
-  exactly as before and there is nothing to scroll. The horizontal scrollbar
-  appears only when the strip can really scroll (`canScrollHorizontally`).
+* **The reach is `PanelReach`, not a plain `HorizontalScrollView`**, because the
+  platform class measures its child with an UNSPECIFIED width on its own axis (that
+  is what makes a drag possible at all) and therefore IGNORES the width
+  `fitContentToPanel` pins on the content. `PanelReach` honours it: a child with an
+  explicit width is measured at exactly that width, so the rows are bounded by the
+  panel and their trailing pills stay inside the glass (see below).
+* `isFillViewport = true` still does the other half: a child narrower than the
+  viewport is stretched to it, so a short row looks exactly as it did before and
+  there is nothing to scroll. The horizontal scrollbar appears only when the strip
+  can really scroll (`canScrollHorizontally`).
 * Its layout direction is pinned **LTR**. In a right-to-left language the
   platform mirrors a horizontal scroller's origin, so it opens scrolled to its
   far end and shows its first pill sliced in half — the bug that made an earlier
@@ -64,15 +81,14 @@ is cut and it will not scroll sideways" report.
 * A sideways drag moves every row's edges in the panel's own coordinates, and
   `CurvedGlassPanel` bends rows by those coordinates; `setRowOffsetX` feeds it
   the strip's scroll so the stack does not visibly shrink while it is dragged.
-* A **nested** horizontal scroller (the source chooser's engine chip strip) is
-  sized to the panel's inner width by `boundNestedHScrollers`, from
-  `applyHeightCap` (the width only exists after the first layout). Under the
-  reach's unbounded width measure such a scroller answers with the width of
-  everything it holds — the sum of all its pills — and every `MATCH_PARENT` row
-  beside it is then stretched to that width, so the cards grow past the glass
-  and their right-hand controls sit outside the silhouette until the whole panel
-  is dragged. Bounded, the strip scrolls **inside** the panel, which is what it
-  is for, and the rows stay the panel's width.
+* A **nested** horizontal scroller (the source chooser's engine chip strip) needs
+  nothing handed to it any more: once the content is measured at the panel's width,
+  every row is a bounded parent, so a `MATCH_PARENT` strip comes out exactly as wide
+  as the row it sits in and scrolls **inside** it (which is what it is for). An
+  earlier version walked the tree in `boundNestedHScrollers` and pinned every nested
+  scroller to the panel's FULL inner width — wider than the space a strip actually
+  has once the row's own padding is taken off it, so the strip ran out under the
+  glass by exactly that padding. That walk is gone.
 
 ### …and the content ITSELF is pinned to the panel's inner width
 
@@ -91,11 +107,10 @@ lines "are not fit" and that there is no way to scroll to them:
   panel's right edge, and the only way to see them was a sideways drag inside a
   vertically scrolling list.
 * `fitContentToPanel` therefore sets the content's own `layoutParams.width` to the
-  panel's inner width **and** runs `boundNestedHScrollers` (which is now called
-  only from there, so the two rules cannot drift apart). Labels ellipsize at the
-  end — every row text already asks for that — and the trailing pills are inside
-  the glass on every row with no drag. The chip strip keeps its own sideways
-  scroll, because that is a strip that really can be longer than the panel.
+  panel's inner width, and `PanelReach` is what makes that width real. Labels
+  ellipsize at the end — every row text already asks for that — and the trailing
+  pills are inside the glass on every row with no drag. A nested strip keeps its own
+  sideways scroll, because that is a strip that really can be longer than its row.
 * It is idempotent (the width is only rewritten when it differs), so calling it on
   every layout pass converges instead of looping.
 

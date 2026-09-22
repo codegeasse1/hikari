@@ -2,6 +2,7 @@ package com.hikari.app.nuvio
 
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.NsfwGate
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.TmdbMeta
 import com.hikari.app.net.Http
@@ -329,6 +330,15 @@ object TmdbResolver {
             for (key in API_KEYS) {
                 val params = LinkedHashMap<String, String>(query)
                 if (lang.isNotBlank()) params["language"] = lang
+                // The adult-content switch, enforced AT THE REQUEST for a
+                // catalogue query. A /discover answer carries no certificate of
+                // its own — a row is a title, a poster and a year — so there is
+                // nothing in it to filter against, and asking TMDB to leave the
+                // films out is the only thing that keeps an R-rated title out of
+                // every row, grid and Production/Network catalogue at once (see
+                // [NsfwGate.capDiscoverCertification]). A no-op for every other
+                // endpoint and for every user with the switch on.
+                NsfwGate.capDiscoverCertification(path, params)
                 params["api_key"] = key
                 val qs = params.entries.joinToString("&") { (k, v) ->
                     "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"

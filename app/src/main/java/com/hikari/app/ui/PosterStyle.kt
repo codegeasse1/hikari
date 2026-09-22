@@ -35,6 +35,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -49,6 +50,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.Ratings
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.theme.rememberGlassTokens
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -73,6 +75,12 @@ import kotlinx.coroutines.delay
  *                the artwork reads as lit from the page rather than pasted on.
  *  - [FRAME]     a gallery mat: the art inset behind a hairline frame with a
  *                soft accent tint, like a print in a mount.
+ *  - [LIT]       one light over the card, standing wherever the reader put it
+ *                (Settings → Poster styling → Edge light): the artwork is
+ *                brightened where the light falls and taken down towards shadow
+ *                everywhere else, which is what makes a flat poster read as a
+ *                lit object. The only treatment here whose LOOK is the user's
+ *                (see [PosterStyle.glowX]/[PosterStyle.glowY]).
  */
 object PosterEffects {
     const val NONE = "none"
@@ -82,9 +90,10 @@ object PosterEffects {
     const val AURA = "aura"
     const val SPOTLIGHT = "spotlight"
     const val FRAME = "frame"
+    const val LIT = "lit"
 
     /** Every effect, in the order Settings lists them. */
-    val ALL = listOf(NONE, GLOW, TILT, SHEEN, AURA, SPOTLIGHT, FRAME)
+    val ALL = listOf(NONE, GLOW, TILT, SHEEN, AURA, SPOTLIGHT, FRAME, LIT)
 
     fun normalize(key: String?): String = if (key != null && key in ALL) key else NONE
 
@@ -116,6 +125,7 @@ object PosterEffects {
         AURA -> "Aura ring"
         SPOTLIGHT -> "Spotlight"
         FRAME -> "Gallery frame"
+        LIT -> "Edge light"
         else -> "None"
     }
 
@@ -133,6 +143,7 @@ object PosterEffects {
         AURA -> "A breathing ring around the card, in its own colour"
         SPOTLIGHT -> "Accent spotlight behind, scrim over the bottom"
         FRAME -> "Art inset behind a hairline gallery frame"
+        LIT -> "Lit from a point you choose, darker away from it"
         else -> "Plain artwork, no effect"
     }
 
@@ -190,6 +201,12 @@ data class PosterStyle(
     /** The colour the [PosterEffects.AURA] ring is drawn in
      *  ([com.hikari.app.ui.AuraColors.THEME] follows the app accent). */
     val auraColor: String = AuraColors.THEME,
+    /** Where the [PosterEffects.LIT] light stands, as fractions of the card:
+     *  (0, 0) is the top-left corner and (1, 1) the bottom-right. */
+    val glowX: Float = 0.5f,
+    val glowY: Float = 0.14f,
+    /** How hard that light burns, 0-100. */
+    val glowStrength: Int = 55,
 ) {
     /** True when [key] is one of the treatments this card wears. */
     fun has(key: String): Boolean = key in effects
@@ -210,6 +227,8 @@ fun rememberPosterStyle(): PosterStyle {
     val glassFlow = remember { app.store.posterGlassFlow() }
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val auraFlow = remember { app.store.posterAuraColorFlow() }
+    val glowPointFlow = remember { app.store.posterGlowPointFlow() }
+    val glowStrengthFlow = remember { app.store.posterGlowStrengthFlow() }
     // Television performance mode (Settings → TV & Remote): a TV stick is
     // decoding 1080p with a chip a phone would have called slow, so while it is
     // on the expensive per-poster work is dropped — the animated treatments and
@@ -223,6 +242,8 @@ fun rememberPosterStyle(): PosterStyle {
     val glass by glassFlow.collectAsState(initial = true)
     val effects by effectsFlow.collectAsState(initial = emptySet())
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
+    val glowPoint by glowPointFlow.collectAsState(initial = 0.5f to 0.14f)
+    val glowStrength by glowStrengthFlow.collectAsState(initial = 55)
     return PosterStyle(
         blur = if (perf) 0 else blur.coerceIn(0, 24),
         corner = corner.coerceIn(0, 28),
@@ -231,6 +252,12 @@ fun rememberPosterStyle(): PosterStyle {
         glass = glass,
         effects = if (perf) emptySet() else PosterEffects.normalizeSet(effects),
         auraColor = AuraColors.normalize(auraColor),
+        glowX = glowPoint.first.coerceIn(0f, 1f),
+        glowY = glowPoint.second.coerceIn(0f, 1f),
+        // The light is a per-card gradient, and a television in performance mode
+        // is not drawing treatments at all (the set above is empty then) — the
+        // zero is belt and braces for any card that asks for it directly.
+        glowStrength = if (perf) 0 else glowStrength.coerceIn(0, 100),
     )
 }
 
@@ -274,6 +301,63 @@ fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
         ?: item.rating?.takeIf { it > 0.0 }
             ?.let { ((it * 10f).roundToInt() / 10f).toString() }
 }
+
+/**
+ * The poster edge light ([PosterEffects.LIT]) as a draw modifier: a card lit
+ * from ([centerX], [centerY]) — expressed as fractions of the card, so the same
+ * numbers mean "a third of the way across, just under the top edge" on a 90dp
+ * grid cell and on a 400dp hero — and falling into shadow away from it.
+ *
+ * Two radial gradients, and both are needed for the look to read as LIGHT
+ * rather than as a bright blob:
+ *
+ *  * a soft white pool centred on the point, which is the light itself;
+ *  * a shadow that grows with distance from the same point, because a lit object
+ *    is not only brighter where the light falls, it is darker where it does not.
+ *    Without this half the card is uniformly bright and reads as pasted on.
+ *
+ * Nothing is decoded, blurred or cached for either: a radial gradient is a draw
+ * call, so the treatment costs the same on a 4K television as on a phone, and it
+ * works over an artwork that has not finished loading.
+ */
+fun Modifier.edgeLight(centerX: Float, centerY: Float, strength: Float): Modifier =
+    if (strength <= 0f) this
+    else drawBehind {
+        val c = Offset(
+            size.width * centerX.coerceIn(0f, 1f),
+            size.height * centerY.coerceIn(0f, 1f),
+        )
+        // The far corner is how far the shadow has to reach to cover the whole
+        // card from wherever the light stands.
+        val reach = maxOf(
+            hypot(c.x, c.y),
+            hypot(size.width - c.x, c.y),
+            hypot(c.x, size.height - c.y),
+            hypot(size.width - c.x, size.height - c.y),
+        ).coerceAtLeast(1f)
+        drawRect(
+            Brush.radialGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.34f * strength),
+                    Color.White.copy(alpha = 0.10f * strength),
+                    Color.Transparent,
+                ),
+                center = c,
+                radius = reach * 0.66f,
+            )
+        )
+        drawRect(
+            Brush.radialGradient(
+                colorStops = arrayOf(
+                    0f to Color.Transparent,
+                    0.55f to Color.Black.copy(alpha = 0.10f * strength),
+                    1f to Color.Black.copy(alpha = 0.52f * strength),
+                ),
+                center = c,
+                radius = reach,
+            )
+        )
+    }
 
 /**
  * One poster cell, styled.
@@ -325,6 +409,10 @@ fun PosterArt(
     val ringed = PosterEffects.AURA in effects
     val spotlighted = PosterEffects.SPOTLIGHT in effects
     val framed = PosterEffects.FRAME in effects
+    val lit = PosterEffects.LIT in effects
+    // 0-1, and 0 when the light is not one of this card's treatments: every layer
+    // below is skipped outright at zero, so a card without it pays nothing.
+    val lightStrength = if (lit) style.glowStrength.coerceIn(0, 100) / 100f else 0f
     // One animation clock per card, created only when one of the chosen
     // treatments animates. The animated values are read INSIDE graphicsLayer,
     // never in composition, so a moving sheen or a breathing ring invalidates
@@ -522,6 +610,18 @@ fun PosterArt(
                                 1f to Color.Black.copy(alpha = 0.55f),
                             )
                         )
+                )
+            }
+            if (lightStrength > 0f) {
+                // The reader's own light (see [PosterEffects.LIT]): over the
+                // artwork, under everything the other treatments draw on top of
+                // it — a light is part of how the art is LIT, not a layer above
+                // the art, so a card wearing both this and a sheen keeps the
+                // sheen on top.
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .edgeLight(style.glowX, style.glowY, lightStrength)
                 )
             }
             if (framed) {

@@ -38,6 +38,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -122,6 +127,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -1904,6 +1910,29 @@ private fun PosterStyleCard(app: HikariApp) {
         )
         // The aura ring's own colour, offered only while that ring is on: a
         // colour row for a ring that is not being drawn would be noise.
+        // The edge light's own controls, offered only while the light is one of
+        // the card's treatments — two sliders for a light that is not being
+        // drawn would be noise (see [PosterEffects.LIT], and [EdgeLightControls]).
+        if (PosterEffects.LIT in effects) {
+            val pointFlow = remember { app.store.posterGlowPointFlow() }
+            val point by pointFlow.collectAsState(initial = 0.5f to 0.14f)
+            val strengthFlow = remember { app.store.posterGlowStrengthFlow() }
+            val strength by strengthFlow.collectAsState(initial = 55)
+            Spacer(Modifier.height(10.dp))
+            EdgeLightControls(
+                x = point.first,
+                y = point.second,
+                strength = strength,
+                onChangePoint = { px, py ->
+                    scope.launch { runCatching { app.store.setPosterGlowPoint(px, py) } }
+                },
+                onChangeStrength = { v ->
+                    scope.launch { runCatching { app.store.setPosterGlowStrength(v) } }
+                },
+            )
+        }
+        // The aura ring's own colour, offered only while that ring is on: a
+        // colour row for a ring that is not being drawn would be noise.
         if (PosterEffects.AURA in effects) {
             AuraColorRow(
                 selected = auraColor,
@@ -1981,6 +2010,123 @@ private fun PosterStyleCard(app: HikariApp) {
             footnote = "Tick as many as you like. They are drawn together on every poster, " +
                 "and \"None\" clears them all.",
         )
+    }
+}
+
+/**
+ * The poster edge light's two controls: a card the reader points AT to place the
+ * light, and a strength slider (see [PosterEffects.LIT]).
+ *
+ * A card rather than a pair of X/Y sliders, because "where is the light" is one
+ * question with an obvious gesture — pointing at the place — and a light placed
+ * by reading two numbers is a light nobody places. The preview draws the real
+ * thing: the same [com.hikari.app.ui.edgeLight] modifier every poster in the app
+ * uses, over a stand-in card, so what is set here is what a grid shows.
+ *
+ * The point being dragged is held locally and written when the gesture ENDS. A
+ * DataStore write per frame would fight the finger it is following, and the
+ * preview has to move at the speed of the touch to be usable at all.
+ */
+@Composable
+private fun EdgeLightControls(
+    x: Float,
+    y: Float,
+    strength: Int,
+    onChangePoint: (Float, Float) -> Unit,
+    onChangeStrength: (Int) -> Unit,
+) {
+    var strengthSlider by remember { mutableStateOf(strength.toFloat()) }
+    LaunchedEffect(strength) { strengthSlider = strength.toFloat() }
+    var dragging by remember { mutableStateOf(false) }
+    var pointX by remember { mutableStateOf(x) }
+    var pointY by remember { mutableStateOf(y) }
+    LaunchedEffect(x, y) {
+        // A write that lands while a finger is on the card is this gesture's own
+        // echo coming back, and snapping the dot to it mid-drag is the dot
+        // fighting the hand.
+        if (!dragging) {
+            pointX = x
+            pointY = y
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BoxWithConstraints(
+            Modifier
+                .width(78.dp)
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(10.dp))
+                // A stand-in for a poster: dark, with a little vertical
+                // structure so a light placed on it is obviously reaching the
+                // top of the card or the bottom.
+                .background(
+                    Brush.verticalGradient(listOf(Color(0xFF414B5E), Color(0xFF141922)))
+                )
+                .edgeLight(pointX, pointY, strengthSlider / 100f)
+                .pointerInput(Unit) {
+                    detectTapGestures { off ->
+                        pointX = (off.x / size.width).coerceIn(0f, 1f)
+                        pointY = (off.y / size.height).coerceIn(0f, 1f)
+                        onChangePoint(pointX, pointY)
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { off ->
+                            dragging = true
+                            pointX = (off.x / size.width).coerceIn(0f, 1f)
+                            pointY = (off.y / size.height).coerceIn(0f, 1f)
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            pointX = (change.position.x / size.width).coerceIn(0f, 1f)
+                            pointY = (change.position.y / size.height).coerceIn(0f, 1f)
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            onChangePoint(pointX, pointY)
+                        },
+                        onDragCancel = {
+                            dragging = false
+                            onChangePoint(pointX, pointY)
+                        },
+                    )
+                }
+        ) {
+            // The light itself: the dot the reader drags. Offset by the same
+            // fractions the effect draws with, so the dot IS where the light is
+            // rather than near it.
+            Box(
+                Modifier
+                    .offset(
+                        x = maxWidth * pointX - 5.dp,
+                        y = maxHeight * pointY - 5.dp,
+                    )
+                    .size(10.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.92f))
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            SettingsSlider(
+                label = tr("Light strength"),
+                value = strengthSlider,
+                valueText = strengthSlider.roundToInt().toString(),
+                valueRange = 0f..100f,
+                steps = 99,
+                onValueChange = { strengthSlider = it },
+                onValueChangeFinished = {
+                    val v = strengthSlider.roundToInt().coerceIn(0, 100)
+                    strengthSlider = v.toFloat()
+                    onChangeStrength(v)
+                },
+            )
+            Text(
+                tr("Drag the dot to place the light"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

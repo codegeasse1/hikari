@@ -26,7 +26,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -50,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -116,6 +119,11 @@ fun MangaScreen(nav: NavHostController) {
     val rev = rememberMangaRevision()
     val library = remember(rev) { MangaStore.library() }
     val progress = remember(rev) { MangaStore.progress() }
+    // The engines the reader pinned to the top of Browse, and which row's pin
+    // control is currently showing (see the long-press in [EngineRow]).
+    val pinnedFlow = remember { app.store.pinnedMangaEnginesFlow() }
+    val pinned by pinnedFlow.collectAsState(initial = emptySet())
+    var pinReveal by remember { mutableStateOf<String?>(null) }
 
     var query by rememberSaveable { mutableStateOf("") }
     // Which engine's own lists to browse / search: "" means every installed one.
@@ -348,20 +356,28 @@ fun MangaScreen(nav: NavHostController) {
         item(key = "manga-browse", span = { GridItemSpan(maxLineSpan) }) {
             MangaSection(title = tr("Browse"), count = engines.size) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // The engine picker's own search box. Only once there are
-                    // enough engines for scrolling to be a chore — below that a
-                    // second text field would be more clutter than help.
-                    if (engines.size >= 6) {
-                        GlassSearchField(
-                            value = engineFilter,
-                            onValueChange = { engineFilter = it },
-                            placeholder = tr("Search %s installed engines…")
-                                .replace("%s", engines.size.toString()),
-                            height = 44.dp,
-                        )
-                    }
-                    val shownEngines = if (engineFilter.isBlank()) engines
+                    // The engine picker's own search box. ALWAYS here, however
+                    // few engines are installed: it was offered only past six
+                    // engines at first, on the theory that a short list needs no
+                    // filter — and the reader with four extensions and a name to
+                    // find was left scrolling a list this box would have answered
+                    // in one word. Below that a plain list reads the same with it
+                    // as without it.
+                    GlassSearchField(
+                        value = engineFilter,
+                        onValueChange = { engineFilter = it },
+                        placeholder = tr("Search %s installed engines…")
+                            .replace("%s", engines.size.toString()),
+                        height = 44.dp,
+                    )
+                    val listed = if (engineFilter.isBlank()) engines
                     else engines.filter { it.config.name.contains(engineFilter, ignoreCase = true) }
+                    // Pinned engines are drawn first — the long press on a row is
+                    // what pins one (see [EngineRow]), and the order is applied
+                    // here rather than stored, so a pin that outlives its engine
+                    // simply stops matching instead of leaving a hole in the list.
+                    val shownEngines = if (pinned.isEmpty()) listed
+                    else listed.sortedByDescending { it.config.id in pinned }
                     if (shownEngines.isEmpty()) {
                         Text(
                             tr("No installed engine matches that name."),
@@ -370,7 +386,24 @@ fun MangaScreen(nav: NavHostController) {
                             modifier = Modifier.padding(vertical = 8.dp),
                         )
                     }
-                    shownEngines.forEach { p -> EngineRow(p, nav) }
+                    shownEngines.forEach { p ->
+                        EngineRow(
+                            engine = p,
+                            nav = nav,
+                            pinned = p.config.id in pinned,
+                            revealPin = pinReveal == p.config.id,
+                            onRevealPin = { pinReveal = if (pinReveal == p.config.id) null else p.config.id },
+                            onTogglePin = {
+                                val next = pinned.toMutableSet().apply {
+                                    if (!add(p.config.id)) remove(p.config.id)
+                                }
+                                pinReveal = null
+                                scope.launch {
+                                    runCatching { app.store.setPinnedMangaEngines(next) }
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -408,14 +441,31 @@ fun MangaScreen(nav: NavHostController) {
  * The ROW itself opens the engine too (its Popular list), because tapping the
  * name of an extension and having nothing happen is the thing every user tries
  * first — the Popular/Latest pills are shortcuts for choosing a list, not the
- * only way in. The globe is the Cloudflare-verification WebView: a manga site
+ * only way in.
+ *
+ * A HOLD on the row (0.5 s — [holdOrTap]) reveals the pin, and the pin puts the
+ * engine above every other one for good: with a hundred extensions installed,
+ * finding the two a reader actually reads in is the same chore as finding one in
+ * the first place, and a re-orderable list is the answer to it. The hold rather
+ * than a button on every row because the row is already a tap target with two
+ * pills on it — a fourth control on all hundred rows to serve the two that get
+ * pinned is the wrong trade.
+ *
+ * The globe is the Cloudflare-verification WebView: a manga site
  * behind a bot wall answers every request with a challenge until a browser has
  * passed it, and an extension cannot open a browser for itself, so the user
  * needs a button that loads the site's own page, lets them clear the check, and
  * closes itself once the clearance is in the jar.
  */
 @Composable
-private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
+private fun EngineRow(
+    engine: MangaProvider,
+    nav: NavHostController,
+    pinned: Boolean,
+    revealPin: Boolean,
+    onRevealPin: () -> Unit,
+    onTogglePin: () -> Unit,
+) {
     val providerId = engine.config.id
     val name = engine.config.name
     val context = LocalContext.current
@@ -426,14 +476,31 @@ private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
     val latestLabel = tr("Latest")
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        // A pinned engine wears the accent so the top of the list explains
+        // itself: a row that floated up has to say why it is there.
+        color = if (pinned) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable {
-                    openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel)
+                // Tap opens the engine (its Popular list). A 0.5 s HOLD reveals
+                // the pin instead — the same gesture, timed by the same helper,
+                // as the Home picker's multi-select hold (see [holdOrTap] and
+                // [HOLD_MS]), so a reader learns it once. While the pin control
+                // is showing a tap puts it away rather than opening the engine,
+                // which is what every other context menu does.
+                .pointerInput(providerId, revealPin) {
+                    holdOrTap(
+                        onHold = onRevealPin,
+                        onTap = {
+                            if (revealPin) onRevealPin()
+                            else openCatalog(
+                                nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel,
+                            )
+                        },
+                    )
                 }
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -459,6 +526,37 @@ private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
                         openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, latestLabel)
                     }
                 }
+            }
+            // Revealed by the hold. Two buttons, because both answers have to be
+            // reachable: the pin itself, and "no thanks" — without the second one
+            // the only way out of the control was to hold another row.
+            if (revealPin) {
+                IconButton(onClick = onTogglePin) {
+                    Icon(
+                        Icons.Filled.PushPin,
+                        contentDescription = tr(if (pinned) "Unpin" else "Pin above the others"),
+                        tint = if (pinned) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                IconButton(onClick = onRevealPin) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = tr("Done"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            } else if (pinned) {
+                Icon(
+                    Icons.Filled.PushPin,
+                    contentDescription = tr("Pinned"),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .size(15.dp),
+                )
             }
             IconButton(
                 onClick = {

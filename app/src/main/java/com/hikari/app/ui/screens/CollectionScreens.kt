@@ -95,12 +95,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -173,6 +175,7 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.PosterImage
@@ -4572,6 +4575,38 @@ fun TmdbGridScreen(
     // hidden title survived.
     val gridItems = rememberVisibleItems(items)
 
+    // ---- This catalog's own search box ----
+    //
+    // A production, a network, a public list and a person are all one PAGED TMDB
+    // query (20 titles a page), and the title a reader came for can be dozens of
+    // pages in. Typing a name here must therefore filter what is loaded AND keep
+    // walking the catalog until it is found — but it must NOT hand the name to
+    // the app's own Search tab: that searches every source in the app and would
+    // leave this catalog entirely, which is exactly what was reported ("search
+    // inside a production sends me to Hikari search"). Nothing here leaves the
+    // page.
+    var filterText by rememberSaveable(specJson, presetKey) { mutableStateOf("") }
+    val needle = filterText.trim()
+    val matched = remember(gridItems, needle) {
+        if (needle.isBlank()) gridItems
+        else gridItems.filter {
+            it.title.contains(needle, ignoreCase = true) ||
+                (it.originalTitle?.contains(needle, ignoreCase = true) == true)
+        }
+    }
+    // The walk. Eight pages (160 titles) is the bound: far enough that a studio's
+    // catalogue is genuinely searched for a name, bounded enough that a typo does
+    // not sit there pulling the whole catalogue over the network. The counter
+    // resets whenever the query changes, so a second search gets its own budget.
+    var deepened by remember { mutableIntStateOf(0) }
+    LaunchedEffect(needle) { deepened = 0 }
+    LaunchedEffect(needle, matched.isEmpty(), loading, done) {
+        if (needle.isNotBlank() && matched.isEmpty() && !loading && !done && deepened < 8) {
+            deepened++
+            vm.loadNext()
+        }
+    }
+
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState) {
         snapshotFlow {
@@ -4593,11 +4628,35 @@ fun TmdbGridScreen(
             },
             onBack = { nav.popBackStack() },
         )
+        GlassSearchField(
+            value = filterText,
+            onValueChange = { filterText = it },
+            placeholder = tr("Search this catalog"),
+            height = 46.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+        )
         if (items.isEmpty() && loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (gridItems.isEmpty()) {
+        } else if (matched.isEmpty() && needle.isNotBlank()) {
+            // The filter is still walking the catalog: the spinner is what says
+            // so, because "nothing matched" and "still looking" are different
+            // answers and this grid must not give the wrong one while it works.
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(Modifier.size(28.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        tr("Looking further into this catalog…"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else if (matched.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = tr("Nothing here right now"),
@@ -4613,7 +4672,7 @@ fun TmdbGridScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(gridItems, key = { it.uniqueId }) { item ->
+                items(matched, key = { it.uniqueId }) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,

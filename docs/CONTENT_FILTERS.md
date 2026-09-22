@@ -109,6 +109,22 @@ predicate while the switch is off is told "not hidden" for everything — so
   listed, and its titles cannot reach Home, a collection, the search queue or
   "Continue watching" by any route. Filtering the DRAWN lists instead would leave
   every one of those paths intact behind the UI.
+* **The TMDB requests themselves** (`nuvio/TmdbResolver.apiGet`, through
+  `NsfwGate.capDiscoverCertification`) — every `/discover/movie` query carries
+  `certification_country=US&certification.lte=PG-13` while the switch is off, so an
+  R-rated film cannot reach a row in the first place. The drawn-list filter cannot
+  do this job: a `/discover/movie` answer is a title, a poster and a year, and
+  carries NO certificate — there is nothing on the item to test. Every shelf, browse
+  grid, preset and Production/Network/Person catalogue in the app IS a discover query
+  (`data/TmdbSources.kt`, `data/TmdbBrowse.kt`, `data/TmdbPresets.kt`), so one line
+  in the one place every TMDB request passes through covers them all. TV is
+  deliberately not capped — TV-MA is not in the adult set (see section 2), and a cap
+  that removed it would empty the shelves of someone who only meant to switch off
+  adult material. A query that names its own `certification`/`certification.lte` is
+  left alone: that is the user stating what they want, and the switch is not a licence
+  to override it. `HomeViewModel` drops its cached feed and rebuilds the moment the
+  switch moves, so the change lands on the feed the user is already looking at — the
+  one case a request-level rule cannot fix on its own.
 * **Every drawn list** through `rememberVisibleItems` / `rememberVisibleRows`:
   `MediaRow` (every shelf: Home, collections, the detail page), `CatalogScreen`'s
   grid, `SearchScreen`'s grid, `LibraryScreen` (the grid AND its empty state, so a
@@ -130,19 +146,28 @@ predicate while the switch is off is told "not hidden" for everything — so
   surprising and slow (the list is parsed, not fetched per title).
 * **The user's own manga library and reading progress.** Their own follows, not a
   catalogue's output.
-* **The DETAIL screen's own rating gate.** `NsfwGate.isAdultRating` exists for it
-  but is not wired: a catalogue row carries no certificate, and blocking a page the
-  user explicitly opened (from a link, a collection, a search they typed) fights the
-  user rather than helping them. The catalogue-level filter is what keeps adult
-  material from being discovered in the first place.
+* **A page the user explicitly opened.** `NsfwGate.isAdultRating` is the rating half
+  of the rule, and it is NOT wired into the detail screen: blocking a page reached
+  from a link, a collection or a title the user typed fights the user rather than
+  helping them. What keeps this material from being DISCOVERED is the catalogue half
+  — the drawn-list filter and the TMDB certification ceiling above — and a saved or
+  shared link is the user's own decision to open it.
 
-## The one accepted consequence
+## The two accepted consequences
 
-With the switch OFF, an installed 18+ extension is not listed on the **Extensions**
-screen either — so it cannot be uninstalled from there until the switch is turned
-back on. That is "hide", as asked, and the way back is one tap in Settings; the
-alternative (a locked row that cannot be used but says it exists) was judged worse
-than a clean list.
+* With the switch OFF, an installed 18+ extension is not listed on the **Extensions**
+  screen either — so it cannot be uninstalled from there until the switch is turned
+  back on. That is "hide", as asked, and the way back is one tap in Settings; the
+  alternative (a locked row that cannot be used but says it exists) was judged worse
+  than a clean list.
+* With the switch OFF, a film TMDB has no US certificate for disappears from the
+  catalogues too. `certification.lte` is a request-level filter and TMDB will not
+  match a title it holds no certificate for — so a niche row (a small country's
+  cinema, a straight-to-streaming release) comes back shorter than it does with the
+  switch on. That is a shelf with fewer cards on it, which is precisely the trade the
+  switch was asking for; the alternative is a filter that cannot see the rating it is
+  supposed to be filtering on, which is how "I turned 18+ off and it still shows
+  R-rated films" happened.
 
 ## Adding a new surface
 

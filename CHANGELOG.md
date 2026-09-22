@@ -1,3 +1,99 @@
+## 0.10.14
+
+**A webtoon page is drawn as ONE image again** — which is what the reference
+reader does, and the only shape that has ever come out right on these phones.
+Everything else here is the list from the last round of reports: the player's
+boxes are bounded and scrollable, the adult-content switch reaches the
+catalogues themselves, and four features asked for by hand (a light you place on
+your posters, a search box with pins over your manga engines, a search box inside
+a studio's catalogue, and Popular/Latest inside a manga engine's own page).
+
+### Fixed
+
+- **The manga reader draws the whole page as one bitmap, and the chunked renderer
+  is deleted.** 0.10.13 ported Nekoread's `WebtoonChunkedImageView`, and the
+  reference app's OWN log says what that renderer does with a real webtoon strip:
+  it comes out black ("page 6, path=TALL_CHUNKED … one solid black field"). That is
+  why the reference app only ever hands it a strip whose single decode cannot fit
+  its 48MB per-bitmap budget — for everything else it decodes the ENTIRE strip once,
+  at display width, as SOFTWARE memory, and draws it with an ordinary `ImageView`.
+  The platform's render thread splits such a bitmap into as many tiles as it needs,
+  silently and correctly, and because the bitmap is stable for the page's whole life
+  there is nothing to re-decode while scrolling. That is now exactly what
+  `PageBitmaps` does (`TALL_PAGE_BYTES` 48MB, width reduced by halving only when a
+  monster strip needs it, never below 256px, `inPreferredConfig = ARGB_8888` so the
+  decode is software and not a hardware texture) and there is one drawing shape for
+  every page. `ChunkedPageView`/`NekoPageView` are gone, the reader's tall-page
+  guard is gone, and a page is one bitmap or it is a failed page with a retry.
+- **The reader's "Page fit" choice now applies in the continuous (webtoon) mode**,
+  which is the mode that ignored it. `Fit width` keeps the strip shape (each page at
+  the full width, at its real height, in one continuous column, exactly as before);
+  `Fit height` and `Fit the screen` now give every page a whole viewport of its own
+  with the page scaled inside it. This is the piece that was reported as "clicking
+  any option from fit screen does nothing": `WebtoonRunBody` was never passed the
+  setting at all, so all three choices drew the same thing.
+- **The players' server and subtitle rows fit inside the glass.** A
+  `HorizontalScrollView` measures its child with an UNSPECIFIED width on its own
+  axis — that is what makes a sideways drag possible at all — so the width the panel
+  pinned on its content was IGNORED: every row was measured against no width, its
+  weighted text column was handed the label's full intrinsic width instead of
+  shrinking, the content came out wider than the panel, and each row's trailing pill
+  (the HLS/DASH badge, the checkmark) landed past the curved edge. `PanelReach` is
+  that missing half: a child that has been given an explicit width is measured at
+  exactly that width, so the rows are bounded by the panel, the labels ellipsize and
+  the pills sit inside the glass. The old hand-written walk that pinned every nested
+  scroller to the panel's FULL inner width is gone with it — that is wider than the
+  space a strip actually has once the row's own padding is taken off, which is why a
+  chip strip ran out under the glass by exactly that padding.
+- **Every player box scrolls, vertically and sideways.** The panel's height cap is
+  now corrected against the panel's own MEASURED height instead of a predicted
+  padding: the silhouette's padding is derived from its size, so a guess drifts as
+  the panel grows and every pixel of drift is a pixel of the panel below the bottom
+  of the video, where no drag can reach it ("the subtitle box is unscrollable").
+  The excess comes off the list and the next pass lays out again, once per measured
+  height so the passes cannot chase each other. The vertical scrollbar still appears
+  exactly when the list can move.
+- **R-rated films leave the catalogues while the adult-content switch is off.** The
+  switch filtered items it could JUDGE, and a catalogue row carries no certificate to
+  judge: a `/discover/movie` answer is a title, a poster and a year. Every row, browse
+  grid, preset and Production/Network/Person catalogue in this app IS a discover
+  query, so the ceiling is now asked of TMDB itself (`certification_country=US`,
+  `certification.lte=PG-13`) in the one place every TMDB request passes through —
+  `TmdbResolver.apiGet`. TV is deliberately not capped (TV-MA is not in the adult
+  set, see `docs/CONTENT_FILTERS.md`), a query that names its own certification is
+  left alone, and Home drops its cached feed and rebuilds the moment the switch
+  moves, so the change is visible on the screen the user is looking at rather than on
+  the next launch. The cost, documented there too: TMDB will not match a film it has
+  no US certificate for, so a niche row comes back shorter than with the switch on.
+
+### Added
+
+- **Poster styling → Edge light: a light you place.** The new `LIT` treatment lights
+  the card from a point the reader chooses and takes it down towards shadow
+  everywhere else — which is what makes a flat poster read as a lit object, and what
+  the reference look in the screenshots is doing. Two radial gradients, no image, no
+  blur, nothing cached: a soft pool of light centred on the point, plus a shadow that
+  grows with distance from the same point. Settings draws the real thing in a
+  draggable preview (point at the place, or drag the dot) plus a strength slider; the
+  point is stored as two fractions of the card, so it lands in the same place on a
+  90dp grid cell and on a 400dp hero.
+- **Manga → Browse: the engine search box is always there, and a 0.5s hold pins an
+  engine to the top.** The box used to appear only past six engines — with four
+  installed and a name to find, the reader had no way to filter at all. A hold on an
+  engine row (the same 0.5s hold, timed by the same helper, as the Home picker's
+  multi-select) reveals a pin; a pinned engine is drawn above every other one, wears
+  the accent and a pin mark so the top of the list explains itself, and the choice is
+  stored by engine id.
+- **A manga engine's own page now offers Popular and Latest as tabs**, so switching
+  between the two lists happens where the reader already is instead of by going back
+  and pressing the other pill.
+- **A studio's (or network's, list's, person's) catalogue has its own search box.**
+  It filters what is loaded AND walks further into the catalogue (up to eight more
+  pages) until the title is found — and it stays on the page: it does not hand the
+  name to the app's Search tab, which is what it used to feel like. "Looking further
+  into this catalog…" says so while it works.
+
+---
 ## 0.10.13
 
 The reader is the ported one FOR REAL this time, the player's server/subtitle

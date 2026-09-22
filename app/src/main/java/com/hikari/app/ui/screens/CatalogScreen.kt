@@ -62,6 +62,7 @@ import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.i18n.I18n
+import com.hikari.app.manga.MangaProvider
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
@@ -85,12 +86,34 @@ import kotlinx.coroutines.withContext
 class CatalogViewModel(
     app: Application,
     private val providerId: String,
-    private val catalogId: String,
+    catalogId: String,
     private val catalogName: String,
     private val type: MediaType,
     private val rawType: String,
 ) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
+
+    /**
+     * Which of the engine's OWN lists this page is showing.
+     *
+     * Every manga engine publishes exactly two — Popular and Latest (see
+     * [MangaProvider.catalogs]) — and the two pills on the engine's row in the
+     * Manga tab are how a reader reaches them. Once they are IN one of the two,
+     * switching to the other must not mean going back a screen and pressing the
+     * second pill: this page is the page that can do it (see the tabs in
+     * [CatalogScreen]), and the pills stay where they are for the reader who is
+     * still choosing which engine to read in.
+     */
+    private val _catalog = MutableStateFlow(catalogId)
+    val catalog: StateFlow<String> = _catalog.asStateFlow()
+
+    /** Shows another of the engine's lists, from the top, with the old list's
+     *  items cleared first so a stale card cannot be tapped under the new list. */
+    fun switchCatalog(id: String) {
+        if (id == _catalog.value) return
+        _catalog.value = id
+        refresh()
+    }
 
     private val _items = MutableStateFlow<List<MediaItem>>(emptyList())
     val items: StateFlow<List<MediaItem>> = _items.asStateFlow()
@@ -167,7 +190,7 @@ class CatalogViewModel(
         }
         loadJob = viewModelScope.launch {
             val provider: ContentProvider? = manager.byId(providerId)
-            val ref = CatalogRef(providerId, type, catalogId, catalogName, rawType)
+            val ref = CatalogRef(providerId, type, _catalog.value, catalogName, rawType)
             val fresh = try {
                 // A search is paged exactly like the catalog is: the same
                 // infinite-scroll effect asks for page 2, and a source with 400
@@ -252,6 +275,22 @@ fun CatalogScreen(
     // "search this extension" magnifier, and Search's own scope row.
     val searchable = rawType == "manga"
     val appliedQuery by vm.appliedQuery.collectAsState()
+    val selectedCatalog by vm.catalog.collectAsState()
+    // The engine's two own lists, as tabs (see [CatalogViewModel.catalog]).
+    // Offered only where they are the whole story: the page is a MANGA catalog
+    // (that is what the two labels mean here) and it is showing one of the two.
+    val popularLabel = tr("Popular")
+    val latestLabel = tr("Latest")
+    val mangaPair = searchable &&
+        (selectedCatalog == MangaProvider.CATALOG_POPULAR ||
+            selectedCatalog == MangaProvider.CATALOG_LATEST)
+    // The name of the list actually on screen — which is not the one the page was
+    // opened with once a tab has been tapped.
+    val shownName = when (selectedCatalog) {
+        MangaProvider.CATALOG_POPULAR -> popularLabel
+        MangaProvider.CATALOG_LATEST -> latestLabel
+        else -> catalogName
+    }
     // The box's text is local and debounced (a search clears the grid, so
     // asking the source on every keystroke would blank it while typing).
     var typedQuery by rememberSaveable { mutableStateOf("") }
@@ -338,7 +377,7 @@ fun CatalogScreen(
             }
             Column(Modifier.weight(1f)) {
             Text(
-                tr(catalogName),
+                tr(shownName),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -350,6 +389,19 @@ fun CatalogScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
+                }
+                if (mangaPair) {
+                    Row(
+                        Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CatalogTab(popularLabel, selectedCatalog == MangaProvider.CATALOG_POPULAR) {
+                            vm.switchCatalog(MangaProvider.CATALOG_POPULAR)
+                        }
+                        CatalogTab(latestLabel, selectedCatalog == MangaProvider.CATALOG_LATEST) {
+                            vm.switchCatalog(MangaProvider.CATALOG_LATEST)
+                        }
+                    }
                 }
             }
             // The Cloudflare-verification WebView. A manga site behind a bot wall
@@ -371,7 +423,7 @@ fun CatalogScreen(
             GlassSearchField(
                 value = typedQuery,
                 onValueChange = { typedQuery = it },
-                placeholder = I18n.t("Search %s…").replace("%s", tr(catalogName)),
+                placeholder = I18n.t("Search %s…").replace("%s", tr(shownName)),
                 height = 46.dp,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -475,6 +527,36 @@ fun CatalogScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * One of an engine's two own lists, as a tab (see [CatalogViewModel.catalog]).
+ *
+ * A tab rather than a pair of buttons: the two lists are the same page with a
+ * different question asked of the site, and a tab is what that relationship
+ * looks like. Tapping the one already selected does nothing (the view model
+ * ignores it), so a double tap cannot reload the list under the reader.
+ */
+@Composable
+private fun CatalogTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

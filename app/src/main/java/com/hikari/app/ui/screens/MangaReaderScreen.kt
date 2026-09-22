@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -105,7 +106,6 @@ import com.hikari.app.web.WebViewActivity
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
 import com.hikari.app.manga.mangaEnhanceMatrix
-import com.hikari.app.manga.NekoPageView
 import com.hikari.app.manga.PageBitmaps
 import com.hikari.app.manga.MangaPageLoader
 import com.hikari.app.manga.MangaPageState
@@ -715,6 +715,7 @@ fun MangaReaderScreen(
                 itemIndexOf = { itemIndexOf(it) },
                 onReport = { c, p -> report(c, p) },
                 onTap = { chrome = !chrome },
+                fit = fit,
                 enhance = enhance,
             )
             else -> PagedBody(
@@ -1075,7 +1076,6 @@ private fun PagedBody(
                 source = pages[i],
                 fit = fit,
                 enhance = enhance,
-                label = "page ${i + 1}",
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -1105,10 +1105,16 @@ private fun TapZone(modifier: Modifier, onClick: () -> Unit) {
  *
  * [entries] is the run: a chapter's title card followed by its pages, for as many
  * chapters as the reader has walked into (see the run in [MangaReaderScreen]).
- * Each page is drawn at the full width and its real aspect ratio — known BEFORE
- * it is drawn, because the loader reads the page's size out of the file header —
- * so the strip is the right height from the first frame and never shifts under
- * the reader's thumb as pages land.
+ * **The fit decides the shape of every page in the run**, and this is a piece that
+ * used to be missing entirely: the fit is a property of the READER, so the strip
+ * must honour the same three fits the paged modes do ([MangaFit]) rather than
+ * always drawing full width. `WIDTH` is the webtoon shape — each page at the full
+ * width and its real aspect ratio, known BEFORE it is drawn because the loader
+ * reads the page's size out of the file header, so the strip is the right height
+ * from the first frame and never shifts under the reader's thumb as pages land.
+ * `HEIGHT` and `WHOLE` instead give every page a whole viewport of its own with
+ * the page fitted inside it — which is what a reader who asked for "fit the
+ * screen" is asking for, and what this body used to ignore.
  *
  * The strip is scrolled only by [request], and the item under the viewport is
  * reported back: that report is what decides which chapter and page the reader is
@@ -1122,6 +1128,7 @@ private fun WebtoonRunBody(
     itemIndexOf: (ScrollRequest) -> Int,
     onReport: (String, Int) -> Unit,
     onTap: () -> Unit,
+    fit: String,
     enhance: Boolean = false,
 ) {
     val mover = remember { ReaderMover() }
@@ -1138,11 +1145,19 @@ private fun WebtoonRunBody(
             .collect { i -> entries.getOrNull(i)?.let { onReport(it.chapterUrl, it.page) } }
     }
 
-    Box(
+    val fitWidth = fit == MangaFit.WIDTH
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .pointerInput(Unit) { detectTapGestures { onTap() } }
     ) {
+        // The box a page gets when the fit is not "width": one whole viewport. This
+        // is the only measurement an item cannot derive from the page itself — the
+        // page's own height is exactly what the fit is meant to constrain, so it
+        // cannot also be the box's height. Measured once, here, and handed to every
+        // item: the strip still scrolls as one column, and each page lands centred
+        // in a screen of its own.
+        val pageRoom = maxHeight
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -1161,21 +1176,23 @@ private fun WebtoonRunBody(
                             Modifier
                                 .fillMaxWidth()
                                 .then(
-                                    if (ratio > 0f) Modifier.aspectRatio(ratio)
-                                    else Modifier.height(420.dp)
+                                    when {
+                                        // The webtoon shape: the box IS the page's own
+                                        // aspect ratio, so the strip's height is exactly
+                                        // the pages it holds.
+                                        fitWidth && ratio > 0f -> Modifier.aspectRatio(ratio)
+                                        fitWidth -> Modifier.height(420.dp)
+                                        // A fit mode: one screen per page, the page scaled
+                                        // to fit inside it (see [PageContent]'s fitWidth).
+                                        else -> Modifier.height(pageRoom)
+                                    }
                                 )
                         ) {
                             PageContent(
                                 state = state,
                                 source = item.source,
-                                // The strip is the full-width shape: the page
-                                // is drawn at its real height inside a box of
-                                // its own aspect ratio (known from the file
-                                // header before it is drawn), and the strip
-                                // scrolls as one column.
-                                fitWidth = true,
+                                fitWidth = fitWidth,
                                 enhance = enhance,
-                                label = "page ${item.page + 1}",
                             )
                         }
                     }
@@ -1227,22 +1244,15 @@ private fun ChapterCard(label: String) {
  * the loader already fetched.
  *
  * The page itself is drawn by [PageContent] — one bitmap, scaled by the
- * platform — so the two shapes only differ in the BOX they give it and in how
- * that bitmap is scaled into it: `MangaFit.WIDTH` lays the page out at its real
- * height inside a vertical scroll, and the fit modes give it the viewport.
- *
- * A page TALLER than 3× its width is the exception, and it is a deliberate one:
- * it is not a bitmap at all but a strip, drawn region-by-region by
- * [NekoPageView] (see [PageBitmaps.TALL_RATIO]). The box is the same either way
- * — the page's own aspect ratio — which is what keeps "the strip scrolls at the
- * right speed" true for both shapes.
+ * platform — so the fits differ only in the BOX they give it and in how that
+ * bitmap is scaled into it: `MangaFit.WIDTH` lays the page out at its real height
+ * inside a vertical scroll, and the fit modes give it the viewport.
  */
 @Composable
 private fun PageImage(
     source: StreamSource,
     fit: String,
     enhance: Boolean = false,
-    label: String = "",
     modifier: Modifier = Modifier,
 ) {
     val state = rememberPageState(source)
@@ -1269,7 +1279,6 @@ private fun PageImage(
                         source = source,
                         fitWidth = true,
                         enhance = enhance,
-                        label = label,
                     )
                 }
             }
@@ -1280,7 +1289,6 @@ private fun PageImage(
                     source = source,
                     fitWidth = false,
                     enhance = enhance,
-                    label = label,
                 )
             }
         }
@@ -1322,19 +1330,14 @@ internal val mangaEnhanceFilter: ColorFilter by lazy {
  * offers one more try on THAT page alone, so a single bad page never costs the
  * reader the whole chapter.
  *
- * There are exactly TWO drawing shapes, and which one a page gets is decided by
- * its own proportions (see [PageBitmaps.TALL_RATIO]):
- *
- *  * **h ≤ 3w** — the ordinary page and the ordinary manhwa page. One bitmap
- *    from [PageBitmaps], drawn by an ordinary Compose `Image`, the same thing
- *    every poster and cover in this app is drawn with. A bitmap is only provably
- *    safe at this shape because [PageBitmaps] holds it to a budget a single page
- *    can be one texture within — that budget, not the shape, is the part that
- *    makes this safe.
- *  * **h > 3w** — a webtoon strip. Drawn by [NekoPageView], the ported CHUNKED
- *    renderer ([ChunkedPageView]): the page is decoded into bounded chunks and
- *    never exists as one bitmap at all. This is the shape that came out as
- *    displaced blocks, because a page that tall cannot be one texture.
+ * There is exactly ONE drawing shape, for every page, short or tall: one bitmap
+ * from [PageBitmaps], drawn by an ordinary Compose `Image` — the same thing every
+ * poster and cover in this app is drawn with. A page taller than the GPU's largest
+ * texture draws correctly all the same, because the bitmap is SOFTWARE memory and
+ * the platform's render thread splits it into as many tiles as it needs: that is
+ * the shape the reference reader has always used for webtoon strips, and the only
+ * shape that has ever come out right on the phones this app ships to — the four
+ * piecewise shapes that did not are listed in [PageBitmaps].
  *
  * [fitWidth] is a property of the MODE, not of the page: the webtoon strip and
  * `MangaFit.WIDTH` draw the page at its full width (at its real height, inside a
@@ -1350,45 +1353,9 @@ private fun PageContent(
     source: StreamSource,
     fitWidth: Boolean,
     enhance: Boolean = false,
-    label: String = "",
 ) {
     when (state) {
         is MangaPageState.Ready -> {
-            if (PageBitmaps.isTallPage(state.width, state.height)) {
-                // A STRIP (h > 3w): drawn by the ported chunked renderer, never by a
-                // bitmap. Nothing here decodes the page as one image at all — the
-                // view region-decodes the file it is given into bounded chunks,
-                // which is the only shape that survives a webtoon's height (see
-                // [ChunkedPageView] for the algorithm, and [PageBitmaps.TALL_RATIO]
-                // for why the rule is 3x).
-                //
-                // The box around this is already the page's own aspect ratio (the
-                // strip mode) or the viewport (the fit modes), so the page occupies
-                // exactly the space it should and the list scrolls through it; the
-                // view never consumes a gesture, so the list keeps every one.
-                var chunkReady by remember(state.file.absolutePath) { mutableStateOf(false) }
-                Box(Modifier.fillMaxSize()) {
-                    NekoPageView(
-                        file = state.file,
-                        sourceUrl = source.url,
-                        // A strip fills the box's width; a paged fit mode scales the
-                        // whole page into the box (see ChunkedPageView.fitInside).
-                        fitInside = !fitWidth,
-                        label = label,
-                        onReady = { chunkReady = true },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    // The chunked view draws nothing until its first chunk lands, so
-                    // the spinner sits on top and goes the moment there is something
-                    // to look at — the same "a page that is coming shows a spinner"
-                    // contract the bitmap path below has.
-                    if (!chunkReady) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
-                        }
-                    }
-                }
-            } else {
             // Keyed on the file's own (unique-per-fetch) path, so a retry that
             // lands a good page decodes THAT file and nothing else changes. The
             // first value is the cache peek: a page that is already decoded (it
@@ -1430,7 +1397,6 @@ private fun PageContent(
                         CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
                     }
                 }
-            }
             }
         }
         is MangaPageState.Failed -> Column(

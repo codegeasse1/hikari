@@ -289,6 +289,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 loadInternal(forceRefresh = true)
             }
         }
+        viewModelScope.launch {
+            // The adult-content switch was turned off (or back on): the rows already
+            // in hand were fetched under the old answer, and a catalogue row cannot
+            // be re-checked afterwards — a /discover answer carries no certificate,
+            // so the ceiling is applied by the REQUEST (see
+            // [com.hikari.app.data.NsfwGate.capDiscoverCertification]). Dropping the
+            // cache and rebuilding is what makes the switch change the feed the user
+            // is looking at, instead of only the next app launch's.
+            val app = getApplication<Application>() as HikariApp
+            app.store.nsfwEnabledFlow().drop(1).collect {
+                homeCache.clear()
+                loadInternal(forceRefresh = true)
+            }
+        }
     }
 
     /** True when a stored Home pick refers to a collection, not an extension. */
@@ -1682,10 +1696,14 @@ private fun PickerRow(
  * still not the platform's long-press timeout (~500ms, which a slow deliberate
  * tap can trip) — it is OUR measurement of a press, and a drag cancels it.
  */
-private const val HOLD_MS = 500L
+internal const val HOLD_MS = 500L
 
 /**
  * "Tap, or HOLD for a moment".
+ *
+ * Shared: the Manga tab's Browse list uses the same gesture to reveal an
+ * engine's pin (see [com.hikari.app.ui.screens.MangaScreen]), so the two holds
+ * in the app are the same length and behave the same way around a scroll.
  *
  * `combinedClickable` uses the platform's long-press timeout, which fires on a
  * press that is merely unhurried, and the gesture also has to survive the list
@@ -1694,7 +1712,7 @@ private const val HOLD_MS = 500L
  * change the enclosing scroller has already consumed) is left completely alone
  * so the list still scrolls normally.
  */
-private suspend fun PointerInputScope.holdOrTap(
+internal suspend fun PointerInputScope.holdOrTap(
     onHold: () -> Unit,
     onTap: () -> Unit,
 ) {

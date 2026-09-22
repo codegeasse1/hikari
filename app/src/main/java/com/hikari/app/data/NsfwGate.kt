@@ -169,7 +169,48 @@ object NsfwGate {
         return out
     }
 
-    /** Whether an extension may be listed/used: NSFW-tagged ones only with the
-     *  switch on. */
-    fun allowsExtension(nsfw: Boolean): Boolean = enabled || !nsfw
+    /**
+     * The certificate a FILM catalogue query may return while the switch is off.
+     *
+     * Asked of TMDB itself, not applied to the answer, because a catalogue row
+     * carries no certificate to apply it to: a /discover/movie item is a title, a
+     * poster and a year, and the rating lives behind a second request per title
+     * that no row can afford. TMDB's own `certification.lte` filter is therefore
+     * the only way to keep an R-rated film out of a row — and every row, browse
+     * grid, preset and Production/Network/Person catalogue in this app IS a
+     * discover query (see [com.hikari.app.data.TmdbSources] and
+     * [com.hikari.app.data.TmdbBrowse]).
+     *
+     * PG-13, and not `R`: the filter is "less than or equal", so asking for R would
+     * keep exactly what the user asked to hide. TV is deliberately NOT capped — see
+     * the class doc for why TV-MA is not in [ADULT_RATINGS], and a cap that removed
+     * TV-MA would empty the shelves of someone who only meant to switch off adult
+     * material.
+     *
+     * The cost is real and is the reason this is the LAST resort rather than the
+     * first line: TMDB will not match a film it has no US certificate for, so a
+     * niche row (a small country's cinema, a straight-to-streaming release) comes
+     * back shorter than it would with the switch on. That is a shelf with fewer
+     * cards on it, which is the trade the switch was asking for.
+     */
+    private const val DISCOVER_MOVIE_CEILING = "PG-13"
+
+    /**
+     * Adds TMDB's certification ceiling to a discover query while the switch is
+     * off, so an R-rated film cannot reach a row at all (see
+     * [DISCOVER_MOVIE_CEILING]).
+     *
+     * Called from the one place every TMDB request passes through
+     * ([com.hikari.app.nuvio.TmdbResolver.apiGet]), so no caller has to remember
+     * it — including callers written later. A query that names its own
+     * certification is left alone: that is the user stating what they want, and
+     * the switch is not a licence to override it.
+     */
+    fun capDiscoverCertification(path: String, params: MutableMap<String, String>) {
+        if (enabled) return
+        if (!path.startsWith("/discover/movie")) return
+        if (params.containsKey("certification.lte") || params.containsKey("certification")) return
+        params["certification_country"] = "US"
+        params["certification.lte"] = DISCOVER_MOVIE_CEILING
+    }
 }

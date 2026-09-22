@@ -175,6 +175,8 @@ class AppStore(private val ctx: Context) {
          * load on phone, not make laggy").
          */
         val MANGA_ENHANCE = booleanPreferencesKey("mangaEnhance")
+    /** Engine ids the reader pinned to the top of the Manga tab's Browse list. */
+    val PINNED_MANGA_ENGINES = stringSetPreferencesKey("pinnedMangaEngines")
         /**
          * May adult material be shown (Settings → Content → NSFW)?
          *
@@ -260,6 +262,12 @@ class AppStore(private val ctx: Context) {
          *  [com.hikari.app.ui.AuraColors]. "theme" (the default) follows the app
          *  accent, which is what the ring always drew. */
         val POSTER_AURA_COLOR = stringPreferencesKey("posterAuraColor")
+    /** Where a poster's edge light stands, as fractions of the card — see
+     *  [com.hikari.app.ui.PosterEffects.LIT]. */
+    val POSTER_GLOW_X = floatPreferencesKey("posterGlowX")
+    val POSTER_GLOW_Y = floatPreferencesKey("posterGlowY")
+    /** How hard that light burns, 0-100. */
+    val POSTER_GLOW_STRENGTH = intPreferencesKey("posterGlowStrength")
         /** The same choice for the loading screen's own aura ring. Kept apart
          *  from the poster's so the two screens can differ. */
         val LOADING_AURA_COLOR = stringPreferencesKey("loadingAuraColor")
@@ -568,6 +576,16 @@ class AppStore(private val ctx: Context) {
         /** dp of corner rounding on each poster. */
         const val DEFAULT_POSTER_CORNER = 28
 
+        /** Where the poster edge light stands by default: top-centre, a little
+         *  in from the top edge — the reference client's look, and the point the
+         *  picker in Settings starts from. */
+        const val DEFAULT_POSTER_GLOW_X = 0.5f
+        const val DEFAULT_POSTER_GLOW_Y = 0.14f
+
+        /** How hard it burns by default: bright enough to read as a light on a
+         *  dark poster, weak enough not to wash out a bright one. */
+        const val DEFAULT_POSTER_GLOW_STRENGTH = 55
+
         /** The signature card treatment ([com.hikari.app.ui.PosterEffects]). */
         val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.FRAME
 
@@ -791,6 +809,44 @@ class AppStore(private val ctx: Context) {
         write("POSTER_AURA_COLOR") {
             it[K.POSTER_AURA_COLOR] = com.hikari.app.ui.AuraColors.normalize(key)
         }
+    }
+
+    /**
+     * Where the poster edge light ([com.hikari.app.ui.PosterEffects.LIT]) stands,
+     * as fractions of the card: (0, 0) is the top-left corner, (1, 1) the
+     * bottom-right.
+     *
+     * Two numbers rather than a list of presets, because the effect is a LIGHT
+     * and the only thing about a light worth choosing is where it stands — the
+     * picker in Settings is a card the user points at, and a preset menu would
+     * be a worse way to ask the same question.
+     */
+    fun posterGlowPointFlow(): Flow<Pair<Float, Float>> =
+        store.data.map {
+            val x = it[K.POSTER_GLOW_X] ?: DEFAULT_POSTER_GLOW_X
+            val y = it[K.POSTER_GLOW_Y] ?: DEFAULT_POSTER_GLOW_Y
+            x.coerceIn(0f, 1f) to y.coerceIn(0f, 1f)
+        }
+
+    suspend fun posterGlowPoint(): Pair<Float, Float> = posterGlowPointFlow().first()
+
+    suspend fun setPosterGlowPoint(x: Float, y: Float) {
+        write("POSTER_GLOW_POINT") {
+            it[K.POSTER_GLOW_X] = x.coerceIn(0f, 1f)
+            it[K.POSTER_GLOW_Y] = y.coerceIn(0f, 1f)
+        }
+    }
+
+    /** How hard that light burns, 0-100 (100 = a hard key light). */
+    fun posterGlowStrengthFlow(): Flow<Int> =
+        store.data.map {
+            (it[K.POSTER_GLOW_STRENGTH] ?: DEFAULT_POSTER_GLOW_STRENGTH).coerceIn(0, 100)
+        }
+
+    suspend fun posterGlowStrength(): Int = posterGlowStrengthFlow().first()
+
+    suspend fun setPosterGlowStrength(value: Int) {
+        write("POSTER_GLOW_STRENGTH") { it[K.POSTER_GLOW_STRENGTH] = value.coerceIn(0, 100) }
     }
 
     /** The colour the loading screen's own aura ring is drawn in. */
@@ -1351,6 +1407,25 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setMangaEnhance(on: Boolean) {
         write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
+    }
+
+    /**
+     * The manga engines the reader pinned to the top of the tab's Browse list
+     * (see [K.PINNED_MANGA_ENGINES]).
+     *
+     * Engine IDS, not names: a name is display text that can be translated or
+     * changed by an extension update, and a pin that fell off because of either
+     * would be worse than no pin at all. An id that no longer exists is simply
+     * ignored when the list is ordered, so uninstalling a pinned engine leaves
+     * nothing behind but a stale string.
+     */
+    fun pinnedMangaEnginesFlow(): Flow<Set<String>> =
+        store.data.map { it[K.PINNED_MANGA_ENGINES] ?: emptySet() }
+
+    suspend fun pinnedMangaEngines(): Set<String> = pinnedMangaEnginesFlow().first()
+
+    suspend fun setPinnedMangaEngines(ids: Set<String>) {
+        write("PINNED_MANGA_ENGINES") { it[K.PINNED_MANGA_ENGINES] = ids }
     }
 
     // ---- Adult content (Settings → Content) ----

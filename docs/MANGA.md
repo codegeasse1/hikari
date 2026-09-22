@@ -69,17 +69,46 @@ reported by name.
   a `Column` in a `ModalBottomSheet` that overflows is clipped, not scrolled, and
   a sliced row reads to the user as a duplicated control.
 * Page images are fetched, validated and retried by `manga/MangaPageLoader` (ten
-  attempts, then a per-page Retry button). What DRAWS a page is decided by the
-  page's own proportions, and by nothing else: h ≤ 3w is one bitmap from
-  `manga/PageBitmaps` drawn by an ordinary `Image`, h > 3w is a strip drawn by
-  `manga/NekoPageView` → `manga/ChunkedPageView` (the ported Nekoread/Tachiyomi
-  `WebtoonChunkedImageView`, which region-decodes the file into at most-2048px
-  chunks and never builds a page-sized bitmap). The short page's budget is
-  Nekoread's too: `MAX_PAGE_PIXELS = 1_000_000` and `MAX_DECODE_HEIGHT = 2048`,
-  because a bitmap is only safe when it is provably ONE texture.
+  attempts, then a per-page Retry button), and every page is drawn the same way:
+  ONE whole-page SOFTWARE bitmap from `manga/PageBitmaps`, drawn by an ordinary
+  `Image`. There is no second path — no chunked renderer, no slices, no
+  `BitmapRegionDecoder` (all four were tried and all four drew the page in
+  pieces). The budget depends on the page's own shape: `MAX_PAGE_PIXELS` =
+  `1_000_000` for an ordinary page, `TALL_PAGE_BYTES` = 48MB for a webtoon strip,
+  with the width halved only when a monster strip needs it and never below 256px.
   `docs/READER.md` section 4a is the whole story, and it is required reading
-  before touching the image path. `Enhance images` in the settings is a draw-time
-  `ColorFilter` on a short page's `Image` (the strip view has no equivalent).
+  before touching the image path.
+
+## Browse: finding an engine, and keeping the two you read
+
+`MangaScreen`'s Browse section is a flat list of every installed manga engine
+(one row per source an extension publishes), and with a hundred extensions installed
+finding one in it is half the work the tab does. Two things answer that:
+
+* **A search box over the installed engines**, always drawn (it used to appear only
+  past six engines, which left the reader with four and a name to find unable to
+  filter at all). It matches the engine's NAME, and it filters the list in place.
+* **A HOLD on a row pins it.** The gesture is `holdOrTap` (`HOLD_MS` = 500ms, the
+  same helper and the same duration as the Home picker's multi-select hold, shared
+  because a second hand-tuned hold in the same app would be a second thing to learn).
+  Holding reveals the pin (and a Done button — a control whose only exit is another
+  gesture is a trap); a pinned engine is drawn ABOVE every other one, wears the accent
+  so the top of the list explains itself, and is remembered by engine ID in
+  `AppStore.pinnedMangaEnginesFlow`. A tap on a row while its pin control is showing
+  puts the control away instead of opening the engine, which is what every other
+  context menu does. The ordering is applied where the list is drawn, from the stored
+  set — a pin that outlives its engine simply stops matching.
+
+**A tap opens the engine's Popular list**, and each row also carries Popular/Latest
+pills. Once INSIDE one of the two, the catalog page offers the same pair as tabs
+(`CatalogScreen` + `CatalogViewModel.catalog`/`switchCatalog`), so switching between
+the two lists happens where the reader already is instead of by going back a screen
+and pressing the other pill. The tabs are offered only where the pair is the whole
+story: a MANGA catalog (`rawType == "manga"`) currently showing one of the two.
+
+The catalog page also carries the engine's own search box (see `docs/SEARCH.md`),
+which asks THAT engine rather than every installed one — with a hundred extensions,
+the one a reader wants may not be the one the tab searches by default.
 
 ## Cloudflare and manga sites
 
