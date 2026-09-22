@@ -213,7 +213,7 @@ object NsfwGate {
      * while the switch is off (series have no certificate ceiling — see the class
      * doc on TV-MA). A shorter, safer row is the trade the switch is asking for.
      *
-     * `/trending/person/*` is deliberately NOT here: its answer is PEOPLE, not
+     * `/trending/person` is deliberately NOT here: its answer is PEOPLE, not
      * titles, and rewriting it into a movie row would replace a row of actors with
      * a row of films — a bug the switch has no business introducing. A person has
      * no certificate to cap.
