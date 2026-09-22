@@ -75,19 +75,38 @@ class ExtensionCloudflareInterceptor(
 
     /**
      * True when a response is a bot wall rather than the page the extension
-     * asked for: Cloudflare's own signature ([CloudflareVerifier]), a
-     * `cf-mitigated` challenge header, or one of the JS interstitials the
-     * AnimeOnline/DooPlay family serves — "One moment, please" with a
-     * `wsidchk-form`, which those sites answer with 403 until the form's script
-     * has run.
+     * asked for.
+     *
+     * The cheap, header-only signals come first, and the body is only read for
+     * the statuses a wall actually uses: an extension streams real media through
+     * this client (video manifests and segments), and peeking a 64 KiB window
+     * out of every response would be pure cost on the healthy ones.
      */
     private fun isChallenge(response: Response): Boolean {
-        if (CloudflareVerifier.isCloudflareChallenge(response)) return true
+        // Cloudflare's own signature — a 403/503 whose `Server` says cloudflare,
+        // or the authoritative `cf-mitigated` header of a managed challenge.
+        val code = response.code
+        val server = response.header("Server")?.lowercase().orEmpty()
         if (!response.header("cf-mitigated").isNullOrBlank()) return true
+        if (code == 403 || code == 503) {
+            if (server.contains("cloudflare")) return true
+        } else if (code != 429) {
+            return false
+        }
+        // A wall answers with a small HTML/JS page. Anything else at this status
+        // is the site's own refusal (or its rate limit) and is handed straight
+        // back to the extension.
+        val type = response.header("Content-Type")?.lowercase().orEmpty()
+        if (type.isNotBlank() &&
+            !type.contains("html") && !type.contains("text") && !type.contains("javascript")
+        ) {
+            return false
+        }
         val body = runCatching { response.peekBody(64L * 1024).string() }.getOrNull().orEmpty()
         if (body.isBlank()) return false
-        // These markers only appear on an interstitial, whatever its status
-        // code, so they are checked regardless of 403/503.
+        // Interstitial-only strings: "One moment, please" with a `wsidchk-form`
+        // is what the AnimeOnline/DooPlay family serves (with 403) until its
+        // script has run; the rest are Cloudflare's challenge markers.
         return HARD_MARKERS.any { body.contains(it, ignoreCase = true) }
     }
 
