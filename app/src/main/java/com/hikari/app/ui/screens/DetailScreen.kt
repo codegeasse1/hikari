@@ -147,6 +147,8 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.openYouTubeVideo
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
+import com.hikari.app.ui.components.ChoiceDialog
+import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.GlassShape
@@ -1559,6 +1561,9 @@ fun DetailScreen(
     val filingsFlow = remember { app.store.favoriteCategoriesFlow() }
     val filings by filingsFlow.collectAsState(initial = emptyMap())
     var librarySheet by remember { mutableStateOf(false) }
+    // The mark sheet (the check button beside Play) — see the block below the
+    // library picker.
+    var markSheet by remember { mutableStateOf(false) }
 
     var playerLaunched by remember { mutableStateOf(false) }
     // Resets the once-only launch guard the moment the player activity returns
@@ -2455,6 +2460,189 @@ fun DetailScreen(
         )
     }
 
+    // ---- The mark sheet: watched / watching / for later ----------------------
+    //
+    // The reference client puts a check button beside Play that files the title
+    // itself — watched, currently watching, or for later — and this is that button
+    // over THIS app's own records. Nothing here is a second kind of state:
+    //
+    //  * "watched" and "watching" are watch-history entries (the watched test is
+    //    the same one the Continue Watching shelf uses — nearly at the end of a
+    //    known length — so a mark and a real play cannot disagree), and
+    //  * "for later" is a LIBRARY FILING into a `Watch later` category, so the
+    //    title shows up in the Library screen, in My Stuff and in a backup, and
+    //    can be re-filed or removed there like any other saved title.
+    //
+    // Which episode a mark applies to is the episode the Play button is pointing
+    // at (the one being resumed, or the first) — the same target the button names,
+    // so the sheet never marks something other than what Play would open. A series
+    // additionally gets "all episodes", which is the reference client's
+    // "mark season as watched".
+    val watchLaterName = tr("Watch later")
+    // Found by NAME: "Watch later" is an ordinary, editable Library category
+    // (created by the sheet's first use), so a user who renames it has renamed
+    // their own shelf — no hidden id is holding a filing they cannot see.
+    val watchLaterCat = categories.firstOrNull { it.name.equals(watchLaterName, ignoreCase = true) }
+    val markIsSeries = m?.type == MediaType.SERIES || episodes?.isNotEmpty() == true
+    val markTargetEp: Episode? = if (markIsSeries) (resumeEp ?: sortedEps.firstOrNull()) else null
+    val markTargetHistory = historyForTitle.firstOrNull { it.episodeId == markTargetEp?.id.orEmpty() }
+    // "Watched" is exactly the condition the Continue Watching shelf treats as
+    // finished (see HomeScreen): a known length, and a position within ten
+    // seconds of its end.
+    val markWatched = markTargetHistory?.let {
+        it.durationMs > 0L && it.positionMs >= it.durationMs - 10_000L
+    } ?: false
+    val markWatching = savedProgressFor(markTargetEp) != null
+    val markAllWatched = markIsSeries && sortedEps.isNotEmpty() && sortedEps.all { ep ->
+        historyForTitle.firstOrNull { it.episodeId == ep.id }?.let {
+            it.durationMs > 0L && it.positionMs >= it.durationMs - 10_000L
+        } == true
+    }
+    val markLater = watchLaterCat != null && savedCategories.contains(watchLaterCat.id)
+    val markAnything = markWatched || markWatching || markLater
+
+    /** Records one mark as a history entry. `position`/`duration` are what the
+     *  shelf reads, so "watched" is written as a FINISHED entry (the title's own
+     *  runtime when TMDB knows it, otherwise an equal pair that simply reads as
+     *  finished) and "watching" as a just-started one — which is what makes it
+     *  appear under Continue watching without inventing a position the viewer
+     *  has not reached. */
+    fun writeMark(ep: Episode?, watched: Boolean) {
+        val runtimeMs = extras?.details?.runtimeMinutes
+            ?.takeIf { it > 0 }?.toLong()?.times(60_000L) ?: 0L
+        val pos: Long
+        val dur: Long
+        if (watched) {
+            // A known length makes the History row draw a full progress bar;
+            // without one, an equal pair is what "finished" looks like.
+            dur = runtimeMs.takeIf { it > 0L } ?: 1_800_000L
+            pos = dur
+        } else {
+            dur = runtimeMs
+            pos = 2_000L
+        }
+        scope.launch {
+            app.store.addHistory(
+                HistoryEntry(
+                    providerId = livePid,
+                    mediaId = mediaId,
+                    type = m?.type ?: type,
+                    title = m?.title ?: title,
+                    posterUrl = (m?.posterUrl ?: posterUrl).takeIf { !it.isNullOrBlank() },
+                    episodeId = ep?.id.orEmpty(),
+                    episodeName = ep?.name.orEmpty(),
+                    positionMs = pos,
+                    durationMs = dur,
+                    watchedAt = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
+    if (markSheet) {
+        val targetLabel = markTargetEp
+            ?.let { if (it.season > 1) "S${it.season} E${it.number}" else "E${it.number}" }
+        ChoiceDialog(
+            title = tr("Mark"),
+            items = buildList {
+                add(
+                    ChoiceItem(
+                        key = "watched",
+                        label = if (markWatched) tr("Mark as unwatched") else tr("Mark as watched"),
+                        supporting = listOfNotNull(
+                            targetLabel,
+                            if (markWatched) tr("Watched") else tr("Not watched yet"),
+                        ).joinToString(" · "),
+                    )
+                )
+                add(
+                    ChoiceItem(
+                        key = "watching",
+                        label = tr("Mark as watching"),
+                        supporting = if (markWatching) tr("Shows in Continue watching")
+                        else tr("Puts it in Continue watching"),
+                    )
+                )
+                add(
+                    ChoiceItem(
+                        key = "later",
+                        label = if (markLater) tr("Remove from watch later") else tr("Add to watch later"),
+                        supporting = tr("Saved in the Library under Watch later"),
+                    )
+                )
+                if (markIsSeries && sortedEps.isNotEmpty()) {
+                    add(
+                        ChoiceItem(
+                            key = "all",
+                            label = tr("Mark all episodes as watched"),
+                            supporting = if (markAllWatched) tr("All episodes are watched")
+                            else "${sortedEps.size} " + tr("episodes"),
+                        )
+                    )
+                }
+                if (historyForTitle.isNotEmpty()) {
+                    add(
+                        ChoiceItem(
+                            key = "clear",
+                            label = tr("Remove from history"),
+                            supporting = tr("Forgets the saved position"),
+                        )
+                    )
+                }
+            },
+            selectedKey = when {
+                markWatched -> "watched"
+                markWatching -> "watching"
+                markLater -> "later"
+                else -> null
+            },
+            onPick = { key ->
+                when (key) {
+                    "watched" -> {
+                        val existing = markTargetHistory
+                        if (markWatched && existing != null) {
+                            // Unmarking is the record going away, which is also
+                            // what clears it from Continue watching and History.
+                            scope.launch { app.store.removeHistory(existing.uniqueKey) }
+                        } else {
+                            writeMark(markTargetEp, watched = true)
+                        }
+                    }
+                    "watching" -> {
+                        // Never resets a position that is already saved: "watching"
+                        // is a STATUS, and clobbering someone's 40th minute with a
+                        // freshly-started entry would be the opposite of helping.
+                        if (!markWatching) writeMark(markTargetEp, watched = false)
+                    }
+                    "later" -> scope.launch {
+                        if (markLater && watchLaterCat != null) {
+                            app.store.setFavoriteCategories(
+                                savedItem.uniqueId, savedCategories - watchLaterCat.id,
+                            )
+                        } else {
+                            // Being "for later" means being in the Library, so the
+                            // category is created on its first use and the title is
+                            // saved into it — one tap, and the Library screen, My
+                            // Stuff and a backup all agree about it.
+                            val cat = watchLaterCat ?: app.store.addLibraryCategory(watchLaterName)
+                            app.store.addFavorite(savedItem)
+                            app.store.addFavoriteCategories(savedItem.uniqueId, setOf(cat.id))
+                        }
+                    }
+                    "all" -> {
+                        val eps = sortedEps.toList()
+                        scope.launch { eps.forEach { writeMark(it, watched = true) } }
+                    }
+                    "clear" -> {
+                        val keys = historyForTitle.map { it.uniqueKey }
+                        scope.launch { keys.forEach { app.store.removeHistory(it) } }
+                    }
+                }
+            },
+            onDismiss = { markSheet = false },
+        )
+    }
+
     // Arriving from watch history: once metadata/episodes are loaded, offer to
     // resume the target episode (or the movie) instead of silently jumping in.
     //
@@ -2726,6 +2914,20 @@ fun DetailScreen(
                             // own loader, so the button must never sit on a
                             // "Preparing…" spinner of its own.
                             Text(actionLabel)
+                        }
+                        // The MARK button — the reference client's check beside
+                        // Play. It opens the sheet above (watched / watching / for
+                        // later), and it wears the accent as soon as this title
+                        // carries any mark at all, so the row answers "is this
+                        // tracked?" at a glance.
+                        FilledTonalButton(onClick = { markSheet = true }) {
+                            Icon(
+                                Icons.Filled.CheckCircle,
+                                contentDescription = tr("Mark as watched, watching or for later"),
+                                modifier = Modifier.size(18.dp),
+                                tint = if (markAnything) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         // Download without watching first: opens the player on
                         // this episode and puts its download chooser up as soon

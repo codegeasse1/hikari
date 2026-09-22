@@ -96,11 +96,16 @@ data class ReaderChapter(
  * once as the defaults for the fields they cover (see [fromLegacy]), so nobody
  * loses the reading mode or background they had picked.
  *
- * Defaults are Hikari's, not Nekoread's, where the two differ: webtoon mode and a
- * pure black backdrop are what this app's manga is almost always read in, and a
- * tap zone that turns pages is what a reader expects from the previous build
- * (Nekoread's default scheme is "disabled" because its chrome has a page slider —
- * ours does too, but the change would look like the taps stopped working).
+ * Defaults are the reference reader's own out-of-the-box states (the settings
+ * screens the user went through and asked to be the app's defaults): webtoon mode
+ * with a pure black backdrop, page transitions and smooth auto-scroll ON, and
+ * every gesture that would otherwise change what a plain swipe does OFF — pinch
+ * to zoom, double-tap to zoom and tap-to-turn-the-page — because on a long strip
+ * those turn a scroll into a jump. Tap zones are `Edge`, the webtoon scale type
+ * is `Fit`, the menu hides at the `Normal` threshold, and pages are decoded at
+ * the `High (sharp)` quality. A fresh install therefore reads a chapter exactly
+ * the way the reference app does, and every one of them is one tap away in the
+ * chrome (or one tap on *Reset to defaults*).
  */
 data class ReaderSettings(
     val mode: ReaderMode = ReaderMode.WEBTOON,
@@ -112,9 +117,9 @@ data class ReaderSettings(
     val cropBorders: Boolean = false,
     val cropBordersPaged: Boolean = false,
     val cropBordersContinuous: Boolean = false,
-    val doubleTapZoom: Boolean = true,
-    val pinchToZoom: Boolean = true,
-    val tapToChangePages: Boolean = true,
+    val doubleTapZoom: Boolean = false,
+    val pinchToZoom: Boolean = false,
+    val tapToChangePages: Boolean = false,
     val webtoonSidePadding: Int = 0,
     val webtoonNavigationMode: Int = 3,
     val webtoonNavInverted: TappingInvertMode = TappingInvertMode.NONE,

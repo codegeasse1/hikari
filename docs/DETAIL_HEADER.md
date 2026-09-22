@@ -54,3 +54,32 @@ does (their screenshots are the spec):
 * **The back button never scrolls away.** The one inside the art is drawn by
   `Hero`; a second one in the page's own box takes over once the art is mostly
   gone (`progress > 0.6`), from the same corner.
+
+## The mark button beside Play
+
+The user asked for the reference client's check button next to Play — tap it and
+the title can be marked **watched**, **watching** or **for later**. Where the
+reference client has its own marks, this uses records the rest of the app already
+reads, so a mark can never disagree with a play:
+
+* **watched / watching are watch-history entries** (`AppStore.addHistory`). The
+  "watched" test is the SAME one the Continue Watching shelf applies
+  (`HomeScreen`: a known length, position within ten seconds of the end), and
+  "watching" writes a just-started entry (`positionMs = 2000`, the runtime when
+  TMDB knows it) — which is exactly what puts a title on that shelf. Marking
+  unwatched is the entry going away (`removeHistory`), which also clears it from
+  History.
+* **for later is a Library filing** into a `Watch later` category, created on the
+  first use and found by NAME afterwards (`AppStore.addLibraryCategory` +
+  `addFavoriteCategories`), so the title appears in the Library, in My Stuff and in
+  a backup, and can be re-filed or removed there like any other saved title.
+* The target of "watched/watching" is the episode Play is pointing at (`resumeEp`
+  else the first) — never a different one than the button names. A series also gets
+  **Mark all episodes as watched**, the reference client's "mark season as
+  watched", and any title with history gets **Remove from history**.
+* "Mark as watching" **never resets a saved position**: it is a status, and
+  clobbering someone's 40th minute with a fresh entry would be the opposite of
+  helping. Nothing is written when the title is already being watched.
+* The button wears the accent as soon as the title carries any mark, so the row
+  answers "is this tracked?" at a glance — the sheet itself is the app's shared
+  `ChoiceDialog`, so it looks and behaves like every other picker.

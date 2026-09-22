@@ -187,9 +187,18 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     /**
      * The pages of one chapter, each as a [StreamSource]: `url` is the image URL
-     * to load and `headers` carries the source's own headers, so the reader's
-     * image loader can fetch from a hotlink-protected CDN the way the extension
-     * itself would.
+     * to load, `pageUrl` is the page's own URL on the site and `headers` carries
+     * the source's own headers, so the reader's image loader can fetch from a
+     * hotlink-protected CDN the way the extension itself would.
+     *
+     * This is Nekoread's `TachiyomiHttpSourceAdapter.getPageDescriptors` for this
+     * app's plumbing: it builds each page from the extension's own `getPageList`
+     * and resolves the image URL exactly as that class does (`page.imageUrl ?:
+     * ext.getImageUrl(page)`, written back onto the page), so the pair the reader
+     * downloads with is the pair the extension would send. The page URL is NOT
+     * decoration: an extension's `imageRequest(page)` builds its Referer/Origin
+     * from it, which is why a page fetched with an empty one came back refused or
+     * scrambled.
      */
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> = gate {
         val src = source() ?: return@gate fail(missingReason(), emptyList())
@@ -199,10 +208,13 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             val headers = sourceHeaders(src)
             lastOutcome[config.id] = "✓ ${pageList.size} page(s)"
             pageList.mapIndexed { i, page ->
+                val url = pageUrl(src, page)
+                if (url.isNotBlank()) page.imageUrl = url
                 StreamSource(
                     name = "Page ${i + 1}",
-                    url = pageUrl(src, page),
+                    url = url,
                     headers = headers,
+                    pageUrl = page.url,
                 )
             }
         } catch (t: Throwable) {
@@ -210,6 +222,20 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             fail("pages failed: ${reason(t)}", emptyList())
         }
     }
+
+    /**
+     * The extension's own source, for the reader's page fetches.
+     *
+     * A chapter's pages are downloaded through THIS object — not through a
+     * generic HTTP client — so the extension's `imageRequest(page)` headers,
+     * its per-host rate limits and its own interceptors (a Descrambler on the
+     * sites that scramble their pages, a 404 fallback, cookie handling) all
+     * apply. Nekoread routes a page through `ext.getImage(page)` for exactly
+     * this reason; [com.hikari.app.reader.source.HikariPageSource] does the
+     * same with the source handed out here. BLOCKING (loading the extension is
+     * part of it), so never call it on the main thread.
+     */
+    fun httpSource(): HttpSource? = runCatching { source() as? HttpSource }.getOrNull()
 
     /** The source's own request headers (its User-Agent, Referer, Origin, any
      *  cookies it set), which the reader's image loader replays so a

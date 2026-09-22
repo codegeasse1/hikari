@@ -1,3 +1,75 @@
+## 0.10.16
+
+**The player's server and subtitle boxes were sized off numbers that do not
+describe the room they are in.** Every height cap on the glass panels was
+derived from `visibleRoomPx`, and that function took the smaller of the panel's
+own frame height and `getWindowVisibleDisplayFrame().height()` — both of which a
+floating dialog's WINDOW reports from the display's *natural* orientation, so in
+a landscape player they answered the portrait height (the same quirk the
+fullscreen helper already documents: `currentWindowMetrics` answering
+`1080x2460` inside a `2460x1080` window). Every cap was therefore about 2.3x the
+real room, the panel grew past the bottom of the video, and the rows below the
+fold could not be scrolled to no matter what the caps said — which is why
+several rounds of re-deriving the caps from those same two figures changed
+nothing. The bound that actually follows rotation is the configuration's
+`screenHeightDp`, so the caps are now taken against that, the scroll view clamps
+its cap against the measure spec it is handed, and the "is it still too tall"
+correction compares the *truthful* list height (hint + scroll + chrome +
+padding) against the allowance instead of against the clamp — the old
+comparison could never disagree with itself, so it never fired. Alongside it:
+manga pages are fetched through the extension's own `getImage(page)` exactly as
+the reference reader does, the reader defaults are the user's screenshotted
+states, and a mark button sits beside Play.
+
+### Fixed
+
+- **The server box and the subtitle box fit the screen and scroll.** See the
+  thesis above: `player/PlayerActivity.kt` gains `screenHeightPx()` (the
+  configuration's `screenHeightDp` times density — the only height figure that
+  rotates with the device), `visibleRoomPx` and the opening panel cap are both
+  bounded by it, `MaxHeightScrollView.onMeasure` clamps the cap against the
+  incoming spec so the scroll view can never be handed more room than the panel
+  has, and the correction now measures `hint + scroll.height + chrome + padding`
+  against the allowance (with the panel's own padding read from
+  `paddingTop/paddingBottom`, the old `panel.height - scroll.height` kept only as
+  a fallback). Nothing else about the panel geometry changed.
+- **A manga page is downloaded through the extension, by the book.** The page
+  loader now does exactly what the reference reader's HTTP source adapter does:
+  build a `Page` carrying the page's own URL and its resolved image URL, call
+  `ext.getImage(page)`, check `isSuccessful`, copy the body to the page cache
+  and close it in a `finally`. That is the half that matters — the extension's
+  `getImage` is where the per-page `Referer`, the site's headers and any
+  descrambler live, and the hand-rolled request that skipped it is why chapters
+  kept breaking. `MangaProvider.getStreams` now records each page's URL on the
+  stream (`StreamSource.pageUrl`, new and defaulted so every existing producer
+  compiles untouched) and writes the resolved image URL back onto the page, the
+  reader hands its source to the loader (`MangaProvider.httpSource()`), and the
+  descriptors carry `pageUrl` instead of an empty string. The old header-replay
+  path survives only as the fallback for a source that is not an HTTP source.
+
+### Changed
+
+- **The reader's defaults are the user's screenshots.** Double-tap zoom, pinch
+  zoom and tap-to-change-pages are now off; keep-screen-on, page transitions,
+  smooth auto-scroll, edge tap zones, the stock (Default/none) invert, webtoon
+  fit-width scale, zero side padding, the Normal hide threshold and High (sharp)
+  quality were already what the screenshots showed. A stored settings blob is
+  left alone, so an existing reader keeps what it has — "Reset to defaults" in
+  the reader chrome applies the new set.
+
+### Added
+
+- **A mark button beside Play on the detail page.** It opens a sheet: mark as
+  watched, mark as unwatched, mark as watching (which never clobbers a saved
+  playback position), add to / remove from watch later, mark every episode of a
+  series as watched, and remove the title from history. "Watch later" is an
+  ordinary Library category found by name and created on first use, so it can be
+  renamed or deleted like any other.
+
+### Notes
+
+- Continuous channel only. Nothing is published to the main release.
+
 ## 0.10.15
 
 **The manga reader is Nekoread's reader, ported whole** — its two native viewers,

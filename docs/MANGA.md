@@ -60,9 +60,10 @@ it.**
   loading/error/end state) and `reader/ui/ChimahonPagerReader` (the paged modes —
   a `DirectionalViewPager` of the same page frames, so it can page vertically
   too). Both render every page **from an on-device file** in
-  `reader/cache/WebtoonPageCache`, downloaded once **through the source's own
-  client** (`reader/source/HikariPageSource`, which carries the page's request
-  headers) and region-decoded from disk by
+  `reader/cache/WebtoonPageCache`, downloaded once **through the extension's own
+  `getImage(page)`** (`reader/source/HikariPageSource`, Nekoread's
+  `downloadPageImage` verbatim — the extension's `imageRequest` headers, its
+  descrambler, its per-host limits, its client) and region-decoded from disk by
   `SubsamplingScaleImageView` — the same memory-bounded renderer the reference
   app uses. There is no second path: no tiled bitmap, no chunked view, no
   whole-page bitmap held in the heap.

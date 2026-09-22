@@ -3520,25 +3520,59 @@ class PlayerActivity : ComponentActivity() {
      * video, and the rows under the fold are unreachable no matter how far the
      * list is scrolled — the "unscrollable box" report. So the room is the
      * SMALLEST of everything that puts a bound on it: the frame that was really
-     * laid out and the area of the display that is actually visible to the
-     * window (which the platform reports, in the current orientation, clipped by
-     * the system bars).
+     * laid out, the area of the display that is actually visible to the window,
+     * and the height of the screen the device is holding — see the note on that
+     * third bound in the body, which is the one that finally closed this report.
      *
-     * [windowSize] is deliberately NOT one of those bounds any more. It is the
-     * one number here that can be wrong (it can answer in the display's natural
-     * orientation — see there), and a cap that takes the smallest of a right
-     * number and a wrong one is only as good as the wrong one: on a portrait
-     * screen a bogus landscape height would clamp the whole list to a third of
-     * the room it has. The frame and the visible display frame are both
-     * measurements the platform took from THIS window, in THIS orientation.
+     * [windowSize] is not one of those bounds, because it is the one figure here
+     * that can answer in the display's natural orientation (see there) and a cap
+     * that takes the smallest of a right number and a wrong one is only as good
+     * as the wrong one: on a portrait screen a bogus landscape height would clamp
+     * the whole list to a third of the room it has. [screenHeightPx] IS such a
+     * bound precisely because it does not have that fault — it comes from the
+     * configuration, which follows the rotation.
      */
     private fun visibleRoomPx(frame: View): Int {
         val win = windowSize()
         var room = if (frame.height > 0) frame.height else win.y
+        // …and the SCREEN itself, in the orientation the device is in right now.
+        // This is the bound that cannot be wrong, and it is the one this cap was
+        // missing: the frame and the visible display area are both figures the
+        // platform reports for a WINDOW, and a floating dialog's window can be
+        // built from the display's natural (portrait) metrics — the same quirk
+        // [windowSize] documents — so in the landscape player both of them can
+        // answer 2460 for a screen that is 1080 tall. A cap taken from either is
+        // then more than twice the room there is, the panel grows past the bottom
+        // of the video, and the rows under the fold cannot be reached no matter
+        // how far the list is scrolled: the "subtitle and server box are
+        // unscrollable" report, which no amount of re-deriving the cap from those
+        // two figures could fix, because they are the thing that is wrong.
+        //
+        // A dialog can never show more than the screen is tall, so the smallest
+        // of the three is the room — and the screen's own height is safe to
+        // include even when everything else is right, because the window is
+        // inside it.
+        val cfgH = screenHeightPx()
+        if (cfgH > 0 && cfgH < room) room = cfgH
         val visible = android.graphics.Rect()
         runCatching { frame.getWindowVisibleDisplayFrame(visible) }
         if (visible.height() > 0 && visible.height() < room) room = visible.height()
         return room
+    }
+
+    /**
+     * The height of the DISPLAY in the orientation the device is in right now, in
+     * px.
+     *
+     * `resources.displayMetrics` cannot answer this: it reports the display's
+     * NATURAL metrics, so in the landscape player it says 2460 of a screen that is
+     * 1080 tall (see [windowSize]). The CONFIGURATION is what follows the
+     * rotation, so its `screenHeightDp` is the honest figure — and the only bound
+     * on the panel's height that no window of the platform's can answer wrongly.
+     */
+    private fun screenHeightPx(): Int {
+        val density = resources.displayMetrics.density
+        return (resources.configuration.screenHeightDp * density).toInt()
     }
 
     /**
@@ -3744,8 +3778,12 @@ class PlayerActivity : ComponentActivity() {
         // corrected at all. A room derived from the window can be too tall, never
         // too short, and "too tall" is fixed a frame later by applyHeightCap.
         val openWin = windowSize()
+        // …bounded by the screen's own height, so even the very first frame (the
+        // one laid out before [applyHeightCap] has run) can never open taller than
+        // the display, whatever the window reports (see [screenHeightPx]).
+        val openRoom = minOf(openWin.y, screenHeightPx().takeIf { it > 0 } ?: openWin.y)
         val panelH = (
-            (openWin.y * if (flatPanel) 0.94f else 0.86f).toInt()
+            (openRoom * if (flatPanel) 0.94f else 0.86f).toInt()
                 - 2 * halo - (8 * density).toInt()
             ).coerceAtLeast((72 * density).toInt())
 
@@ -4011,24 +4049,20 @@ class PlayerActivity : ComponentActivity() {
             // collapses under its own height.
             val hintRow = root.getChildAt(0)
             val hintH = if (hintRow != null && hintRow.height > 0) hintRow.height else 0
-            // The panel's own vertical padding is MEASURED, not guessed. The
-            // silhouette's padding is derived from its own size (see
-            // [CurvedGlassPanel]), so a fixed guess is a number that drifts as the
-            // panel grows — and every pixel it drifts by is a pixel of the panel
-            // that ends up below the bottom of the video, where no drag can reach
-            // it. `panel` is WRAP_CONTENT around `scroll`, so the difference
-            // between their two measured heights IS that padding, whatever the
-            // silhouette does with it. The flat guess is only used on the first
-            // pass, before either has been measured.
-            val panelPad = (panel.height - scroll.height).takeIf { it > 0 }
-                ?: (panel.paddingTop + panel.paddingBottom).takeIf { it > 0 }
+            // The panel's own vertical padding is READ BACK from the view — the
+            // silhouette derives it from its own size (see [CurvedGlassPanel]), so
+            // the padding actually applied IS that number, whatever it turned out
+            // to be. The measured difference between the two views is only the
+            // fallback: while the panel is clamped (the very state this function
+            // exists to fix) that difference is the leftover sliver, not the
+            // padding, and believing it was what let the cap stay too big.
+            val panelPad = (panel.paddingTop + panel.paddingBottom).takeIf { it > 0 }
+                ?: (panel.height - scroll.height).takeIf { it > 0 }
                 ?: (2 * (halo + (13 * density).toInt()))
-            // The budget keeps the halo's room top and bottom, and a little air
-            // so the glow has somewhere to fade. The floor yields to the ceiling
-            // — an empty range is exactly the crash a user reported
-            // ("Cannot coerce value to an empty range: maximum 256 is less than
-            // minimum 272") and it is never worth a crash to keep a minimum.
-            val chromeNow = 2 * halo + (8 * density).toInt()
+            // Air the box keeps around itself so it reads as a pane floating on
+            // the video rather than as a sheet stuck to the edges. Small on
+            // purpose: every pixel here is a row the list cannot show.
+            val chromeNow = (24 * density).toInt()
             // The whole panel — the hint line above it plus the panel (list +
             // its own halo padding) — has to fit inside `avail`. The arithmetic
             // below is a first guess at the LIST height that achieves that; the
@@ -4042,18 +4076,22 @@ class PlayerActivity : ComponentActivity() {
             var cap = if (appliedCap > 0) minOf(appliedCap, ceiling) else ceiling
             // THE CORRECTION, and the reason the "unscrollable box" report is over:
             // the number that decides is not any of the estimates above but the
-            // height the frame ACTUALLY laid out. A panel taller than the room it
-            // was given is centred, so it hangs off the top AND the bottom of the
-            // video, and its last rows sit below the display where no drag can ever
-            // bring them up — the user's screenshot is exactly that: a subtitle
-            // list running off the bottom edge of the screen with its scrollbar
-            // visible, i.e. the list was scrollable and the PANEL was too tall. So
-            // the excess comes off the list, and the layout this schedules calls
-            // this function again: each pass shrinks toward the room and the pass
-            // after it finds nothing left to take.
-            if (root.height > 0 && root.height > avail && corrections < 12) {
+            // height the box ACTUALLY came out as. What has to fit is the hint line,
+            // the list the scroll view was really given and the panel's own
+            // padding; if that total is taller than the room, the excess comes off
+            // the list and the layout this schedules calls this function again —
+            // each pass shrinks toward the room and the pass after it finds nothing
+            // left to take. It deliberately does NOT read `root.height` for this:
+            // a LinearLayout's own measured height is CLAMPED to the spec its
+            // parent offers, so a root that hangs off the bottom of the display
+            // reports exactly the room it was given and the correction never fired.
+            // The list's height is the figure that is truthful in that state (it
+            // keeps its measured size however the panel around it is clamped).
+            val listNow = if (scroll.height > 0) scroll.height else cap
+            val needed = hintH + listNow + chromeNow + panelPad
+            if (needed > avail && corrections < 12) {
                 corrections++
-                cap = (cap - (root.height - avail)).coerceAtLeast((24 * density).toInt())
+                cap = (cap - (needed - avail)).coerceAtLeast((24 * density).toInt())
             }
             if (cap != appliedCap) {
                 appliedCap = cap
@@ -10052,11 +10090,31 @@ private class MaxHeightScrollView(context: android.content.Context) : ScrollView
     var maxHeightPx = 0
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        if (maxHeightPx > 0) {
-            super.onMeasure(
-                widthMeasureSpec,
-                MeasureSpec.makeMeasureSpec(maxHeightPx, MeasureSpec.AT_MOST),
-            )
+        val cap = maxHeightPx
+        if (cap > 0) {
+            // The cap is a CEILING over the incoming spec as well, never a
+            // replacement for it. Replacing it is what made a box that was cut
+            // off and would not scroll: the cap could come out larger than the
+            // room the panel around this view actually had (the panel is
+            // WRAP_CONTENT inside a root that is clamped to the frame, so its
+            // allowance is a real number), this view was then measured TALLER
+            // than the panel could be, and a LinearLayout lays its children out
+            // at their measured size even when its own height is clamped — so
+            // the bottom of the list was drawn below the panel's own edge, where
+            // the panel's silhouette clip hides it, and the list could not be
+            // scrolled to reach it (its content fitted inside a view that was
+            // itself too tall). Honouring the spec makes that state impossible:
+            // this view is never taller than the space it was given, so whenever
+            // its content is bigger than it, there is somewhere to scroll to.
+            val spec = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+                MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST)
+            } else {
+                MeasureSpec.makeMeasureSpec(
+                    minOf(cap, MeasureSpec.getSize(heightMeasureSpec)),
+                    MeasureSpec.AT_MOST,
+                )
+            }
+            super.onMeasure(widthMeasureSpec, spec)
         } else {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }

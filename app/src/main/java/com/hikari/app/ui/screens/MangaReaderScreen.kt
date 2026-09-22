@@ -288,8 +288,15 @@ fun MangaReaderScreen(
         val ep = Episode(number = idx + 1, id = url, name = null, season = 1)
         val out = runCatching { p.getStreams(item, ep) }.getOrNull().orEmpty()
             .filter { it.url.isNotBlank() }
+        // Every page is downloaded through the extension's OWN source (see
+        // [HikariPageSource]): `getImage(page)` is what carries the extension's
+        // imageRequest headers and its own interceptors, which is the whole
+        // difference between a page that loads and one that comes back refused or
+        // scrambled. Set here, before the viewers ask the cache for anything.
+        pageSource.httpSource = p.httpSource()
         // Every page's own headers go into the one map the page cache reads, so a
-        // page fetched by a viewer bind (not by this screen) still carries them.
+        // page fetched by a viewer bind (not by this screen) still carries them —
+        // the fallback path, for a source with no HttpSource behind it.
         for (s in out) knownHeaders[s.url] = s.headers
         pageSource.setHeaders(HashMap(knownHeaders))
         out
@@ -343,10 +350,10 @@ fun MangaReaderScreen(
     var nextError by remember(chapter) { mutableStateOf<String?>(null) }
 
     val pageDescriptors = remember(pages) {
-        pages.map { MangaSource.PageDescriptor(pageUrl = "", imageUrl = it.url) }
+        pages.map { MangaSource.PageDescriptor(pageUrl = it.pageUrl, imageUrl = it.url) }
     }
     val segmentDescriptors = remember(streamSegments) {
-        streamSegments.map { seg -> seg.map { MangaSource.PageDescriptor(pageUrl = "", imageUrl = it.url) } }
+        streamSegments.map { seg -> seg.map { MangaSource.PageDescriptor(pageUrl = it.pageUrl, imageUrl = it.url) } }
     }
 
     val prevForStream = remember(navChapters, chapter) {

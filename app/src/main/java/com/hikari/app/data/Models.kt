@@ -415,6 +415,16 @@ data class StreamSource(
     /** The installed provider's display name. The player's server chooser uses
      *  it for the heading of that provider's own section. */
     val providerName: String = "",
+    /**
+     * For a manga page: the URL of the page ON THE SITE, i.e. the reader's
+     * `Page.url` — `url` above is the image. The video player ignores this; the
+     * reader needs it because a manga extension builds the image request from
+     * the pair (`imageRequest(page)` in the extension reads `page.url` for the
+     * Referer/Origin it has to send), so a page fetched with an empty one is the
+     * hotlink-refused, scrambled-page report (see
+     * [com.hikari.app.reader.source.HikariPageSource]).
+     */
+    val pageUrl: String = "",
 )
 
 data class CatalogRef(

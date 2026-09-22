@@ -38,10 +38,20 @@ that region-decodes it from disk. Both viewers use the same file and the same
 renderer, so there is one drawing path, and it is the one the reference reader
 uses on these phones.
 
-* **Wrong pixels / 403 / broken cells** were the app's own image loader fetching
-  the URL with the app's headers. The page cache downloads through
-  `HikariPageSource`, which replays the headers `MangaProvider.sourceHeaders`
-  built (`HttpSource.headers`).
+* **Wrong pixels / 403 / scrambled pages** were the app's own HTTP client
+  fetching the bare image URL. A page is now downloaded **through the
+  extension** — `HttpSource.getImage(Page(0, url = pageUrl, imageUrl = url))` in
+  `HikariPageSource`, which is Nekoread's `TachiyomiHttpSourceAdapter.
+  downloadPageImage` copied verbatim. `getImage` builds its request from the
+  source's own `imageRequest(page)` (Referer/Origin/custom headers, and where a
+  source with scrambled pages installs its descrambler) and runs it through the
+  extension's own client (per-host limits, cookies, 404 fallback). `pageUrl` is
+  part of that: an extension builds its Referer from `page.url`, so a page
+  fetched with an empty one was refused. `MangaProvider.getStreams` therefore
+  carries the page's own URL on the `StreamSource` (see `StreamSource.pageUrl`)
+  and writes the resolved image URL back onto the page, exactly as the reference
+  adapter does. `HikariPageSource.setHeaders` remains only as the fallback for a
+  source with no `HttpSource` behind it.
 * **Torn / sliced / tiled pages** were the old whole-page bitmap path (the user's
   screenshot shows one page drawn as a grid of fragments with grey seams). That
   path is deleted; a strip is now region-decoded by the subsampling view, which is
@@ -63,11 +73,14 @@ uses on these phones.
    is one entry per chapter NUMBER (an aggregator lists the same chapter once per
    group); the ◀ ▶ buttons and the auto-continue walk that list, and
    `neighbourOf`/`navIndexOf`/`chapterNo` are the whole rule.
-2. **Pages** — `fetchPages(url)` calls `MangaProvider.getStreams` and puts every
-   page's `headers` into `HikariPageSource` (`knownHeaders`, a
-   `ConcurrentHashMap`). The `StreamSource`s become `PageDescriptor`s
-   (`pageUrl = ""`, `imageUrl = url`) — the image URL is the identity every cache
-   key, diff and warm uses.
+2. **Pages** — `fetchPages(url)` calls `MangaProvider.getStreams`, hands the
+   extension's own source to `HikariPageSource` (`httpSource`, the object every
+   page is fetched through) and puts every page's `headers` into it as well
+   (`knownHeaders`, a `ConcurrentHashMap` — the fallback path only). The
+   `StreamSource`s become `PageDescriptor`s (`pageUrl = it.pageUrl`,
+   `imageUrl = it.url`) — the image URL is the identity every cache key, diff and
+   warm uses, and the page URL is half of what the extension's `imageRequest`
+   needs.
 3. **Where to open** — a chapter that was saved opens on its saved page;
    any other chapter opens at its top. `openPage` and `pages` are assigned in the
    same breath so the viewer can never be created against a stale page.
@@ -106,6 +119,15 @@ had. The per-series override is a second blob
 (`MANGA_SERIES_MODES`, `mangaKey -> ReaderMode name`): the key being present IS
 the override being on, and `onSelectReaderMode` writes to the map instead of the
 global mode while it is.
+
+The DEFAULTS are the reference reader's own out-of-the-box states, which is what
+the user's settings screenshots asked for: webtoon + pure-black backdrop, page
+transitions and smooth auto-scroll ON, pinch-to-zoom / double-tap-zoom /
+tap-to-turn-the-page OFF (on a strip those turn a scroll into a jump), tap zones
+`Edge`, webtoon scale `Fit`, menu-hide `Normal`, image quality `High (sharp)`,
+everything else off. Changing a default does NOT rewrite a stored blob: an install
+that has already saved its settings keeps them, and "Reset to defaults" in the
+chrome is how it picks the new ones up.
 
 A settings change is applied **live**: `WebtoonConfig`/`PagerConfig` are rebuilt
 as `remember`ed snapshots keyed on the options that feed them, and the viewers'
