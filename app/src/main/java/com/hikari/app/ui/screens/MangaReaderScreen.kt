@@ -48,6 +48,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -533,13 +534,28 @@ private fun WebtoonBody(
 ) {
     val listState = rememberLazyListState()
     val ratios = remember { mutableStateMapOf<String, Float>() }
+    val scope = rememberCoroutineScope()
+    // The last index we asked the list to move to. Without it the two effects
+    // below would chase each other: the scroll report would look like a request
+    // to scroll, and cancelling the animation mid-flight would leave a restored
+    // position one page from where it started.
+    val lastCommanded = remember { mutableIntStateOf(-1) }
 
     LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { onPage(it) }
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { i ->
+            lastCommanded.intValue = i
+            onPage(i)
+        }
     }
-    LaunchedEffect(page, listState.firstVisibleItemIndex, pages.size) {
-        if (page in pages.indices && page != listState.firstVisibleItemIndex) {
-            listState.animateScrollToItem(page)
+    // The list follows the page when something OUTSIDE moved it (the slider, a
+    // D-pad press, a tap zone, the restored position). The scroll runs in the
+    // composition's own scope so it is not cancelled when this effect is
+    // re-keyed by the page changes the scroll itself reports.
+    LaunchedEffect(page) {
+        val target = page.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+        if (pages.isNotEmpty() && target != lastCommanded.intValue) {
+            lastCommanded.intValue = target
+            scope.launch { listState.animateScrollToItem(target) }
         }
     }
 
