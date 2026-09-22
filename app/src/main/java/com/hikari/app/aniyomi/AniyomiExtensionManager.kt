@@ -594,7 +594,35 @@ object AniyomiExtensionManager {
             iconUrl = iconUrl,
             version = versionCode,
             iconHost = firstSourceHost(o),
+            contentKind = contentKindOf(o),
+            pkg = pkg,
         )
+    }
+
+    /**
+     * What an index entry serves — `"manga"`, `"anime"`, or `""` when the
+     * listing genuinely does not say.
+     *
+     * The index format IS the signal, and it is a real one rather than a guess:
+     * Mihon/keiyoushi (the MANGA half of the ecosystem) publishes the modern
+     * shape — `resources.apkUrl`, a string `versionCode`, `extensionLib`,
+     * `sources[].language`/`homeUrl` — because that is the shape Mihon 0.20.1+
+     * reads, while Aniyomi (the ANIME half) still publishes the legacy one: a
+     * bare `apk` FILE NAME, an integer `code`, `sources[].lang`/`baseUrl`. Not
+     * one of those fields differs by accident, and no repo publishes the other
+     * branch's shape.
+     *
+     * It is only a DEFAULT all the same, because one repo CAN hold both kinds —
+     * an extension list is just a list. The Extensions screen therefore overlays
+     * what the app has already INSTALLED on top of it: an entry whose package is
+     * installed as a manga engine is manga whatever its listing looked like, and
+     * that answer needs no heuristic at all.
+     */
+    fun contentKindOf(o: JSONObject): String {
+        val modern = o.optJSONObject("resources") != null ||
+            o.optString("extensionLib").isNotBlank() ||
+            o.optString("versionCode").isNotBlank()
+        return if (modern) "manga" else "anime"
     }
 
     /**

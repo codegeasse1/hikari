@@ -1527,6 +1527,16 @@ private fun TaskbarCard(app: HikariApp) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (tab.route == Routes.LIBRARY) {
+                        // My Stuff is really THREE pages behind one button, so
+                        // its own sections get their own switches directly under
+                        // it — see MyStuffSections below.
+                        Text(
+                            tr("Its sections can be switched off individually below"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Switch(
                     checked = isOn,
@@ -1546,7 +1556,108 @@ private fun TaskbarCard(app: HikariApp) {
                     }
                 )
             }
+            // ---- My Stuff's own sections ----
+            //
+            // Drawn only while the My Stuff button itself is on: the switches
+            // below it configure a page the user cannot currently reach, and a
+            // row of them under a switched-off tab reads as a setting that does
+            // nothing. Every one of the three can be switched off, except the
+            // last one still on — the strip always keeps at least one pill
+            // (see MyStuffScreen, which also draws its section on screen even
+            // when it has been hidden, so a deep link can never land on a page
+            // with no way out).
+            if (tab.route == Routes.LIBRARY && isOn) {
+                MyStuffSectionToggles(app)
+            }
         }
+    }
+}
+
+/** The three switches for the sections of the My Stuff page. */
+@Composable
+private fun MyStuffSectionToggles(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val libraryFlow = remember { app.store.myStuffSectionFlow(com.hikari.app.data.MyStuffSection.LIBRARY) }
+    val historyFlow = remember { app.store.myStuffSectionFlow(com.hikari.app.data.MyStuffSection.HISTORY) }
+    val downloadsFlow = remember { app.store.myStuffSectionFlow(com.hikari.app.data.MyStuffSection.DOWNLOADS) }
+    val libraryOn by libraryFlow.collectAsState(initial = true)
+    val historyOn by historyFlow.collectAsState(initial = true)
+    val downloadsOn by downloadsFlow.collectAsState(initial = true)
+    val onCount = listOf(libraryOn, historyOn, downloadsOn).count { it }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 18.dp)
+    ) {
+        // A hairline, and an indent: the three rows configure the button ABOVE
+        // them, not the taskbar in general.
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+            modifier = Modifier.padding(bottom = 2.dp),
+        )
+        MyStuffSectionRow(
+            label = tr("Library"),
+            supporting = tr("Titles you saved with the player's heart"),
+            checked = libraryOn,
+            // A switch that cannot be moved is a lie; it is disabled and the
+            // supporting line says why.
+            enabled = libraryOn && onCount > 1,
+            onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.LIBRARY, on) } } },
+        )
+        MyStuffSectionRow(
+            label = tr("History"),
+            supporting = tr("What you watched and where you stopped reading"),
+            checked = historyOn,
+            enabled = historyOn && onCount > 1,
+            onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.HISTORY, on) } } },
+        )
+        MyStuffSectionRow(
+            label = tr("Downloads"),
+            supporting = tr("What you saved for offline"),
+            checked = downloadsOn,
+            enabled = downloadsOn && onCount > 1,
+            onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.DOWNLOADS, on) } } },
+        )
+        if (onCount == 1) {
+            Text(
+                tr("One section always stays — the page would otherwise be empty."),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MyStuffSectionRow(
+    label: String,
+    supporting: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled || checked) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                supporting,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

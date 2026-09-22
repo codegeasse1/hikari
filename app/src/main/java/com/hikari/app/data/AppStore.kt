@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -51,6 +52,25 @@ data class PrefRecord(
     val type: String,
     val value: Any?,
 )
+
+/**
+ * The three sections of the merged "My Stuff" tab, named in ONE place.
+ *
+ * They live in the data layer (not beside the screen that draws them) because
+ * their per-section switches are stored preferences: the store has to be able to
+ * name a section to look up whether it is on, and a data-layer object reaching
+ * into a UI object for a string is the kind of dependency that silently breaks
+ * the day somebody moves the screen. [com.hikari.app.ui.screens.MyStuff] reads
+ * these constants, so the names have exactly one definition.
+ */
+object MyStuffSection {
+    const val LIBRARY = "library"
+    const val HISTORY = "history"
+    const val DOWNLOADS = "downloads"
+
+    /** The three, in the order the strip draws them. */
+    val ALL = listOf(LIBRARY, HISTORY, DOWNLOADS)
+}
 
 class AppStore(private val ctx: Context) {
 
@@ -143,6 +163,21 @@ class AppStore(private val ctx: Context) {
         /** Keep the screen on while reading, and print "12 / 40" over the page. */
         val MANGA_KEEP_AWAKE = booleanPreferencesKey("mangaKeepAwake")
         val MANGA_SHOW_PAGE_NUMBER = booleanPreferencesKey("mangaShowPageNumber")
+        /**
+         * The three sections of the merged "My Stuff" tab (Library, History,
+         * Downloads), each switchable in Settings → Taskbar buttons.
+         *
+         * The strip used to draw all three unconditionally — three buttons, a
+         * third of a phone's row, for someone who only ever opens one of them.
+         * The sections have their OWN preferences rather than entries in
+         * [HIDDEN_TABS]: they default to ON (which a set cannot express, since
+         * only the user can write into one), and keeping them out of the set the
+         * taskbar filters on means switching a section off can never hide a tab
+         * or trip the "the bar never becomes empty" rule.
+         */
+        val MYSTUFF_LIBRARY = booleanPreferencesKey("mystuffLibrary")
+        val MYSTUFF_HISTORY = booleanPreferencesKey("mystuffHistory")
+        val MYSTUFF_DOWNLOADS = booleanPreferencesKey("mystuffDownloads")
         /** Shape of the tiles on the IPTV tab's playlist/group grids (see
          *  [TileShapes]: poster / square / wide). */
         val IPTV_SHAPE = stringPreferencesKey("iptvTileShape")
@@ -1289,6 +1324,29 @@ class AppStore(private val ctx: Context) {
         "grey", "gray" -> "grey"
         "white" -> "white"
         else -> "black"
+    }
+
+    // ---- The My Stuff tab's sections (Settings → Taskbar buttons) ----
+    //
+    // Library / History / Downloads share one taskbar slot and one segmented
+    // strip at the top of that page (see
+    // [com.hikari.app.ui.screens.MyStuffScreen]). Each can be switched off, and
+    // the strip then lays out the ones that are left so they SHARE the row —
+    // there is no reserved gap where the hidden one was. All three default to
+    // on, which is what every install had before the switches existed.
+
+    /** Whether a section's pill is drawn in the My Stuff strip. */
+    fun myStuffSectionFlow(section: String): Flow<Boolean> =
+        store.data.map { it[keyForSection(section)] ?: true }
+
+    suspend fun setMyStuffSection(section: String, shown: Boolean) {
+        write("MYSTUFF_" + section.uppercase()) { it[keyForSection(section)] = shown }
+    }
+
+    private fun keyForSection(section: String): Preferences.Key<Boolean> = when (section) {
+        MyStuffSection.HISTORY -> K.MYSTUFF_HISTORY
+        MyStuffSection.DOWNLOADS -> K.MYSTUFF_DOWNLOADS
+        else -> K.MYSTUFF_LIBRARY
     }
 
     // ---- Animated covers on tiles ----

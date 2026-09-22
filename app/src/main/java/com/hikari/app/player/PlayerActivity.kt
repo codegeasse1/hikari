@@ -33,6 +33,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -3328,9 +3329,15 @@ class PlayerActivity : ComponentActivity() {
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
                     dpText(9f)
-                    // Same rule for the secondary line, so every row on screen is
-                    // exactly one label line plus one sub line: identical capsules.
-                    maxLines = 1
+                    // Two lines, not one. The sub line is where a menu explains
+                    // itself — "Nothing applied — the picture exactly as the
+                    // server sent it" is 56 characters and does not fit a phone's
+                    // panel on one line, so a one-line cap ellipsised the
+                    // explanation of the option being chosen, which is exactly the
+                    // text that makes the choice possible. The capsule grows by one
+                    // line when it needs to; the rows that do not need it are
+                    // unchanged, so the menu still reads as one family.
+                    maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
@@ -3461,7 +3468,6 @@ class PlayerActivity : ComponentActivity() {
         dialog: Dialog,
         title: String,
         content: View,
-        preferredHeightDp: Float,
         hint: String? = null,
         iconRes: Int = 0,
         cancelable: Boolean = true,
@@ -3566,19 +3572,34 @@ class PlayerActivity : ComponentActivity() {
         ))
 
         // The panel FLOATS on the video with all four rounded corners (and the
-        // light sweeping around them) visible. Its height is not decided here
-        // any more: the panel is WRAP_CONTENT and the scroll view below is
-        // capped against the room the dialog frame actually measured (see
-        // [MaxHeightScrollView] + applyHeightCap), which is the only number that
-        // cannot be wrong on a device whose window differs from its screen.
-        // [preferredHeightDp] is now only the STARTING cap — the height the panel
-        // opens at before the frame has been laid out, and an upper bound a short
-        // list shrinks below.
-        val panelH = (preferredHeightDp * density).toInt()
-            .coerceAtLeast((72 * density).toInt())
+        // light sweeping around them) visible. Its height is never decided by a
+        // guess about its content: the panel is WRAP_CONTENT, and the cap on the
+        // scroll view below is computed from the room the dialog frame actually
+        // MEASURED and from what the rows actually measure (see
+        // [MaxHeightScrollView] + applyHeightCap) — the two numbers that cannot
+        // be wrong on a device whose window differs from its screen.
+        //
+        // The cap it opens with (before the frame has been laid out even once)
+        // is the room the WINDOW has, because the window is what the dialog is
+        // given and the frame is never larger than it. A previous version opened
+        // at a per-call ESTIMATE of the content's height (~34dp a row, plus a
+        // guess for the message line), and that estimate is exactly what cut the
+        // second option off the download sheet: the real rows are taller than
+        // 34dp, so the sheet opened one row short until a layout pass corrected
+        // it — and on a dialog with no hint line and nothing to scroll it never
+        // corrected at all. A room derived from the window can be too tall, never
+        // too short, and "too tall" is fixed a frame later by applyHeightCap.
+        val openWin = windowSize()
+        val panelH = (
+            (openWin.y * if (flatPanel) 0.94f else 0.86f).toInt()
+                - 2 * halo - (8 * density).toInt()
+            ).coerceAtLeast((72 * density).toInt())
 
-        // A permanent thin scrollbar makes it obvious the panel scrolls — the
-        // old fixed-height panel hid its last rows with no affordance at all.
+        // A thin scrollbar makes it obvious the panel scrolls — the old
+        // fixed-height panel hid its last rows with no affordance at all. It is
+        // switched OFF again by applyHeightCap whenever the rows turn out to fit,
+        // because a scrollbar beside a list that cannot scroll reads as a list
+        // with something hidden in it.
         val scroll = MaxHeightScrollView(this).apply {
             addView(content)
             // The panel is WRAP_CONTENT tall and THIS view is what caps the
@@ -3772,7 +3793,18 @@ class PlayerActivity : ComponentActivity() {
         // to do is CAP it, and the number to cap it against is the room the
         // dialog really has (the frame's measured height), not a guess made from
         // the window size at show time.
+        //
+        // The other half of the rule is the one that matters to the user: a cap
+        // that is not needed is not applied at all. A row list that fits the room
+        // gets NO limit ([MaxHeightScrollView] treats 0 as "no cap"), so the
+        // panel is measured purely by its content and there is nothing left that
+        // could slice the last option off — which is what "adjust automatically,
+        // however many options it holds, so none are cut off" asks for. `content`
+        // is measured by the scroll view with an UNSPECIFIED height, so its
+        // measured height is the rows' TRUE height even while the cap is on;
+        // comparing the two is therefore exact, not an estimate.
         var appliedCap = -1
+        var capLifted = false
         fun applyHeightCap() {
             val avail = outer.height
             if (avail <= 0) return
@@ -3796,21 +3828,31 @@ class PlayerActivity : ComponentActivity() {
                 (avail * if (flatPanel) 0.94f else 0.86f).toInt(),
             ).coerceAtLeast(1)
             val cap = (ceiling - panelPad).coerceIn(1, ceiling)
-            // A few pixels of jitter are not worth a relayout: the panel's own
-            // padding is recomputed when IT is resized (see CurvedGlassPanel), so
-            // the cap can move by a pixel or two between passes. Settling rather
-            // than chasing that is what keeps this from re-laying the panel out
-            // on every frame.
-            if (appliedCap > 0 && kotlin.math.abs(cap - appliedCap) <= (3 * density).toInt()) {
+            // The rows' own height, measured without the cap (see the note
+            // above). A few pixels of slack are required before lifting the cap,
+            // so a list that fills its room exactly does not flap between the two
+            // states.
+            val contentH = content.measuredHeight
+            val fits = contentH > 0 && contentH <= cap - (4 * density).toInt()
+            val wanted = if (fits) 0 else cap
+            // Only a real change is worth a relayout: the panel's own padding is
+            // recomputed when IT is resized (see CurvedGlassPanel), so the cap can
+            // move by a pixel or two between passes, and chasing that would
+            // re-lay the panel out on every frame.
+            if (wanted == appliedCap && fits == capLifted) {
                 sizeDialogWindow()
                 return
             }
-            if (cap == appliedCap) {
+            if (!fits && appliedCap > 0 && kotlin.math.abs(cap - appliedCap) <= (3 * density).toInt()) {
                 sizeDialogWindow()
                 return
             }
-            appliedCap = cap
-            scroll.maxHeightPx = cap
+            appliedCap = wanted
+            capLifted = fits
+            scroll.maxHeightPx = wanted
+            // A scrollbar on a list that cannot scroll is a lie: it says there is
+            // more to see. It is shown only when the cap is actually in force.
+            scroll.isVerticalScrollBarEnabled = !fits
             scroll.requestLayout()
             panel.requestLayout()
             sizeDialogWindow()
@@ -3822,6 +3864,23 @@ class PlayerActivity : ComponentActivity() {
         outer.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        // …and once more in the window's own pre-draw pass, which is the first
+        // moment the frame has a height AND the rows have a measured one. Without
+        // it the first drawn frame can still be the opening cap — the panel the
+        // user sees appear would be briefly the wrong size, and on a slow frame
+        // that is the frame they remember. It removes itself after three passes
+        // (returning false does that), so it costs nothing while the dialog is up;
+        // a dialog dismissed earlier leaves it on a detached view tree, where it
+        // can never run again.
+        val preDraw = object : ViewTreeObserver.OnPreDrawListener {
+            private var passes = 0
+            override fun onPreDraw(): Boolean {
+                applyHeightCap()
+                passes++
+                return passes < 3
+            }
+        }
+        runCatching { outer.viewTreeObserver.addOnPreDrawListener(preDraw) }
         return hintView
     }
 
@@ -3872,15 +3931,8 @@ class PlayerActivity : ComponentActivity() {
         content.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        // Capsule rows are ~34dp tall (46dp when they carry a second line), 3dp
-        // apart inside the list's own padding — mirrored here so the panel opens
-        // at its natural height instead of always filling the screen. presentGlass
-        // still caps this against the screen, and anything longer scrolls.
-        val height = options.sumOf { if (it.sub.isNullOrBlank()) 34.0 else 46.0 }.toFloat() +
-            options.size * 3f + 12f +
-            (if (!message.isNullOrBlank()) 40f else 0f)
         onDialog?.invoke(dialog)
-        val hintView = presentGlass(dialog, title, content, height, hint, iconRes, cancelable, rowHosts = listOf(list))
+        val hintView = presentGlass(dialog, title, content, hint, iconRes, cancelable, rowHosts = listOf(list))
         if (hintView != null) onHint?.invoke(hintView)
         return dialog
     }
@@ -4590,7 +4642,6 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             if (forDownload) I18n.t("Download from") else "Select server",
             list,
-            700f,
             hint = baseHint,
             iconRes = if (forDownload) R.drawable.ic_download else R.drawable.ic_server,
             rowHosts = listOf(list),
@@ -5106,7 +5157,6 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             "Subtitles",
             root,
-            1000f,
             hint = I18n.t("Applies while captions are on."),
             iconRes = R.drawable.ic_subtitles,
             rowHosts = listOf(trackList),
@@ -5332,7 +5382,6 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             I18n.t("Subtitle settings"),
             list,
-            620f,
             hint = if (autoSubtitleSites) {
                 I18n.t("Applies while captions are on.") + " · " +
                     I18n.t("Searches %s subtitle sites and every addon")
@@ -5703,7 +5752,6 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             I18n.t("Load from internet"),
             content,
-            640f,
             hint = if (episode != null) {
                 I18n.t("Season %s episode %s")
                     .replaceFirst("%s", "${episode.season}")
@@ -6130,7 +6178,6 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             "Caption style",
             panel,
-            1000f,
             hint = I18n.t("Applies to every subtitle, from any server."),
             iconRes = R.drawable.ic_subtitles,
             rowHosts = listOf(panel),

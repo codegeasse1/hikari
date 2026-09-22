@@ -80,6 +80,35 @@ data class Cs3RepoPlugin(
      * lookup could never resolve.
      */
     val iconHost: String? = null,
+    /**
+     * What a Mihon/Aniyomi entry SERVES: `"manga"`, `"anime"`, or `""` when the
+     * listing does not say.
+     *
+     * One index can hold both kinds — the two ecosystems publish the same file
+     * format out of the same folders — and a reader looking for a manga engine
+     * in a 1396-entry list should not have to open the anime rows to find out
+     * which is which. See [com.hikari.app.aniyomi.AniyomiExtensionManager
+     * .contentKindOf], which decides it from the entry's own shape and from
+     * what the app has already installed.
+     *
+     * Empty is the honest answer for a CloudStream/Hikari/SkyStream/Nuvio
+     * entry: those are all video extensions, and the manga/anime split does not
+     * exist among them.
+     */
+    val contentKind: String = "",
+    /**
+     * The extension's own PACKAGE NAME, when the listing declares one
+     * (`packageName`, or the legacy `pkg`).
+     *
+     * It is the one identifier that survives everything the row goes through: a
+     * repo can move its APK between hosts, a mirror can rewrite the download URL
+     * and a rebuild changes the version, but the package is what an installed
+     * extension is keyed by. The Extensions screen pairs an entry with what is
+     * installed through it — which is how a repo's list knows, without
+     * downloading anything, which of its entries the user already has as a
+     * manga engine and which as an anime one.
+     */
+    val pkg: String = "",
 )
 
 /** Per-repo plugin-list loading state shown in the Extensions screen. */

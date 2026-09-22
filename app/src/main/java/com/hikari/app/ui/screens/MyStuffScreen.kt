@@ -20,8 +20,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -31,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.hikari.app.HikariApp
 import com.hikari.app.i18n.tr
 
 /**
@@ -49,11 +52,22 @@ import com.hikari.app.i18n.tr
  * "Browse", a Continue-watching row's "See all", a deep link) lands on the right
  * section instead of breaking — those routes now render this screen with the
  * section preselected, and the taskbar shows exactly one button for all three.
+ *
+ * Each section can also be switched OFF (Settings → Taskbar buttons → My Stuff),
+ * and the strip then draws only the ones that are left, sharing the row between
+ * them — no reserved gap where the hidden one was, and a single remaining section
+ * hides the strip entirely rather than drawing one button that can do nothing.
+ * Hiding a section only hides its PILL: the page itself stays reachable from the
+ * rest of the app (History from the player's "Continue watching", Downloads from
+ * a download button, Library from the heart), the same rule a hidden tab obeys.
  */
 object MyStuff {
-    const val LIBRARY = "library"
-    const val HISTORY = "history"
-    const val DOWNLOADS = "downloads"
+    const val LIBRARY = com.hikari.app.data.MyStuffSection.LIBRARY
+    const val HISTORY = com.hikari.app.data.MyStuffSection.HISTORY
+    const val DOWNLOADS = com.hikari.app.data.MyStuffSection.DOWNLOADS
+
+    /** The sections, in the order the strip draws them. */
+    val ALL = com.hikari.app.data.MyStuffSection.ALL
 }
 
 @Composable
@@ -65,8 +79,39 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
     // link) must move the strip, not leave the previous section showing.
     androidx.compose.runtime.LaunchedEffect(initial) { section = initial }
 
+    // Which sections the user keeps in the strip (Settings → Taskbar buttons →
+    // My Stuff). Read here — the one place that owns the choice — and handed to
+    // the strip, so switching a section off re-lays the row out in the same
+    // frame instead of leaving a gap.
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
+    // One flow and one collect per section (three preferences, three
+    // subscriptions): the screen redraws when a section is switched, and nothing
+    // else, which is what keeps a toggle in Settings instant here.
+    val libraryFlow = remember { app.store.myStuffSectionFlow(MyStuff.LIBRARY) }
+    val historyFlow = remember { app.store.myStuffSectionFlow(MyStuff.HISTORY) }
+    val downloadsFlow = remember { app.store.myStuffSectionFlow(MyStuff.DOWNLOADS) }
+    val libraryOn by libraryFlow.collectAsState(initial = true)
+    val historyOn by historyFlow.collectAsState(initial = true)
+    val downloadsOn by downloadsFlow.collectAsState(initial = true)
+    val visible = MyStuff.ALL.filter { section ->
+        when (section) {
+            MyStuff.HISTORY -> historyOn
+            MyStuff.DOWNLOADS -> downloadsOn
+            else -> libraryOn
+        }
+    }
+    // Whatever is left must include the section on screen, or the strip would
+    // show nothing selected while its page is drawn: a section can only be
+    // switched off while ANOTHER one is on (the settings screen enforces that),
+    // but a route can also name a section that is hidden — a "Continue
+    // watching" link, a download button — and then the page must still be
+    // reachable and one pill must say so.
+    val strip = if (section in visible) visible else visible + section
+
     Column(Modifier.fillMaxSize()) {
-        MyStuffStrip(section) { section = it }
+        // One section left means the strip is a single pill: hide it rather than
+        // draw a lone button that does nothing but take a row of the screen.
+        if (strip.size > 1) MyStuffStrip(strip, section) { section = it }
         when (section) {
             MyStuff.HISTORY -> HistoryScreen(nav, embedded = true)
             MyStuff.DOWNLOADS -> DownloadsScreen(nav, embedded = true)
@@ -75,12 +120,14 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
     }
 }
 
-/** The three small buttons. Equal width, so all three fit a phone's edge-to-edge
- *  row without ever wrapping — and each is a real clickable, so a television's
- *  D-pad can walk across them and press one (the focus ring comes from
- *  MainActivity's TvFocusProvider, like every other clickable in the app). */
+/** The small buttons, one per section the user keeps. Equal width, so however
+ *  many are left they fill a phone's edge-to-edge row without ever wrapping (a
+ *  hidden section leaves no gap — the others share its room) — and each is a real
+ *  clickable, so a television's D-pad can walk across them and press one (the
+ *  focus ring comes from MainActivity's TvFocusProvider, like every other
+ *  clickable in the app). */
 @Composable
-private fun MyStuffStrip(current: String, onPick: (String) -> Unit) {
+private fun MyStuffStrip(sections: List<String>, current: String, onPick: (String) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -88,24 +135,24 @@ private fun MyStuffStrip(current: String, onPick: (String) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MyStuffPill(
-            label = tr("Library"),
-            icon = Icons.Filled.Favorite,
-            selected = current == MyStuff.LIBRARY,
-            modifier = Modifier.weight(1f),
-        ) { onPick(MyStuff.LIBRARY) }
-        MyStuffPill(
-            label = tr("History"),
-            icon = Icons.Filled.History,
-            selected = current == MyStuff.HISTORY,
-            modifier = Modifier.weight(1f),
-        ) { onPick(MyStuff.HISTORY) }
-        MyStuffPill(
-            label = tr("Downloads"),
-            icon = Icons.Filled.Download,
-            selected = current == MyStuff.DOWNLOADS,
-            modifier = Modifier.weight(1f),
-        ) { onPick(MyStuff.DOWNLOADS) }
+        // The labels are read HERE (a composable position) because `tr` is
+        // itself composable and cannot be called from inside a click lambda.
+        sections.forEach { section ->
+            MyStuffPill(
+                label = when (section) {
+                    MyStuff.HISTORY -> tr("History")
+                    MyStuff.DOWNLOADS -> tr("Downloads")
+                    else -> tr("Library")
+                },
+                icon = when (section) {
+                    MyStuff.HISTORY -> Icons.Filled.History
+                    MyStuff.DOWNLOADS -> Icons.Filled.Download
+                    else -> Icons.Filled.Favorite
+                },
+                selected = current == section,
+                modifier = Modifier.weight(1f),
+            ) { onPick(section) }
+        }
     }
 }
 

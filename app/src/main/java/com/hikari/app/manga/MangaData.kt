@@ -163,6 +163,22 @@ object MangaStore {
         ping()
     }
 
+    /**
+     * Forgets where the reader was in EVERY title — the "Clear all" action on
+     * the reading history.
+     *
+     * Only the reading POSITIONS go: the library (what is followed) and the
+     * chapter lists stay exactly as they are, because "clear my reading history"
+     * means the history, not the collection. The in-memory cache is emptied in
+     * the same breath as the file so a screen reading the store right after this
+     * call cannot resurrect a row the user just deleted.
+     */
+    fun clearAllProgress() {
+        progressCache = HashMap()
+        runCatching { progressFile(ctx()).writeText("[]") }
+        ping()
+    }
+
     private fun progressMap(): MutableMap<String, MangaProgress> {
         progressCache?.let { return it }
         val map = HashMap<String, MangaProgress>()

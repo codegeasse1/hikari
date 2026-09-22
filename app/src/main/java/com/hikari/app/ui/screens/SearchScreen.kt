@@ -765,7 +765,20 @@ fun SearchScreen(
                             .clickable {
                                 Routes.safeNavigate(
                                     nav,
-                                    Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                    // A manga engine's results are MANGA: they open
+                                    // the manga detail page (chapters, follow,
+                                    // reader), not the video one, which would ask
+                                    // the extension for servers it cannot serve.
+                                    // This is what makes a tag's "Global search"
+                                    // land somewhere sensible — and what makes any
+                                    // manga search work, not just that one.
+                                    if (item.rawType == "manga") {
+                                        Routes.mangaDetail(
+                                            item.providerId, item.id, item.title, item.posterUrl
+                                        )
+                                    } else {
+                                        Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                    }
                                 )
                             }
                     ) {

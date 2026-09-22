@@ -59,6 +59,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -4049,6 +4050,7 @@ private fun LazyListScope.extensionsSearchItems(
         items(installedMatches, key = { "inst-" + it.config.id }) { p ->
             ProviderCard(
                 p = p,
+                onVerify = rememberVerifyAction(p),
                 status = pluginStatus(p),
                 onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                 onDelete = { onDeleteProvider(p.config.id) },
@@ -4152,6 +4154,68 @@ private fun LazyListScope.repoStatusItems(
     }
 }
 
+/**
+ * One line of a repo's extension listing: either a section heading or an
+ * extension. See [RepoPluginsView], which builds the list of them once.
+ */
+private sealed interface RepoListEntry {
+    /** Its own key: a heading has no URL, and a heading's text is unique in one
+     *  listing, so this is stable across a re-listing. */
+    val key: String
+
+    data class Head(val title: String, val count: Int) : RepoListEntry {
+        override val key: String get() = "head|$title"
+    }
+
+    data class Row(val plugin: Cs3RepoPlugin) : RepoListEntry {
+        override val key: String get() = plugin.url
+    }
+}
+
+/** A section heading inside a repo's listing ("Anime extensions", 84). */
+@Composable
+private fun RepoGroupHeader(title: String, count: Int) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One of the "All / Manga / Anime" chips above a mixed repo's listing. */
+@Composable
+private fun RepoKindChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+        )
+    }
+}
+
 @Composable
 private fun RepoPluginsView(
     repo: Cs3Repo,
@@ -4179,6 +4243,78 @@ private fun RepoPluginsView(
     onInstallAll: () -> Unit,
 ) {
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    // The repo's own search box. keiyoushi is 1396 entries: finding one by
+    // scrolling is not a thing anyone can do, and this listing is the ONLY place
+    // an extension can be installed from.
+    var filter by rememberSaveable { mutableStateOf("") }
+    // Which of the two kinds to show, when this repo holds both. "" = all.
+    var kindFilter by rememberSaveable { mutableStateOf("") }
+    // What the app has already installed, by package name — the authoritative
+    // answer to "is this entry a manga engine or an anime one?" (see
+    // Cs3RepoPlugin.contentKind for why the listing alone cannot be trusted).
+    val installedKinds = remember(providers) {
+        providers.mapNotNull { p ->
+            val id = p.config.id
+            val pkg = when {
+                com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(id) ->
+                    com.hikari.app.manga.MangaExtensionManager.packageOf(p.config) to "manga"
+                id.startsWith("aniyomi|") ->
+                    com.hikari.app.aniyomi.AniyomiExtensionManager.packageOf(p.config) to "anime"
+                else -> null
+            }
+            pkg
+        }.toMap()
+    }
+    fun kindOf(p: Cs3RepoPlugin): String =
+        installedKinds[p.pkg] ?: p.contentKind
+    val mangaCount = plugins.count { kindOf(it) == "manga" }
+    val animeCount = plugins.count { kindOf(it) == "anime" }
+    // Only a repo that really holds two kinds gets grouped and filtered: a
+    // header saying "Manga extensions (1396)" over a list that is entirely manga
+    // is one more line of chrome for no information, and the filter chips would
+    // be a control with a single possible answer.
+    val mixed = mangaCount > 0 && animeCount > 0
+    val matched = remember(plugins, filter, kindFilter, installedKinds) {
+        plugins.filter { p ->
+            (kindFilter.isBlank() || kindOf(p) == kindFilter) &&
+                (filter.isBlank() ||
+                    p.name.contains(filter, ignoreCase = true) ||
+                    p.pkg.contains(filter, ignoreCase = true) ||
+                    p.description.contains(filter, ignoreCase = true))
+        }
+    }
+    // The listing as it is drawn: section headings interleaved with the rows,
+    // built once per change rather than in the LazyGridScope (where a header
+    // before each group of a lazy list means splitting one list into three and
+    // duplicating every row's arguments).
+    val entries: List<RepoListEntry> = remember(matched, mixed, kindFilter, installedKinds) {
+        if (!mixed || kindFilter.isNotBlank()) {
+            matched.map { RepoListEntry.Row(it) }
+        } else {
+            // Anime first: a repo that holds both kinds is an Anime repo with
+            // manga in it (that is how the two ecosystems mix), and the row the
+            // user came for is the one whose kind the repo is named after.
+            buildList {
+                listOf(
+                    "anime" to I18n.t("Anime extensions"),
+                    "manga" to I18n.t("Manga extensions"),
+                ).forEach { (kind, title) ->
+                    val group = matched.filter { kindOf(it) == kind }
+                    if (group.isEmpty()) return@forEach
+                    add(RepoListEntry.Head(title, group.size))
+                    group.forEach { add(RepoListEntry.Row(it)) }
+                }
+                // Anything the listing did not classify still has to be listed —
+                // a heading is a way of sorting the list, never a filter that
+                // can make an entry disappear.
+                val rest = matched.filter { kindOf(it) != "anime" && kindOf(it) != "manga" }
+                if (rest.isNotEmpty()) {
+                    add(RepoListEntry.Head(I18n.t("Extensions"), rest.size))
+                    rest.forEach { add(RepoListEntry.Row(it)) }
+                }
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         val unit = when (repo.kind) {
             RepoKind.HIKARI -> "extension"
@@ -4266,6 +4402,41 @@ private fun RepoPluginsView(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
         }
+        // The filter box and the kind chips sit ABOVE the scrolling list so they
+        // stay reachable however far down the user has scrolled: keiyoushi is
+        // 1396 rows, and a search field that scrolls away is one you have to
+        // scroll back to the top to use.
+        GlassSearchField(
+            value = filter,
+            onValueChange = { filter = it },
+            placeholder = tr("Search this repo…"),
+            height = 46.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+        if (mixed) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RepoKindChip(
+                    label = I18n.t("All (%s)").replace("%s", plugins.size.toString()),
+                    selected = kindFilter.isBlank(),
+                ) { kindFilter = "" }
+                RepoKindChip(
+                    label = I18n.t("Manga (%s)").replace("%s", mangaCount.toString()),
+                    selected = kindFilter == "manga",
+                ) { kindFilter = if (kindFilter == "manga") "" else "manga" }
+                RepoKindChip(
+                    label = I18n.t("Anime (%s)").replace("%s", animeCount.toString()),
+                    selected = kindFilter == "anime",
+                ) { kindFilter = if (kindFilter == "anime") "" else "anime" }
+            }
+        }
         LazyColumn(
             Modifier
                 .fillMaxWidth()
@@ -4278,7 +4449,10 @@ private fun RepoPluginsView(
             )
         ) {
             val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) }
-            if (plugins.isNotEmpty() && uninstalled > 0) {
+            // Hidden while a filter is on: this button installs the WHOLE repo,
+            // and offering it under a narrowed list would install 1396
+            // extensions to a user who typed a name.
+            if (plugins.isNotEmpty() && uninstalled > 0 && filter.isBlank() && kindFilter.isBlank()) {
                 item {
                     Button(
                         onClick = onInstallAll,
@@ -4338,19 +4512,33 @@ private fun RepoPluginsView(
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
                 }
-                else -> items(plugins, key = { it.url }) { p ->
-                    PluginRow(
-                        p = p,
-                        installed = SourceUrls.anyKeyIn(p.url, installedUrls),
-                        onInstall = { onInstall(p) },
-                        onUninstall = { onUninstall(p) },
-                        onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
-                            ?.let { target -> { onOpenSettings(target) } },
-                        updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
-                        onUpdate = { onUpdate(p) },
-                        kind = repo.kind,
-                        repoUrl = repo.url,
+                matched.isEmpty() -> item {
+                    Text(
+                        I18n.t("Nothing in this repo matches \"%s\".").replace("%s", filter.ifBlank { kindFilter }),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
                     )
+                }
+                else -> items(entries, key = { it.key }) { entry ->
+                    when (entry) {
+                        is RepoListEntry.Head -> RepoGroupHeader(entry.title, entry.count)
+                        is RepoListEntry.Row -> {
+                            val p = entry.plugin
+                            PluginRow(
+                                p = p,
+                                installed = SourceUrls.anyKeyIn(p.url, installedUrls),
+                                onInstall = { onInstall(p) },
+                                onUninstall = { onUninstall(p) },
+                                onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
+                                    ?.let { target -> { onOpenSettings(target) } },
+                                updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
+                                onUpdate = { onUpdate(p) },
+                                kind = repo.kind,
+                                repoUrl = repo.url,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -4569,6 +4757,63 @@ private fun showSettingsFailureDialog(context: Context, name: String, detail: St
     }
 }
 
+/**
+ * The "open this extension's site to pass its Cloudflare check" click for a
+ * provider, or null when it has no site the user could visit.
+ *
+ * Offered for the two engine kinds whose content lives on a normal website the
+ * user can open — [ProviderType.MANGA] and [ProviderType.ANIYOMI] — because
+ * those are precisely the sites that answer an app with a bot check the app
+ * cannot solve on its own, and an extension has no way to open a browser for
+ * itself. Everything else (CloudStream, IPTV, Stremio…) either needs no such
+ * step or already has its own way (Home's header globe, a site's own page).
+ *
+ * The site URL is derived by LOADING the extension (its source's `baseUrl`), so
+ * the work is done on IO when the button is tapped rather than here — and a
+ * provider whose extension declares no site gets a sentence, not a dead button.
+ *
+ * Composable because it needs a coroutine scope and the activity's context; the
+ * returned lambda is remembered per provider, so a list of a hundred installed
+ * engines does not rebuild a hundred closures on every scroll step.
+ */
+@Composable
+private fun rememberVerifyAction(p: ContentProvider): (() -> Unit)? {
+    val type = p.config.type
+    if (type != ProviderType.MANGA && type != ProviderType.ANIYOMI) return null
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    return remember(p.config.id) {
+        {
+            scope.launch {
+                val site = withContext(Dispatchers.IO) {
+                    runCatching { webUrlFor(p) }.getOrNull()
+                }
+                if (site.isNullOrBlank()) {
+                    Toast.makeText(
+                        context,
+                        I18n.t("Couldn't determine this extension's site"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
+                    context.startActivity(
+                        Intent(context, WebViewActivity::class.java).apply {
+                            putExtra("url", site)
+                            putExtra("title", "Verify: " + (host ?: p.config.name))
+                            putExtra("providerId", p.config.id)
+                            // The WebView closes itself the moment the clearance
+                            // lands in the cookie jar — the user is not expected
+                            // to know when they are "done".
+                            putExtra("autoCloseWhenCloudflarePassed", true)
+                            if (host != null) putExtra("verifyHost", host)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ProviderCard(
     p: ContentProvider,
@@ -4576,6 +4821,17 @@ private fun ProviderCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
+    /**
+     * Opens the provider's own website in the app's browser so the user can
+     * pass a Cloudflare (or similar) check — offered for the engine kinds whose
+     * site is a normal website the user can visit (see [rememberVerifyAction]).
+     * Null for every other kind, which needs no such step.
+     *
+     * This is the same button Home's header carries; an extension's own page in
+     * Extensions had no way to reach it, which left a manga engine behind a bot
+     * wall unfixable from the screen where it was installed.
+     */
+    onVerify: (() -> Unit)? = null,
     updateAvailable: Boolean = false,
     onUpdate: (() -> Unit)? = null,
 ) {
@@ -4636,6 +4892,15 @@ private fun ProviderCard(
                     Icon(
                         Icons.Filled.Refresh,
                         contentDescription = tr("Update"),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            if (onVerify != null) {
+                IconButton(onClick = onVerify) {
+                    Icon(
+                        Icons.Filled.Public,
+                        contentDescription = tr("Open the site to pass its Cloudflare check"),
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
@@ -5676,6 +5941,7 @@ private fun SourceFolderView(
                 items(iptvProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     ProviderCard(
                         p = p,
+                        onVerify = rememberVerifyAction(p),
                         status = pluginStatus(p, iptvTick),
                         onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                         onDelete = { onDeleteProvider(p.config.id) },
@@ -5698,6 +5964,7 @@ private fun SourceFolderView(
         items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                     ProviderCard(
                         p = p,
+                        onVerify = rememberVerifyAction(p),
                         status = null,
                         onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                         onDelete = { onDeleteProvider(p.config.id) },
@@ -5910,6 +6177,7 @@ private fun SourcesOverviewView(
             items(stremioProviders, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
+                    onVerify = rememberVerifyAction(p),
                     status = null,
                     onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                     onDelete = { onDeleteProvider(p.config.id) },
@@ -5947,6 +6215,7 @@ private fun SourcesOverviewView(
             items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
+                    onVerify = rememberVerifyAction(p),
                     status = pluginStatus(p),
                     onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                     onDelete = { onDeleteProvider(p.config.id) },
@@ -6276,6 +6545,7 @@ private fun InstalledExtensionsView(
             items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
+                    onVerify = rememberVerifyAction(p),
                     status = pluginStatus(p),
                     onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
                     onDelete = { onDeleteProvider(p.config.id) },

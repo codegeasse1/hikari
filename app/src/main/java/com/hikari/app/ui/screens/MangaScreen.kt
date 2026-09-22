@@ -24,13 +24,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +62,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.manga.MangaProvider
 import com.hikari.app.manga.MangaProgress
@@ -75,6 +80,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -113,6 +119,13 @@ fun MangaScreen(nav: NavHostController) {
     var query by rememberSaveable { mutableStateOf("") }
     // Which engine's own lists to browse / search: "" means every installed one.
     var enginePick by rememberSaveable { mutableStateOf("") }
+    // The filter over the installed engines under "Browse" — separate from the
+    // search box at the top of the screen (which queries the ENGINES). With a
+    // hundred extensions installed, finding the one to read in is half the work
+    // this screen does, and scrolling a hundred rows is not a way to do it.
+    var engineFilter by rememberSaveable { mutableStateOf("") }
+    // Shown when "Clear all" is tapped on the reading history.
+    var confirmClearReading by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
 
@@ -267,17 +280,26 @@ fun MangaScreen(nav: NavHostController) {
                 MangaSection(
                     title = tr("Continue reading"),
                     count = progress.size,
+                    // The reading history is prunable from here too, not only
+                    // from My Stuff → History: this is the surface a reader
+                    // actually opens, and sending them to another tab to remove
+                    // one entry would be absurd.
+                    action = tr("Clear all") to { confirmClearReading = true },
                 ) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(progress, key = { "prog-" + it.mangaKey }) { p ->
-                            ContinueCard(p) {
-                                Routes.safeNavigate(
-                                    nav,
-                                    Routes.mangaReader(
-                                        p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl,
+                            ContinueCard(
+                                progress = p,
+                                onClick = {
+                                    Routes.safeNavigate(
+                                        nav,
+                                        Routes.mangaReader(
+                                            p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl,
+                                        )
                                     )
-                                )
-                            }
+                                },
+                                onDelete = { MangaStore.clearProgress(p.mangaKey) },
+                            )
                         }
                     }
                 }
@@ -319,26 +341,94 @@ fun MangaScreen(nav: NavHostController) {
         item(key = "manga-browse", span = { GridItemSpan(maxLineSpan) }) {
             MangaSection(title = tr("Browse"), count = engines.size) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    engines.forEach { p -> EngineRow(p, nav) }
+                    // The engine picker's own search box. Only once there are
+                    // enough engines for scrolling to be a chore — below that a
+                    // second text field would be more clutter than help.
+                    if (engines.size >= 6) {
+                        GlassSearchField(
+                            value = engineFilter,
+                            onValueChange = { engineFilter = it },
+                            placeholder = tr("Search %s installed engines…")
+                                .replace("%s", engines.size.toString()),
+                            height = 44.dp,
+                        )
+                    }
+                    val shownEngines = if (engineFilter.isBlank()) engines
+                    else engines.filter { it.config.name.contains(engineFilter, ignoreCase = true) }
+                    if (shownEngines.isEmpty()) {
+                        Text(
+                            tr("No installed engine matches that name."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
+                    shownEngines.forEach { p -> EngineRow(p, nav) }
                 }
             }
         }
     }
+
+    if (confirmClearReading) {
+        AlertDialog(
+            onDismissRequest = { confirmClearReading = false },
+            title = { Text(tr("Clear reading history?")) },
+            text = {
+                Text(
+                    I18n.t(
+                        "The reading position of %s title is forgotten. The titles you " +
+                            "follow and their chapter lists are kept."
+                    ).replace("%s", progress.size.toString())
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClearReading = false
+                    MangaStore.clearAllProgress()
+                }) { Text(tr("Clear"), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearReading = false }) { Text(tr("Cancel")) }
+            },
+        )
+    }
 }
 
-/** One engine's card: its icon and name, plus a shortcut into each of the two
- *  lists every manga source publishes. */
+/**
+ * One engine's card: its icon and name, plus a shortcut into each of the two
+ * lists every manga source publishes.
+ *
+ * The ROW itself opens the engine too (its Popular list), because tapping the
+ * name of an extension and having nothing happen is the thing every user tries
+ * first — the Popular/Latest pills are shortcuts for choosing a list, not the
+ * only way in. The globe is the Cloudflare-verification WebView: a manga site
+ * behind a bot wall answers every request with a challenge until a browser has
+ * passed it, and an extension cannot open a browser for itself, so the user
+ * needs a button that loads the site's own page, lets them clear the check, and
+ * closes itself once the clearance is in the jar.
+ */
 @Composable
 private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
     val providerId = engine.config.id
     val name = engine.config.name
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Read here (a composable position) — `tr` cannot be called from inside a
+    // click lambda, and this label is needed by one.
+    val popularLabel = tr("Popular")
+    val latestLabel = tr("Latest")
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            Modifier.padding(12.dp),
+            Modifier
+                .fillMaxWidth()
+                .clickable {
+                    openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel)
+                }
+                .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MangaIcon(engine.config, size = 44.dp)
@@ -355,18 +445,58 @@ private fun EngineRow(engine: MangaProvider, nav: NavHostController) {
                     Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // The labels are read HERE (a composable position) and passed
-                    // into the click lambdas: `tr` is itself composable, so it
-                    // cannot be called from inside an onClick.
-                    val popular = tr("Popular")
-                    val latest = tr("Latest")
-                    EngineAction(popular) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popular)
+                    EngineAction(popularLabel) {
+                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel)
                     }
-                    EngineAction(latest) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, latest)
+                    EngineAction(latestLabel) {
+                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, latestLabel)
                     }
                 }
+            }
+            IconButton(
+                onClick = {
+                    // The site is derived by LOADING the extension (its source's
+                    // baseUrl), which is blocking — hence the IO hop, and hence
+                    // the toast when the extension declares no site at all.
+                    scope.launch {
+                        val site = withContext(Dispatchers.IO) {
+                            runCatching {
+                                com.hikari.app.manga.MangaExtensionManager.siteUrlOf(engine.config)
+                            }.getOrNull()
+                        }
+                        if (site.isNullOrBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                I18n.t("Couldn't determine this extension's site"),
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
+                            context.startActivity(
+                                android.content.Intent(
+                                    context,
+                                    com.hikari.app.web.WebViewActivity::class.java,
+                                ).apply {
+                                    putExtra("url", site)
+                                    putExtra("title", "Verify: " + (host ?: name))
+                                    putExtra("providerId", providerId)
+                                    // Closes itself the moment the clearance is in
+                                    // the cookie jar, so the user does not have to
+                                    // know when they are "done".
+                                    putExtra("autoCloseWhenCloudflarePassed", true)
+                                    if (host != null) putExtra("verifyHost", host)
+                                }
+                            )
+                        }
+                    }
+                }
+            ) {
+                Icon(
+                    Icons.Filled.Public,
+                    contentDescription = tr("Open the site to pass its Cloudflare check"),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
@@ -451,11 +581,16 @@ private fun EngineChip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** A shelf heading — the title, the count, and whatever the shelf draws. */
+/** A shelf heading — the title, the count, an optional trailing action, and
+ *  whatever the shelf draws. */
 @Composable
 private fun MangaSection(
     title: String,
     count: Int,
+    /** A labelled action on the heading row (label to text, callback), e.g.
+     *  "Clear all" on the reading history. The text is read by the caller: it is
+     *  a plain String here so the heading stays a dumb layout. */
+    action: Pair<String, () -> Unit>? = null,
     content: @Composable () -> Unit,
 ) {
     Column(Modifier.padding(top = 4.dp)) {
@@ -466,6 +601,11 @@ private fun MangaSection(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            if (action != null) {
+                TextButton(onClick = action.second) {
+                    Text(action.first, color = MaterialTheme.colorScheme.error)
+                }
+            }
             Text(
                 count.toString(),
                 style = MaterialTheme.typography.labelSmall,
@@ -477,9 +617,20 @@ private fun MangaSection(
     }
 }
 
-/** One "continue reading" card: the cover, the chapter, and the page pair. */
+/**
+ * One "continue reading" card: the cover, the chapter, and the page pair.
+ *
+ * [onDelete] draws a small ✕ over the cover, which forgets this title's reading
+ * position (it does NOT un-follow the manga — that is the library's own button on
+ * the detail page). It is null wherever the card is a browsing surface rather
+ * than a history list.
+ */
 @Composable
-private fun ContinueCard(progress: MangaProgress, onClick: () -> Unit) {
+private fun ContinueCard(
+    progress: MangaProgress,
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null,
+) {
     Column(
         Modifier
             .width(116.dp)
@@ -523,6 +674,28 @@ private fun ContinueCard(progress: MangaProgress, onClick: () -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.White,
                         maxLines = 1,
+                    )
+                }
+            }
+            if (onDelete != null) {
+                // Over the cover's top-right corner, away from the title below
+                // and from the progress pill above: the two places a thumb lands
+                // when the user means "open this".
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .clickable(onClick = onDelete),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = tr("Remove from reading history"),
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp),
                     )
                 }
             }
@@ -670,30 +843,83 @@ internal fun rememberMangaRevision(): Int {
  * The "Continue reading" shelf on its own, for the My Stuff tab's History
  * section — the place the user already looks for "what was I doing". Draws
  * nothing at all (not even a heading) when no manga has been read.
+ *
+ * Because this IS a history list, it carries the two ways to prune one: a ✕ on
+ * every card (that title's reading position) and a "Clear all" above the row
+ * (every title's). Both are confirmed nowhere — a reading position is a
+ * convenience, not data the user typed, and the same ✕ on a video history row
+ * has always deleted on a single tap. "Clear all" is the one destructive action
+ * here and it asks first (see [ClearReadingHistory]) because it cannot be undone.
  */
 @Composable
 fun MangaContinueShelf(nav: NavHostController) {
     val rev = rememberMangaRevision()
     val progress = remember(rev) { MangaStore.progress() }
     if (progress.isEmpty()) return
+    var confirmingClear by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        Text(
-            tr("Manga — continue reading"),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                tr("Manga — continue reading"),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { confirmingClear = true }) {
+                Text(tr("Clear all"), color = MaterialTheme.colorScheme.error)
+            }
+        }
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(progress, key = { "my-prog-" + it.mangaKey }) { p ->
-                ContinueCard(p) {
-                    Routes.safeNavigate(
-                        nav,
-                        Routes.mangaReader(p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl),
-                    )
-                }
+                ContinueCard(
+                    progress = p,
+                    onClick = {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.mangaReader(p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl),
+                        )
+                    },
+                    onDelete = { MangaStore.clearProgress(p.mangaKey) },
+                )
             }
         }
     }
+    if (confirmingClear) {
+        ClearReadingHistory(
+            count = progress.size,
+            onDismiss = { confirmingClear = false },
+            onConfirm = {
+                confirmingClear = false
+                MangaStore.clearAllProgress()
+            },
+        )
+    }
+}
+
+/** The one confirmation in this file: forgetting EVERY reading position. */
+@Composable
+private fun ClearReadingHistory(count: Int, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Clear reading history?")) },
+        text = {
+            Text(
+                I18n.t(
+                    "The reading position of %s title is forgotten. The titles you " +
+                        "follow and their chapter lists are kept."
+                ).replace("%s", count.toString())
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(tr("Clear"), color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
+        },
+    )
 }
 
 /**

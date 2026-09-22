@@ -2,8 +2,10 @@ package com.hikari.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,7 +42,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -68,6 +71,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,6 +86,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.StreamSource
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
+import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
 import com.hikari.app.manga.MangaProvider
@@ -235,6 +240,13 @@ fun MangaReaderScreen(
 
     var chrome by remember { mutableStateOf(true) }
     var showSettings by remember { mutableStateOf(false) }
+    // The chapter picker: a reader without one has to go back to the title page
+    // to move on, which is also the only way to jump around inside a long series
+    // (a 300-chapter manhwa is not navigated by pressing "next").
+    var showChapters by remember { mutableStateOf(false) }
+    // The filter inside the chapter picker — its own state, so opening the sheet
+    // twice does not show the previous search still applied.
+    var chapterQuery by remember { mutableStateOf("") }
 
     fun openChapterIndex(i: Int) {
         val next = chapters.getOrNull(i) ?: return
@@ -286,8 +298,14 @@ fun MangaReaderScreen(
 
     // The hardware/edge back button closes the chrome first, the way every
     // reader does — a bar over the page is a mode, not a destination.
-    BackHandler(enabled = chrome || showSettings) {
-        if (showSettings) showSettings = false else chrome = false
+    BackHandler(enabled = chrome || showSettings || showChapters) {
+        when {
+            showSettings -> showSettings = false
+            // The sheet is the topmost surface, so back closes IT first and the
+            // chrome stays exactly as the user left it.
+            showChapters -> showChapters = false
+            else -> chrome = false
+        }
     }
 
     // ---- Controls ----
@@ -374,6 +392,13 @@ fun MangaReaderScreen(
                 title = chapters.getOrNull(chapterIndex)?.let { "${title} — ${it.label}" }
                     ?: title,
                 onSettings = { showSettings = true },
+                onChapters = if (chapters.isEmpty()) null else {
+                    {
+                        chapterQuery = ""
+                        showChapters = true
+                    }
+                },
+                chapterCount = chapters.size,
             )
             ReaderBottomBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -418,6 +443,162 @@ fun MangaReaderScreen(
                 onAwake = { v -> scope.launch { app.store.setMangaKeepAwake(v) } },
                 onNumber = { v -> scope.launch { app.store.setMangaShowPageNumber(v) } },
             )
+        }
+    }
+
+    if (showChapters && chapters.isNotEmpty()) {
+        ChapterSheet(
+            chapters = chapters,
+            currentUrl = chapter,
+            query = chapterQuery,
+            onQuery = { chapterQuery = it },
+            onPick = { i ->
+                showChapters = false
+                openChapterIndex(i)
+            },
+            onDismiss = { showChapters = false },
+        )
+    }
+}
+
+/**
+ * The chapter picker.
+ *
+ * In READING order (oldest first, the order the engine returned) rather than the
+ * newest-first order the title page defaults to, and opened scrolled to the
+ * chapter being read: the reader's own ◀ ▶ buttons walk this array, so the row
+ * under the current one has to be the NEXT chapter — a list that disagreed with
+ * the buttons would be a trap. The search box is what makes a 300-chapter series
+ * navigable at all.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChapterSheet(
+    chapters: List<MangaChapter>,
+    currentUrl: String,
+    query: String,
+    onQuery: (String) -> Unit,
+    onPick: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val currentIndex = chapters.indexOfFirst { it.url == currentUrl }
+    // Indices into [chapters] rather than a copied list: a tapped row has to
+    // report the chapter's position in the READING order (the array the ◀ ▶
+    // buttons walk), and a filtered copy loses that. Built once per query rather
+    // than once per row — the row-level version of this is a scan of the whole
+    // list for every row on screen.
+    val shownIndices = remember(chapters, query) {
+        chapters.indices.filter { i ->
+            val c = chapters[i]
+            query.isBlank() ||
+                c.label.contains(query, ignoreCase = true) ||
+                (c.scanlator?.contains(query, ignoreCase = true) == true)
+        }
+    }
+    // Opens on the chapter being read (a long list would otherwise always start
+    // at chapter 1), which is also where the user's eye lands first.
+    val state = rememberLazyListState(
+        initialFirstVisibleItemIndex = if (query.isBlank() && currentIndex > 0) currentIndex else 0,
+    )
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    tr("Chapters"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (currentIndex >= 0) "${currentIndex + 1} / ${chapters.size}"
+                    else chapters.size.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            GlassSearchField(
+                value = query,
+                onValueChange = onQuery,
+                placeholder = I18n.t("Search %s chapters…").replace("%s", chapters.size.toString()),
+                height = 46.dp,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (shownIndices.isEmpty()) {
+                Text(
+                    tr("No chapter matches that."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+            }
+            LazyColumn(
+                state = state,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Tall enough for a real list, short enough that the sheet
+                    // never becomes the whole screen (the page behind it is the
+                    // thing being navigated).
+                    .heightIn(max = 440.dp),
+            ) {
+                items(shownIndices, key = { "sheet-ch-" + chapters[it].url }) { i ->
+                    val c = chapters[i]
+                    val isCurrent = c.url == currentUrl
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(i) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(
+                                    if (isCurrent) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                )
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                c.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val sub = listOfNotNull(
+                                c.scanlator?.takeIf { it.isNotBlank() },
+                                if (c.dateUpload > 0L) {
+                                    java.text.SimpleDateFormat(
+                                        "d MMM yyyy", java.util.Locale.getDefault()
+                                    ).format(java.util.Date(c.dateUpload))
+                                } else null,
+                            ).joinToString("  ·  ")
+                            if (sub.isNotBlank()) {
+                                Text(
+                                    sub,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        if (isCurrent) {
+                            Text(
+                                tr("Reading"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -688,6 +869,10 @@ private fun ReaderTopBar(
     onBack: () -> Unit,
     title: String,
     onSettings: () -> Unit,
+    /** Opens the chapter picker. Null while the chapter list is unknown or
+     *  holds a single chapter — a button that can only show one row is noise. */
+    onChapters: (() -> Unit)? = null,
+    chapterCount: Int = 0,
 ) {
     Surface(
         color = Color.Black.copy(alpha = 0.78f),
@@ -712,6 +897,19 @@ private fun ReaderTopBar(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (onChapters != null) {
+                IconButton(onClick = onChapters) {
+                    Icon(
+                        Icons.Filled.List,
+                        // The count travels in the description, so a screen
+                        // reader says "Chapters, 184" rather than "List".
+                        contentDescription = if (chapterCount > 0)
+                            I18n.t("Chapters (%s)").replace("%s", chapterCount.toString())
+                        else tr("Chapters"),
+                        tint = Color.White,
+                    )
+                }
+            }
             IconButton(onClick = onSettings) {
                 Icon(
                     Icons.Filled.Settings,
@@ -741,13 +939,30 @@ private fun ReaderBottomBar(
     ) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
             if (pageCount > 1) {
-                Slider(
-                    value = page.toFloat(),
-                    onValueChange = { onPage(it.roundToInt()) },
-                    valueRange = 0f..(pageCount - 1).toFloat(),
-                    // No steps: the readout under the bar is the truth, and a
-                    // stepped slider on a 900-page chapter is unusable.
-                )
+                // A point per page, not a slider: with the dots visible the bar
+                // says WHERE in the chapter a page is, and a tap or a drag lands
+                // on the exact page rather than on an interpolation of it.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "1",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                    ReaderScrubber(
+                        page = page,
+                        pageCount = pageCount,
+                        onPage = onPage,
+                        onColor = Color.White,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp),
+                    )
+                    Text(
+                        pageCount.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onPrevChapter, enabled = hasPrev) {
@@ -781,6 +996,92 @@ private fun ReaderBottomBar(
             }
         }
     }
+}
+
+/**
+ * The page bar: one dot per page of the chapter, the current one highlighted,
+ * with a drag anywhere on it jumping to the page under the finger.
+ *
+ * Why not a [Slider]: a slider's thumb has no relationship to a PAGE — on a
+ * 184-page chapter it is a 5-pixel step, so the readout is the only thing that
+ * says where you are, and letting go lands on whatever page the fraction
+ * happened to round to. A dot per page makes the chapter's own structure
+ * visible (short chapters read as a sparse row, long ones as a dense one), and
+ * both a tap and a drag resolve to the nearest page deterministically.
+ *
+ * The dots are drawn rather than laid out, because a 900-page chapter would be
+ * 900 composables otherwise. Their radius shrinks as the count grows so they
+ * stay separate on a phone's width, and stops at a hairline — past that point
+ * the strip reads as a dotted track, which is still exactly what it is.
+ */
+@Composable
+private fun ReaderScrubber(
+    page: Int,
+    pageCount: Int,
+    onPage: (Int) -> Unit,
+    onColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val density = LocalDensity.current
+    val dotMin = with(density) { 1.1.dp.toPx() }
+    val dotMax = with(density) { 3.4.dp.toPx() }
+    val activeRadius = with(density) { 5.6.dp.toPx() }
+    Box(
+        modifier
+            .fillMaxWidth()
+            // A finger's worth of height: the dots are 7px, but the touch target
+            // has to be something a person can hit without looking.
+            .height(30.dp)
+            .pointerInput(pageCount) {
+                detectTapGestures { offset ->
+                    onPage(pageAt(offset.x, size.width, pageCount))
+                }
+            }
+            .pointerInput(pageCount) {
+                // A drag scrubs. Separate from the tap detector above because a
+                // pointer-input block runs one suspend loop each; this is the
+                // standard pairing and the drag wins as soon as the finger moves.
+                detectHorizontalDragGestures(
+                    onDragStart = { offset -> onPage(pageAt(offset.x, size.width, pageCount)) },
+                ) { change, _ ->
+                    onPage(pageAt(change.position.x, size.width, pageCount))
+                }
+            }
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val cy = size.height / 2f
+            if (w <= 0f) return@Canvas
+            if (pageCount <= 1) return@Canvas
+            val step = w / (pageCount - 1).toFloat()
+            val radius = (step / 2.6f).coerceIn(dotMin, dotMax)
+            // The track behind the dots: what makes a dense strip read as a bar
+            // with points on it rather than as noise.
+            drawLine(
+                color = onColor.copy(alpha = 0.22f),
+                start = androidx.compose.ui.geometry.Offset(0f, cy),
+                end = androidx.compose.ui.geometry.Offset(w, cy),
+                strokeWidth = 1.5.dp.toPx(),
+            )
+            for (i in 0 until pageCount) {
+                val isCurrent = i == page
+                drawCircle(
+                    color = if (isCurrent) accent else onColor.copy(alpha = 0.45f),
+                    radius = if (isCurrent) activeRadius else radius,
+                    center = androidx.compose.ui.geometry.Offset(i * step, cy),
+                )
+            }
+        }
+    }
+}
+
+/** The page a touch at [x] means: the nearest of the [count] evenly spaced
+ *  points, clamped. Shared by the tap and the drag so both can never disagree. */
+private fun pageAt(x: Float, width: Int, count: Int): Int {
+    if (count <= 1 || width <= 0) return 0
+    val fraction = (x / width).coerceIn(0f, 1f)
+    return (fraction * (count - 1)).roundToInt().coerceIn(0, count - 1)
 }
 
 /** The reader's settings sheet: the two shapes of a chapter, and the page

@@ -24,9 +24,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -309,17 +313,22 @@ fun MangaDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(genres, key = { "g-" + it }) { g ->
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                            ) {
-                                Text(
-                                    g,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                )
-                            }
+                            // A tag is a search, not a decoration. Two scopes are
+                            // offered because both are wanted and only the user
+                            // knows which: the tag belongs to THIS site's
+                            // vocabulary (only this extension knows what it means
+                            // by "Manhwa"), while the same story is usually carried
+                            // by several engines and a reader hunting for more of
+                            // it does not care which one answers.
+                            GenreChip(
+                                genre = g,
+                                onSearchHere = {
+                                    Routes.safeNavigate(nav, Routes.searchInProvider(providerId, g))
+                                },
+                                onSearchEverywhere = {
+                                    Routes.safeNavigate(nav, Routes.searchQuery(g))
+                                },
+                            )
                         }
                     }
                 }
@@ -391,6 +400,59 @@ fun MangaDetailScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * One tag of a manga, as a chip that opens the two ways to search for it.
+ *
+ * A plain `Surface` pair rather than a `FilterChip`: the app's chips are glass
+ * pills everywhere else (see the engine chips on the Manga tab), and a tag that
+ * looks clickable has to behave clickable — tapping it used to do nothing at
+ * all, which is worse than not offering it.
+ *
+ * The menu is anchored to the chip, so it opens under the tag the user actually
+ * pressed, and the two entries say exactly what they search: [onSearchHere] is
+ * the engine this title came from, [onSearchEverywhere] every installed engine.
+ */
+@Composable
+private fun GenreChip(
+    genre: String,
+    onSearchHere: () -> Unit,
+    onSearchEverywhere: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            onClick = { open = true },
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        ) {
+            Text(
+                genre,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(tr("Search")) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onSearchHere()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(tr("Global search")) },
+                leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onSearchEverywhere()
+                },
+            )
         }
     }
 }

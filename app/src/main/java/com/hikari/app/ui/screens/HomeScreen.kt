@@ -1716,7 +1716,7 @@ private suspend fun PointerInputScope.holdOrTap(
  *  verification WebView button). HIKARI providers expose it through their SDK
  *  mainUrl; Stremio/universal use the configured URL; CS3 plugins load theirs
  *  from the plugin dex. Null when unknown — the button is hidden then. */
-private fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
+internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     ProviderType.STREMIO, ProviderType.UNIVERSAL ->
         p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     ProviderType.HIKARI ->
