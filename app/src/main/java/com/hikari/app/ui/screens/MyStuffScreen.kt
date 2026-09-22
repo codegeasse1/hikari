@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,9 +31,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.i18n.tr
@@ -164,6 +169,21 @@ private fun MyStuffStrip(sections: List<String>, current: String, onPick: (Strin
     }
 }
 
+/**
+ * One section button of the strip.
+ *
+ * Its label is SIZED TO FIT rather than ellipsized. "Downloads" is the longest
+ * label the strip carries and it is drawn at `labelLarge` beside a 16dp icon
+ * inside a third of a phone's row — which came out as "Downloa…" (and, on a
+ * narrow screen or a large font scale, as a word sliced across two lines), the
+ * user's report: "on downloading button it only shows downloa". Guessing a
+ * smaller font would just move the failure to someone else's phone, so the label
+ * is MEASURED: one measurement at a 100sp reference gives the size that fits the
+ * room the icon leaves (text width is linear in font size), and that size is
+ * used — the same trick the taskbar itself uses on its own labels. When even a
+ * readable size does not fit, the ICON goes instead of the word, because the
+ * word is what tells the user where the button goes.
+ */
 @Composable
 private fun MyStuffPill(
     label: String,
@@ -174,30 +194,74 @@ private fun MyStuffPill(
 ) {
     val fg = if (selected) MaterialTheme.colorScheme.onPrimary
     else MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(
-        onClick = onClick,
-        modifier = modifier.height(38.dp),
-        shape = RoundedCornerShape(50),
-        color = if (selected) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.surfaceVariant,
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    // The style the label is drawn with. Bold is the wider weight (a selected
+    // pill), so it is the one measured — and letter spacing is pinned to zero
+    // for the labels, as in the taskbar, so what is measured is what is drawn.
+    val labelStyle = MaterialTheme.typography.labelLarge
+    val measuredStyle = remember(labelStyle, density.fontScale) {
+        labelStyle.copy(fontSize = 100.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp)
+    }
+    val reference = remember(label, measuredStyle, density.density) {
+        measurer.measure(
+            text = AnnotatedString(label),
+            style = measuredStyle,
+            maxLines = 1,
+            softWrap = false,
+            constraints = androidx.compose.ui.unit.Constraints(maxWidth = 100000),
+        ).size.width
+    }
+
+    BoxWithConstraints(modifier.height(38.dp)) {
+        // The pill's own padding (8dp a side), the 16dp icon and the 6dp gap —
+        // the room a label has when the icon is drawn.
+        val withIcon = with(density) { (maxWidth - 16.dp - 16.dp - 6.dp).toPx() }
+        // …and what is left of the pill once the icon is gone.
+        val withoutIcon = with(density) { (maxWidth - 16.dp).toPx() }
+        fun sizeFor(room: Float): Float {
+            if (reference <= 0 || room <= 0f) return labelStyle.fontSize.value
+            val fontScale = density.fontScale.coerceAtLeast(0.5f)
+            return (room * 0.98f * 100f * fontScale / reference)
+                .coerceAtMost(labelStyle.fontSize.value)
+        }
+        val sizedWithIcon = sizeFor(withIcon)
+        // Below 11sp a side-by-side icon and word are no longer both legible, so
+        // the icon yields: the label is the part that carries the meaning, and a
+        // dropped icon costs nothing (the pill is still a labelled button).
+        val showIcon = sizedWithIcon >= 11f
+        val sizeSp = if (showIcon) sizedWithIcon else sizeFor(withoutIcon)
+        val scale = density.fontScale.coerceAtLeast(0.5f)
+        Surface(
+            onClick = onClick,
+            modifier = Modifier.fillMaxSize(),
+            shape = RoundedCornerShape(50),
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = fg,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (showIcon) {
+                    Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    label,
+                    style = labelStyle,
+                    fontSize = (sizeSp / scale).sp,
+                    letterSpacing = 0.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = fg,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                )
+            }
         }
     }
 }

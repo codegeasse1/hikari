@@ -1,5 +1,8 @@
 package com.hikari.app.ui.screens
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,9 +70,12 @@ import com.hikari.app.manga.MangaProvider
 import com.hikari.app.manga.MangaRecord
 import com.hikari.app.manga.MangaStore
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.components.VerificationNudge
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,6 +106,10 @@ fun MangaDetailScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
+    // The verification launcher below is started from a click, and the site URL
+    // has to be derived off the main thread, so the screen needs a scope of its
+    // own (the same one the refresh path uses).
+    val scope = rememberCoroutineScope()
 
     // The store key is provider + the source's own url — the same key the
     // chapter cache and the reading progress use.
@@ -118,6 +129,52 @@ fun MangaDetailScreen(
     val rev = rememberMangaRevision()
     val progress = remember(rev) { MangaStore.progressFor(key) }
     LaunchedEffect(rev) { followed = MangaStore.isFollowed(key) }
+
+    // ---- Verification, right where the chapters are -------------------------
+    //
+    // The Manga tab's globe is per ENGINE, which is the right place to fix a
+    // blocked catalog — but a site can put its Cloudflare challenge in front of
+    // the CHAPTER LIST, and then the title page is the one that comes back empty
+    // ("some manga site also put verification on chapter loading page, so add
+    // there a webview"). So the page the user is staring at carries its own way
+    // in, and coming back re-asks the source: between opening the view and
+    // closing it, the answer goes from a challenge to the real chapter list.
+    val verifyLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        error = null
+        reload++
+    }
+    val openVerify: () -> Unit = {
+        scope.launch {
+            val provider = app.providers.byId(providerId)
+            val site = withContext(Dispatchers.IO) {
+                runCatching {
+                    provider?.config?.let {
+                        com.hikari.app.manga.MangaExtensionManager.siteUrlOf(it)
+                    }
+                }.getOrNull()
+            }
+            if (site.isNullOrBlank()) {
+                android.widget.Toast.makeText(
+                    context,
+                    I18n.t("Couldn't determine this extension's site"),
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            } else {
+                val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
+                verifyLauncher.launch(
+                    Intent(context, WebViewActivity::class.java).apply {
+                        putExtra("url", site)
+                        putExtra("title", "Verify: " + (host ?: title))
+                        putExtra("providerId", providerId)
+                        putExtra("autoCloseWhenCloudflarePassed", true)
+                        if (host != null) putExtra("verifyHost", host)
+                    }
+                )
+            }
+        }
+    }
 
     LaunchedEffect(providerId, mangaUrl, reload) {
         loading = true
@@ -161,6 +218,9 @@ fun MangaDetailScreen(
         if (newestFirst) chapters.asReversed() else chapters
     }
 
+    // A Box, not a plain Column, purely so the verification nudge can float over
+    // the chapter list without taking a row of it (see the nudge below).
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         // ---- Top bar ----
         Row(
@@ -180,6 +240,17 @@ fun MangaDetailScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // The same globe the Manga tab's engine headers carry: this title's
+            // site, in the verification WebView. Kept beside the refresh button
+            // because a chapter list that will not load is either stale (refresh)
+            // or blocked (this).
+            IconButton(onClick = openVerify) {
+                Icon(
+                    Icons.Filled.Public,
+                    contentDescription = tr("Open the site to pass its Cloudflare check"),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
             IconButton(
                 onClick = {
                     MangaStore.dropChapters(key)
@@ -401,6 +472,18 @@ fun MangaDetailScreen(
                 }
             }
         }
+    }
+    // Ten seconds of an empty chapter list is the one moment this page can
+    // explain itself: the site is almost certainly asking for the verification
+    // it asks a browser for (see [VerificationNudge]). It floats under the bar,
+    // says its piece once, and is tappable straight into the WebView.
+    VerificationNudge(
+        waiting = loading && chapters.isEmpty(),
+        onOpenWebView = openVerify,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .padding(top = 56.dp),
+    )
     }
 }
 

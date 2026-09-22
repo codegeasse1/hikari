@@ -329,6 +329,14 @@ fun mangaStatusLabel(status: Int): String? = when (status) {
  *  * [WEBTOON] — one continuous vertical strip, which is how Korean webtoons and
  *    a lot of long-strip releases are drawn (separate page images that are only
  *    correct when butted together with no gap and no page break).
+ *
+ * [WEBTOON] is the DEFAULT — the user's own request ("make webtoon mode as
+ * default reader mode"). Manhwa and webtoon releases are what almost every
+ * installed manga extension carries, and a released chapter of one is a single
+ * vertical strip: opening it one page at a time shows a tall page cut at the
+ * knee and makes the reader swipe four times per panel. The two paged modes are
+ * still one tap away in the reader's settings (and stick once chosen — see
+ * [com.hikari.app.data.AppStore.mangaReadModeFlow]).
  */
 object MangaReadMode {
     const val PAGED_LTR = "ltr"
@@ -338,7 +346,7 @@ object MangaReadMode {
     val ALL = listOf(PAGED_LTR, PAGED_RTL, WEBTOON)
 
     fun normalize(raw: String?): String =
-        ALL.firstOrNull { it.equals(raw, ignoreCase = true) } ?: PAGED_LTR
+        ALL.firstOrNull { it.equals(raw, ignoreCase = true) } ?: WEBTOON
 }
 
 /**

@@ -71,6 +71,7 @@ import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.components.VerificationNudge
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -379,6 +380,18 @@ fun CatalogScreen(
         if (items.isEmpty() && loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+                // The spinner, on its own, cannot say WHY nothing is arriving —
+                // and ten seconds in, the usual answer is a Cloudflare check the
+                // site wants a browser to pass (see [VerificationNudge]). The
+                // chip floats under the spinner, says so once, and is itself the
+                // tap that opens the verification view.
+                VerificationNudge(
+                    waiting = true,
+                    onOpenWebView = openVerify,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 32.dp),
+                )
             }
         } else if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

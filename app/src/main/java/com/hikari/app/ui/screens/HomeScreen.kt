@@ -136,7 +136,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
      *
      * EMPTY means "All providers" (the default), ONE entry is the ordinary
      * single pick, and SEVERAL entries are a MULTI pick — made by holding a row
-     * in the picker for 1.5s and ticking others (see [setSelection]). Every
+     * in the picker for 0.5s and ticking others (see [setSelection]). Every
      * entry is the same string the picker stores a single pick under: an
      * extension's id, or `collection:<id>` for a personal catalog, so one list
      * carries both kinds of choice.
@@ -1572,8 +1572,9 @@ private fun PickerSectionLabel(text: String) {
  * looking different.
  *
  * The row's own tap handling is [holdOrTap] rather than `clickable`, because the
- * multi-select gesture is a deliberately LONG hold (1.5s — see [HOLD_MS]) and
- * `clickable`/`combinedClickable` would fire at the platform's ~500ms. The price
+ * multi-select gesture is a deliberate HOLD (0.5s — see [HOLD_MS]) and
+ * `clickable`/`combinedClickable` would fire at the platform's own timeout or
+ * swallow the press the list needs to scroll. The price
  * is the touch ripple, which a bottom-sheet row can do without.
  */
 @Composable
@@ -1670,18 +1671,28 @@ private fun PickerRow(
     }
 }
 
-/** How long a picker row must be held before multi-select starts. */
-private const val HOLD_MS = 1_500L
+/**
+ * How long a picker row must be held before multi-select starts.
+ *
+ * Half a second, on the user's own instruction ("make it 1.5second to 0.5 second
+ * for multi select to enable"): the hold was deliberately long when it was the
+ * only thing standing between a tap and a mode change, but half a second is
+ * still far longer than a tap and it makes ticking four extensions a gesture
+ * instead of a wait. It is worth being explicit about what it is NOT: this is
+ * still not the platform's long-press timeout (~500ms, which a slow deliberate
+ * tap can trip) — it is OUR measurement of a press, and a drag cancels it.
+ */
+private const val HOLD_MS = 500L
 
 /**
  * "Tap, or HOLD for a moment".
  *
- * `combinedClickable` uses the platform's long-press timeout, which is around
- * 500ms — short enough that a deliberate tap can trip it, and the user asked for
- * a 1.5s hold for exactly that reason. So the press is timed here: released
- * before [HOLD_MS] it is a tap, still down after it fires [onHold], and a drag
- * (past the touch slop, or a change the enclosing scroller has already consumed)
- * is left completely alone so the list still scrolls normally.
+ * `combinedClickable` uses the platform's long-press timeout, which fires on a
+ * press that is merely unhurried, and the gesture also has to survive the list
+ * being scrolled. So the press is timed here: released before [HOLD_MS] it is a
+ * tap, still down after it fires [onHold], and a drag (past the touch slop, or a
+ * change the enclosing scroller has already consumed) is left completely alone
+ * so the list still scrolls normally.
  */
 private suspend fun PointerInputScope.holdOrTap(
     onHold: () -> Unit,

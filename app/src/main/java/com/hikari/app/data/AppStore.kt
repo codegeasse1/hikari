@@ -164,6 +164,18 @@ class AppStore(private val ctx: Context) {
         val MANGA_KEEP_AWAKE = booleanPreferencesKey("mangaKeepAwake")
         val MANGA_SHOW_PAGE_NUMBER = booleanPreferencesKey("mangaShowPageNumber")
         /**
+         * Colour-enhance the pages while reading.
+         *
+         * Off by default (a scan is the artist's own colour, and "enhancing" it
+         * behind the reader's back would be a surprising default), but one tap
+         * away in the reader's settings and applied at DRAW time — a colour
+         * matrix on the GPU, see [com.hikari.app.ui.screens.mangaEnhanceFilter] —
+         * so it costs no extra decode, no extra memory and no frame time: the
+         * user asked for exactly that ("enhance all image real time without any
+         * load on phone, not make laggy").
+         */
+        val MANGA_ENHANCE = booleanPreferencesKey("mangaEnhance")
+        /**
          * The three sections of the merged "My Stuff" tab (Library, History,
          * Downloads), each switchable in Settings → Taskbar buttons.
          *
@@ -1317,6 +1329,16 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setMangaShowPageNumber(on: Boolean) {
         write("MANGA_SHOW_PAGE_NUMBER") { it[K.MANGA_SHOW_PAGE_NUMBER] = on }
+    }
+
+    /** Colour-enhance the pages while reading (default OFF — see
+     *  [K.MANGA_ENHANCE]). Applied as a GPU colour matrix, so flipping it is
+     *  instant and costs nothing per page. */
+    fun mangaEnhanceFlow(): Flow<Boolean> =
+        store.data.map { it[K.MANGA_ENHANCE] ?: false }
+
+    suspend fun setMangaEnhance(on: Boolean) {
+        write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
     }
 
     /** One of the reader's three backdrops; anything unknown means black. */

@@ -1,6 +1,12 @@
 package com.hikari.app.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import android.graphics.Bitmap
+import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -35,6 +41,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,6 +63,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -66,6 +74,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -73,6 +86,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -80,8 +94,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
@@ -90,6 +102,8 @@ import com.hikari.app.data.StreamSource
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.components.VerificationNudge
+import com.hikari.app.web.WebViewActivity
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
 import com.hikari.app.manga.MangaPageLoader
@@ -181,11 +195,26 @@ fun MangaReaderScreen(
     val bgFlow = remember { app.store.mangaReaderBgFlow() }
     val awakeFlow = remember { app.store.mangaKeepAwakeFlow() }
     val numberFlow = remember { app.store.mangaShowPageNumberFlow() }
-    val mode by modeFlow.collectAsState(initial = MangaReadMode.PAGED_LTR)
+    val enhanceFlow = remember { app.store.mangaEnhanceFlow() }
+    // The initial value is only what is drawn in the frame before the stored
+    // preference lands; it matches [MangaReadMode.normalize]'s default (webtoon)
+    // so a chapter never opens as a paged one and then re-lays itself out.
+    val mode by modeFlow.collectAsState(initial = MangaReadMode.WEBTOON)
     val fit by fitFlow.collectAsState(initial = MangaFit.WIDTH)
     val bgKey by bgFlow.collectAsState(initial = "black")
     val keepAwake by awakeFlow.collectAsState(initial = true)
     val showNumber by numberFlow.collectAsState(initial = false)
+    val enhance by enhanceFlow.collectAsState(initial = false)
+
+    // The width a page is decoded at, told to the loader once: it is the only
+    // component that knows how wide the reader's own window is, and the loader
+    // needs it to decode (and pre-decode) a page at the size it will be drawn
+    // rather than at the size the site happened to publish.
+    val density = LocalDensity.current
+    val decodeWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
+    LaunchedEffect(decodeWidthPx) {
+        if (decodeWidthPx > 0) MangaPageLoader.decodeWidth = decodeWidthPx
+    }
 
     // ---- The chapters the ◀ ▶ buttons walk ----
     //
@@ -211,6 +240,59 @@ fun MangaReaderScreen(
     var error by remember { mutableStateOf<String?>(null) }
     // Bumped by the retry button.
     var reload by remember { mutableStateOf(0) }
+
+    // ---- The reader's own way past a Cloudflare check ----------------------
+    //
+    // The Manga tab has a globe per engine and every catalog header has one, but
+    // a chapter can be behind its own verification page ("some manga site also
+    // put verification on chapter loading page, so add there a webview"). So the
+    // reader carries the same escape hatch: the engine's own site is opened in
+    // [WebViewActivity], the user passes whatever check the site wants, and the
+    // chapter is re-fetched on the way back — because between opening the view
+    // and closing it, the answer the site gives an extension's request can go
+    // from a challenge to the real page list.
+    val verifyLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        // The clearance is in the cookie jar now (the view flushes it before it
+        // closes — see CloudflareVerifier.onVerifyViewClosed); ask the chapter
+        // again, and drop the pages that came back before the verification.
+        error = null
+        reload++
+    }
+    val openVerify: () -> Unit = {
+        scope.launch {
+            val site = withContext(Dispatchers.IO) {
+                runCatching {
+                    app.providers.byId(providerId)?.config?.let {
+                        com.hikari.app.manga.MangaExtensionManager.siteUrlOf(it)
+                    }
+                }.getOrNull()
+            }
+            if (site.isNullOrBlank()) {
+                Toast.makeText(
+                    context,
+                    I18n.t("Couldn't determine this extension's site"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } else {
+                val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
+                verifyLauncher.launch(
+                    Intent(context, WebViewActivity::class.java).apply {
+                        putExtra("url", site)
+                        putExtra("title", "Verify: " + (host ?: title))
+                        putExtra("providerId", providerId)
+                        // Closes itself the moment the clearance is in the
+                        // cookie jar, so the user never has to guess when they
+                        // are "done" — which is also what makes the retry above
+                        // land on a page that now answers.
+                        putExtra("autoCloseWhenCloudflarePassed", true)
+                        if (host != null) putExtra("verifyHost", host)
+                    }
+                )
+            }
+        }
+    }
     // Where the reader is: the page of the chapter ON SCREEN, and which chapter
     // that is. Both are REPORTED by the body that draws the pages — in webtoon
     // mode the continuous strip can be showing a different chapter than the one
@@ -626,6 +708,8 @@ fun MangaReaderScreen(
                 itemIndexOf = { itemIndexOf(it) },
                 onReport = { c, p -> report(c, p) },
                 onTap = { chrome = !chrome },
+                enhance = enhance,
+                maxWidthPx = decodeWidthPx,
             )
             else -> PagedBody(
                 pages = pages,
@@ -636,6 +720,23 @@ fun MangaReaderScreen(
                 onReport = { c, p -> report(c, p) },
                 onTap = { chrome = !chrome },
                 onStep = { pageStep(it) },
+                enhance = enhance,
+                maxWidthPx = decodeWidthPx,
+            )
+        }
+
+        // A chapter whose PAGE LIST never arrives is usually a verification wall
+        // (the site gates chapter requests, not just its catalog), so the reader
+        // says so once, ten seconds in — and the nudge itself is the way to the
+        // WebView, because telling the user to go and press another button is
+        // one step worse than the button (see [VerificationNudge]).
+        if (pages.isEmpty()) {
+            VerificationNudge(
+                waiting = loading,
+                onOpenWebView = openVerify,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp),
             )
         }
 
@@ -671,6 +772,7 @@ fun MangaReaderScreen(
                     }
                 },
                 chapterCount = chapters.size,
+                onVerify = openVerify,
             )
             ReaderBottomBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -709,11 +811,13 @@ fun MangaReaderScreen(
                 bgKey = bgKey,
                 keepAwake = keepAwake,
                 showNumber = showNumber,
+                enhance = enhance,
                 onMode = { v -> scope.launch { app.store.setMangaReadMode(v) } },
                 onFit = { v -> scope.launch { app.store.setMangaFit(v) } },
                 onBg = { v -> scope.launch { app.store.setMangaReaderBg(v) } },
                 onAwake = { v -> scope.launch { app.store.setMangaKeepAwake(v) } },
                 onNumber = { v -> scope.launch { app.store.setMangaShowPageNumber(v) } },
+                onEnhance = { v -> scope.launch { app.store.setMangaEnhance(v) } },
             )
         }
     }
@@ -934,6 +1038,8 @@ private fun PagedBody(
     onReport: (String, Int) -> Unit,
     onTap: () -> Unit,
     onStep: (Int) -> Unit,
+    enhance: Boolean = false,
+    maxWidthPx: Int = 0,
 ) {
     val pager = rememberPagerState(pageCount = { pages.size })
     val mover = remember { ReaderMover() }
@@ -964,6 +1070,8 @@ private fun PagedBody(
             PageImage(
                 source = pages[i],
                 fit = fit,
+                enhance = enhance,
+                maxWidthPx = maxWidthPx,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -1010,6 +1118,8 @@ private fun WebtoonRunBody(
     itemIndexOf: (ScrollRequest) -> Int,
     onReport: (String, Int) -> Unit,
     onTap: () -> Unit,
+    enhance: Boolean = false,
+    maxWidthPx: Int = 0,
 ) {
     val mover = remember { ReaderMover() }
     LaunchedEffect(Unit) {
@@ -1052,7 +1162,13 @@ private fun WebtoonRunBody(
                                     else Modifier.height(420.dp)
                                 )
                         ) {
-                            PageContent(state, item.source, ContentScale.FillWidth)
+                            PageContent(
+                                state = state,
+                                source = item.source,
+                                contentScale = ContentScale.FillWidth,
+                                enhance = enhance,
+                                maxWidthPx = maxWidthPx,
+                            )
                         }
                     }
                 }
@@ -1106,6 +1222,8 @@ private fun ChapterCard(label: String) {
 private fun PageImage(
     source: StreamSource,
     fit: String,
+    enhance: Boolean = false,
+    maxWidthPx: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val state = rememberPageState(source)
@@ -1126,12 +1244,12 @@ private fun PageImage(
                             else Modifier.height(520.dp)
                         )
                 ) {
-                    PageContent(state, source, ContentScale.FillWidth)
+                    PageContent(state, source, ContentScale.FillWidth, enhance, maxWidthPx)
                 }
             }
         } else {
             Box(Modifier.fillMaxSize()) {
-                PageContent(state, source, ContentScale.Fit)
+                PageContent(state, source, ContentScale.Fit, enhance, maxWidthPx)
             }
         }
     }
@@ -1154,24 +1272,149 @@ private fun rememberPageState(source: StreamSource): MangaPageState {
 }
 
 /**
- * The page itself: the loader's validated file, a spinner while it is coming, or
- * — once the loader has spent all ten attempts — a row that says so and offers
- * one more try on THAT page alone, so a single bad page never costs the reader
- * the whole chapter.
+ * The reader's "Enhance" look, as a colour matrix applied AT DRAW TIME.
+ *
+ * The player has had an Enhance button since forever (a GL shader over the
+ * video); this is the reader's own, and it is deliberately implemented the one
+ * way that can be on all the time without costing anything: a [ColorFilter] on
+ * the `Image` call, which is a 4×5 matrix the GPU applies to the sampled texture
+ * while it composites. No second decode, no extra bitmap, no per-frame CPU work
+ * — flipping the switch recomposes one modifier and the very next frame is
+ * enhanced, which is exactly what the user asked for ("enhance all image real
+ * time without any load on phone, not make laggy").
+ *
+ * What it does is the mild, honest version of "enhance": a little more
+ * saturation (1.16 — scan sites' JPEGs are noticeably washed out), a little more
+ * contrast (1.10, with the 50% grey pivot kept where it is so dark line art does
+ * not blow out), and a hair of lift so pure blacks on a black reader backdrop
+ * stop looking like holes. Nothing is sharpened: an unsharp mask would need a
+ * second pass over every page and would ring on line art.
+ */
+internal val mangaEnhanceFilter: ColorFilter by lazy {
+    ColorFilter.colorMatrix(ColorMatrix(mangaEnhanceMatrix()))
+}
+
+/** The saturation ∘ contrast matrix behind [mangaEnhanceFilter] (see there for
+ *  why these numbers). Written out rather than composed at runtime so the whole
+ *  thing is one allocation, once. */
+private fun mangaEnhanceMatrix(): FloatArray {
+    val sat = 1.16f
+    val contrast = 1.10f
+    val lift = 0.02f * 255f
+    val inv = 1f - sat
+    val ir = 0.213f * inv
+    val ig = 0.715f * inv
+    val ib = 0.072f * inv
+    val saturation = floatArrayOf(
+        ir + sat, ig, ib, 0f, 0f,
+        ir, ig + sat, ib, 0f, 0f,
+        ir, ig, ib + sat, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+    val t = (1f - contrast) / 2f * 255f + lift
+    val levels = floatArrayOf(
+        contrast, 0f, 0f, 0f, t,
+        0f, contrast, 0f, 0f, t,
+        0f, 0f, contrast, 0f, t,
+        0f, 0f, 0f, 1f, 0f,
+    )
+    // levels ∘ saturation: the page is desaturated-onto-saturated first, then
+    // levelled — the order that keeps the luma weights meaningful.
+    return multiplyColorMatrix(levels, saturation)
+}
+
+/** `a ∘ b` in Android/Compose's 4×5 row-major colour-matrix layout: apply [b]
+ *  first, then [a]. */
+private fun multiplyColorMatrix(a: FloatArray, b: FloatArray): FloatArray {
+    val out = FloatArray(20)
+    for (row in 0 until 4) {
+        for (col in 0 until 5) {
+            var sum = if (col == 4) a[row * 5 + 4] else 0f
+            for (k in 0 until 4) sum += a[row * 5 + k] * b[k * 5 + col]
+            out[row * 5 + col] = sum
+        }
+    }
+    return out
+}
+
+/**
+ * The page itself: the loader's validated file, decoded to a bitmap, a spinner
+ * while it is coming, or — once the loader has spent all ten attempts — a row
+ * that says so and offers one more try on THAT page alone, so a single bad page
+ * never costs the reader the whole chapter.
+ *
+ * The decode is [MangaPageLoader]'s (see [MangaPageLoader.bitmap]) rather than
+ * Coil's, and that is deliberate: Coil would re-request, re-decode and re-upload
+ * the page every time it scrolled back into composition, at whatever size the
+ * cell happened to be. Here the page is decoded once, at the reader's own width,
+ * remembered by the loader's byte-budgeted cache, and drawn as a plain bitmap —
+ * so a page that scrolls back into view is a blit. [enhance] rides on the same
+ * draw: a colour matrix on the GPU (see [mangaEnhanceFilter]), which is why
+ * turning it on costs no decode, no memory and no frame time.
  */
 @Composable
 private fun PageContent(
     state: MangaPageState,
     source: StreamSource,
     contentScale: ContentScale,
+    enhance: Boolean = false,
+    maxWidthPx: Int = 0,
 ) {
     when (state) {
-        is MangaPageState.Ready -> AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current).data(state.file).build(),
-            contentDescription = null,
-            contentScale = contentScale,
-            modifier = Modifier.fillMaxSize(),
-        )
+        is MangaPageState.Ready -> {
+            // Whether this page has already been re-asked for: the decode below
+            // must be able to say "this file is not an image" without the screen
+            // turning that into an endless fetch loop. Keyed on the URL (not the
+            // file), so one composition can re-ask a page at most once however
+            // many attempts land.
+            var reasked by remember(source.url) { mutableStateOf(false) }
+            // Keyed on the file's own (unique-per-fetch) path as well as the
+            // url, so a page that was re-fetched is DECODED again: the loader
+            // writes every attempt to a fresh file precisely so nothing can
+            // serve a stale decode, and this is the other half of that.
+            val bitmap by produceState<Bitmap?>(
+                initialValue = null,
+                source.url,
+                maxWidthPx,
+                state.file.absolutePath,
+            ) {
+                val decoded = withContext(Dispatchers.IO) {
+                    MangaPageLoader.bitmap(source.url, maxWidthPx)
+                }
+                value = decoded
+                if (decoded == null && !reasked) {
+                    // A Ready page with no pixels means the file on disk is not
+                    // an image after all (damaged scan data, a file the system
+                    // cleared behind us). Ask for it again rather than spinning
+                    // forever on a page that will never appear — and ask only
+                    // ONCE per file, so a page that is genuinely undecodable
+                    // ends up on the loader's own retry ladder (and then on the
+                    // per-page Retry row) instead of fetching in a loop.
+                    reasked = true
+                    MangaPageLoader.retry(source.url, source.headers)
+                }
+            }
+            val page = remember(bitmap) { bitmap?.asImageBitmap() }
+            if (page != null) {
+                Image(
+                    bitmap = page,
+                    contentDescription = null,
+                    contentScale = contentScale,
+                    // Low is the right filter for this: the bitmap is already
+                    // decoded at the drawing width, so anything more than the
+                    // cheap path is a per-frame cost that buys nothing — and a
+                    // mangled half-drawn frame during a fling is the jank the
+                    // user reported.
+                    filterQuality = FilterQuality.Low,
+                    colorFilter = if (enhance) mangaEnhanceFilter else null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
+                }
+            }
+        }
         is MangaPageState.Failed -> Column(
             Modifier
                 .fillMaxSize()
@@ -1218,6 +1461,11 @@ private fun ReaderTopBar(
      *  holds a single chapter — a button that can only show one row is noise. */
     onChapters: (() -> Unit)? = null,
     chapterCount: Int = 0,
+    /** Opens the engine's own site in the verification WebView — the reader's
+     *  own way past a Cloudflare check that sits in front of a CHAPTER rather
+     *  than the catalog (the user's report: "some manga site also put
+     *  verification on chapter loading page, so add there a webview"). */
+    onVerify: (() -> Unit)? = null,
 ) {
     Surface(
         color = Color.Black.copy(alpha = 0.78f),
@@ -1252,6 +1500,15 @@ private fun ReaderTopBar(
                             I18n.t("Chapters (%s)").replace("%s", chapterCount.toString())
                         else tr("Chapters"),
                         tint = Color.White,
+                    )
+                }
+            }
+            if (onVerify != null) {
+                IconButton(onClick = onVerify) {
+                    Icon(
+                        Icons.Filled.Public,
+                        contentDescription = tr("Open the site to pass its Cloudflare check"),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
@@ -1429,8 +1686,18 @@ private fun pageAt(x: Float, width: Int, count: Int): Int {
     return (fraction * (count - 1)).roundToInt().coerceIn(0, count - 1)
 }
 
-/** The reader's settings sheet: the two shapes of a chapter, and the page
- *  furniture around it. */
+/** The reader's settings sheet: the shapes of a chapter, the page furniture
+ *  around it, and the two switches that change how the artwork is DRAWN.
+ *
+ *  The sheet's content SCROLLS, and that is not a nicety: the settings are
+ *  grouped (direction, fit, background, while-reading) and on a short screen
+ *  the last group did not fit. A `Column` inside a `ModalBottomSheet` that
+ *  overflows is CLIPPED — it does not scroll by itself — so the last row was
+ *  cut in half at the sheet's own edge, and a half-drawn `Switch` sitting under
+ *  another row's switch is exactly what the user reported as "an extra toggle
+ *  near Keep screen on". Nothing was ever duplicated; the row below it was
+ *  sliced by the sheet's bottom edge. Scrolling the content is the fix, and it
+ *  keeps every option (including any added later) reachable on any screen. */
 @Composable
 private fun ReaderSettings(
     mode: String,
@@ -1438,13 +1705,19 @@ private fun ReaderSettings(
     bgKey: String,
     keepAwake: Boolean,
     showNumber: Boolean,
+    enhance: Boolean,
     onMode: (String) -> Unit,
     onFit: (String) -> Unit,
     onBg: (String) -> Unit,
     onAwake: (Boolean) -> Unit,
     onNumber: (Boolean) -> Unit,
+    onEnhance: (Boolean) -> Unit,
 ) {
-    Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
+    Column(
+        Modifier
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, bottom = 28.dp)
+    ) {
         Text(
             tr("Reader"),
             style = MaterialTheme.typography.titleMedium,
@@ -1468,6 +1741,7 @@ private fun ReaderSettings(
         SettingGroup(tr("While reading"))
         SettingSwitch(tr("Keep the screen awake"), keepAwake, onAwake)
         SettingSwitch(tr("Show page number over the page"), showNumber, onNumber)
+        SettingSwitch(tr("Enhance images"), enhance, onEnhance)
     }
 }
 

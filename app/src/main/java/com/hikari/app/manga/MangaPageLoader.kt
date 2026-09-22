@@ -1,7 +1,9 @@
 package com.hikari.app.manga
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import com.hikari.app.HikariApp
 import com.hikari.app.data.StreamSource
 import com.hikari.app.net.DohDns
@@ -78,6 +80,25 @@ sealed class MangaPageState {
  *
  * A page is fetched at most ONCE per URL: [load] is single-flight, so the
  * preloader, the pager and a retry cannot race each other into three downloads.
+ *
+ * **Why the decode lives here too.** A page that is on disk still has to become
+ * pixels, and that step was Coil's — which meant a fresh request, a fresh
+ * decode and a fresh upload to the GPU every time a page scrolled back into
+ * view, at whatever size the composable happened to ask for. A webtoon strip is
+ * a dozen 1080×8000 pages; decoding each of them at full size, over and over,
+ * on a list that scrolls with the thumb is exactly what "not buttery smooth"
+ * is. So the loader decodes a page itself — deliberately DOWNSAMPLED to the
+ * reader's own width (see [decodeFor]) and to [MAX_DECODE_H] — and keeps the
+ * result in a byte-budgeted LRU ([bitmaps]). [plan] then PRELOADS the pages
+ * around the reader, so by the time a page appears its bitmap is either in that
+ * cache (a blit) or one decode away. Nothing is ever fetched twice and nothing
+ * is decoded twice.
+ *
+ * The decode is also the last word on whether a page is GOOD: a file that
+ * cannot be decoded, or that decodes to something other than the shape its own
+ * header promised, is treated as a failed fetch and retried like any other —
+ * because a page that decodes to garbage is a page that looks broken forever,
+ * and "some pages are broken" is the report this whole class answers.
  */
 object MangaPageLoader {
 
@@ -100,14 +121,68 @@ object MangaPageLoader {
     /** How often the cache is measured. Every chapter open is enough. */
     private const val PRUNE_EVERY_MS = 60_000L
 
+    /** The widest a page is ever decoded. A phone is 1080–1440px wide and a
+     *  webtoon page is 800–1600, so this is the reader's own resolution on
+     *  almost every page — anything wider is an upscale nobody can see, paid for
+     *  in memory and in the upload to the GPU on every frame it is on screen. */
+    private const val MAX_DECODE_W = 1600
+
+    /** The tallest a page is ever decoded. A long strip is 8000–20000px tall
+     *  and TextureView/GPU upload of that in one piece is where the frame drops
+     *  come from; halving it (a power-of-two sample, so the decoder does the
+     *  work on the fly) costs nothing visible at reading distance and keeps the
+     *  whole window of pages resident. */
+    private const val MAX_DECODE_H = 8192
+
+    /** How many pixels of decoded page the bitmap cache may hold, derived from
+     *  the heap the process was actually given rather than from a number picked
+     *  on a developer's phone: a sixth of it, never below 48MB (a couple of
+     *  webtoon pages, which is what "back one page" needs) and never above
+     *  320MB (a big heap should still leave room for the list, the player and
+     *  the rest of the app). Pages are RGB_565 (see [decodeFor]), so ~2 bytes a
+     *  pixel: 96MB is around a dozen 1080×3600 pages. */
+    private val bitmapBudget: Int by lazy {
+        val max = Runtime.getRuntime().maxMemory()
+        ((max / 6).coerceAtMost(320L * 1024 * 1024).coerceAtLeast(48L * 1024 * 1024))
+            .toInt()
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gate = Semaphore(PARALLEL)
     private val states = ConcurrentHashMap<String, MutableStateFlow<MangaPageState>>()
     private val jobs = ConcurrentHashMap<String, Job>()
     private val files = ConcurrentHashMap<String, File>()
 
+    /**
+     * Decoded pages, keyed by URL and budgeted by their own byte count.
+     *
+     * The entries are deliberately NEVER recycled on eviction: the reader draws
+     * them straight from this map, and a bitmap the cache has just evicted can
+     * still be the one a frame is drawing — recycling it there is a hard crash
+     * ("Canvas: trying to use a recycled bitmap"), while simply dropping the
+     * reference lets the GC take it back a moment later. The budget is what
+     * keeps the pressure off; the missing `recycle()` is what keeps the reader
+     * up.
+     */
+    private val bitmaps: LruCache<String, Bitmap> by lazy {
+        object : LruCache<String, Bitmap>(bitmapBudget) {
+            override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+        }
+    }
+
+    /** One lock per URL, so two composables asking for the same page at once
+     *  share a decode instead of racing into two. */
+    private val decodes = ConcurrentHashMap<String, Any>()
+
     @Volatile
     private var prunedAt = 0L
+
+    /** The last [plan] call, so a scroll step that moves the reader by a page or
+     *  two does not re-walk (and re-ask for) the whole window below. */
+    @Volatile
+    private var plannedKey: String = ""
+    @Volatile
+    private var plannedAt: Int = -1
 
     /**
      * A client of its own, deliberately: no ad-blocker, no Cloudflare marking
@@ -137,8 +212,15 @@ object MangaPageLoader {
      * Makes sure [url] is being fetched. Idempotent: a page already loading (or
      * already on disk) is left alone unless [force], which is what the reader's
      * retry button and the loader's own retry loop use.
+     *
+     * [eager] asks for the page to be decoded into the bitmap cache as soon as
+     * its bytes land — the reader passes it for the pages immediately around the
+     * thumb ([plan]'s ahead/behind window) and leaves it off for the long tail
+     * of the chapter, whose bytes are wanted on disk but whose pixels are not
+     * needed for another minute: decoding all two hundred pages of a chapter up
+     * front would evict the page under the eye from the budget.
      */
-    fun load(url: String, headers: Map<String, String>, force: Boolean = false) {
+    fun load(url: String, headers: Map<String, String>, force: Boolean = false, eager: Boolean = false) {
         if (url.isBlank()) return
         val current = states.getOrPut(url) { MutableStateFlow(MangaPageState.Idle) }
         val running = jobs[url]?.isActive == true
@@ -147,7 +229,10 @@ object MangaPageLoader {
                 // A page that is on disk needs nothing... unless the system
                 // cleared the cache directory under us, which it is free to do
                 // at any time. The state is only as good as the file.
-                if (s.file.exists() && !force) return
+                if (s.file.exists() && !force) {
+                    if (eager) ensureBitmap(url)
+                    return
+                }
             }
             is MangaPageState.Loading -> if (running && !force) return
             // A page that has spent its ten attempts stays failed until the
@@ -156,11 +241,31 @@ object MangaPageLoader {
             is MangaPageState.Failed -> if (!force) return
             MangaPageState.Idle -> Unit
         }
-        if (force) jobs.remove(url)?.cancel()
+        if (force) {
+            jobs.remove(url)?.cancel()
+            // A retry is a statement that what is on screen is wrong, so the
+            // decoded page goes now — not when (and if) the new bytes land.
+            bitmaps.remove(url)
+        }
         jobs[url] = scope.launch {
-            gate.withPermit { fetch(url, headers, current) }
+            gate.withPermit { fetch(url, headers, current, eager) }
             jobs.remove(url)
         }
+    }
+
+    /** The width the reader draws a page at, in pixels. The reader knows it (it
+     *  is the window's own width); the preloader needs it to decode a page at
+     *  the size it will actually be shown. Set from the reader's composition. */
+    @Volatile
+    var decodeWidth: Int = 1080
+
+    /** Decodes a page that is already on disk but not yet in memory, off the
+     *  main thread — the "it is in the near window now" path (see [plan]). */
+    private fun ensureBitmap(url: String) {
+        if (bitmaps.get(url) != null) return
+        val ready = states[url]?.value as? MangaPageState.Ready ?: return
+        if (!ready.file.exists()) return
+        scope.launch { bitmap(url, decodeWidth) }
     }
 
     /** The reader's retry button: forget the failure and try the full ladder
@@ -184,6 +289,16 @@ object MangaPageLoader {
         if (pages.isEmpty()) return
         pruneCache()
         val at = current.coerceIn(0, pages.lastIndex)
+        // Called on EVERY scroll step by the surface that draws the pages, and
+        // the window it computes only changes meaningfully every couple of
+        // pages — so a step that lands within one page of the last plan is
+        // skipped. The loads themselves are idempotent, but walking 200 page
+        // entries on every frame of a fling is not free, and a fling is exactly
+        // when the reader is watching for dropped frames.
+        val key = pages.first().url
+        if (key == plannedKey && kotlin.math.abs(at - plannedAt) < 2) return
+        plannedKey = key
+        plannedAt = at
         val ahead = (at + 1..at + 10).filter { it in pages.indices }
         val behind = (at - 1 downTo at - 8).filter { it in pages.indices }
         val forward = (ahead.lastOrNull()?.plus(1) ?: at + 1)..pages.lastIndex
@@ -193,16 +308,55 @@ object MangaPageLoader {
         order += behind
         order += forward
         order += restBehind
-        for (i in order) load(pages[i].url, pages[i].headers)
+        // The near window is fetched EAGERLY (bytes AND pixels): those are the
+        // pages the thumb is about to land on, and having their decoded bitmaps
+        // already in memory is what makes the next swipe a blit instead of a
+        // decode. The rest of the chapter is mapped onto the disk only.
+        val near = (ahead + behind).toHashSet()
+        for (i in order) load(pages[i].url, pages[i].headers, eager = i in near)
+    }
+
+    /**
+     * The decoded page, or null while it is not (yet) in memory.
+     *
+     * Called from the reader's composition, off the main thread. [maxWidthPx] is
+     * the width the reader will DRAW at, so a page wider than the phone is
+     * downsampled by the decoder itself instead of being decoded at full size
+     * and scaled on the GPU every frame. A page that is on disk but not in the
+     * bitmap cache is decoded here and remembered; the caller re-asks when it
+     * wants it again, and the answer is then a map lookup.
+     *
+     * Returns null for a page that has no file (never fetched, or the system
+     * cleared the cache directory) and for one that cannot be decoded — the
+     * latter is a page the reader shows as its retry row, because the fetch that
+     * "succeeded" evidently did not.
+     */
+    fun bitmap(url: String, maxWidthPx: Int): Bitmap? {
+        bitmaps.get(url)?.let { return it }
+        val file = files[url] ?: (states[url]?.value as? MangaPageState.Ready)?.file ?: return null
+        if (!file.exists() || file.length() <= 0L) return null
+        val lock = decodes.getOrPut(url) { Any() }
+        synchronized(lock) {
+            // Another composable may have decoded it while this one waited.
+            bitmaps.get(url)?.let { return it }
+            val bmp = decodeFor(file, maxWidthPx) ?: return null
+            bitmaps.put(url, bmp)
+            return bmp
+        }
     }
 
     // ---- Fetching -----------------------------------------------------------
 
-    private suspend fun fetch(url: String, headers: Map<String, String>, state: MutableStateFlow<MangaPageState>) {
+    private suspend fun fetch(
+        url: String,
+        headers: Map<String, String>,
+        state: MutableStateFlow<MangaPageState>,
+        eager: Boolean,
+    ) {
         var lastReason = "unknown"
         for (attempt in 1..MAX_ATTEMPTS) {
             state.value = MangaPageState.Loading(attempt)
-            val result = runCatching { get(url, headers) }
+            val result = runCatching { get(url, headers, eager) }
             val outcome = result.getOrNull()
             if (result.isFailure) {
                 lastReason = result.exceptionOrNull()?.javaClass?.simpleName ?: "error"
@@ -224,7 +378,7 @@ object MangaPageLoader {
 
     /** One attempt. Returns the [MangaPageState.Ready] state on success, null on
      *  a soft failure (retry), and throws only for programming errors. */
-    private fun get(url: String, headers: Map<String, String>): MangaPageState? {
+    private fun get(url: String, headers: Map<String, String>, eager: Boolean): MangaPageState? {
         val builder = Request.Builder().url(url)
         headers.forEach { (k, v) ->
             // A header value OkHttp refuses (a stray newline in an extension's
@@ -258,6 +412,23 @@ object MangaPageLoader {
             if (!looksComplete(bytes, kind)) return null
             val file = write(url, bytes, kind) ?: return null
             val bounds = bounds(file)
+            // The last gate, and the only one no header can stand in for: the
+            // bytes must actually DECODE, at the size the reader will draw them.
+            // A file can be a complete, correctly-terminated JPEG whose scan data
+            // is damaged — every structural check above passes, the decoder
+            // returns a bitmap full of displaced blocks, and the reader shows a
+            // page "cut into rectangles" forever with nothing to retry. Decoding
+            // here turns that into a failed attempt, which is retried like any
+            // other. It is also the decode the reader would have done anyway, so
+            // when [eager] is set the result is KEPT (see [bitmaps]) and the page
+            // is one blit away when the thumb reaches it.
+            val drawn = decodeFor(file, if (eager) decodeWidth else 0)
+            if (drawn == null) {
+                file.delete()
+                files.remove(url, file)
+                return null
+            }
+            if (eager) bitmaps.put(url, drawn)
             return MangaPageState.Ready(file, bounds.first, bounds.second)
         }
     }
@@ -274,7 +445,9 @@ object MangaPageLoader {
 
     /** Writes the bytes under a FRESH name every time (see [load]'s note about
      *  Coil's cache key: the same path with new bytes would keep serving the old
-     *  decode), and drops the previous file for this url. */
+     *  decode), and drops the previous file for this url. The url's DECODED page
+     *  goes with it: a retry that lands a good page must never leave the old
+     *  garbage on screen. */
     private fun write(url: String, bytes: ByteArray, kind: String): File? = runCatching {
         val dir = cacheDir(HikariApp.instance)
         val file = File(dir, nameOf(url) + "-" + System.nanoTime() + "." + kind)
@@ -285,6 +458,7 @@ object MangaPageLoader {
             return@runCatching null
         }
         files.put(url, file)?.let { old -> if (old.absolutePath != file.absolutePath) old.delete() }
+        bitmaps.remove(url)
         file
     }.getOrNull()
 
@@ -295,6 +469,42 @@ object MangaPageLoader {
         BitmapFactory.decodeFile(file.absolutePath, opts)
         opts.outWidth to opts.outHeight
     }.getOrDefault(0 to 0)
+
+    /**
+     * Decodes a page for DRAWING at [maxWidthPx] (the reader's own width), or —
+     * when that is 0 — at the size the reader would draw it anyway, purely to
+     * find out whether the bytes are an image at all (see [get]'s last gate).
+     *
+     * The sampling is a power of two because that is what the decoder can do
+     * while it decodes: `inSampleSize = 2` skips every other block as it reads
+     * the file, so a 1080×12000 strip is never materialised full size. Two caps
+     * apply at once — the reader's width (no point decoding wider than the
+     * screen) and [MAX_DECODE_H] (no point holding a page taller than the GPU
+     * wants to upload in one piece), and the tighter of the two wins.
+     */
+    private fun decodeFor(file: File, maxWidthPx: Int): Bitmap? {
+        val (w, h) = bounds(file)
+        if (w <= 0 || h <= 0) return null
+        val target = if (maxWidthPx <= 0) 1080 else maxWidthPx.coerceIn(600, MAX_DECODE_W)
+        var sample = 1
+        while (w / sample > target || h / sample > MAX_DECODE_H) sample *= 2
+        return decode(file, sample)
+    }
+
+    /** One BitmapFactory pass over [file], sampled by [sample] (see
+     *  [decodeFor]). Null for anything the platform refuses to decode — which is
+     *  precisely the answer [get] needs. */
+    private fun decode(file: File, sample: Int): Bitmap? = runCatching {
+        BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply {
+            inSampleSize = sample
+            // A page is opaque artwork: an alpha channel would be 255
+            // everywhere, at a quarter of every page's memory and every frame's
+            // upload. RGB_565 halves both, which is what keeps a window of
+            // webtoon pages in memory and the strip's scrolling smooth.
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inScaled = false
+        })
+    }.getOrNull()
 
     /**
      * Which format a page file is, from its own magic bytes.
@@ -374,9 +584,21 @@ object MangaPageLoader {
                 for (f in all.sortedBy { it.lastModified() }) {
                     if (total <= CACHE_CAP_BYTES) break
                     val len = f.length()
+                    // The url → file entries pointing at this file go with it,
+                    // and so do their decoded pages and their Ready states: a
+                    // bitmap whose file was just evicted can never be re-read,
+                    // and a state that keeps claiming Ready for a file that is
+                    // gone is exactly how a page ends up drawn as a blank cell
+                    // with no retry offered.
+                    val gone = files.entries.filter { it.value.absolutePath == f.absolutePath }
+                        .map { it.key }
                     if (f.delete()) {
                         total -= len
-                        files.entries.removeAll { it.value.absolutePath == f.absolutePath }
+                        for (url in gone) {
+                            files.remove(url)
+                            bitmaps.remove(url)
+                            states[url]?.value = MangaPageState.Idle
+                        }
                     }
                 }
             }

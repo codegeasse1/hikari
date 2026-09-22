@@ -48,23 +48,31 @@ surfaced as "Manga — continue reading" in **My Stuff → History** and on the
 ## The reader (`ui/screens/MangaReaderScreen.kt`)
 
 **Read [READER.md](READER.md) before changing anything in it** — the request lane
-(`ScrollRequest`/`ReaderMover`), the webtoon *run* of chapters and the page
-loader are three rules that each map to a bug the user reported by name.
+(`ScrollRequest`/`ReaderMover`), the webtoon *run* of chapters, the page loader
+and "webtoon is the default mode" are four rules that each map to a bug the user
+reported by name.
 
 * Top bar: back, title, **chapter list** (`ChapterSheet` — reading order,
   scrolled to the current chapter, searchable, keyed by position because a
-  source can repeat a chapter URL), reader settings.
+  source can repeat a chapter URL), **the globe** (this engine's site in the
+  verification WebView — a site can gate the CHAPTER list, not just the catalog)
+  and reader settings.
 * Bottom bar: chapter ◀ ▶ (walking `navChapters`, one entry per chapter NUMBER —
   see `dedupeChapters`), the chapter label, the page readout, and
   `ReaderScrubber` — **one dot per page**, drag or tap to land on an exact page
   (through a `ScrollRequest`, never by setting `page` and hoping). Not a
   `Slider`: a thumb has no relationship to a page number.
 * Three read modes (`MangaReadMode`) and three fits (`MangaFit`), stored in
-  `AppStore`; progress is written debounced on every page change and once more
-  on dispose, against the chapter and page the surface REPORTED.
-* Page images are fetched, validated and retried by `manga/MangaPageLoader`
-  (ten attempts, then a per-page Retry button); the reader only ever decodes the
-  file it produced.
+  `AppStore` (**webtoon is the default** — see `MangaReadMode.normalize`);
+  progress is written debounced on every page change and once more on dispose,
+  against the chapter and page the surface REPORTED. The settings sheet SCROLLS:
+  a `Column` in a `ModalBottomSheet` that overflows is clipped, not scrolled, and
+  a sliced row reads to the user as a duplicated control.
+* Page images are fetched, validated, retried AND decoded by
+  `manga/MangaPageLoader` (ten attempts, then a per-page Retry button; decoded
+  pages live in its byte-budgeted cache, which is what keeps the strip smooth).
+  `Enhance images` in the settings is a draw-time `ColorFilter`, never a second
+  copy of the page.
 
 ## Cloudflare and manga sites
 
@@ -92,5 +100,12 @@ user noticed the problem:
 * the Manga tab's engine card (`MangaScreen.EngineRow`),
 * a manga engine's Popular/Latest page (`CatalogScreen`'s header and its empty
   state — that page also carries the engine's own **search box**),
+* a title's own page (`MangaDetailScreen`'s header — the chapter list itself can
+  be the thing that is gated) and the reader's top bar,
 * an installed engine's row in Extensions (`rememberVerifyAction` → each
   `ProviderCard`).
+
+Any of those screens can also go ten seconds with nothing arriving, which is the
+signature of exactly this wall: they carry `VerificationNudge`
+(`ui/components/Components.kt`), a three-second chip that says so and opens the
+verification view when tapped.

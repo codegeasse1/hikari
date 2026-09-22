@@ -52,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -1471,3 +1472,91 @@ fun GlassDialog(
         }
     }
 }
+
+/**
+ * The "this is taking a while — a verification may be in the way" nudge.
+ *
+ * The user's report: an extension's catalog or chapter list can sit there
+ * spinning forever with nothing on screen explaining why, and the reason is
+ * almost always Cloudflare — the site wants its check passed in a real browser
+ * before it will answer an extension's request (see
+ * [com.hikari.app.net.CloudflareVerifier]). The fix is the WebView button, which
+ * the Manga tab and every catalog header already carry — but a button the user
+ * does not know to press is not a fix.
+ *
+ * So: when [waiting] has been true for [WAIT_MS] (ten seconds — long enough that
+ * a slow-but-working site never trips it, short enough that a blocked one does
+ * not leave the user staring at a spinner), a SMALL chip appears for
+ * [SHOW_MS] (three seconds) saying to tap it for the verification view, with its
+ * own ✕. Tapping the chip opens that view directly, because telling someone to
+ * go and press another button is one step worse than the button itself.
+ *
+ * Deliberately tiny and out of the way: it is a note, not an error state, and it
+ * must not push the content around or read as a failure. It re-arms only when
+ * the load succeeds and fails again (i.e. on the next real wait), so a site that
+ * is merely slow cannot nag.
+ */
+@Composable
+fun VerificationNudge(
+    waiting: Boolean,
+    onOpenWebView: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var visible by remember { mutableStateOf(false) }
+    // "Armed" = this wait has not shown its chip yet. It is set by the wait
+    // STARTING, so one long wait shows the nudge once, however long it lasts.
+    var armed by remember { mutableStateOf(true) }
+    LaunchedEffect(waiting) {
+        if (!waiting) {
+            armed = true
+            visible = false
+            return@LaunchedEffect
+        }
+        if (!armed) return@LaunchedEffect
+        armed = false
+        delay(WAIT_MS)
+        if (!waiting) return@LaunchedEffect
+        visible = true
+        delay(SHOW_MS)
+        visible = false
+    }
+    if (!visible) return
+    Surface(
+        onClick = {
+            visible = false
+            onOpenWebView()
+        },
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
+        modifier = modifier,
+    ) {
+        Row(
+            Modifier.padding(start = 10.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                tr("Not loading? Tap to verify in the WebView"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            IconButton(
+                onClick = { visible = false },
+                modifier = Modifier.size(22.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = tr("Dismiss"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Ten seconds of no answer before the nudge appears, and three seconds of it
+ *  being on screen (see [VerificationNudge]). */
+private const val WAIT_MS = 10_000L
+private const val SHOW_MS = 3_000L

@@ -577,10 +577,48 @@ class PlayerActivity : ComponentActivity() {
      * show the name of the series or movie in the bar". The intent ALWAYS carries
      * the title, so there is no reason for a blank one: this is the name the box
      * is pre-filled with, and the name a search with no item behind it asks for.
+     *
+     * Read in this order, and deliberately so:
+     *
+     *  1. [AppMediaItem.searchTitle] — the item's ORIGINAL/English name. Every
+     *     subtitle site indexes that name and nothing else: a TMDB-localised
+     *     display title finds no tracks at all, which is the "sometimes nothing
+     *     shows up" half of the report. This is the same rule the
+     *     cross-extension server search already follows.
+     *  2. the intent's own `title` (always present, always the display name),
+     *  3. the history title the intent carries for a resumed item,
+     *  4. and last, the top bar's own text — where a title ends up when it
+     *     arrived through a path the extras do not cover (a live channel, a
+     *     deep link). A box that opens empty is the bug; this is the belt to go
+     *     with the braces.
      */
     private val playingTitle: String
-        get() = favouriteItem?.title?.takeIf { it.isNotBlank() }
-            ?: intent.getStringExtra("title").orEmpty().trim()
+        get() = favouriteItem?.searchTitle?.takeIf { it.isNotBlank() }
+            ?: intent.getStringExtra("title").orEmpty().trim().takeIf { it.isNotBlank() }
+            ?: intent.getStringExtra("histTitle").orEmpty().trim().takeIf { it.isNotBlank() }
+            ?: runCatching {
+                findViewById<TextView>(R.id.title_text)?.text?.toString()?.trim().orEmpty()
+            }.getOrNull().orEmpty()
+
+    /**
+     * What the "Load from internet" box opens with: the ENGLISH name the
+     * subtitle sites index, plus the episode when an episode is playing —
+     * `"Castle TV S01E01"` — because a search for a series with no episode in it
+     * comes back with every season's subtitles at once.
+     *
+     * The episode rides in the TEXT only. The search itself still sends the
+     * structured season/episode ([com.hikari.app.subtitles.SubtitleQuery]) beside
+     * the clean title, so the sites that want them separately still get them;
+     * the box says what the user is looking for, which is the point of showing
+     * it at all ("show the search bar with auto entering the name of that movie
+     * or series with episode it currently doing").
+     */
+    private fun subtitleSearchSeed(): String {
+        val name = playingTitle
+        val ep = currentEpisode() ?: return name
+        if (name.isBlank()) return name
+        return name + " " + String.format(java.util.Locale.US, "S%02dE%02d", ep.season, ep.number)
+    }
 
     /** Episode listing / in-player episode switching, built lazily so the
      *  provider stack isn't touched until the Episodes pill is actually used. */
@@ -5215,6 +5253,13 @@ class PlayerActivity : ComponentActivity() {
                 gravity = Gravity.CENTER
                 background = bg
                 includeFontPadding = false
+                // One line, ellipsized rather than wrapped: a wrapped word in a
+                // row of steppers grows the row and pushes its neighbours
+                // around, which is the "all the boxes move" half of the
+                // language report. The width is shared out by [controlRow], so
+                // the word has its own cell to fit in.
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
                 setPadding((9 * density).toInt(), (4 * density).toInt(), (9 * density).toInt(), (4 * density).toInt())
                 setOnClickListener { onClick() }
             }
@@ -5223,11 +5268,8 @@ class PlayerActivity : ComponentActivity() {
             this.text = text
             dpText(12f)
             setTextColor(0xFFE6EAF3.toInt())
-            // The label is a WEIGHTED child of its row (see [controlRow]), so it
-            // takes the space the controls leave instead of holding a fixed slice
-            // — and it may wrap to two lines rather than ellipsizing to "Caption
-            // st…". It used to reserve 104dp and one line, which pushed the
-            // controls off the panel's edge on a narrow window.
+            // The label has a line of its own now (see [controlRow]), so it can
+            // wrap to two lines and still never push a control off the panel.
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
@@ -5236,68 +5278,68 @@ class PlayerActivity : ComponentActivity() {
             dpText(11f)
             setTextColor(0xFF9AA5B5.toInt())
             gravity = Gravity.CENTER
-            minWidth = (38 * density).toInt()
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
         }
         fun weightSpacer(): View = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
         /**
-         * One labelled row of controls.
+         * One setting: its label on a line of its own, its controls in a
+         * full-width row BELOW it.
          *
-         * The controls ride inside a HorizontalScrollView. A caption-style
-         * summary plus the A−/100%/A+ steppers plus the sync buttons are wider
-         * than even a generous panel on a phone held in portrait, and a row that
-         * cannot scroll leaves its last button past the panel's edge, unreachable
-         * — which is the cut subtitle box that was reported. The label gives up
-         * its width first (it is the weighted child), and whatever still does not
-         * fit can be dragged.
+         * This shape is the fix for "when I change the language the player box
+         * starts cutting": the old row put the label and the controls side by
+         * side, the label held a slice of the width, the controls needed more
+         * than was left, and a `HorizontalScrollView` was supposed to make up
+         * the difference. It does not — in a right-to-left language a
+         * HorizontalScrollView opens scrolled to the wrong end, so the row came
+         * up showing its own first button sliced in half, and in a language with
+         * longer words the same thing happened at the other end. A label ABOVE
+         * and controls that SHARE the row's width below cannot do either: every
+         * control is inside the panel by construction, in every language and in
+         * both directions, because nothing is allowed to be wider than the row.
+         *
+         * The controls are weighted, so they also stay aligned with each other
+         * from one setting to the next — the steppers of "Text size" line up
+         * with the steppers of "Sync" instead of drifting with the words.
          */
-        fun controlRow(label: String, vararg controls: View): LinearLayout =
+        fun controlRow(label: String, vararg controls: Pair<View, Float>): LinearLayout =
             LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                clipToPadding = false
-                clipChildren = false
+                orientation = LinearLayout.VERTICAL
                 setPadding(
-                    (10 * density).toInt(), (6 * density).toInt(),
-                    (10 * density).toInt(), (6 * density).toInt()
+                    (10 * density).toInt(), (7 * density).toInt(),
+                    (10 * density).toInt(), (7 * density).toInt()
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = 999f
                     setColor(0x14FFFFFF.toInt())
                 }
+                addView(rowLabel(label), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ))
                 val cluster = LinearLayout(this@PlayerActivity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    controls.forEach { addView(it) }
+                    controls.forEachIndexed { i, (v, weight) ->
+                        addView(v, LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, weight,
+                        ).apply {
+                            // Space BETWEEN the controls rather than margin on
+                            // each of them: with `layoutDirection` resolved by
+                            // the platform, a start margin is the left one in
+                            // English and the right one in Arabic, which is
+                            // exactly the behaviour wanted here.
+                            if (i > 0) marginStart = (6 * density).toInt()
+                        })
+                    }
                 }
-                val scroller = HorizontalScrollView(this@PlayerActivity).apply {
-                    isHorizontalScrollBarEnabled = false
-                    overScrollMode = View.OVER_SCROLL_NEVER
-                    clipToPadding = false
-                    clipChildren = false
-                    addView(
-                        cluster,
-                        LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                        )
-                    )
-                }
-                addView(
-                    rowLabel(label),
-                    LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                    ).apply { marginEnd = (8 * density).toInt() }
-                )
-                addView(
-                    scroller,
-                    LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                )
+                addView(cluster, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = (6 * density).toInt() })
             }
 
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
@@ -5334,29 +5376,29 @@ class PlayerActivity : ComponentActivity() {
         }
         addRow(controlRow(
             I18n.t("Caption style"),
-            valueLabel(subtitleStyle.summary()),
-            pill(I18n.t("Change")) { dialog.dismiss(); showSubtitleStyleDialog() },
+            valueLabel(subtitleStyle.summary()) to 1.6f,
+            pill(I18n.t("Change")) { dialog.dismiss(); showSubtitleStyleDialog() } to 1f,
         ))
         addRow(controlRow(
             I18n.t("Text size"),
-            pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() },
-            sizeValue,
-            pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() },
+            pill("A−") { subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f); applySize() } to 1f,
+            sizeValue to 1f,
+            pill("A+") { subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f); applySize() } to 1f,
         ))
         addRow(controlRow(
             I18n.t("Sync"),
-            pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() },
-            syncValue,
-            pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() },
+            pill("−0.5s") { subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30000L, 30000L); applySync() } to 1f,
+            syncValue to 1f,
+            pill("+0.5s") { subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30000L, 30000L); applySync() } to 1f,
         ))
         // Vertical position: "Higher" keeps more of the player's height
         // clear below the captions, lifting them off the bottom edge (and
         // out of the letterbox bar on a fitted/letterboxed video).
         addRow(controlRow(
             I18n.t("Position"),
-            pill(I18n.t("Lower")) { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
-            posValue,
-            pill(I18n.t("Higher")) { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() },
+            pill(I18n.t("Lower")) { subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f); applyPos() } to 1f,
+            posValue to 1f,
+            pill(I18n.t("Higher")) { subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f); applyPos() } to 1f,
         ))
         // "Find subtitles on the internet": the automatic half of the
         // "Load from internet" panel. With it on, a video that starts with no
@@ -5374,11 +5416,11 @@ class PlayerActivity : ComponentActivity() {
         }
         addRow(controlRow(
             I18n.t("Find subtitles automatically"),
-            autoSites,
+            autoSites to 1f,
             pill(if (autoSubtitleSites) I18n.t("Turn off") else I18n.t("Turn on")) {
                 autoSubtitleSites = !autoSubtitleSites
                 applyAutoSites()
-            },
+            } to 1.4f,
         ))
 
         presentGlass(
@@ -5432,11 +5474,15 @@ class PlayerActivity : ComponentActivity() {
             visibility = View.GONE
         }
 
+        // What the box opens with, computed ONCE: the English name (plus the
+        // episode) the sites index — see [subtitleSearchSeed]. It is also what
+        // "the user did not retype the title" is measured against below.
+        val seed = subtitleSearchSeed()
         val input = EditText(this).apply {
             // Pre-filled with what is playing, from the ITEM when there is one
             // and from the intent's own title when there is not — see
-            // [playingTitle].
-            setText(playingTitle)
+            // [playingTitle] — and always as the sites index it (English).
+            setText(seed)
             hint = I18n.t("Title to search for")
             setHintTextColor(0x88FFFFFF.toInt())
             setTextColor(0xFFFFFFFF.toInt())
@@ -5677,8 +5723,12 @@ class PlayerActivity : ComponentActivity() {
                 // A title the user RETYPED is a DIFFERENT title: the item's own
                 // id and year must not follow it (asking for "Frozen" from a
                 // Moana page must not resolve Moana's `tt` id and quietly search
-                // for what was already playing).
-                val sameTitle = base != null && typed.equals(base.title.trim(), true)
+                // for what was already playing). "Not retyped" means the box
+                // still holds what it OPENED with — which is the English seed
+                // (see [subtitleSearchSeed]), not the display title, so the
+                // seeded case keeps the id/year resolution AND asks in English.
+                val sameTitle = base != null &&
+                    (typed.equals(base.title.trim(), true) || typed.equals(seed.trim(), true))
                 // …and an item's display title can be a LOCALISED name (TMDB
                 // hands a Spanish user "Vengadores: Endgame") while every
                 // subtitle site indexes the ORIGINAL release name, so when the
@@ -5769,6 +5819,16 @@ class PlayerActivity : ComponentActivity() {
             rowHosts = listOf(results),
         )
         // The keyboard is the point of this panel: the user came here to type.
+        // ADJUST_RESIZE keeps the panel inside the room that is left once the
+        // IME is up — the panel is centred in its window, so a window that is
+        // NOT resized puts its first row (the field) behind the keyboard, which
+        // is one half of "sometimes the search bar is not there": the box
+        // existed, it was just under the IME. The mode is set on the dialog's
+        // own window, after it is shown (the window does not exist before).
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+        )
         input.requestFocus()
     }
 
@@ -5954,7 +6014,8 @@ class PlayerActivity : ComponentActivity() {
         }
 
         /**
-         * One labelled row of controls.
+         * One labelled row of controls: the label on a line of its own, the
+         * pills in a full-width scroller BELOW it.
          *
          * The pills scroll HORIZONTALLY inside the row when they do not all fit.
          * They used to be laid out at their natural width with nothing to scroll
@@ -5965,6 +6026,18 @@ class PlayerActivity : ComponentActivity() {
          * Custom button is going out of the curve, and the ones below it too,
          * and it won't scroll so I can't pick them". A row that scrolls can
          * always be reached, whatever the skin's width or the system font size.
+         *
+         * Two things about the shape, both learned from the language report
+         * ("when I change the language the player box starts cutting"):
+         *
+         *  * the label is on its OWN LINE, so the scroller gets the panel's whole
+         *    width and the label can wrap instead of being ellipsized into "Capt…"
+         *    — the label no longer competes with the pills for the row.
+         *  * the scroller is pinned to LTR even in a right-to-left language. Its
+         *    content is a set of swatches and short toggles, and Android's
+         *    HorizontalScrollView opens mirrored layouts scrolled to the far end,
+         *    which shows the row's first pill sliced in half at the panel's edge
+         *    — the exact "box is cut" artifact the user sent a screenshot of.
          */
         fun controlRow(label: String, vararg controls: View): LinearLayout {
             val pills = LinearLayout(this).apply {
@@ -5986,31 +6059,37 @@ class PlayerActivity : ComponentActivity() {
                 pills.addView(control)
             }
             return LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.VERTICAL
                 clipToPadding = false
                 setPadding(
-                    (10 * density).toInt(), (6 * density).toInt(),
-                    (10 * density).toInt(), (6 * density).toInt()
+                    (10 * density).toInt(), (7 * density).toInt(),
+                    (10 * density).toInt(), (7 * density).toInt()
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = 999f
                     setColor(0x14FFFFFF.toInt())
                 }
-                addView(rowLabel(label))
+                addView(rowLabel(label), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ))
                 addView(
                     android.widget.HorizontalScrollView(this@PlayerActivity).apply {
                         isHorizontalScrollBarEnabled = false
                         overScrollMode = View.OVER_SCROLL_NEVER
                         clipToPadding = false
+                        // …and the scroller itself, for the reason above.
+                        layoutDirection = LinearLayout.LAYOUT_DIRECTION_LTR
                         addView(pills, LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.WRAP_CONTENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT
                         ))
                     },
-                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                        .apply { marginStart = (6 * density).toInt() }
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply { topMargin = (6 * density).toInt() }
                 )
             }
         }
