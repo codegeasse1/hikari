@@ -40,9 +40,15 @@ class QuickJs private constructor(private val engine: Engine) : Closeable {
         engine.evaluate<Any?>(script, name, false)
     }
 
-    /** Read a global. */
-    fun <T> get(globalName: String): T = runBlocking {
-        engine.evaluate<T>(globalName, "quickjs-get.js", false)
+    /**
+     * Read a global. Non-generic on purpose: this is what Cash App's
+     * `<T> T get(String)` compiles down to (`Ljava/lang/Object;`), so an
+     * extension's bytecode links against it exactly — and the generic form
+     * cannot be forwarded here, because the engine's `evaluate` needs a reified
+     * type argument.
+     */
+    fun get(globalName: String): Any? = runBlocking {
+        engine.evaluate<Any?>(globalName, "quickjs-get.js", false)
     }
 
     /**
