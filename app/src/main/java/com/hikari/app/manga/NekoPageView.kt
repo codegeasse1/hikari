@@ -44,20 +44,21 @@ internal fun NekoPageView(
     // page's url).
     val url = rememberUpdatedState(sourceUrl)
     val ready = rememberUpdatedState(onReady)
-    // Read BEFORE the factory: the factory lambda has no view of the composable's
-    // parameters once it is running, and capturing the value (rather than reading
-    // [fitInside] inside `apply`, where the name means the view's own property)
-    // keeps the initial fit from being a self-assignment.
+    // Read BEFORE the factory, and the view is configured on a named local rather
+    // than inside `apply`: this composable's own `fitInside` PARAMETER shadows the
+    // view's property of the same name inside a lambda with that implicit
+    // receiver, so `fitInside = …` there is an attempt to reassign the parameter
+    // ("'val' cannot be reassigned") rather than to set the property.
     val initialFit = fitInside
     AndroidView(
         factory = { ctx ->
-            ChunkedPageView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                fitInside = initialFit
-            }
+            val view = ChunkedPageView(ctx)
+            view.layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            view.fitInside = initialFit
+            view
         },
         modifier = modifier,
         update = { view ->
