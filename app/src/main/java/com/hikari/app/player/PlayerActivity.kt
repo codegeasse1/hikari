@@ -33,6 +33,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewParent
 import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.EditText
@@ -3440,9 +3441,41 @@ class PlayerActivity : ComponentActivity() {
      *  though the window is 2460x1080. Every "shrink to fit the screen" cap
      *  below was therefore measured against the wrong axis and never bit, which
      *  is why the dialogs grew past the bottom of the video. WindowMetrics (API
-     *  30+) and getRealSize both follow the current rotation. */
+     *  30+) and getRealSize both follow the current rotation.
+     *
+     *  The three sources are CROSS-CHECKED against the configuration, and that
+     *  cross-check has to look at the ORIENTATION before it compares anything.
+     *  This is the bug that made every dialog in the landscape player a third of
+     *  the width it should have been: the decor had not been laid out yet (so
+     *  the first branch was skipped) and `currentWindowMetrics` answered with the
+     *  display's NATURAL bounds — 1080x2460 inside a 2460x1080 landscape window.
+     *  The old cross-check only ever SHRANK an axis, so the axes could not be put
+     *  back the right way round: the portrait `x` (1080) survived as the WIDTH
+     *  while the landscape `y` (1080) — which the check could shrink — became the
+     *  height. A square "window", and every number derived from it wrong:
+     *
+     *   - `win.x` 1080 instead of 2460 made the panel `roomW`-wide, i.e. ~915px
+     *     (330dp) on a 2460px screen. The rows were laid out inside THAT, so the
+     *     right-hand column of a long row — the "Change" pill, the sync stepper,
+     *     a server's host — sat off the panel with no way to reach it, which is
+     *     the "the box is cut and it will not scroll sideways" report.
+     *   - `win.y` 1080 instead of 2460 (and, on the other devices, 2460 instead
+     *     of 1080) is the axis every height cap is measured from, so the cap was
+     *     taken from the wrong side of the screen and either never bit — the
+     *     panel grew past the bottom of the video with its last rows out of
+     *     reach, i.e. "it will not scroll down" — or bit far too early.
+     *
+     *  So: normalise the raw figure to the orientation the CONFIGURATION reports
+     *  (that one always follows the current rotation) by swapping x and y when
+     *  they disagree, and only then take the smaller figure per axis — the
+     *  smaller one is still the safe side for a genuinely smaller window (split
+     *  screen, a small television box), and it is now the same axis it claims to
+     *  be.
+     */
     private fun windowSize(): Point {
         val density = resources.displayMetrics.density
+        val cfgW = (resources.configuration.screenWidthDp * density).toInt()
+        val cfgH = (resources.configuration.screenHeightDp * density).toInt()
         val size = Point()
         // The activity's own window is the authority: it is exactly the area a
         // dialog has to fit inside.
@@ -3456,22 +3489,108 @@ class PlayerActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.getRealSize(size)
         }
-        // Cross-check with the configuration, which always follows the current
-        // rotation: on some devices `currentWindowMetrics` answers with the
-        // display's NATURAL (portrait) bounds even while the activity sits in
-        // landscape. Trusting that made win.y 2460 inside a 1080-tall window,
-        // so every cap below ("0.58 of the window", "the window minus chrome")
-        // never bit: the panel grew past 1400px, hung off the bottom of the
-        // screen, and its scroll view ended up taller than its own content —
-        // i.e. a subtitle sheet whose last rows were unreachable and which
-        // could not be scrolled at all. Taking the smaller figure per axis is
-        // the safe side: on a correct device the two agree, and this one is
-        // wrong in the too-large direction only.
-        val cfgW = (resources.configuration.screenWidthDp * density).toInt()
-        val cfgH = (resources.configuration.screenHeightDp * density).toInt()
+        if (size.x > 0 && size.y > 0 && cfgW > 0 && cfgH > 0 && cfgW != cfgH) {
+            // `true` = landscape. A disagreement here means the source answered
+            // in the display's natural orientation, so turn it round before any
+            // axis is compared with its configuration twin.
+            if ((cfgW > cfgH) != (size.x > size.y)) {
+                val t = size.x
+                size.x = size.y
+                size.y = t
+            }
+        }
         if (cfgW > 0 && cfgW < size.x) size.x = cfgW
         if (cfgH > 0 && cfgH < size.y) size.y = cfgH
         return size
+    }
+
+    /**
+     * The room a dialog may really paint in, in px — the number every height cap
+     * is measured from.
+     *
+     * [View.getHeight] alone is not it. A dialog window can be laid out TALLER
+     * than the screen (a window created while the rotation was still settling, a
+     * window the window-manager places with its top at the screen's top edge),
+     * and then the frame measures a room that extends below the display: a cap
+     * taken from that number is too big, the panel grows past the bottom of the
+     * video, and the rows under the fold are unreachable no matter how far the
+     * list is scrolled — the "unscrollable box" report. So the room is the
+     * SMALLEST of everything that puts a bound on it: the frame that was really
+     * laid out, the area of the display that is actually visible to the window
+     * (which the platform reports and which is clipped by the system bars), and
+     * the window size ([windowSize], rotation-corrected).
+     */
+    private fun visibleRoomPx(frame: View): Int {
+        val win = windowSize()
+        var room = if (frame.height > 0) frame.height else win.y
+        val visible = android.graphics.Rect()
+        runCatching { frame.getWindowVisibleDisplayFrame(visible) }
+        if (visible.height() > 0 && visible.height() < room) room = visible.height()
+        if (win.y > 0 && win.y < room) room = win.y
+        return room
+    }
+
+    /**
+     * The nearest ANCESTOR of [v] that scrolls vertically — the panel's own list
+     * view (see [presentGlass]).
+     *
+     * A dialog that needs to keep its scroll position across a rebuild (the
+     * server chooser, whose list grows while the user reads it) cannot ask for
+     * `v.parent`: the content now hangs inside the panel's horizontal reach
+     * first (see presentGlass), so one `parent` up is the wrong view and the
+     * saved offset would come back as 0 and yank the list to the top on every
+     * server that landed. Walking up finds the right one whatever the panel
+     * wraps its content in.
+     */
+    private fun verticalScrollerOf(v: View): ScrollView? {
+        var p: ViewParent? = v.parent
+        while (p != null) {
+            if (p is ScrollView) return p
+            p = (p as? View)?.parent
+        }
+        return null
+    }
+
+    /**
+     * Hands every nested horizontal scroller inside [v] the width the panel's
+     * content really has, and reports whether any of them changed.
+     *
+     * A row that scrolls sideways on its OWN — the source chooser's engine chip
+     * strip is the one that exists — must not widen the whole panel. The content
+     * is measured with an UNBOUNDED width (that is what makes a genuinely
+     * too-wide row draggable at all, see [presentGlass]), and under an unbounded
+     * measure a nested scroller answers with the width of everything it holds:
+     * the chip strip reports the sum of all its pills, the content becomes that
+     * wide, and every MATCH_PARENT row beside it is stretched to match — the
+     * cards grow past the glass, their right-hand controls (the "Change" pill, a
+     * sync stepper) end up outside the silhouette, and the whole panel has to be
+     * dragged sideways just to see a row that would have fit. Given the panel's
+     * own inner width instead, the strip scrolls INSIDE the panel, which is what
+     * it was built for, and the rows stay the width of the panel.
+     *
+     * The width is only known once the panel has been laid out (its padding is
+     * computed from its own size), which is why this runs from [applyHeightCap]
+     * rather than at build time. It converges: a scroller is only rewritten when
+     * its width really differs.
+     */
+    private fun boundNestedHScrollers(v: View, widthPx: Int): Boolean {
+        if (v is HorizontalScrollView) {
+            val lp = v.layoutParams
+            if (lp != null && lp.width != widthPx) {
+                lp.width = widthPx
+                v.layoutParams = lp
+                return true
+            }
+            return false
+        }
+        if (v is ViewGroup) {
+            var changed = false
+            for (i in 0 until v.childCount) {
+                if (boundNestedHScrollers(v.getChildAt(i), widthPx)) changed = true
+            }
+            return changed
+        }
+        return false
     }
 
     /**
@@ -3633,13 +3752,42 @@ class PlayerActivity : ComponentActivity() {
                 - 2 * halo - (8 * density).toInt()
             ).coerceAtLeast((72 * density).toInt())
 
+        // Sideways first, so the vertical cap below is applied to the finished
+        // stack. A row can be wider than the panel — the engine chips, a server
+        // name with its host beside it, a hint line with one long token in it —
+        // and a row that does not fit is a row the user cannot read and cannot
+        // reach: the old panel clipped it at its own edge and there was nothing
+        // to drag, which is the "the box is cut and it will not scroll
+        // sideways" report.
+        //
+        // `isFillViewport` is what makes this free: when the rows DO fit (the
+        // normal case) the content is stretched to the viewport, so every row
+        // spans the panel exactly as it did before and there is nothing to
+        // scroll. Only a row that genuinely overflows makes the strip scrollable
+        // — and then the scrollbar appears by itself (see applyHeightCap, which
+        // asks the strip whether it can scroll rather than guessing).
+        //
+        // Its layout direction is pinned LTR. In a right-to-left language the
+        // platform mirrors a horizontal scroller's origin, so the strip opens
+        // scrolled to its far end and its first pill comes up sliced in half —
+        // the report that made an earlier version drop the horizontal scroller
+        // from the subtitle sheet altogether. Pinned, x = 0 is the start of the
+        // row in every language and the strip opens at the start.
+        val reach = HorizontalScrollView(this).apply {
+            isFillViewport = true
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            addView(content)
+        }
+
         // A thin scrollbar makes it obvious the panel scrolls — the old
         // fixed-height panel hid its last rows with no affordance at all. It is
-        // switched OFF again by applyHeightCap whenever the rows turn out to fit,
-        // because a scrollbar beside a list that cannot scroll reads as a list
-        // with something hidden in it.
+        // switched OFF again by applyHeightCap whenever the list turns out not to
+        // scroll, because a scrollbar beside a list that cannot scroll reads as a
+        // list with something hidden in it.
         val scroll = MaxHeightScrollView(this).apply {
-            addView(content)
+            addView(reach)
             // The panel is WRAP_CONTENT tall and THIS view is what caps the
             // height, so the rows a long server list cannot show scroll inside a
             // panel that is always fully on screen. The old arrangement sized
@@ -3692,6 +3840,15 @@ class PlayerActivity : ComponentActivity() {
         // the bowed edges slice it — which is what cut the lower quality rows
         // ("1080p" -> "0p") in a list long enough to scroll.
         scroll.setOnScrollChangeListener { _, _, _, _, _ -> panel.rebend() }
+        // A sideways drag moves every row's edges in the panel's own coordinates,
+        // and the bend reads those coordinates to decide how far in each row has
+        // to come to clear the bowed glass. Without this the bend would treat a
+        // scrolled-away row as one hanging over the panel's left edge and pull it
+        // in by its 22% cap — i.e. the rows would visibly shrink as the user
+        // dragged sideways. Telling the panel how far the content has been
+        // scrolled sideways puts that back before the maths runs, so the bend is
+        // the same whether the strip is at its start or not.
+        reach.setOnScrollChangeListener { _, x, _, _, _ -> panel.setRowOffsetX(x) }
 
         val win = windowSize()
         // Width of the PANEL's own silhouette (the halo is added around it), so
@@ -3786,6 +3943,7 @@ class PlayerActivity : ComponentActivity() {
         // why it reads as a lightweight overlay instead of a full-screen sheet.
         // The halo is added back on top so the PANEL keeps that width.
         var appliedWinW = -1
+        var appliedWinH = -1
         fun sizeDialogWindow() {
             // Re-read the window every time this is asked for. The size a dialog
             // is shown with is whatever the window said at that instant, and on a
@@ -3796,16 +3954,31 @@ class PlayerActivity : ComponentActivity() {
             val w = windowSize()
             val maxW = (if (w.x > 0) minOf(win.x, w.x) else win.x)
             val wantW = (panelW + 2 * halo).coerceAtMost(maxW).coerceAtLeast(1)
-            if (wantW == appliedWinW) return
+            // The window's HEIGHT is asked for explicitly rather than left as
+            // MATCH_PARENT. MATCH_PARENT hands the decision to the window manager,
+            // which can lay a dialog out TALLER than the display (it then hangs
+            // off the bottom, and the frame inside it measures a room that does
+            // not exist — the panel is centred in the window, so its last rows
+            // sit below the screen no matter how well the LIST is capped). Asking
+            // for the room we believe in gives the same window on a healthy
+            // device and a window that is clamped to the screen on an unhealthy
+            // one — and because the frame is then the real room, the caps
+            // measured from it are real too.
+            val wantH = (if (w.y > 0) minOf(win.y, w.y) else win.y).coerceAtLeast(1)
+            if (wantW == appliedWinW && wantH == appliedWinH) return
             appliedWinW = wantW
-            dialog.window?.setLayout(wantW, WindowManager.LayoutParams.MATCH_PARENT)
+            appliedWinH = wantH
+            dialog.window?.setLayout(wantW, wantH)
         }
         dialog.window?.apply {
-            setLayout(panelW + 2 * halo, WindowManager.LayoutParams.MATCH_PARENT)
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
+        // The window is sized by [sizeDialogWindow] alone — one place that knows
+        // the rule, so the size the dialog opens with is the size every later
+        // re-check would ask for.
+        sizeDialogWindow()
         // The window now fills the screen (it has to, for the frame to measure
         // the room that really exists), so a tap in the dim area lands INSIDE
         // the window and the platform's own "canceled on touch outside" never
@@ -3824,30 +3997,50 @@ class PlayerActivity : ComponentActivity() {
             false
         }
 
-        // A cap TALLER than the rows it holds is just empty glass: the panel's
-        // bottom keeps its curve while the rows stop well above it, which is
-        // what a bare band of panel between two groups of rows is. The panel is
-        // WRAP_CONTENT, so it shrinks onto its rows by itself — all that is left
-        // to do is CAP it, and the number to cap it against is the room the
-        // dialog really has (the frame's measured height), not a guess made from
-        // the window size at show time.
+        // The cap itself. Two rules, and the second one is the fix for
+        // "the box content is unscrollable":
         //
-        // The other half of the rule is the one that matters to the user: a cap
-        // that is not needed is not applied at all. A row list that fits the room
-        // gets NO limit ([MaxHeightScrollView] treats 0 as "no cap"), so the
-        // panel is measured purely by its content and there is nothing left that
-        // could slice the last option off — which is what "adjust automatically,
-        // however many options it holds, so none are cut off" asks for.
+        //  1. The number is the room the dialog REALLY has — [visibleRoomPx],
+        //     which is the smallest of the frame's own measured height, the area
+        //     of the display that is actually visible to this window, and the
+        //     rotation-corrected window size. It is not the frame's height alone
+        //     (a window laid out taller than the screen measures a room that runs
+        //     off the bottom of the display, and a cap taken from it is too big)
+        //     and it is not an estimate.
         //
-        // The test for it is exact rather than a guess: `content` is measured
-        // against the cap (an AT_MOST spec), so a measurement equal to the
-        // natural height means the rows FIT and a measurement equal to the cap
-        // itself means they do not — one comparison answers the question, and
-        // there is no estimate of "a row is about 34dp" anywhere in this.
+        //  2. The cap is ALWAYS applied — there is no "the rows fit, so remove
+        //     the limit" state any more. That state is what made the box
+        //     unscrollable: when it was entered by mistake (the measured room
+        //     was wrong, so a long list looked short) the scroll view was given
+        //     no ceiling at all, it grew to the full height of its content, the
+        //     panel grew with it past the bottom of the video, and because the
+        //     view was then exactly as tall as what it held there was NOTHING to
+        //     scroll: the last rows sat below the screen and no drag could bring
+        //     them up. A WRAP_CONTENT scroll view with a ceiling is identical to
+        //     an uncapped one whenever the rows are short — it shrinks onto them
+        //     — so the "adjust automatically, however many options it holds, so
+        //     none are cut off" behaviour is kept WITHOUT the state that could be
+        //     entered wrongly. The cap is a ceiling, never a size.
+        //
+        // The scrollbar follows the truth rather than a guess about the fit
+        // ([scroll.canScrollVertically], read after the pass that applied the
+        // cap): a bar beside a list that cannot move is a lie that says something
+        // is hidden, and a missing bar beside one that can is the "how was I
+        // supposed to know" half of the same report.
         var appliedCap = -1
-        var capLifted = false
+        var barShown = false
         fun applyHeightCap() {
-            val avail = outer.height
+            // A nested sideways scroller is sized against the panel's own inner
+            // width (see [boundNestedHScrollers]) before anything is measured
+            // from the heights below: the room the panel was given decides that
+            // width, so a chip strip that is wider than the panel scrolls inside
+            // it instead of stretching every row to its own width.
+            val innerW = panel.width - panel.paddingLeft - panel.paddingRight
+            if (innerW > 0 && boundNestedHScrollers(content, innerW)) {
+                scroll.requestLayout()
+                panel.requestLayout()
+            }
+            val avail = visibleRoomPx(outer)
             if (avail <= 0) return
             // Everything outside the scroll view: the hint line + its inset, and
             // the panel's own padding (the halo plus the row gap on both sides).
@@ -3868,43 +4061,45 @@ class PlayerActivity : ComponentActivity() {
                 (avail - hintH - chromeNow).coerceAtLeast((72 * density).toInt()),
                 (avail * if (flatPanel) 0.94f else 0.86f).toInt(),
             ).coerceAtLeast(1)
-            val cap = (ceiling - panelPad).coerceIn(1, ceiling)
-            // The rows' own height, measured without the cap (see the note
-            // above). A few pixels of slack are required before lifting the cap,
-            // so a list that fills its room exactly does not flap between the two
-            // states.
-            val contentH = content.measuredHeight
-            val fits = contentH > 0 && contentH <= cap - (4 * density).toInt()
-            val wanted = if (fits) 0 else cap
-            // Only a real change is worth a relayout: the panel's own padding is
-            // recomputed when IT is resized (see CurvedGlassPanel), so the cap can
-            // move by a pixel or two between passes, and chasing that would
-            // re-lay the panel out on every frame.
-            if (wanted == appliedCap && fits == capLifted) {
-                sizeDialogWindow()
-                return
+            // The panel's own vertical padding is taken off the LIST, so the
+            // panel (WRAP_CONTENT, list + padding) comes out at `ceiling` — and
+            // `ceiling` is already inside the room, so the hint + the whole panel
+            // always add up to less than the room and nothing can hang off the
+            // bottom. The floor keeps a list of a couple of rows usable on a
+            // very short window, and never wins over the room.
+            val cap = (ceiling - panelPad).coerceIn(1, minOf(ceiling, avail))
+            if (cap != appliedCap) {
+                appliedCap = cap
+                scroll.maxHeightPx = cap
+                scroll.requestLayout()
+                panel.requestLayout()
             }
-            if (!fits && appliedCap > 0 && kotlin.math.abs(cap - appliedCap) <= (3 * density).toInt()) {
-                sizeDialogWindow()
-                return
+            // Read AFTER the layout that the cap above schedules, so the answer
+            // is about the list it produced (the frame's pre-draw pass and the
+            // scroll view's own layout listener are what give this a second look
+            // — see below).
+            val canScroll = scroll.canScrollVertically(1) || scroll.canScrollVertically(-1)
+            val wantBar = canScroll
+            if (wantBar != barShown || wantBar != scroll.isVerticalScrollBarEnabled) {
+                barShown = wantBar
+                scroll.isVerticalScrollBarEnabled = wantBar
             }
-            appliedCap = wanted
-            capLifted = fits
-            scroll.maxHeightPx = wanted
-            // A scrollbar on a list that cannot scroll is a lie: it says there is
-            // more to see. It is shown only when the cap is actually in force.
-            scroll.isVerticalScrollBarEnabled = !fits
-            scroll.requestLayout()
-            panel.requestLayout()
+            val canReach = reach.canScrollHorizontally(1) || reach.canScrollHorizontally(-1)
+            if (reach.isHorizontalScrollBarEnabled != canReach) {
+                reach.isHorizontalScrollBarEnabled = canReach
+            }
             sizeDialogWindow()
         }
         // The frame's height only exists after the dialog is shown, and the rows
         // can change height while it is up (a server landing mid-search), so cap
-        // now and again on every layout change of the frame and the panel.
+        // now and again on every layout change of the frame and of the panel —
+        // and of the scroll view, whose own layout is what turns "can it scroll"
+        // into a real answer.
         outer.post { applyHeightCap() }
         outer.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
-        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        scroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
+        reach.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyHeightCap() }
         // …and once more in the window's own pre-draw pass, which is the first
         // moment the frame has a height AND the rows have a measured one. Without
         // it the first drawn frame can still be the opening cap — the panel the
@@ -4624,7 +4819,7 @@ class PlayerActivity : ComponentActivity() {
             // maximum) — otherwise a server landing while the user reads the
             // list would yank them to the top, or a re-created chip row would
             // throw away the chip they had scrolled to.
-            val sv = list.parent as? ScrollView
+            val sv = verticalScrollerOf(list)
             val keepY = sv?.scrollY ?: 0
             val keepX = chipScroll.scrollX
             rebuildChips()

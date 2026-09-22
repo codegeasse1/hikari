@@ -106,6 +106,7 @@ import com.hikari.app.ui.components.VerificationNudge
 import com.hikari.app.web.WebViewActivity
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
+import com.hikari.app.manga.MangaPage
 import com.hikari.app.manga.MangaPageLoader
 import com.hikari.app.manga.MangaPageState
 import com.hikari.app.manga.MangaProvider
@@ -1168,6 +1169,11 @@ private fun WebtoonRunBody(
                                 contentScale = ContentScale.FillWidth,
                                 enhance = enhance,
                                 maxWidthPx = maxWidthPx,
+                                // A strip is drawn at its full height — the
+                                // place a page is taller than a GPU texture and
+                                // the reason pages arrive as slices (see
+                                // [MangaPageLoader.MAX_DRAW_H]).
+                                stackSlices = true,
                             )
                         }
                     }
@@ -1217,6 +1223,13 @@ private fun ChapterCard(label: String) {
  * reading position for a tall page on a phone: full width, scrolled vertically —
  * which is why the page is laid out at its true aspect ratio, read from the file
  * the loader already fetched.
+ *
+ * The two shapes also ask the loader for different pixels, and that is the point:
+ * a full-width page is DRAWN at its real height, so it is decoded at the reader's
+ * width and drawn as a stack of GPU-legal slices ([stackSlices]); a page that is
+ * scaled to fit the viewport is decoded so that the whole thing already fits it,
+ * which keeps the drawn texture small and means the page arrives as one piece
+ * (a stack cannot be scaled as a unit).
  */
 @Composable
 private fun PageImage(
@@ -1229,8 +1242,16 @@ private fun PageImage(
     val state = rememberPageState(source)
     val ratio = (state as? MangaPageState.Ready)?.ratio ?: 0f
     val scroll = rememberScrollState()
+    val fullWidth = fit == MangaFit.WIDTH
+    // The page is drawn scaled into the viewport, so the decode only has to be
+    // as big as the viewport — never taller than one drawn slice, or the page
+    // would come back as a stack and lose its fit.
+    val viewportH = with(LocalDensity.current) {
+        LocalConfiguration.current.screenHeightDp.dp.roundToPx()
+    }
+    val maxHeightPx = if (fullWidth) 0 else minOf(viewportH, MangaPageLoader.MAX_DRAW_H)
     Box(modifier, contentAlignment = Alignment.TopCenter) {
-        if (fit == MangaFit.WIDTH) {
+        if (fullWidth) {
             Column(
                 Modifier
                     .fillMaxSize()
@@ -1244,12 +1265,27 @@ private fun PageImage(
                             else Modifier.height(520.dp)
                         )
                 ) {
-                    PageContent(state, source, ContentScale.FillWidth, enhance, maxWidthPx)
+                    PageContent(
+                        state = state,
+                        source = source,
+                        contentScale = ContentScale.FillWidth,
+                        enhance = enhance,
+                        maxWidthPx = maxWidthPx,
+                        maxHeightPx = maxHeightPx,
+                        stackSlices = true,
+                    )
                 }
             }
         } else {
             Box(Modifier.fillMaxSize()) {
-                PageContent(state, source, ContentScale.Fit, enhance, maxWidthPx)
+                PageContent(
+                    state = state,
+                    source = source,
+                    contentScale = ContentScale.Fit,
+                    enhance = enhance,
+                    maxWidthPx = maxWidthPx,
+                    maxHeightPx = maxHeightPx,
+                )
             }
         }
     }
@@ -1338,19 +1374,29 @@ private fun multiplyColorMatrix(a: FloatArray, b: FloatArray): FloatArray {
 }
 
 /**
- * The page itself: the loader's validated file, decoded to a bitmap, a spinner
- * while it is coming, or — once the loader has spent all ten attempts — a row
- * that says so and offers one more try on THAT page alone, so a single bad page
- * never costs the reader the whole chapter.
+ * The page itself: the loader's slices, a spinner while they are coming, or —
+ * once the loader has spent all ten attempts — a row that says so and offers one
+ * more try on THAT page alone, so a single bad page never costs the reader the
+ * whole chapter.
  *
- * The decode is [MangaPageLoader]'s (see [MangaPageLoader.bitmap]) rather than
+ * The decode is [MangaPageLoader]'s (see [MangaPageLoader.page]) rather than
  * Coil's, and that is deliberate: Coil would re-request, re-decode and re-upload
  * the page every time it scrolled back into composition, at whatever size the
  * cell happened to be. Here the page is decoded once, at the reader's own width,
- * remembered by the loader's byte-budgeted cache, and drawn as a plain bitmap —
- * so a page that scrolls back into view is a blit. [enhance] rides on the same
- * draw: a colour matrix on the GPU (see [mangaEnhanceFilter]), which is why
- * turning it on costs no decode, no memory and no frame time.
+ * cut into GPU-legal slices (see [MangaPageLoader.MAX_DRAW_H]) and remembered by
+ * the loader's byte-budgeted cache — so a page that scrolls back into view is a
+ * blit. [enhance] rides on the same draw: a colour matrix on the GPU (see
+ * [mangaEnhanceFilter]), which is why turning it on costs no decode, no memory
+ * and no frame time.
+ *
+ * [stackSlices] says how the page is drawn, and it is a property of the MODE,
+ * not of the page: a full-width mode (the webtoon strip, and `MangaFit.WIDTH`)
+ * draws the page at its real height, so it gets the slices STACKED — one `Image`
+ * per slice, each at its own aspect ratio, which together are exactly the page.
+ * The modes that scale the whole page into the viewport (fit/whole/height) get
+ * the page as one piece instead, because there the page is drawn inside the
+ * viewport and the loader was asked for a decode that already fits it
+ * ([maxHeightPx]); a stack of images cannot be scaled as one.
  */
 @Composable
 private fun PageContent(
@@ -1359,6 +1405,8 @@ private fun PageContent(
     contentScale: ContentScale,
     enhance: Boolean = false,
     maxWidthPx: Int = 0,
+    maxHeightPx: Int = 0,
+    stackSlices: Boolean = false,
 ) {
     when (state) {
         is MangaPageState.Ready -> {
@@ -1372,32 +1420,74 @@ private fun PageContent(
             // url, so a page that was re-fetched is DECODED again: the loader
             // writes every attempt to a fresh file precisely so nothing can
             // serve a stale decode, and this is the other half of that.
-            val bitmap by produceState<Bitmap?>(
+            val page by produceState<MangaPage?>(
                 initialValue = null,
                 source.url,
                 maxWidthPx,
+                maxHeightPx,
                 state.file.absolutePath,
             ) {
                 val decoded = withContext(Dispatchers.IO) {
-                    MangaPageLoader.bitmap(source.url, maxWidthPx)
+                    MangaPageLoader.page(source.url, maxWidthPx, maxHeightPx)
                 }
                 value = decoded
                 if (decoded == null && !reasked) {
                     // A Ready page with no pixels means the file on disk is not
                     // an image after all (damaged scan data, a file the system
-                    // cleared behind us). Ask for it again rather than spinning
-                    // forever on a page that will never appear — and ask only
-                    // ONCE per file, so a page that is genuinely undecodable
-                    // ends up on the loader's own retry ladder (and then on the
-                    // per-page Retry row) instead of fetching in a loop.
+                    // cleared behind us, or an allocation the platform refused).
+                    // Ask for it again rather than spinning forever on a page
+                    // that will never appear — and ask only ONCE per file, so a
+                    // page that is genuinely undecodable ends up on the loader's
+                    // own retry ladder (and then on the per-page Retry row)
+                    // instead of fetching in a loop.
                     reasked = true
                     MangaPageLoader.retry(source.url, source.headers)
                 }
             }
-            val page = remember(bitmap) { bitmap?.asImageBitmap() }
-            if (page != null) {
+            // The slices as drawables, each paired with its own aspect ratio so
+            // the stack can be laid out without touching the loader's bitmaps
+            // again on every recomposition.
+            val shown = remember(page) {
+                page?.slices?.map { bmp ->
+                    bmp.asImageBitmap() to (bmp.width.toFloat() / bmp.height.toFloat())
+                }.orEmpty()
+            }
+            if (shown.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
+                }
+            } else if (stackSlices || shown.size > 1) {
+                // One Image per slice, at the slice's own aspect ratio: the
+                // stack IS the page. `Column` measures them top to bottom, so
+                // the heights add up to the box the page was laid out in (they
+                // are slices of one decoded bitmap, so their proportions are
+                // exact) and there is no seam to line up by hand.
+                //
+                // `shown.size > 1` is belt and braces on top of the mode: a
+                // single-`Image` draw can only ever show slice zero, so if a
+                // page somehow arrives cut in two while the mode asked for one
+                // piece, stacking it still draws the WHOLE page (a page that is
+                // half missing is exactly the report this whole change exists to
+                // kill). The loader's own height ceiling makes that case
+                // unreachable in the fit modes; the guard is what keeps it
+                // unreachable if that ceiling is ever changed.
+                Column(Modifier.fillMaxWidth()) {
+                    shown.forEach { (slice, ratio) ->
+                        Image(
+                            bitmap = slice,
+                            contentDescription = null,
+                            contentScale = ContentScale.FillWidth,
+                            filterQuality = FilterQuality.Low,
+                            colorFilter = if (enhance) mangaEnhanceFilter else null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(if (ratio > 0f) ratio else 1f),
+                        )
+                    }
+                }
+            } else {
                 Image(
-                    bitmap = page,
+                    bitmap = shown[0].first,
                     contentDescription = null,
                     contentScale = contentScale,
                     // Low is the right filter for this: the bitmap is already
@@ -1409,10 +1499,6 @@ private fun PageContent(
                     colorFilter = if (enhance) mangaEnhanceFilter else null,
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
-                }
             }
         }
         is MangaPageState.Failed -> Column(

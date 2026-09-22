@@ -259,6 +259,27 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
      *  a scroll (or an overscroll bounce) into a visible shudder. */
     private var inLayout = false
 
+    /** How far the content has been scrolled SIDEWAYS inside the panel, in px. */
+    private var rowOffsetX = 0
+
+    /**
+     * Tells the panel that its content has been dragged sideways by [x] px, and
+     * re-bends.
+     *
+     * A row's position is read in the PANEL's own coordinates, so a sideways drag
+     * moves every row's edges out from under the panel — and the bend, which
+     * exists to keep a row's visible content clear of the bowed glass, would read
+     * that as a row hanging over the left edge and pull it back in by its own
+     * cap. Every row of a user-scrolled strip would shrink as they dragged it.
+     * Subtracting the offset before the maths puts the row back where it was laid
+     * out, so the shape of the stack does not change when the strip is scrolled.
+     */
+    fun setRowOffsetX(x: Int) {
+        if (x == rowOffsetX) return
+        rowOffsetX = x
+        rebend()
+    }
+
     /** Coalesces the many scroll notifications of a single frame into one bend. */
     private var rebendPosted = false
 
@@ -542,6 +563,11 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // the "the curve is cutting the text" the panel kept showing.
             rect.set(0, 0, child.width, child.height)
             offsetDescendantRectToMyCoords(child, rect)
+            // `offsetDescendantRectToMyCoords` also carries the content's own
+            // sideways scroll (see [setRowOffsetX]): undoing it here keeps a row
+            // on the curve it was laid out against, whatever the strip has been
+            // dragged to.
+            if (rowOffsetX != 0) rect.offset(rowOffsetX, 0)
             if (rect.bottom <= top || rect.top >= top + h) continue
             val lp = child.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
             val base = baseMargins.getOrPut(child) { intArrayOf(lp.leftMargin, lp.rightMargin) }

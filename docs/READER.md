@@ -88,18 +88,59 @@ is damaged decodes to displaced blocks. So the loader checks, in this order:
 Anything that fails is fetched again — `MAX_ATTEMPTS` (10) tries with a capped
 backoff — and after that the page reports `MangaPageState.Failed` so
 `PageContent` draws a **Retry** row on that page alone. A page is fetched at most
-once: `load` is single-flight per URL.
+once: `load` is single-flight per URL. From the second attempt on, the request
+carries `Cache-Control: no-cache`: a retry means the last body was unusable, and
+the likeliest reason a later attempt gets the same one is a CDN edge holding it
+(a header rather than a URL change, so a signed link stays valid).
 
 **The decode is cached, and that is what makes scrolling smooth.** Decoded pages
-live in `bitmaps`, an `LruCache` budgeted by BYTES (a sixth of the process heap,
-48MB–320MB floor/ceiling). A page is decoded at most `MAX_DECODE_W` wide and
-`MAX_DECODE_H` tall — powers of two, so `BitmapFactory` does the skipping while it
-decodes — and as `RGB_565`, because a page is opaque: that is half the memory and
-half the upload for every frame it is on screen. `bitmap(url, maxWidthPx)` is what
-the UI calls (off the main thread, once per page per composition); it returns
-cached pixels or decodes and caches them. **Never recycle** those bitmaps: the
-cache hands them straight to a drawing frame, so a recycled one is a crash rather
-than a saved allocation. Eviction just drops the reference.
+live in `pages`, an `LruCache<String, MangaPage>` budgeted by BYTES (a sixth of
+the process heap, 48MB–320MB floor/ceiling). A page is decoded at most
+`MAX_DECODE_W` wide and `MAX_DECODE_H` tall — powers of two, so `BitmapFactory`
+does the skipping while it decodes — and as `RGB_565`, because a page is opaque:
+that is half the memory and half the upload for every frame it is on screen.
+`page(url, targetW, targetH)` is what the UI calls (off the main thread, once per
+page per composition); it returns cached pixels or decodes, SLICES and caches
+them, and it is keyed by the url **and the decode target**, because the same page
+is legitimately wanted at two sizes (full width for the strip, fitted to the
+viewport for the paged fit modes) and the two must not evict each other.
+**Never recycle** a cached slice: the cache hands them straight to a drawing
+frame, so a recycled one is a crash rather than a saved allocation. Eviction just
+drops the reference.
+
+### 4a. A drawn page is SLICED — `MAX_DRAW_H`
+
+A page is not handed to the GPU as one bitmap. It is cut into horizontal slices
+no taller than `MangaPageLoader.MAX_DRAW_H` (2048px — half the smallest
+`GL_MAX_TEXTURE_SIZE` any GLES2 device may report, so every slice is a legal
+texture everywhere), and `PageContent` draws them as a `Column` inside a box of
+the page's aspect ratio, one `Image` per slice at the slice's own ratio. The
+slices are cut from one decoded bitmap, so the stack is exactly the page.
+
+This is the fix for "the image in the reader is still breaking", and the reason
+it is not a fetch problem: an image bigger than the device's largest texture is
+not drawn by Skia — it is drawn as a GRID OF TILES, and that fallback mis-places
+the tiles' source rectangles on the drivers these phones have. What that looks
+like is bands of the page displaced sideways, artwork repeated at a fixed offset,
+a white seam at every tile boundary, and the whole thing running off both screen
+edges. The bytes on disk are fine, so no amount of re-fetching, retrying or
+validating changes anything. Handing the GPU only legally-sized pieces is the
+whole fix.
+
+Consequences to respect:
+
+* `slice(full)` takes ownership of the bitmap it is given and RECYCLES it after
+  cutting (it was decoded only to be cut up and no composable ever saw it — the
+  `pages` cache is the thing that must never recycle). The single exception is a
+  page already ≤ `MAX_DRAW_H`, which is handed back as-is.
+* A mode that scales the whole page into the viewport (the paged fit/whole/height
+  modes) cannot draw a stack, so it asks for a decode that already fits the
+  viewport (`targetH = min(viewport height, MAX_DRAW_H)`) and draws the single
+  slice it gets with its `ContentScale`. `stackSlices = true` is for the modes
+  that draw the page at full width and its real height: the webtoon strip and
+  `MangaFit.WIDTH`.
+* Anything that asks for pixels must pass a target (`page(url, targetW,
+  targetH)`); `targetH = 0` means "no height ceiling, slice it".
 
 Things the loader also owns:
 
@@ -132,7 +173,9 @@ would keep a stale decode alive.
   Add a `ScrollRequest`.
 * Do not key a `LazyColumn` item by index. `RunItem.key` is the identity.
 * Do not pass a page URL to `AsyncImage` and do not decode a page file yourself.
-  Go through `MangaPageLoader.bitmap`.
+  Go through `MangaPageLoader.page`, and remember that what it hands back is
+  SLICES (see 4a) — a drawn page may never be one bitmap taller than
+  `MAX_DRAW_H`.
 * `MangaReaderScreen`'s reader-mode/fit/background preferences are declared near
   the TOP of the composable (before the run): which mode is in force decides
   whether a run exists at all.
