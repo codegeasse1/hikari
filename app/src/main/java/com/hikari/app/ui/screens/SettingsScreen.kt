@@ -180,6 +180,7 @@ import com.hikari.app.ui.navigation.BottomTabs
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.NavStyles
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.edgeLight
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
