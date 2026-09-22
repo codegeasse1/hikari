@@ -131,6 +131,10 @@ object CloudflareSolver {
             if (ok) {
                 solvedAt[host] = System.currentTimeMillis()
                 CloudflareVerifier.clearBlocked(host)
+                // The clearance and the session cookies the page set have to
+                // reach the disk: they are what makes the next request from the
+                // extension (or the next app run) already verified.
+                runCatching { CookieManager.getInstance().flush() }
             } else {
                 // The user's globe button is the fallback for exactly this case.
                 CloudflareVerifier.markBlocked(url)

@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,9 +58,12 @@ import com.hikari.app.i18n.tr
  * and the strip then draws only the ones that are left, sharing the row between
  * them — no reserved gap where the hidden one was, and a single remaining section
  * hides the strip entirely rather than drawing one button that can do nothing.
- * Hiding a section only hides its PILL: the page itself stays reachable from the
- * rest of the app (History from the player's "Continue watching", Downloads from
- * a download button, Library from the heart), the same rule a hidden tab obeys.
+ * Switching a section off while it is the one on screen moves the page to the
+ * first section that is still kept, so a hidden section loses its pill and its
+ * page in the same frame. Hiding a section only hides it HERE: the page itself
+ * stays reachable from the rest of the app (History from the player's "Continue
+ * watching", Downloads from a download button, Library from the heart), the same
+ * rule a hidden tab obeys.
  */
 object MyStuff {
     const val LIBRARY = com.hikari.app.data.MyStuffSection.LIBRARY
@@ -100,13 +104,17 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
             else -> libraryOn
         }
     }
-    // Whatever is left must include the section on screen, or the strip would
-    // show nothing selected while its page is drawn: a section can only be
-    // switched off while ANOTHER one is on (the settings screen enforces that),
-    // but a route can also name a section that is hidden — a "Continue
-    // watching" link, a download button — and then the page must still be
-    // reachable and one pill must say so.
-    val strip = if (section in visible) visible else visible + section
+    // The section on screen is always one the user keeps. Switching a section off
+    // in Settings has to take its pill away AND take its page with it in the same
+    // frame — that is what "as soon as I toggle it, it shows and hides" means —
+    // so a section that is no longer kept is left behind for the first one that
+    // is. (The old rule kept the hidden section in the strip until the user
+    // tapped another pill, which is the "it still shows until I tap Downloads"
+    // the user reported.)
+    LaunchedEffect(visible) {
+        if (visible.isNotEmpty() && section !in visible) section = visible.first()
+    }
+    val strip = if (visible.isEmpty()) listOf(section) else visible
 
     Column(Modifier.fillMaxSize()) {
         // One section left means the strip is a single pill: hide it rather than

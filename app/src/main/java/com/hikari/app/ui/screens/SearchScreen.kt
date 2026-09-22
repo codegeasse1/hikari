@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -66,6 +67,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.ProviderType
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
@@ -231,15 +233,18 @@ class SearchViewModel(
         savedState["providers"] = ArrayList(listOf(id))
     }
 
-    /** Toggle one provider in/out of the multi-select. Refuses to empty the
-     *  selection (which would silently become "All"); use selectAll() for that. */
-    fun toggleProvider(id: String) {
-        val cur = _selectedProviders.value
-        val next = if (id in cur) cur - id else cur + id
-        if (next.isNotEmpty()) {
-            _selectedProviders.value = next
-            savedState["providers"] = ArrayList(next)
+    /** The whole selection at once — what the provider picker's Done button
+     *  saves (a multi pick). An empty list is "All sources" rather than "search
+     *  nothing", which is the same meaning an empty selection has everywhere
+     *  else in this screen. */
+    fun setProviders(keys: List<String>) {
+        val next = keys.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (next.isEmpty()) {
+            selectAll()
+            return
         }
+        _selectedProviders.value = next.toSet()
+        savedState["providers"] = ArrayList(next)
     }
 }
 
@@ -423,101 +428,60 @@ fun SearchScreen(
             }
         )
         if (providers.isNotEmpty() || collections.isNotEmpty()) {
-            Column {
-                var providerFilter by remember { mutableStateOf("") }
-                // The row is one list of "places a title can be looked for":
-                // every installed extension, plus every personal catalog the
-                // user built in Settings → Personal Catalog creator. The
-                // catalogs lead, because a user who built one is looking for it
-                // — and its absence from this row was the report ("there isn't
-                // the catalog we created name in provider in search bar to
-                // select to search from it").
-                val visibleProviders = remember(providers, providerFilter) {
-                    val f = providerFilter.trim()
-                    if (f.isEmpty()) providers
-                    else providers.filter { it.config.name.contains(f, ignoreCase = true) }
-                }
-                val visibleCollections = remember(collections, providerFilter) {
-                    val f = providerFilter.trim()
-                    if (f.isEmpty()) collections
-                    else collections.filter { it.name.contains(f, ignoreCase = true) }
-                }
-                if (providers.size + collections.size > 5) {
-                    // With many extensions installed the chip row is unusable —
-                    // a mini search box narrows it to the ones you mean.
-                    GlassSearchField(
-                        value = providerFilter,
-                        onValueChange = { providerFilter = it },
-                        placeholder = tr("Filter providers…"),
-                        height = 44.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 2.dp)
-                    )
-                }
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        FilterChip(
-                            selected = selected.isEmpty(),
-                            onClick = { vm.selectAll() },
-                            label = { Text(tr("All")) },
-                            shape = RoundedCornerShape(24.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                selectedLabelColor = MaterialTheme.colorScheme.primary,
-                            )
-                        )
-                    }
-                    items(visibleCollections.distinctBy { it.id }, key = { "coll|" + it.id }) { c ->
-                        val key = Routes.COLLECTION_PROVIDER_PREFIX + c.id
-                        FilterChip(
-                            selected = key in selected,
-                            onClick = { vm.toggleProvider(key) },
-                            label = { Text(c.name) },
-                            shape = RoundedCornerShape(24.dp),
-                            // A catalog chip wears the tertiary accent instead of
-                            // the primary one the extensions use: two chips can
-                            // share a name (a collection called "HBO" beside an
-                            // HBO extension), and the colour is what says which
-                            // is which.
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                                selectedContainerColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.20f),
-                                labelColor = MaterialTheme.colorScheme.tertiary,
-                                selectedLabelColor = MaterialTheme.colorScheme.tertiary,
-                            )
-                        )
-                    }
-                    items(visibleProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
-                        FilterChip(
-                            selected = p.config.id in selected,
-                            onClick = { vm.toggleProvider(p.config.id) },
-                            label = { Text(p.config.name) },
-                            shape = RoundedCornerShape(24.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                selectedLabelColor = MaterialTheme.colorScheme.primary,
-                            )
-                        )
-                    }
-                }
-                Text(
-                    when {
-                        selected.isEmpty() -> I18n.t("Searching every source")
-                        soleName != null -> I18n.t("Searching in %s").replace("%s", soleName)
-                        else -> I18n.t("%s sources selected")
-                            .replace("%s", selected.size.toString())
+            // ---- Where to search: a button, and the picker it opens ----
+            //
+            // This used to be a HORIZONTAL row of chips (one per extension, plus
+            // one per personal catalog) with a "Filter providers…" box above it,
+            // and with a few dozen extensions installed it was unusable: a name
+            // you could not see was a provider you could not pick. The user asked
+            // for the picker Home's own header uses instead — a button that opens
+            // a full-height list with a search box, the engine categories, and
+            // multi-select — and for the outer filter box to go away with it,
+            // because the picker carries its own search. Doing that removed the
+            // chips entirely, so what is left here is one line that says WHAT
+            // will be searched and one tap to change it.
+            var showProviders by remember { mutableStateOf(false) }
+            var providerKind by remember { mutableStateOf<ProviderType?>(null) }
+            val scopeLabel = when {
+                selected.isEmpty() -> tr("All providers")
+                soleName != null -> soleName
+                else -> I18n.t("%s sources").replace("%s", selected.size.toString())
+            }
+            // The same sentence the old status line carried, now the button's
+            // second line: a scoped search announces its scope by NAME.
+            val scopeNote = when {
+                selected.isEmpty() -> tr("Searching every source")
+                soleName != null -> I18n.t("Searching in %s").replace("%s", soleName)
+                else -> I18n.t("%s sources selected").replace("%s", selected.size.toString())
+            }
+            ProviderScopeButton(
+                label = scopeLabel,
+                supporting = scopeNote,
+                onClick = { showProviders = true },
+            )
+            if (showProviders) {
+                ProviderPickerSheet(
+                    providers = providers,
+                    collections = collections,
+                    selection = selected.toList(),
+                    filter = providerKind,
+                    onFilter = { providerKind = it },
+                    onManageCollections = {
+                        showProviders = false
+                        Routes.safeNavigate(nav, Routes.COLLECTIONS)
                     },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                    // A plain tap picks exactly one source (the usual case: "search
+                    // inside this extension"); the sheet's hold-for-multi mode and
+                    // its Done button save the whole set.
+                    onPick = { key ->
+                        showProviders = false
+                        if (key == null) vm.selectAll() else vm.selectProvider(key)
+                    },
+                    onDone = { keys ->
+                        showProviders = false
+                        vm.setProviders(keys)
+                    },
+                    onDismiss = { showProviders = false },
                 )
             }
         }
@@ -939,6 +903,71 @@ private fun YearChip(label: String, selected: Boolean, onClick: () -> Unit) {
             else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
         )
+    }
+}
+
+/**
+ * The scope button: what a search will look through, and the way to change it.
+ *
+ * The row of provider chips this replaces could only ever show what fitted on
+ * screen, and a provider whose chip had scrolled off could not be picked at all —
+ * the user's report was "make the all provider showing from horizontal scrolling
+ * to vertical … with multi select … and remove the search provider we have
+ * outside, as now we will get it in the scrollable vertical bar". So this is a
+ * BUTTON in the same shape as the app's other pickers (Home's own provider
+ * button): it names the current scope on one line and what the search will do on
+ * the next, and tapping it opens the picker — a full-height, searchable,
+ * multi-selectable list of every place a title can be looked for.
+ */
+@Composable
+private fun ProviderScopeButton(
+    label: String,
+    supporting: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Tune,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    supporting,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = tr("Choose providers"),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 

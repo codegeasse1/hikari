@@ -1262,7 +1262,7 @@ private fun CollectionFoldersOnHome(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProviderPickerSheet(
+internal fun ProviderPickerSheet(
     providers: List<ContentProvider>,
     collections: List<Collection>,
     /** Every key currently picked (empty = All, one = the usual single pick,

@@ -1600,23 +1600,26 @@ private fun MyStuffSectionToggles(app: HikariApp) {
             label = tr("Library"),
             supporting = tr("Titles you saved with the player's heart"),
             checked = libraryOn,
-            // A switch that cannot be moved is a lie; it is disabled and the
-            // supporting line says why.
-            enabled = libraryOn && onCount > 1,
+            // A switch is only disabled while it would be the LAST one on: that
+            // is the case it must not be possible to turn off. It must NOT be
+            // disabled when it is already off — `libraryOn && onCount > 1` did
+            // exactly that, so the moment a section was switched off its switch
+            // went dead and could never be switched back on.
+            enabled = !libraryOn || onCount > 1,
             onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.LIBRARY, on) } } },
         )
         MyStuffSectionRow(
             label = tr("History"),
             supporting = tr("What you watched and where you stopped reading"),
             checked = historyOn,
-            enabled = historyOn && onCount > 1,
+            enabled = !historyOn || onCount > 1,
             onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.HISTORY, on) } } },
         )
         MyStuffSectionRow(
             label = tr("Downloads"),
             supporting = tr("What you saved for offline"),
             checked = downloadsOn,
-            enabled = downloadsOn && onCount > 1,
+            enabled = !downloadsOn || onCount > 1,
             onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.DOWNLOADS, on) } } },
         )
         if (onCount == 1) {

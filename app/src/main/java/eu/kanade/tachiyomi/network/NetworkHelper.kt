@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.network
 
 import android.content.Context
+import com.hikari.app.HikariApp
 import com.hikari.app.net.ExtensionCloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
@@ -61,21 +62,45 @@ class NetworkHelper(private val context: Context) {
     @Suppress("UNUSED")
     val cloudflareClient: OkHttpClient = client
 
-    fun defaultUserAgentProvider(): String = DEFAULT_USER_AGENT
+    /**
+     * The UA every extension request presents when it sets none.
+     *
+     * This is Hikari's EFFECTIVE WEBVIEW UA, not a hard-coded browser string, and
+     * that is the point: a Cloudflare `cf_clearance` is minted for the exact UA
+     * the WebView presented, and it is rejected the moment a request advertises a
+     * different one. The clearance the user earns with the globe button is earned
+     * by a WebView, so the requests that follow must look like that same browser
+     * or the site simply challenges them again — the failure the user reported as
+     * "I verified the site and it still says I need to verify". A device's WebView
+     * UA is also an honest one (it is what the engine on this phone really is),
+     * and it is still a Chrome-shaped mobile UA, which is all the sites that
+     * sniff for a browser need.
+     *
+     * It is read live rather than captured, because the user can change it in
+     * Settings (and Android updates the WebView's own version over time) — a new
+     * UA means new clearances, which is unavoidable, but at least every part of
+     * the app agrees on which one is in force.
+     */
+    fun defaultUserAgentProvider(): String = runCatching {
+        HikariApp.instance.effectiveWebViewUa()
+    }.getOrNull().orEmpty().ifBlank { DEFAULT_USER_AGENT }
 
     companion object {
         /**
-         * A CURRENT Chrome-on-Android UA. Two things depend on it: sources that
-         * simply reject anything not browser-shaped, and Cloudflare, whose
-         * `cf_clearance` is bound to the UA it was minted for — so this is also
-         * the UA [CloudflareSolver] makes its WebView advertise. A stale
-         * browser number is itself a bot signal to the managed-challenge rules,
-         * which is why this is kept a recent Chrome rather than any old one.
+         * The fallback UA, used only when the app's WebView UA cannot be read
+         * (before [HikariApp] exists). A CURRENT Chrome-on-Android UA: sources
+         * that simply reject anything not browser-shaped need one, and a stale
+         * browser number is itself a bot signal to the managed-challenge rules.
+         *
+         * See [defaultUserAgentProvider] for why the live WebView UA — not this —
+         * is what requests normally carry: a `cf_clearance` is bound to the UA it
+         * was minted for.
          *
          * Extensions that need something else put their own "User-Agent" on the
          * request (or override `headersBuilder`); [UserAgentInterceptor] only
          * fills in a default when the request has none — and when they do that,
-         * the solver uses THEIR UA for the solve, keeping the pair consistent.
+         * the solver uses the WebView UA for the solve and the request that
+         * follows carries the clearance under that same UA.
          */
         const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) " +

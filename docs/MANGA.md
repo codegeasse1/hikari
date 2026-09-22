@@ -47,15 +47,24 @@ surfaced as "Manga — continue reading" in **My Stuff → History** and on the
 
 ## The reader (`ui/screens/MangaReaderScreen.kt`)
 
+**Read [READER.md](READER.md) before changing anything in it** — the request lane
+(`ScrollRequest`/`ReaderMover`), the webtoon *run* of chapters and the page
+loader are three rules that each map to a bug the user reported by name.
+
 * Top bar: back, title, **chapter list** (`ChapterSheet` — reading order,
   scrolled to the current chapter, searchable, keyed by position because a
   source can repeat a chapter URL), reader settings.
-* Bottom bar: chapter ◀ ▶, the chapter label, the page readout, and
-  `ReaderScrubber` — **one dot per page**, drag or tap to land on an exact page.
-  Not a `Slider`: a thumb has no relationship to a page number.
+* Bottom bar: chapter ◀ ▶ (walking `navChapters`, one entry per chapter NUMBER —
+  see `dedupeChapters`), the chapter label, the page readout, and
+  `ReaderScrubber` — **one dot per page**, drag or tap to land on an exact page
+  (through a `ScrollRequest`, never by setting `page` and hoping). Not a
+  `Slider`: a thumb has no relationship to a page number.
 * Three read modes (`MangaReadMode`) and three fits (`MangaFit`), stored in
   `AppStore`; progress is written debounced on every page change and once more
-  on dispose.
+  on dispose, against the chapter and page the surface REPORTED.
+* Page images are fetched, validated and retried by `manga/MangaPageLoader`
+  (ten attempts, then a per-page Retry button); the reader only ever decodes the
+  file it produced.
 
 ## Cloudflare and manga sites
 
@@ -66,6 +75,16 @@ is the **globe** button, which loads the extension's own site in
 URL — derived from the extension's source `baseUrl` by
 `MangaExtensionManager.siteUrlOf` / `AniyomiExtensionManager.siteUrlOf`, i.e.
 **on IO only** (it loads the extension) and never on the main thread.
+
+**The clearance only works if the User-Agent matches.** A `cf_clearance` is bound
+to the UA the WebView presented, so the extension client's default UA is
+`HikariApp.effectiveWebViewUa()` (see `NetworkHelper.defaultUserAgentProvider`)
+and any request that carries a clearance is presented under that same UA
+(`ExtensionCloudflareInterceptor.withJarCookies`), as is the solver's offscreen
+WebView. Two different fingerprints fighting over one cookie slot is what made a
+verified site lapse back into challenging. The verify view and the solver both
+`CookieManager.flush()` so the clearance reaches the disk.
+
 
 The globe is offered in three places so it is always reachable from wherever the
 user noticed the problem:

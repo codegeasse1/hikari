@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -34,9 +35,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,7 +55,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -90,12 +92,15 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaFit
+import com.hikari.app.manga.MangaPageLoader
+import com.hikari.app.manga.MangaPageState
 import com.hikari.app.manga.MangaProvider
 import com.hikari.app.manga.MangaProgress
 import com.hikari.app.manga.MangaReadMode
 import com.hikari.app.manga.MangaStore
 import com.hikari.app.tv.TvMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -165,16 +170,163 @@ fun MangaReaderScreen(
         chapters = MangaStore.chaptersFor(key).orEmpty()
     }
 
-    // ---- The pages of the current chapter ----
+    // ---- Reader settings (Settings-shaped, stored in the app's preference store) ----
+    //
+    // Declared up here because the reading surface itself depends on them: which
+    // mode is in force decides whether a chapter is one page at a time or a
+    // continuous strip (and therefore whether the reader keeps a RUN of
+    // chapters), so they are read before any of that is built.
+    val modeFlow = remember { app.store.mangaReadModeFlow() }
+    val fitFlow = remember { app.store.mangaFitFlow() }
+    val bgFlow = remember { app.store.mangaReaderBgFlow() }
+    val awakeFlow = remember { app.store.mangaKeepAwakeFlow() }
+    val numberFlow = remember { app.store.mangaShowPageNumberFlow() }
+    val mode by modeFlow.collectAsState(initial = MangaReadMode.PAGED_LTR)
+    val fit by fitFlow.collectAsState(initial = MangaFit.WIDTH)
+    val bgKey by bgFlow.collectAsState(initial = "black")
+    val keepAwake by awakeFlow.collectAsState(initial = true)
+    val showNumber by numberFlow.collectAsState(initial = false)
+
+    // ---- The chapters the ◀ ▶ buttons walk ----
+    //
+    // One entry per chapter NUMBER, not one per release. An aggregator lists the
+    // same chapter once per scanlation group — the chapter list in the user's
+    // screenshot has "Chapter 1" five times in a row — so stepping to the next
+    // LIST entry stepped to the same chapter from the next group ("it again
+    // opens chapter 1 instead of loading chapter 2"). The buttons walk this list
+    // instead; the chapter sheet still shows every release, because wanting a
+    // different group's scan of the chapter you are ON is a real thing to want.
+    val currentScanlator = chapters.firstOrNull { it.url == chapter }?.scanlator
+    val navChapters = remember(chapters, currentScanlator) {
+        dedupeChapters(chapters, currentScanlator)
+    }
+    // Where the chapter on screen sits in that order (matched by NUMBER, so a
+    // chapter opened from a different group than the list's own release is still
+    // found).
+    val navIndex = remember(navChapters, chapter) { navIndexOf(navChapters, chapter, chapters) }
+
+    // ---- The pages of the chapter being read ----
     var pages by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     // Bumped by the retry button.
     var reload by remember { mutableStateOf(0) }
-    // Where the reader is, in pages. Both bodies report it, and it is what gets
-    // saved; the pager/list states stay the source of truth for what is drawn.
-    // Declared up here because the load below restores it.
+    // Where the reader is: the page of the chapter ON SCREEN, and which chapter
+    // that is. Both are REPORTED by the body that draws the pages — in webtoon
+    // mode the continuous strip can be showing a different chapter than the one
+    // the reader was opened on — and both are what the readout, the scrubber and
+    // the saved progress mean. Nothing MOVES because they changed: see the
+    // request lane below, which is the single thing that may move the pages.
     var page by remember { mutableStateOf(0) }
+    var visibleChapter by remember { mutableStateOf(chapterUrl) }
+
+    // ---- The webtoon run ----
+    //
+    // In webtoon mode the pages on screen are a RUN of chapters, not one. A
+    // webtoon's artwork has no chapter-sized break in it, so the strip must not
+    // stop at one: reaching the end of a chapter fetches the next and appends
+    // it, and scrolling above the top fetches the previous and prepends it (with
+    // the page under the eye held still). That is what the user asked for —
+    // "the reading must be continuation, no stopping" — and a title card is
+    // drawn where each chapter begins so "chapter 2 started" is visible.
+    //
+    // Paged modes keep a single chapter, so the run is empty for them.
+    var run by remember { mutableStateOf<List<RunBlock>>(emptyList()) }
+    val runItems = remember(run) { flattenRun(run) }
+    val inRun = remember(run) { run.map { it.chapterUrl }.toSet() }
+    // The neighbours being fetched right now (both watchers can fire for the
+    // same chapter in one pass), the neighbours that turned out to have no pages
+    // (never asked twice — see the continuation watcher), and the two
+    // single-flight flags that keep one append and one prepend in the air at a
+    // time.
+    val fetching = remember { mutableStateOf(emptySet<String>()) }
+    val tried = remember(chapter) { mutableSetOf<String>() }
+    val appending = remember { mutableStateOf(false) }
+    val prepending = remember { mutableStateOf(false) }
+
+    // ---- One lane for every request to move the reading surface ------------
+    //
+    // The bug this exists to kill (reported twice — once for tapping the page
+    // bar, once for dragging it): the surface used to be moved by an effect
+    // keyed on the very page the surface reports, so the effect restarted — and
+    // cancelled its own in-flight scroll — the moment the move it had just been
+    // told to make came back as a report. On screen that is "I tap page 50, it
+    // flashes there, and I am back on page 12"; a drag was worse, because every
+    // page the finger crossed started its own scroll and the scrolls cancelled
+    // each other, which is the bar "going back to where I started dragging".
+    //
+    // So the reader now SPEAKS in requests. The scrubber, the arrow buttons, a
+    // D-pad press, the restored position and a chapter jump all publish a
+    // [ScrollRequest]; the body that draws the pages carries it out exactly once
+    // through its own [ReaderMover], and the body's reports may only update the
+    // readout — never move anything. A loop is impossible by construction.
+    var request by remember { mutableStateOf<ScrollRequest?>(null) }
+    var requestSeq by remember { mutableIntStateOf(0) }
+
+    /** The pages of [chapterUrl] as they are known right now (the run's copy for
+     *  a neighbour, the loaded copy for the chapter being read). */
+    fun pagesOf(chapterUrl: String): List<StreamSource> =
+        run.firstOrNull { it.chapterUrl == chapterUrl }?.pages
+            ?: if (chapterUrl == chapter) pages else emptyList()
+
+    fun labelOf(chapterUrl: String): String =
+        chapters.firstOrNull { it.url == chapterUrl }?.label.orEmpty()
+
+    /** Ask the surface to show page [target] of [chapterUrl]. Optimistic: the
+     *  readout moves in the same frame, and the body confirms it. */
+    fun ask(target: Int, chapterUrl: String = visibleChapter) {
+        val size = pagesOf(chapterUrl).size
+        if (size == 0) return
+        val t = target.coerceIn(0, size - 1)
+        visibleChapter = chapterUrl
+        page = t
+        requestSeq += 1
+        request = ScrollRequest(requestSeq, chapterUrl, t)
+    }
+
+    /** Where a request lands in the webtoon strip: a chapter's pages are one
+     *  title card plus one item per page ([RunItem]). */
+    fun itemIndexOf(r: ScrollRequest): Int {
+        var idx = 0
+        for (b in run) {
+            if (b.chapterUrl == r.chapterUrl) {
+                if (b.pages.isEmpty()) return idx
+                return idx + 1 + r.page.coerceIn(0, b.pages.size - 1)
+            }
+            idx += 1 + b.pages.size
+        }
+        return -1
+    }
+
+    /** What the drawn surface reports: which chapter, and which page inside it.
+     *  This is also where the preloading window is set, so the pages ahead of
+     *  the reader are already coming down. */
+    fun report(chapterUrl: String, p: Int) {
+        visibleChapter = chapterUrl
+        page = p
+        val list = pagesOf(chapterUrl)
+        if (list.isNotEmpty()) MangaPageLoader.plan(list, p)
+    }
+
+    /** The pages of a chapter that is NOT the loaded one (the webtoon run's
+     *  neighbours), fetched exactly the way the reader's own load does. */
+    suspend fun pagesOfChapter(chapterUrl: String): List<StreamSource> =
+        withContext(Dispatchers.IO) {
+            val p = app.providers.byId(providerId) as? MangaProvider
+                ?: return@withContext emptyList()
+            val idx = chapters.indexOfFirst { it.url == chapterUrl }
+            val ep = Episode(number = idx + 1, id = chapterUrl, name = null, season = 1)
+            runCatching { p.getStreams(item, ep) }.getOrNull().orEmpty()
+                .filter { it.url.isNotBlank() }
+        }
+
+    // ---- The strips' own scroll positions ----
+    //
+    // Hoisted out of the webtoon body because the reader itself has to watch the
+    // continuous strip's position (that is what tells it the next chapter's edge
+    // has come into view — see the continuation watcher below) and has to be
+    // able to anchor the viewport when a chapter is prepended above it.
+    val listState = rememberLazyListState()
 
     LaunchedEffect(providerId, chapter, reload) {
         loading = true
@@ -198,10 +350,19 @@ fun MangaReaderScreen(
         // the debounced save below can never observe (and write back) the
         // placeholder 0 before the restored page lands.
         val saved = MangaStore.progressFor(key)
-        page = if (saved != null && saved.chapterUrl == chapter) {
+        val restored = if (saved != null && saved.chapterUrl == chapter) {
             saved.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
         } else {
             0
+        }
+        visibleChapter = chapter
+        page = restored
+        if (pages.isNotEmpty()) {
+            // Pull the chapter in around the reader before anything is drawn:
+            // the ten pages ahead are what the first swipe needs.
+            MangaPageLoader.plan(pages, restored)
+            requestSeq += 1
+            request = ScrollRequest(requestSeq, chapter, restored)
         }
         if (pages.isEmpty()) {
             error = MangaProvider.lastOutcome[providerId]
@@ -210,17 +371,104 @@ fun MangaReaderScreen(
         loading = false
     }
 
-    // ---- Reader settings (Settings-shaped, stored in the app's preference store) ----
-    val modeFlow = remember { app.store.mangaReadModeFlow() }
-    val fitFlow = remember { app.store.mangaFitFlow() }
-    val bgFlow = remember { app.store.mangaReaderBgFlow() }
-    val awakeFlow = remember { app.store.mangaKeepAwakeFlow() }
-    val numberFlow = remember { app.store.mangaShowPageNumberFlow() }
-    val mode by modeFlow.collectAsState(initial = MangaReadMode.PAGED_LTR)
-    val fit by fitFlow.collectAsState(initial = MangaFit.WIDTH)
-    val bgKey by bgFlow.collectAsState(initial = "black")
-    val keepAwake by awakeFlow.collectAsState(initial = true)
-    val showNumber by numberFlow.collectAsState(initial = false)
+    // The run is rebuilt whenever the chapters on screen or their pages change
+    // (a new chapter, a retry, or the reader switching between paged and webtoon
+    // while a chapter is open), and the surface is put back on the page the
+    // reader was on — the strip and the pager both start at their top, so this
+    // request is what puts them where they belong.
+    LaunchedEffect(mode, chapter, pages) {
+        run = if (mode == MangaReadMode.WEBTOON && pages.isNotEmpty()) {
+            listOf(RunBlock(chapter, labelOf(chapter), pages))
+        } else {
+            emptyList()
+        }
+        if (pages.isEmpty()) return@LaunchedEffect
+        requestSeq += 1
+        request = ScrollRequest(requestSeq, chapter, page)
+    }
+
+    // ---- The strip's continuation ----
+    //
+    // Watching the strip's own position is the only way to know the reader has
+    // reached the edge of what is loaded: the last few items coming into view
+    // fetches and appends the NEXT chapter, and reaching the first items fetches
+    // and prepends the PREVIOUS one. Nothing is fetched twice (see inRun/tried),
+    // and only ONE append and one prepend are ever in flight: two prepends at
+    // once would both try to correct the scroll position they had just changed,
+    // and the view would jump by the first chapter's length. An empty fetch
+    // simply leaves the run as it is — a chapter with no pages must not break the
+    // strip, and [tried] keeps it from being asked again on every scroll step.
+    LaunchedEffect(run, navChapters, mode) {
+        if (mode != MangaReadMode.WEBTOON || run.isEmpty()) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            Triple(
+                listState.firstVisibleItemIndex,
+                info.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                info.totalItemsCount,
+            )
+        }.collect { (first, last, total) ->
+            if (total <= 0) return@collect
+            if (last >= total - 3 && !appending.value) {
+                val nextUrl = neighbourOf(run.last().chapterUrl, +1, navChapters, chapters)
+                if (nextUrl != null && nextUrl !in inRun && nextUrl !in fetching.value &&
+                    nextUrl !in tried
+                ) {
+                    appending.value = true
+                    fetching.value = fetching.value + nextUrl
+                    scope.launch {
+                        val p = pagesOfChapter(nextUrl)
+                        fetching.value = fetching.value - nextUrl
+                        if (p.isEmpty()) tried += nextUrl
+                        else if (run.none { it.chapterUrl == nextUrl }) {
+                            run = run + RunBlock(nextUrl, labelOf(nextUrl), p)
+                            MangaPageLoader.plan(p, 0)
+                        }
+                        appending.value = false
+                    }
+                }
+            }
+            if (first <= 2 && !prepending.value) {
+                val prevUrl = neighbourOf(run.first().chapterUrl, -1, navChapters, chapters)
+                if (prevUrl != null && prevUrl !in inRun && prevUrl !in fetching.value &&
+                    prevUrl !in tried
+                ) {
+                    prepending.value = true
+                    fetching.value = fetching.value + prevUrl
+                    scope.launch {
+                        val p = pagesOfChapter(prevUrl)
+                        fetching.value = fetching.value - prevUrl
+                        if (p.isEmpty()) {
+                            tried += prevUrl
+                            prepending.value = false
+                            return@launch
+                        }
+                        if (run.none { it.chapterUrl == prevUrl }) {
+                            // The anchor is read as LATE as possible — after the
+                            // fetch, right before the strip grows — so it is the
+                            // position the reader is really at when the new items
+                            // land above the viewport.
+                            val anchor = listState.firstVisibleItemIndex to
+                                listState.firstVisibleItemScrollOffset
+                            val added = 1 + p.size
+                            run = listOf(RunBlock(prevUrl, labelOf(prevUrl), p)) + run
+                            MangaPageLoader.plan(p, p.size - 1)
+                            // Hold the page under the eye exactly where it was:
+                            // the strip just grew by [added] items ABOVE the
+                            // viewport, so the anchor moves down by that many. The
+                            // reader only ever prepends with the anchor at the very
+                            // top (first <= 2), so the target index cannot be past
+                            // the end of the list it is measured against — which is
+                            // what makes this safe without waiting for the new
+                            // items to be laid out.
+                            listState.scrollToItem(anchor.first + added, anchor.second)
+                        }
+                        prepending.value = false
+                    }
+                }
+            }
+        }
+    }
 
     val background = remember(bgKey) {
         when (bgKey) {
@@ -249,24 +497,45 @@ fun MangaReaderScreen(
     // twice does not show the previous search still applied.
     var chapterQuery by remember { mutableStateOf("") }
 
+    /** Jump to the chapter at position [i] of [chapters] (the chapter sheet's
+     *  rows report their position in the READING order, which is this array). */
     fun openChapterIndex(i: Int) {
         val next = chapters.getOrNull(i) ?: return
+        // A chapter the strip already holds (a neighbour it pulled in) is jumped
+        // to rather than fetched again — its pages are right there.
+        if (run.any { it.chapterUrl == next.url }) {
+            chrome = true
+            ask(0, next.url)
+            return
+        }
         if (next.url == chapter) return
         chapter = next.url
+        visibleChapter = next.url
         page = 0
         chrome = true
     }
 
-    /** Move forward/backward by [delta] pages. Both reading modes share it: in
-     *  webtoon the strip is scrolled to that page instead of the pager. */
+    /** Step to the next/previous chapter NUMBER ([delta] = ±1 in [navChapters]). */
+    fun stepChapter(delta: Int) {
+        val i = if (navIndex >= 0) navIndex + delta else -1
+        val target = navChapters.getOrNull(i) ?: return
+        chapter = target.url
+        visibleChapter = target.url
+        page = 0
+        chrome = true
+    }
+
+    /** Move forward/backward by [delta] pages. Both reading modes share it: the
+     *  request lane carries it to whichever body is drawing the pages. */
     fun step(delta: Int) {
-        page = (page + delta).coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+        ask(page + delta)
     }
 
     // ---- Progress ----
     fun saveProgress(p: Int) {
-        if (pages.isEmpty()) return
-        val c = chapters.firstOrNull { it.url == chapter }
+        val list = pagesOf(visibleChapter)
+        if (list.isEmpty()) return
+        val c = chapters.firstOrNull { it.url == visibleChapter }
         MangaStore.setProgress(
             MangaProgress(
                 mangaKey = key,
@@ -275,18 +544,18 @@ fun MangaReaderScreen(
                 mangaUrl = mangaUrl,
                 title = title,
                 posterUrl = posterUrl.takeIf { it.isNotBlank() },
-                chapterUrl = chapter,
+                chapterUrl = visibleChapter,
                 chapterName = c?.label.orEmpty(),
-                page = p.coerceIn(0, pages.size - 1),
-                pages = pages.size,
+                page = p.coerceIn(0, list.size - 1),
+                pages = list.size,
                 at = System.currentTimeMillis(),
             )
         )
     }
 
     // Debounced: flipping through ten pages writes once, at the tenth.
-    LaunchedEffect(page, chapter, pages.size) {
-        if (pages.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(page, visibleChapter, pages.size) {
+        if (pagesOf(visibleChapter).isEmpty()) return@LaunchedEffect
         delay(700)
         saveProgress(page)
     }
@@ -350,27 +619,28 @@ fun MangaReaderScreen(
                 actionLabel = tr("Try again"),
                 onAction = { reload++ },
             )
-            mode == MangaReadMode.WEBTOON -> WebtoonBody(
-                pages = pages,
-                context = context,
-                page = page,
-                onPage = { page = it },
+            mode == MangaReadMode.WEBTOON -> WebtoonRunBody(
+                entries = runItems,
+                listState = listState,
+                request = request,
+                itemIndexOf = { itemIndexOf(it) },
+                onReport = { c, p -> report(c, p) },
                 onTap = { chrome = !chrome },
             )
             else -> PagedBody(
                 pages = pages,
-                context = context,
+                chapterUrl = chapter,
                 fit = fit,
                 reverse = mode == MangaReadMode.PAGED_RTL,
-                page = page,
-                onPage = { page = it },
+                request = request,
+                onReport = { c, p -> report(c, p) },
                 onTap = { chrome = !chrome },
                 onStep = { pageStep(it) },
             )
         }
 
         // The page number, floating, when the user asked for it permanently.
-        if (showNumber && pages.isNotEmpty()) {
+        if (showNumber && pagesOf(visibleChapter).isNotEmpty()) {
             Surface(
                 shape = RoundedCornerShape(50),
                 color = Color.Black.copy(alpha = 0.55f),
@@ -379,7 +649,7 @@ fun MangaReaderScreen(
                     .padding(16.dp),
             ) {
                 Text(
-                    "${page + 1} / ${pages.size}",
+                    "${page + 1} / ${pagesOf(visibleChapter).size}",
                     style = MaterialTheme.typography.labelMedium,
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -390,7 +660,8 @@ fun MangaReaderScreen(
         if (chrome) {
             ReaderTopBar(
                 onBack = { nav.popBackStack() },
-                title = chapters.getOrNull(chapterIndex)?.let { "${title} — ${it.label}" }
+                title = chapters.firstOrNull { it.url == visibleChapter }
+                    ?.let { "${title} — ${it.label}" }
                     ?: title,
                 onSettings = { showSettings = true },
                 onChapters = if (chapters.isEmpty()) null else {
@@ -404,13 +675,13 @@ fun MangaReaderScreen(
             ReaderBottomBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
                 page = page,
-                pageCount = pages.size,
-                onPage = { page = it },
-                chapterLabel = chapters.getOrNull(chapterIndex)?.label.orEmpty(),
-                hasPrev = chapterIndex > 0,
-                hasNext = chapterIndex in 0..(chapters.size - 2),
-                onPrevChapter = { openChapterIndex(chapterIndex - 1) },
-                onNextChapter = { openChapterIndex(chapterIndex + 1) },
+                pageCount = pagesOf(visibleChapter).size,
+                onPage = { ask(it) },
+                chapterLabel = chapters.firstOrNull { it.url == visibleChapter }?.label.orEmpty(),
+                hasPrev = navIndex > 0,
+                hasNext = navIndex >= 0 && navIndex < navChapters.size - 1,
+                onPrevChapter = { stepChapter(-1) },
+                onNextChapter = { stepChapter(+1) },
             )
         }
 
@@ -450,7 +721,7 @@ fun MangaReaderScreen(
     if (showChapters && chapters.isNotEmpty()) {
         ChapterSheet(
             chapters = chapters,
-            currentUrl = chapter,
+            currentUrl = visibleChapter,
             query = chapterQuery,
             onQuery = { chapterQuery = it },
             onPick = { i ->
@@ -646,29 +917,41 @@ private fun ReaderStatus(
  * familiar reader layout — a side for the previous/next page and the middle for
  * the controls — and they only ever receive TAPS, so the pager's own horizontal
  * drag keeps working underneath.
+ *
+ * The pager is MOVED only by [request], and its own position is only ever
+ * REPORTED back. The effect that used to make the pager follow the reported page
+ * is what broke the page bar: as the pager reported the very move it had been
+ * asked to make, that effect restarted, cancelled the scroll it was carrying out
+ * and the pager snapped back to the page the reader had started on.
  */
 @Composable
 private fun PagedBody(
     pages: List<StreamSource>,
-    context: android.content.Context,
+    chapterUrl: String,
     fit: String,
     reverse: Boolean,
-    page: Int,
-    onPage: (Int) -> Unit,
+    request: ScrollRequest?,
+    onReport: (String, Int) -> Unit,
     onTap: () -> Unit,
     onStep: (Int) -> Unit,
 ) {
     val pager = rememberPagerState(pageCount = { pages.size })
+    val mover = remember { ReaderMover() }
 
-    // The pager drives the reported page (single source of truth for the slider
-    // and for what gets saved).
-    LaunchedEffect(pager) {
-        snapshotFlow { pager.currentPage }.collect { onPage(it) }
+    // ONE collector carries out every move for as long as this body lives, so a
+    // new request can never cancel the scroll the previous one started. The
+    // bounds come from the pager itself, not from a captured list: a chapter
+    // change replaces the list under this effect's feet.
+    LaunchedEffect(Unit) {
+        mover.run { target -> if (target in 0 until pager.pageCount) pager.scrollToPage(target) }
     }
-    // ...and follows it when something else moved it (the slider, the buttons, a
-    // D-pad press, a restored position).
-    LaunchedEffect(page, pager.currentPage) {
-        if (pager.currentPage != page && page in pages.indices) pager.scrollToPage(page)
+    LaunchedEffect(request?.seq) {
+        request?.let { mover.request(it.page) }
+    }
+    // The pager's own position is the report (a finger swipe, or a move we just
+    // made — either way it is where the reader is).
+    LaunchedEffect(pager, chapterUrl) {
+        snapshotFlow { pager.currentPage }.collect { onReport(chapterUrl, it) }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -679,7 +962,6 @@ private fun PagedBody(
             beyondViewportPageCount = 1,
         ) { i ->
             PageImage(
-                context = context,
                 source = pages[i],
                 fit = fit,
                 modifier = Modifier.fillMaxSize(),
@@ -707,43 +989,40 @@ private fun TapZone(modifier: Modifier, onClick: () -> Unit) {
 }
 
 /**
- * Continuous vertical reading. Each page is drawn at the full width and its real
- * aspect ratio, filled in as the image reports its size — without that a strip
- * of unknown-height boxes jumps under the reader's thumb as every page lands.
+ * Continuous vertical reading, ACROSS chapters.
+ *
+ * [entries] is the run: a chapter's title card followed by its pages, for as many
+ * chapters as the reader has walked into (see the run in [MangaReaderScreen]).
+ * Each page is drawn at the full width and its real aspect ratio — known BEFORE
+ * it is drawn, because the loader reads the page's size out of the file header —
+ * so the strip is the right height from the first frame and never shifts under
+ * the reader's thumb as pages land.
+ *
+ * The strip is scrolled only by [request], and the item under the viewport is
+ * reported back: that report is what decides which chapter and page the reader is
+ * on, what gets saved as progress, and where the preloading window sits.
  */
 @Composable
-private fun WebtoonBody(
-    pages: List<StreamSource>,
-    context: android.content.Context,
-    page: Int,
-    onPage: (Int) -> Unit,
+private fun WebtoonRunBody(
+    entries: List<RunItem>,
+    listState: LazyListState,
+    request: ScrollRequest?,
+    itemIndexOf: (ScrollRequest) -> Int,
+    onReport: (String, Int) -> Unit,
     onTap: () -> Unit,
 ) {
-    val listState = rememberLazyListState()
-    val ratios = remember { mutableStateMapOf<String, Float>() }
-    val scope = rememberCoroutineScope()
-    // The last index we asked the list to move to. Without it the two effects
-    // below would chase each other: the scroll report would look like a request
-    // to scroll, and cancelling the animation mid-flight would leave a restored
-    // position one page from where it started.
-    val lastCommanded = remember { mutableIntStateOf(-1) }
-
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { i ->
-            lastCommanded.intValue = i
-            onPage(i)
-        }
+    val mover = remember { ReaderMover() }
+    LaunchedEffect(Unit) {
+        mover.run { target -> if (target >= 0) listState.scrollToItem(target) }
     }
-    // The list follows the page when something OUTSIDE moved it (the slider, a
-    // D-pad press, a tap zone, the restored position). The scroll runs in the
-    // composition's own scope so it is not cancelled when this effect is
-    // re-keyed by the page changes the scroll itself reports.
-    LaunchedEffect(page) {
-        val target = page.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
-        if (pages.isNotEmpty() && target != lastCommanded.intValue) {
-            lastCommanded.intValue = target
-            scope.launch { listState.animateScrollToItem(target) }
-        }
+    LaunchedEffect(request?.seq) {
+        request?.let { mover.request(itemIndexOf(it)) }
+    }
+    // One report per item the viewport passes, which is also when the preload
+    // window is recomputed (see the reader's report()).
+    LaunchedEffect(listState, entries.size) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .collect { i -> entries.getOrNull(i)?.let { onReport(it.chapterUrl, it.page) } }
     }
 
     Box(
@@ -755,46 +1034,62 @@ private fun WebtoonBody(
             state = listState,
             modifier = Modifier.fillMaxSize(),
         ) {
-            items(pages.size, key = { pages[it].url }) { i ->
-                val src = pages[i]
-                val ratio = ratios[src.url]
-                Box(Modifier.fillMaxWidth()) {
-                    if (ratio == null || ratio <= 0f) {
-                        // A plausible page height behind the image, so the strip
-                        // neither jumps as pages land nor looks broken while one
-                        // is coming. The image itself is given a real height in
-                        // the same case (below) — a zero-sized target would never
-                        // be fetched, so the ratio would never arrive.
+            // Keyed by the item's own identity (chapter + page), never by its
+            // position: the run is appended to and prepended to while the reader
+            // scrolls, and the keys are what keep the page under the eye exactly
+            // where it is when the strip grows at either end.
+            items(entries, key = { it.key }) { item ->
+                when (item) {
+                    is RunItem.Head -> ChapterCard(item.label)
+                    is RunItem.Page -> {
+                        val state = rememberPageState(item.source)
+                        val ratio = (state as? MangaPageState.Ready)?.ratio ?: 0f
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .height(420.dp)
-                                .background(Color(0xFF101010)),
-                            contentAlignment = Alignment.Center,
+                                .then(
+                                    if (ratio > 0f) Modifier.aspectRatio(ratio)
+                                    else Modifier.height(420.dp)
+                                )
                         ) {
-                            CircularProgressIndicator(Modifier.size(22.dp), color = Color.White)
+                            PageContent(state, item.source, ContentScale.FillWidth)
                         }
                     }
-                    AsyncImage(
-                        model = readerRequest(context, src),
-                        contentDescription = null,
-                        contentScale = ContentScale.FillWidth,
-                        onSuccess = { state ->
-                            val size = state.painter.intrinsicSize
-                            if (size.width > 0f && size.height > 0f) {
-                                ratios[src.url] = size.height / size.width
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(
-                                if (ratio != null && ratio > 0f) Modifier.aspectRatio(1f / ratio)
-                                else Modifier.height(420.dp)
-                            ),
-                    )
                 }
             }
         }
+    }
+}
+
+/**
+ * The card drawn where a chapter begins in the continuous strip.
+ *
+ * This is the user's own request: "when chapter 2 starting it shows chapter 2 so
+ * the user knows chapter 2 started". In a strip with no page breaks a chapter
+ * boundary is otherwise invisible — the pages simply flow on, and there is no way
+ * to tell that what you are reading belongs to the next chapter.
+ */
+@Composable
+private fun ChapterCard(label: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 26.dp, bottom = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            label.ifBlank { tr("Next chapter") },
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = 0.88f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 24.dp),
+        )
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(
+            color = Color.White.copy(alpha = 0.18f),
+            modifier = Modifier.padding(horizontal = 40.dp),
+        )
     }
 }
 
@@ -804,18 +1099,17 @@ private fun WebtoonBody(
  * [MangaFit.HEIGHT] (and [MangaFit.WHOLE], which differs only on a screen wider
  * than the page) draw the whole page inside the viewport. [MangaFit.WIDTH] is the
  * reading position for a tall page on a phone: full width, scrolled vertically —
- * which is why the image is given its true aspect ratio first (a page drawn at
- * the wrong height is either squashed or cropped, and neither is acceptable for
- * artwork).
+ * which is why the page is laid out at its true aspect ratio, read from the file
+ * the loader already fetched.
  */
 @Composable
 private fun PageImage(
-    context: android.content.Context,
     source: StreamSource,
     fit: String,
     modifier: Modifier = Modifier,
 ) {
-    var ratio by remember(source.url) { mutableStateOf(0f) }
+    val state = rememberPageState(source)
+    val ratio = (state as? MangaPageState.Ready)?.ratio ?: 0f
     val scroll = rememberScrollState()
     Box(modifier, contentAlignment = Alignment.TopCenter) {
         if (fit == MangaFit.WIDTH) {
@@ -824,50 +1118,95 @@ private fun PageImage(
                     .fillMaxSize()
                     .verticalScroll(scroll)
             ) {
-                AsyncImage(
-                    model = readerRequest(context, source),
-                    contentDescription = null,
-                    contentScale = ContentScale.FillWidth,
-                    onSuccess = { state ->
-                        val size = state.painter.intrinsicSize
-                        if (size.width > 0f && size.height > 0f) {
-                            ratio = size.height / size.width
-                        }
-                    },
-                    modifier = Modifier
+                Box(
+                    Modifier
                         .fillMaxWidth()
                         .then(
-                            if (ratio > 0f) Modifier.aspectRatio(1f / ratio)
+                            if (ratio > 0f) Modifier.aspectRatio(ratio)
                             else Modifier.height(520.dp)
-                        ),
-                )
+                        )
+                ) {
+                    PageContent(state, source, ContentScale.FillWidth)
+                }
             }
         } else {
-            AsyncImage(
-                model = readerRequest(context, source),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+            Box(Modifier.fillMaxSize()) {
+                PageContent(state, source, ContentScale.Fit)
+            }
         }
     }
 }
 
 /**
- * The request that actually fetches a page.
+ * The state of one page, wired to [MangaPageLoader].
  *
- * The source's own headers (its User-Agent, its Referer, any cookie it set) are
- * replayed verbatim, because a manga CDN routinely answers a hotlink with a 403
- * — the extension's own request carried them, and so must this one. They come
- * from the provider (see MangaProvider.sourceHeaders).
+ * The preloader fetches the pages around the reader, but a page can also be
+ * reached without being planned (the first frame of a chapter, a chapter whose
+ * neighbours have no pages) — so the composable asks for its own page too. The
+ * call is idempotent: a page already on disk or in flight is left alone.
  */
-private fun readerRequest(
-    context: android.content.Context,
+@Composable
+private fun rememberPageState(source: StreamSource): MangaPageState {
+    val flow = remember(source.url) { MangaPageLoader.state(source.url) }
+    val state by flow.collectAsState()
+    LaunchedEffect(source.url) { MangaPageLoader.load(source.url, source.headers) }
+    return state
+}
+
+/**
+ * The page itself: the loader's validated file, a spinner while it is coming, or
+ * — once the loader has spent all ten attempts — a row that says so and offers
+ * one more try on THAT page alone, so a single bad page never costs the reader
+ * the whole chapter.
+ */
+@Composable
+private fun PageContent(
+    state: MangaPageState,
     source: StreamSource,
-): ImageRequest {
-    val builder = ImageRequest.Builder(context).data(source.url)
-    source.headers.forEach { (k, v) -> builder.addHeader(k, v) }
-    return builder.build()
+    contentScale: ContentScale,
+) {
+    when (state) {
+        is MangaPageState.Ready -> AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current).data(state.file).build(),
+            contentDescription = null,
+            contentScale = contentScale,
+            modifier = Modifier.fillMaxSize(),
+        )
+        is MangaPageState.Failed -> Column(
+            Modifier
+                .fillMaxSize()
+                .background(Color(0xFF141414)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(
+                Icons.Filled.Refresh,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.size(30.dp),
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr("This page did not load"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Text(
+                I18n.t("%s tries did not get it").replace("%s", state.attempts.toString()),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.6f),
+            )
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = { MangaPageLoader.retry(source.url, source.headers) }) {
+                Text(tr("Retry"))
+            }
+        }
+        else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(24.dp), color = Color.White)
+        }
+    }
 }
 
 @Composable
@@ -1168,4 +1507,161 @@ private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+// ---------------------------------------------------------------------------
+// The reader's own plumbing: how a move is asked for, and how a webtoon's
+// chapters are strung together.
+// ---------------------------------------------------------------------------
+
+/**
+ * A request to move the reading surface to page [page] of [chapterUrl].
+ *
+ * [seq] is what makes two requests to the same page distinguishable: the body
+ * carries out a request once per [seq], so re-publishing the same viewport (a
+ * recomposition, the chapter being reloaded) can never be mistaken for a new
+ * instruction — and, in the other direction, asking twice for the page you are
+ * already on still works (which a value comparison could never express).
+ */
+private data class ScrollRequest(val seq: Int, val chapterUrl: String, val page: Int)
+
+/**
+ * The single lane every request to move the reading surface travels down.
+ *
+ * The channel is CONFLATED — while one move is being carried out, later requests
+ * replace each other, so dragging along the page bar crosses forty pages and ends
+ * on the one the finger stopped at instead of replaying all forty. Moves are
+ * carried out one at a time by ONE collector, started with `LaunchedEffect(Unit)`
+ * in the body that owns the scroll, which is what makes a move impossible to
+ * cancel from outside: the old reader moved the surface from an effect keyed on
+ * the state the move itself reported, so it cancelled its own scroll mid-flight
+ * and the reader snapped back to where they started.
+ */
+private class ReaderMover {
+    private val moves = Channel<Int>(Channel.CONFLATED)
+
+    fun request(target: Int) {
+        moves.trySend(target)
+    }
+
+    /** Runs for the lifetime of the body. [move] is the body's own way of
+     *  moving — `pager.scrollToPage` or `listState.scrollToItem` — and is called
+     *  on the main thread, which is where it must be called from. */
+    suspend fun run(move: suspend (Int) -> Unit) {
+        for (target in moves) {
+            runCatching { move(target) }
+        }
+    }
+}
+
+/** One chapter inside the continuous webtoon strip. */
+private data class RunBlock(
+    val chapterUrl: String,
+    val label: String,
+    val pages: List<StreamSource>,
+)
+
+/**
+ * One drawn thing in that strip: a chapter's title card, or one of its pages.
+ *
+ * [key] is the item's own identity and is what the LazyColumn positions itself
+ * by, so appending the next chapter (below the viewport) or prepending the
+ * previous one (above it) leaves the page under the reader's eye exactly where it
+ * was.
+ */
+private sealed class RunItem(open val chapterUrl: String, open val page: Int) {
+    class Head(override val chapterUrl: String, val label: String) : RunItem(chapterUrl, 0)
+    class Page(
+        override val chapterUrl: String,
+        override val page: Int,
+        val source: StreamSource,
+    ) : RunItem(chapterUrl, page)
+
+    val key: String
+        get() = when (this) {
+            is Head -> "$chapterUrl#head"
+            is Page -> "$chapterUrl#$page"
+        }
+}
+
+private fun flattenRun(run: List<RunBlock>): List<RunItem> = buildList {
+    for (block in run) {
+        add(RunItem.Head(block.chapterUrl, block.label))
+        block.pages.forEachIndexed { i, source -> add(RunItem.Page(block.chapterUrl, i, source)) }
+    }
+}
+
+/** The chapter [delta] away from [url] in the de-duplicated reading order. */
+private fun neighbourOf(
+    url: String,
+    delta: Int,
+    nav: List<MangaChapter>,
+    all: List<MangaChapter>,
+): String? {
+    val at = navIndexOf(nav, url, all)
+    if (at < 0) return null
+    return nav.getOrNull(at + delta)?.url
+}
+
+/** Where [url] sits in [nav] — by url, or by the chapter NUMBER when the url
+ *  belongs to a different release of the same chapter. */
+private fun navIndexOf(nav: List<MangaChapter>, url: String, all: List<MangaChapter>): Int {
+    nav.indexOfFirst { it.url == url }.let { if (it >= 0) return it }
+    val no = all.firstOrNull { it.url == url }?.let { chapterNo(it) } ?: return -1
+    if (no < 0f) return -1
+    return nav.indexOfFirst { chapterNo(it) == no }
+}
+
+/**
+ * The number a chapter is known by: the source's own `chapter_number` when it has
+ * one, otherwise read out of its name — plenty of sources leave the number unset
+ * and put everything in the title ("Chapter 12.5", "Ch. 12", "Vol. 3 Ch. 12").
+ * A name with a volume number in it is why "ch" is looked for FIRST: "Vol. 3 Ch.
+ * 12" must be chapter 12, not chapter 3, or two different chapters would be
+ * treated as the same one. -1 when no number can be found at all.
+ */
+private fun chapterNo(c: MangaChapter): Float {
+    if (c.number > 0f) return c.number
+    val name = c.name
+    if (name.isBlank()) return -1f
+    val match = Regex("""(?i)\bch(?:apter|ap)?\.?\s*(\d+(?:\.\d+)?)""").find(name)
+        ?: Regex("""(\d+(?:\.\d+)?)""").find(name)
+        ?: return -1f
+    return match.groupValues.getOrNull(1)?.toFloatOrNull() ?: -1f
+}
+
+/**
+ * One entry per chapter NUMBER, in reading order — what the ◀ ▶ buttons walk.
+ *
+ * An aggregator lists the same chapter once per scanlation group (the chapter
+ * sheet in the user's screenshot has "Chapter 1" five times in a row), so walking
+ * the raw list stepped to the same chapter from the next group — "it again opens
+ * chapter 1 instead of loading chapter 2". For each number the release by
+ * [preferScanlator] wins when there is one, so stepping forward keeps the
+ * translation the reader is already reading; otherwise the first release wins.
+ * Chapters whose number cannot be read at all are kept as their own entries, so
+ * nothing is ever merged by accident.
+ */
+private fun dedupeChapters(list: List<MangaChapter>, preferScanlator: String?): List<MangaChapter> {
+    val group = preferScanlator?.takeIf { it.isNotBlank() }
+    val slots = ArrayList<Pair<Float, MangaChapter>>(list.size)
+    list.forEachIndexed { i, c ->
+        val no = chapterNo(c)
+        // A chapter with no readable number gets a key of its own — a distinct
+        // negative — so it can never be merged into another one.
+        val key = if (no >= 0f) no else -1f - i
+        val at = slots.indexOfFirst { it.first == key }
+        if (at < 0) {
+            slots += key to c
+            return@forEachIndexed
+        }
+        // A later release of the same number takes the slot only when it is by
+        // the group the reader is reading; the entry is swapped IN PLACE, so the
+        // list's order keeps matching the chapters' numbers.
+        if (group != null) {
+            val held = slots[at].second
+            if (held.scanlator != group && c.scanlator == group) slots[at] = key to c
+        }
+    }
+    return slots.map { it.second }
 }

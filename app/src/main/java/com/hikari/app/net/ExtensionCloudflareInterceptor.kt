@@ -18,11 +18,13 @@ import okhttp3.Response
  *
  *  1. attach the cookies the shared WebView jar already holds for the host — a
  *     clearance the user earned with the globe button, or one an earlier solve
- *     earned. After that first solve, this alone is what makes the requests
- *     sail through;
+ *     earned — AND, when one of those cookies is a `cf_clearance`, present the
+ *     request under the User-Agent that clearance was minted for. After that
+ *     first solve, this alone is what makes the requests sail through;
  *  2. if the response is still a challenge, and another request for that host
  *     is not already solving it, load the page in an offscreen WebView
- *     ([CloudflareSolver]) and retry ONCE with the cookie it earned;
+ *     ([CloudflareSolver], advertising the same UA) and retry ONCE with the
+ *     cookie it earned;
  *  3. if that does not clear it either, record the host in
  *     [CloudflareVerifier] so the UI can offer the user's own verification
  *     (the globe button) instead of pretending the extension is broken.
@@ -45,10 +47,16 @@ class ExtensionCloudflareInterceptor(
         if (!isChallenge(first)) return first
         if (isImageRequest(request)) return first
         val url = request.url.toString()
-        val ua = request.header("User-Agent")?.takeIf { it.isNotBlank() } ?: defaultUserAgent()
         val solved = CloudflareSolver.solve(
             url = url,
-            userAgent = ua,
+            // The solve runs in a WebView, and the clearance it earns has to be
+            // usable by the requests that follow — so the WebView advertises the
+            // SAME fingerprint as the verify view the user taps, not whatever UA
+            // the extension happened to set on this one request. Two different
+            // fingerprints fighting over one `cf_clearance` cookie is what made a
+            // verified site fall back to challenging: every solve overwrote the
+            // cookie the reader's own verification had earned.
+            userAgent = webViewUa(),
             referer = request.header("Referer"),
         )
         if (!solved) return first
@@ -62,16 +70,34 @@ class ExtensionCloudflareInterceptor(
         return retry
     }
 
-    /** The request with the shared WebView jar's cookies attached when it
-     *  carries none of its own. */
+    /** The request with the shared WebView jar's cookies attached, presented the
+     *  way Cloudflare needs them. */
     private fun withJarCookies(request: Request): Request {
-        if (request.header("Cookie") != null) return request
+        val url = request.url.toString()
         val cookie = runCatching {
-            android.webkit.CookieManager.getInstance().getCookie(request.url.toString())
-        }.getOrNull()
-        if (cookie.isNullOrBlank()) return request
-        return request.newBuilder().header("Cookie", cookie).build()
+            android.webkit.CookieManager.getInstance().getCookie(url)
+        }.getOrNull().orEmpty()
+        if (cookie.isBlank()) return request
+        val builder = request.newBuilder()
+        if (request.header("Cookie") == null) builder.header("Cookie", cookie)
+        // A `cf_clearance` is bound to the User-Agent it was minted for, and the
+        // clearance in this jar was minted by a WebView. Presenting it with the
+        // extension's own UA (or the default browser one) is a guaranteed
+        // rejection, which is exactly what "I verified the site and it still says
+        // I need to verify" is: the cookie was being sent, and thrown away. So a
+        // request that carries a clearance advertises the UA the verify WebView
+        // earns it under — HikariApp.effectiveWebViewUa, the same string the
+        // verify view and the solver's view install.
+        if (cookie.contains("cf_clearance")) {
+            builder.header("User-Agent", webViewUa())
+        }
+        return builder.build()
     }
+
+    /** The UA a Cloudflare clearance is minted for on this device. */
+    private fun webViewUa(): String = runCatching {
+        com.hikari.app.HikariApp.instance.effectiveWebViewUa()
+    }.getOrNull().orEmpty().ifBlank { defaultUserAgent() }
 
     /**
      * True when a response is a bot wall rather than the page the extension

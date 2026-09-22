@@ -280,10 +280,18 @@ object CloudflareVerifier {
      *  record once a clearance is in the jar, so the next search lists its
      *  servers again without waiting out the record's own age. */
     fun onVerifyViewClosed(host: String?) {
+        // The user has just been through the site's verification. Two things make
+        // that stick: the cookies have to reach the DISK (the WebView's jar is
+        // written lazily, and a clearance that only lives in memory is an app
+        // restart away from being re-challenged), and any record of the host
+        // being walled has to go, or every screen keeps saying "verification
+        // needed" for a site the user has already verified.
+        runCatching { CookieManager.getInstance().flush() }
         if (host == null) return
         synchronized(lock) { inFlight[host]?.countDown() }
-        // The user just went through the site's verification: if a clearance is
-        // in the jar now, any "Cloudflare check needed" note for it is stale.
+        // Ask about the host itself rather than the page that was opened: a
+        // clearance is set for the domain, and the site the extension reads may
+        // be a different path (or subdomain) than the page the user verified on.
         if (clearanceFor("https://$host/") != null) clearBlocked(host)
     }
 }
