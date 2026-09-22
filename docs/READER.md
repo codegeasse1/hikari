@@ -132,11 +132,15 @@ and any page that still ends up over the limit goes back to the tiled draw. A
 recipe that has to guess a device's texture limit will be wrong on some device.
 
 So the page is not drawn from a bitmap at all. `SubsamplingPageView` region-decodes
-the file: the page is never materialised, not once, at any size — the view asks
-the decoder for the rectangle the viewport is showing, at the scale the screen
-needs, as tiles, and it does that again as the reader scrolls. A 1080×20000 strip
-costs its compressed bytes plus the tiles on screen, and it draws the same on
-every device, because nothing here depends on a texture limit.
+the file: it decodes TILES — a downsampled base layer at about the resolution the
+screen can show, plus the higher-resolution tiles the viewport actually needs — and
+it does that again as the reader scrolls. A 1080×20000 strip is never decoded at
+its own size: what a page costs is the file's bytes plus a handful of viewports of
+pixels, whatever its height, and every tile is a legal texture on every device
+because nothing here depends on the device's texture limit. (The tile ceiling is
+pinned with `setMaxTileSize(2048)` in `SubsamplingPageView` for exactly that
+reason: a viewport wider than 2048px — a tablet, a desktop window — must not be
+allowed to produce a tile the GPU cannot take.)
 
 Consequences to respect:
 

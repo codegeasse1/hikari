@@ -30,15 +30,17 @@ import java.io.FileInputStream
  * to not hand the GPU the page at all.
  *
  * **What this view does instead.** It is [SubsamplingScaleImageView] — the
- * Tachiyomi/yomi reader's own image view (see Nekoread, this app's manga
- * sibling, where the same view is what the reader draws with). It opens the
- * page's file through [ImageSource.provider], reads it ONCE into a native byte
- * buffer, and then decodes only the region the viewport is showing, at the scale
- * the screen needs, as tiles no bigger than a texture. A 1080×20000 manhwa strip
- * is never materialised: the reader sees a sharp page and the process holds a
- * few hundred KB of decoded tiles for the part on screen. Tall pages, wide
+ * Tachiyomi/yomi reader's own image view, and the view Nekoread (this app's manga
+ * sibling) draws its pages with. It opens the page's file through
+ * [ImageSource.provider], reads it ONCE into a native byte buffer, and from there
+ * decodes TILES: a downsampled base layer at about the resolution the screen can
+ * show, plus the higher-resolution tiles the viewport actually needs. A
+ * 1080×20000 manhwa strip is never decoded at its own size — what the process
+ * holds for a page is a handful of viewports of pixels, whatever the page's
+ * height, and the taller the page the coarser its base layer. Tall pages, wide
  * pages, EXIF-rotated pages and pages whose full height no phone could allocate
- * all draw the same way — edge to edge, uninterrupted.
+ * all draw the same way: edge to edge, uninterrupted, as tiles that are each a
+ * legal texture.
  *
  * **Why the reader keeps its own loader.** The page still has to be FETCHED,
  * validated and retried (see [MangaPageLoader]) — the extension's own headers, a
@@ -104,6 +106,17 @@ internal class SubsamplingPageView(context: Context) : SubsamplingScaleImageView
         // Decode tiles once a fling settles rather than mid-scroll, which is what
         // keeps a fast webtoon scroll at the display's refresh rate.
         setEagerLoadingEnabled(false)
+        // ...and never let one tile be bigger than a texture. By default the view
+        // picks a tile size from its own dimensions, which is fine on a phone and
+        // is exactly how the old drawing path went wrong on a page: a bitmap
+        // bigger than the device's GL_MAX_TEXTURE_SIZE is drawn as a displaced
+        // grid of tiles by Skia. Pinning the tile ceiling at 2048 — the smallest
+        // maximum texture size any GLES2 device is allowed to report — makes a
+        // tile a legal texture everywhere, including a tablet or a desktop window
+        // whose viewport is wider than any phone's. The cost is a tile or two
+        // more per screen, and it is paid in a place that cannot produce a broken
+        // page.
+        setMaxTileSize(2048)
         setOnImageEventListener(object : SubsamplingScaleImageView.OnImageEventListener {
             override fun onReady() = onPageReady?.invoke() ?: Unit
             override fun onImageLoaded() = Unit
