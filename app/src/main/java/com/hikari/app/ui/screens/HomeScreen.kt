@@ -951,13 +951,19 @@ fun HomeScreen(nav: NavHostController) {
                                 // an unsupported extension library) and it is
                                 // reported here now.
                                 ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[selected]
-                        // No verification/Cloudflare story is ever told here: a
-                        // provider whose site answers with a challenge is simply
-                        // left out of searches (see ContentRepository.crossCfSkip),
-                        // and naming the wall on screen only added a scary,
-                        // unactionable message about a different site. The empty
-                        // state stays generic and the globe button (which opens
-                        // this extension's own site) is still one tap away.
+                        // An extension whose site answers with a wall (403/503/429,
+                        // a Cloudflare body, a "One moment, please" interstitial)
+                        // is the one failure the user can actually do something
+                        // about: the globe button opens THAT extension's own site,
+                        // and the clearance the verification earns lands in the
+                        // shared cookie jar the extension's client reads — so the
+                        // Retry right after it succeeds. Hikari clears the
+                        // challenge by itself first (see CloudflareSolver); this
+                        // action is what remains for the cases it could not.
+                        val wallFailure = reason?.let { r ->
+                            r.contains("403") || r.contains("503") || r.contains("429") ||
+                                com.hikari.app.net.CloudflareVerifier.isVerificationMessage(r)
+                        } == true
                         val streamOnly =
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
                         if (streamOnly) {
@@ -984,6 +990,8 @@ fun HomeScreen(nav: NavHostController) {
                                     ),
                                 actionLabel = tr("Retry"),
                                 action = vm::refresh,
+                                action2Label = if (wallFailure) tr("Verify site") else null,
+                                action2 = if (wallFailure) openVerify else null,
                             )
                         }
                     } else {

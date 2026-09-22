@@ -1072,15 +1072,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun addAniyomiRepoUrl(url: String): Result<Cs3Repo> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val text = fetchRepoRaw(url, ANIYOMI_INDEX).getOrElse { throw it }
-                // Validate BEFORE storing: a wrong URL (or an HTML page) must
-                // not end up as a repo whose every open fails.
-                val arr = com.hikari.app.aniyomi.AniyomiExtensionManager.indexEntries(text)
-                    ?: throw Exception("Invalid $ANIYOMI_INDEX: not a list of extensions")
-                if (arr.length() == 0) throw Exception("That $ANIYOMI_INDEX lists no extensions")
+                val loaded = loadAniyomiIndex(url)
+                    ?: throw Exception(
+                        "No extension list at that link — tried $ANIYOMI_INDEX, " +
+                            "index.json and the other index file names a " +
+                            "Mihon/Aniyomi repo publishes"
+                    )
                 val repo = Cs3Repo(
-                    url = lastGoodRepoUrl,
-                    name = niceRepoName(url, ""),
+                    url = loaded.servedUrl,
+                    name = niceRepoName(loaded.servedUrl, loaded.name),
                     description = "",
                     kind = RepoKind.ANIYOMI,
                 )
@@ -1127,15 +1127,54 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Downloads an extension package and checks that it really is one.
+     *
+     * The check matters because a wrong URL does not fail loudly: a repo whose
+     * index lists a bare `apk` file name gets that name resolved against the
+     * repo root, and if the root is wrong the host answers a perfectly
+     * well-formed 404 page. Byte-checking the "PK" zip magic before installing
+     * turns "download timed out" (which was never true) into a sentence that
+     * names the real problem.
+     */
+    private fun downloadExtension(url: String): Pair<ByteArray?, String> {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return null to "This extension has no download link — remove its repo and add it again"
+        }
+        // 60s per read, 5 minutes for the whole call: an extension is ~1MB, but
+        // the phones this app runs on can be on a connection where that takes a
+        // while, and a fixable slow download must not be cut off at 30s.
+        val result = Http.downloadBytes(url, readTimeoutSec = 60, callTimeoutSec = 300)
+        val bytes = result.getOrNull()
+            ?: return null to downloadFailureMessage(result.exceptionOrNull())
+        if (bytes.size < 4 || bytes[0] != 'P'.toByte() || bytes[1] != 'K'.toByte()) {
+            return null to "Download failed — that link served ${bytes.size} bytes that are " +
+                "not an APK (the repo's index points at something that is not an extension package)"
+        }
+        return bytes to ""
+    }
+
+    /** One actionable line for a download that did not happen. */
+    private fun downloadFailureMessage(e: Throwable?): String {
+        if (e == null) return "Download failed — the file could not be downloaded"
+        val m = e.message.orEmpty()
+        return when {
+            e is java.net.SocketTimeoutException ||
+                e is java.io.InterruptedIOException ||
+                m.contains("timeout", true) || m.contains("timed out", true) ->
+                "Download timed out — check your connection"
+            e is java.net.UnknownHostException || e is java.net.ConnectException ->
+                "Download failed — ${if (m.isBlank()) "the host could not be reached" else m} — " +
+                    "check your connection"
+            m.isNotBlank() -> "Download failed — $m"
+            else -> "Download failed (${e.javaClass.simpleName})"
+        }
+    }
+
     suspend fun installAniyomiPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
-            // Aniyomi extensions are a couple of MB at most, but the biggest
-            // ones (allanime, aniwatch) sit behind slow mirrors, so the ceiling
-            // is looser than the JS-plugin installs'.
-            val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(plugin.url) }
-                ?: return@withContext Result.failure(
-                    Exception("Download timed out — check your connection")
-                )
+            val (bytes, failure) = downloadExtension(plugin.url)
+            if (bytes == null) return@withContext Result.failure(Exception(failure))
             installExtension(
                 bytes,
                 sourceUrl = plugin.url,
@@ -1174,8 +1213,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
             return@withContext Result.failure(Exception("Must start with http(s)://"))
         }
-        val bytes = withTimeoutOrNull(120_000) { Http.fetchBytesRobust(clean) }
-            ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
+        val (bytes, failure) = downloadExtension(clean)
+        if (bytes == null) return@withContext Result.failure(Exception(failure))
         installExtension(bytes, sourceUrl = clean).also { manager.refresh(); reloadInstalled() }
     }
 
@@ -1212,6 +1251,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         file: String = "repo.json",
         ua: String? = null,
         remember: Boolean = true,
+        readSec: Long = 30,
     ): Result<String> {
         // Nuvio manifests/scrapers live on Codeberg, which 403s the shared
         // desktop-Chrome UA but serves the nuvio app's own UA fine — override
@@ -1233,7 +1273,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         candidates += url
         var lastError: Throwable? = null
         for (candidate in candidates) {
-            val r = Http.fetchStringRobust(candidate, headers)
+            val r = Http.fetchStringRobust(candidate, headers, readSec)
             val text = r.getOrNull()
             if (text == null) {
                 lastError = r.exceptionOrNull() ?: lastError
@@ -1379,6 +1419,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val aniyomiOfficial = aniyomiExt(
             "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
         )
+        // The MANGA side of the same file format (and the same add-repo,
+        // install and update flow): keiyoushi's index is the one every Mihon
+        // app reads, and each of its APKs installs through this screen — the
+        // package's own manifest decides whether the Aniyomi or the Mihon
+        // engine loads it. The `index.json` spelling matters: see
+        // MangaExtensionManager.DEFAULT_REPOS.
+        val keiyoushi = aniyomiExt(
+            "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json"
+        )
         val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
@@ -1457,6 +1506,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("aniyomiindex", listOf(aniyomiOfficial))
         put("aniyomiofficial", listOf(aniyomiOfficial))
         put("aniyomirepo", listOf(aniyomiOfficial))
+        put("keiyoushi", listOf(keiyoushi))
+        put("keyoshi", listOf(keiyoushi))
+        put("manga", listOf(keiyoushi))
+        put("mangarepo", listOf(keiyoushi))
+        put("keiyoushimanga", listOf(keiyoushi))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -1677,10 +1731,93 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return url.removePrefix("https://").removePrefix("http://").trimEnd('/')
     }
 
+    /** A repo index that was found and parsed: its plugins, the URL that served
+     *  it, and the repo's own name when that index carries one. */
+    private class AniyomiIndex(
+        val servedUrl: String,
+        val plugins: List<Cs3RepoPlugin>,
+        val name: String,
+    )
+
+    /**
+     * Fetches a Mihon/Aniyomi repo's extension list.
+     *
+     * The list is NOT in one fixed file name. keiyoushi — the repo the whole
+     * Mihon ecosystem reads — publishes the real catalogue in `index.json` and
+     * turned `index.min.json` into a two-entry "Outdated App" / "Update to
+     * Mihon 0.20.1+" placeholder that older apps are meant to *display*; the
+     * official Aniyomi repo still publishes `index.min.json`; some mirrors
+     * publish only `repo.json`; and several publish a protobuf `index.pb`
+     * beside a JSON one. Reading only `index.min.json` is exactly why the
+     * Keiyoushi folder said "Outdated App" and listed nothing installable.
+     *
+     * So every candidate name the repo could be using is tried in order
+     * ([AniyomiExtensionManager.indexCandidatesFor]) and the first one that
+     * really lists extensions wins — a placeholder index, an empty one, and a
+     * file that isn't an index at all (an HTML page, a JSON metadata blob) are
+     * all skipped. Each entry's APK/icon URL is built from the repo ROOT of the
+     * candidate that actually served the list, which is what keeps a repo
+     * published as `index.json` installable.
+     *
+     * [knownName] is the repo's current display name: an index that names
+     * itself ("Keiyoushi") only replaces a URL-shaped name, never one the user
+     * already recognises.
+     */
+    private fun loadAniyomiIndex(url: String, knownName: String = ""): AniyomiIndex? {
+        val mgr = com.hikari.app.aniyomi.AniyomiExtensionManager
+        for (candidate in mgr.indexCandidatesFor(url)) {
+            val text = fetchRepoRaw(
+                candidate,
+                ANIYOMI_INDEX,
+                remember = false,
+                // A Mihon index can be a 1.5 MB JSON file (keiyoushi's is);
+                // 30s per read is not always enough for it on a slow phone.
+                readSec = 60,
+            ).getOrNull() ?: continue
+            val arr = mgr.indexEntries(text) ?: continue
+            if (arr.length() == 0) continue
+            if (mgr.looksLikeStub(arr)) continue
+            val baseUrl = mgr.indexDirFor(candidate)
+            val out = LinkedHashMap<String, Cs3RepoPlugin>()
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { o ->
+                    mgr.repoPlugin(o, baseUrl)?.let { p -> out[p.url] = p }
+                }
+            }
+            if (out.isEmpty()) continue
+            val jsonName = indexNameOf(text)
+            val name = if (jsonName.isNotBlank() && !knownName.startsWith(jsonName, true)) jsonName else ""
+            return AniyomiIndex(candidate, out.values.toList(), name)
+        }
+        return null
+    }
+
+    /** The index's own `name` field (keiyoushi's is "Keiyoushi"), or "" when the
+     *  index is a bare array / carries no name. */
+    private fun indexNameOf(text: String): String = runCatching {
+        JSONObject(text).optString("name").trim()
+    }.getOrDefault("")
+
     private suspend fun fetchRepoPlugins(repo: Cs3Repo): Pair<List<Cs3RepoPlugin>, Cs3Repo?> {
+        if (repo.kind == RepoKind.ANIYOMI) {
+            // A Mihon/Aniyomi repo is fetched through its candidate index files
+            // rather than one fixed file name — see [loadAniyomiIndex].
+            val loaded = loadAniyomiIndex(repo.url, repo.name)
+                ?: run {
+                    val tried = com.hikari.app.aniyomi.AniyomiExtensionManager
+                        .indexCandidatesFor(repo.url).size
+                    throw Exception(
+                        "Could not fetch repo: no extension list at ${repo.url} " +
+                            "(tried $tried index file names)"
+                    )
+                }
+            val meta = if (loaded.name.isNotBlank() && loaded.name != repo.name) {
+                repo.copy(name = loaded.name)
+            } else null
+            return loaded.plugins to meta
+        }
         val file = when (repo.kind) {
             RepoKind.NUVIO -> "manifest.json"
-            RepoKind.ANIYOMI -> ANIYOMI_INDEX
             else -> "repo.json"
         }
         val text = fetchRepoRaw(
@@ -1691,26 +1828,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             remember = false,
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
-        if (repo.kind == RepoKind.ANIYOMI) {
-            // An Aniyomi index is a BARE ARRAY (not an object with a `plugins`
-            // key), so it can't go through JSONObject below. Each entry's `apk`
-            // is a filename served from `<repo root>/apk/`, and the icon from
-            // `<repo root>/icon/<pkg>.png` — see AniyomiExtensionManager.repoPlugin.
-            val arr = com.hikari.app.aniyomi.AniyomiExtensionManager.indexEntries(text)
-                ?: throw Exception("Invalid $file: not a list of extensions")
-            val out = LinkedHashMap<String, Cs3RepoPlugin>()
-            val trimmed = repo.url.trimEnd('/')
-            val baseUrl = if (trimmed.endsWith("/$ANIYOMI_INDEX", ignoreCase = true))
-                trimmed.removeSuffix("/$ANIYOMI_INDEX") else trimmed
-            for (i in 0 until arr.length()) {
-                arr.optJSONObject(i)?.let { o ->
-                    com.hikari.app.aniyomi.AniyomiExtensionManager.repoPlugin(o, baseUrl)
-                        ?.let { p -> out[p.url] = p }
-                }
-            }
-            if (out.isEmpty()) throw Exception("No extensions found in $file")
-            return out.values.toList() to null
-        }
         val root = runCatching { JSONObject(text) }.getOrElse {
             throw Exception("Invalid $file: ${it.message}")
         }
@@ -2117,7 +2234,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                         .replaceFirst("%s", (i + 1).toString())
                         .replaceFirst("%s", pending.size.toString())
                     val r = runCatching {
-                        withTimeoutOrNull(90_000) {
+                        // Five minutes for one entry: the download itself is
+                        // allowed up to that (see Http.downloadBytes — a 1 MB
+                        // extension on a slow phone connection), and a ceiling
+                        // shorter than the download would report a perfectly
+                        // good install as failed.
+                        withTimeoutOrNull(300_000) {
                             when (effectiveRepoKind(kind, p.url)) {
                                 RepoKind.CS3 -> installCs3Plugin(p)
                                 RepoKind.HIKARI -> installHikiPlugin(p)
@@ -2230,7 +2352,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                         .replaceFirst("%s", (i + 1).toString())
                         .replaceFirst("%s", items.size.toString())
                     val r = runCatching {
-                        withTimeoutOrNull(90_000) {
+                        // Five minutes for one entry: the download itself is
+                        // allowed up to that (see Http.downloadBytes — a 1 MB
+                        // extension on a slow phone connection), and a ceiling
+                        // shorter than the download would report a perfectly
+                        // good install as failed.
+                        withTimeoutOrNull(300_000) {
                             when (effectiveRepoKind(kind, p.url)) {
                                 RepoKind.CS3 -> installCs3Plugin(p)
                                 RepoKind.HIKARI -> installHikiPlugin(p)

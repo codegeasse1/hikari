@@ -131,7 +131,7 @@ object SourceUrls {
             // The segment right after owner/repo is the branch; the rest is the
             // path inside the repo.
             val path = if (rest.size > 1) rest.drop(1).joinToString("/") else rest.joinToString("/")
-            return "gh:${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$path"
+            return "gh:${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/${stripIndexFileName(path)}"
         }
         GH_WEB.find(c)?.let { m ->
             return "gh:${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/"
@@ -141,6 +141,35 @@ object SourceUrls {
                 m.groupValues[3]).trimEnd('/')
         }
         return c.trimEnd('/')
+    }
+
+    /**
+     * Which FILE a Mihon/Aniyomi repo publishes its extension list in is not
+     * part of the repo's identity: `…/repo/index.json` and
+     * `…/repo/index.min.json` are the same repository, and Hikari may store one
+     * spelling while fetching the other — keiyoushi's minified file is a
+     * two-entry "update your app" stub, so the real list always comes from
+     * `index.json` (see AniyomiExtensionManager.indexCandidatesFor). Without
+     * this, re-adding the same repo with the other spelling grew a second,
+     * empty-looking folder.
+     *
+     * Only the Mihon/Aniyomi index names are folded away — `repo.json`,
+     * `manifest.json` and `plugins.json` are the repo FILES of the other kinds
+     * and keep their identity.
+     */
+    private val INDEX_FILE_NAMES = listOf(
+        "index.json",
+        "index.min.json",
+        "index.pb",
+        "index.min.pb",
+    )
+
+    private fun stripIndexFileName(path: String): String {
+        for (name in INDEX_FILE_NAMES) {
+            if (path.equals(name, ignoreCase = true)) return ""
+            if (path.endsWith("/$name", ignoreCase = true)) return path.dropLast(name.length + 1)
+        }
+        return path
     }
 
     /** True when [raw] and [other] name the same repository file (see [repoKey]). */

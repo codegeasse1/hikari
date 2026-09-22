@@ -76,17 +76,26 @@ object MangaExtensionManager {
 
     /**
      * The built-in manga extension repositories. keiyoushi is the community
-     * index the whole Mihon ecosystem reads; its `index.min.json` is a bare JSON
-     * array in exactly the shape the Extensions screen already parses for the
-     * Aniyomi repo, which is why a manga repo can be added through the same
-     * "Aniyomi repo" flow.
+     * index the whole Mihon ecosystem reads; its list is the modern
+     * `index.json` (entries under `extensionList.extensions`, absolute
+     * `resources.apkUrl`/`iconUrl` links) in exactly the shape the Extensions
+     * screen parses for an Aniyomi repo — which is why a manga repo can be
+     * added through the same "Aniyomi repo" flow.
+     *
+     * The URL is deliberately NOT `index.min.json`: keiyoushi turned that file
+     * into a two-entry "Outdated App" / "Update to Mihon 0.20.1+" placeholder
+     * that older apps display verbatim, so seeding it showed the user a folder
+     * telling them to install Mihon instead of 1396 manga extensions. (A repo
+     * that was already seeded as the minified URL is healed at load time — see
+     * AniyomiExtensionManager.indexCandidatesFor, which tries `index.json`
+     * first.)
      *
      * Only seeded once (see [seedDefaults]) and never bulk-installed: adding the
      * repo just makes the catalogue of manga extensions browsable.
      */
     val DEFAULT_REPOS = listOf(
         Triple(
-            "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json",
+            "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json",
             "Keiyoushi (manga)",
             "The community manga extension repo (Mihon / Tachiyomi)",
         ),

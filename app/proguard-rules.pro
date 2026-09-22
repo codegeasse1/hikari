@@ -83,6 +83,15 @@
 -keep class uy.kohesive.injekt.** { *; }
 -dontwarn uy.kohesive.injekt.**
 
+# The JavaScript engine extensions link against by name (Aniyomi bundles
+# `app.cash.quickjs`; Hikari bridges it to the `com.dokar.quickjs` runtime it
+# already ships — see app/cash/quickjs/QuickJs.kt). Its members are called
+# directly from extension bytecode, so no renaming and no shrinking.
+-keep class app.cash.** { *; }
+-dontwarn app.cash.**
+-keep class com.dokar.quickjs.** { *; }
+-dontwarn com.dokar.quickjs.**
+
 # ---------------------------------------------------------------------------
 # 3. Hikari's own plugin API
 #

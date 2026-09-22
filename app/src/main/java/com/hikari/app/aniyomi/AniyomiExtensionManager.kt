@@ -221,6 +221,126 @@ object AniyomiExtensionManager {
         ),
     )
 
+    // ---- Index files (which file a repo's extension list actually lives in) ----
+
+    /**
+     * Every file name a Mihon/Aniyomi repo publishes its extension list under,
+     * best-first. A repo normally ships ONE of these, and which one differs
+     * per repo:
+     *
+     *  * `index.json` — the full index, the one Mihon 0.20.1+ reads;
+     *  * `index.min.json` — the same list minified. Careful: keiyoushi turned
+     *    this file into a **2-entry stub** ("Outdated App" / "Update to Mihon
+     *    0.20.1+") that old apps are expected to show as-is, so it must never
+     *    be preferred over a real index;
+     *  * `repo.json` — metadata only for a Mihon repo (`{"meta":{…}}`), the
+     *    plugin list for a CloudStream repo, so it parses as neither here
+     *    unless it really does carry an array (some small mirrors use it).
+     */
+    val INDEX_FILE_NAMES = listOf(
+        "index.json",
+        "index.min.json",
+        "repo.json",
+        "plugins.json",
+        "plugins.min.json",
+    )
+
+    /**
+     * Binary (protobuf) indexes — `index.pb`, `index.min.pb`, `repo.pb`. Hikari
+     * cannot parse the binary form, but a repo that publishes one virtually
+     * always serves the JSON sibling too, so a URL pointing at a `.pb` file is
+     * transparently rewritten to its `.json` form rather than failing with
+     * "not a list of extensions" on a perfectly good repo.
+     */
+    val PB_INDEX_FILE_NAMES = listOf("index.pb", "index.min.pb", "repo.pb")
+
+    val ALL_INDEX_FILE_NAMES = INDEX_FILE_NAMES + PB_INDEX_FILE_NAMES
+
+    /** True when [url] points at a repo index FILE rather than at a repo folder. */
+    fun isIndexUrl(url: String): Boolean {
+        val trimmed = url.trim().trimEnd('/')
+        return ALL_INDEX_FILE_NAMES.any { trimmed.endsWith("/$it", ignoreCase = true) }
+    }
+
+    /**
+     * The repo ROOT of an index URL — the folder the `apk/` and `icon/`
+     * subfolders hang off.
+     *
+     * This is the difference between an install that works and one that ends in
+     * "Download timed out": an index entry's `apk` is a bare FILE NAME, so it
+     * has to be appended to the repo root as `<root>/apk/<name>`. Stripping only
+     * `index.min.json` (as this once did) left `<root>/index.json/apk/<name>`
+     * for every repo whose index is served as `index.json`, and that URL 404s —
+     * while the listing itself kept working, so every extension in the repo
+     * looked installable and none of them installed.
+     */
+    fun indexDirFor(indexUrl: String): String {
+        var url = indexUrl.trim().trimEnd('/')
+        for (name in ALL_INDEX_FILE_NAMES) {
+            if (url.endsWith("/$name", ignoreCase = true)) {
+                url = url.dropLast(name.length + 1).trimEnd('/')
+                break
+            }
+        }
+        return url
+    }
+
+    /**
+     * The index URLs worth trying for a repo URL, best-first. A repo folder gets
+     * the common file names appended; a direct index URL keeps that file first
+     * — except a `.min.json`/`.pb` one, where the full `index.json` is tried
+     * first (that is the one that actually lists the extensions today) and the
+     * given file stays as the fallback.
+     */
+    fun indexCandidatesFor(url: String): List<String> {
+        val clean = url.trim().trimEnd('/')
+        if (clean.isEmpty()) return emptyList()
+        if (clean.endsWith(".pb", ignoreCase = true)) {
+            val stem = clean.dropLast(3)
+            val min = if (stem.endsWith(".min", ignoreCase = true)) null else "$stem.min.json"
+            return listOfNotNull("$stem.json", min)
+        }
+        if (!isIndexUrl(clean)) return INDEX_FILE_NAMES.map { "$clean/$it" }
+        val dir = indexDirFor(clean)
+        val given = clean.substringAfterLast('/')
+        val others = INDEX_FILE_NAMES.filterNot { it.equals(given, ignoreCase = true) }
+        val order = if (given.equals("index.min.json", ignoreCase = true)) {
+            listOf("index.json") + others
+        } else {
+            listOf(given) + others
+        }
+        return order.map { "$dir/$it" }
+    }
+
+    /**
+     * True for an index that is really the "your app is too old" placeholder
+     * keiyoushi (and Mihon's own repo) serves at `index.min.json`: the whole
+     * list is the couple of stub entries that tell the user to update the app.
+     * Treating that as a repo is why the Keiyoushi folder said "Outdated App"
+     * and "Update to Mihon 0.20.1+" with nothing installable in it — the real
+     * catalogue is in the same folder's `index.json`, so a stub has to be
+     * recognised and skipped rather than shown.
+     */
+    fun looksLikeStub(entries: JSONArray): Boolean {
+        if (entries.length() == 0) return true
+        for (i in 0 until entries.length()) {
+            val o = entries.optJSONObject(i) ?: return false
+            val pkg = indexPkgOf(o)
+            val name = o.optString("name").trim()
+            val stubPkg = pkg.equals("eu.kanade.tachiyomi.extension.all.keiyoushi", true) ||
+                pkg.equals("eu.kanade.tachiyomi.extension.all.mihon", true)
+            val stubName = name.equals("Outdated App", true) ||
+                name.startsWith("Update to Mihon", true) ||
+                name.startsWith("Update to Tachiyomi", true)
+            if (!stubPkg && !stubName) return false
+        }
+        return true
+    }
+
+    /** The package name of an index entry, whichever of the two formats it is in. */
+    private fun indexPkgOf(o: JSONObject): String =
+        o.optString("pkg").ifBlank { o.optString("packageName") }.trim()
+
     // ---- Paths ----
 
     /** Where private extension copies live (`filesDir/aniyomi/exts`). */
@@ -396,9 +516,12 @@ object AniyomiExtensionManager {
     }
 
     /**
-     * One entry of an Aniyomi `index.min.json` — a BARE JSON ARRAY (not the
-     * object with a `plugins` key the other repo kinds use, which is why this
-     * kind needs its own parser):
+     * One entry of a Mihon/Aniyomi extension index, in EITHER of the two shapes
+     * the ecosystem publishes.
+     *
+     * **Legacy** (Aniyomi's `index.min.json`, and every mirror of it) — a BARE
+     * JSON ARRAY (not the object with a `plugins` key the other repo kinds use,
+     * which is why this kind needs its own parser):
      *
      * ```json
      * [{"name":"Aniyomi: Jellyfin","pkg":"…jellyfin","apk":"aniyomi-all.jellyfin-v14.17.apk",
@@ -409,57 +532,104 @@ object AniyomiExtensionManager {
      * `apk` is a FILENAME, and the repo serves the files from two subfolders of
      * the index's directory: the APK from `<root>/apk/<apk>` and the icon from
      * `<root>/icon/<pkg>.png` — see Aniyomi's `NetworkLegacyAnimeExtension`.
-     * [baseUrl] is the repo root (the index URL minus its `index.min.json`).
-     * The first source's `baseUrl` also gives the row a favicon without any
-     * network call.
+     * [baseUrl] is the repo root ([indexDirFor] of the index URL); the first
+     * source's `baseUrl` also gives the row a favicon without any network call.
+     *
+     * **Modern** (keiyoushi's `index.json`, the shape Mihon 0.20.1+ reads) —
+     * the entries live under `extensionList.extensions` (see [indexEntries])
+     * and carry ABSOLUTE URLs plus a string `versionCode`:
+     *
+     * ```json
+     * {"packageName":"…all.ahottie","resources":{"apkUrl":"https://github.com/…/x.apk",
+     *   "iconUrl":"https://cdn.jsdelivr.net/…/ic_launcher.png","jarUrl":"…"},
+     *   "extensionLib":"1.6","versionCode":"106004","versionName":"1.6.4",
+     *   "contentWarning":"CONTENT_WARNING_NSFW",
+     *   "sources":[{"id":"…","name":"AHottie","language":"all","homeUrl":"https://ahottie.top"}]}
+     * ```
+     *
+     * Both are read here so a keiyoushi-style repo lists and installs exactly
+     * like an Aniyomi one: the row text, the install URL and the icon URL are
+     * built the same way from either shape.
      */
     fun repoPlugin(o: JSONObject, baseUrl: String = ""): Cs3RepoPlugin? {
-        val name = o.optString("name").ifBlank { o.optString("pkg") }
+        val resources = o.optJSONObject("resources")
+        val pkg = indexPkgOf(o)
+        val name = o.optString("name").ifBlank { pkg }
             .removePrefix("Aniyomi: ").trim()
-        val apk = o.optString("apk")
+        // `apk` (legacy — a file name, or a full URL in repos that publish
+        // absolute ones) or `resources.apkUrl` (modern — always a full URL).
+        val apk = o.optString("apk").ifBlank { resources?.optString("apkUrl").orEmpty() }.trim()
         if (name.isBlank() || apk.isBlank()) return null
         val root = baseUrl.trimEnd('/')
-        val pkg = o.optString("pkg").trim()
         val url = when {
             apk.startsWith("http://") || apk.startsWith("https://") -> apk
             root.isBlank() -> return null
             else -> "$root/apk/${apk.trimStart('/')}"
         }
+        val icon = o.optString("icon")
+            .ifBlank { o.optString("iconUrl") }
+            .ifBlank { resources?.optString("iconUrl").orEmpty() }
+            .trim()
+        val iconUrl = when {
+            icon.startsWith("http://") || icon.startsWith("https://") -> icon
+            icon.isNotBlank() && root.isNotBlank() -> "$root/${icon.trimStart('/')}"
+            pkg.isNotBlank() && root.isNotBlank() -> "$root/icon/$pkg.png"
+            else -> null
+        }
+        // The modern format carries no top-level `lang` — the sources each name
+        // their own (`language`), which is also what the row should show.
+        val lang = o.optString("lang").ifBlank { firstSourceLang(o) }
+        val versionName = o.optString("version").ifBlank { o.optString("versionName") }
+        val versionCode = o.optInt("code", 0).takeIf { it > 0 }
+            ?: o.optString("versionCode").toIntOrNull()
+            ?: 1
         return Cs3RepoPlugin(
             name = name,
             description = listOfNotNull(
-                o.optString("lang").ifBlank { null }?.uppercase(),
-                o.optString("version").ifBlank { null }?.let { "v$it" },
+                lang.ifBlank { null }?.uppercase(),
+                versionName.ifBlank { null }?.let { "v$it" },
                 pkg.ifBlank { null },
             ).joinToString(" · "),
             url = url,
-            iconUrl = o.optString("icon")
-                .ifBlank { o.optString("iconUrl") }
-                .ifBlank {
-                    if (pkg.isNotBlank() && root.isNotBlank()) "$root/icon/$pkg.png" else ""
-                }
-                .ifBlank { null },
-            version = o.optInt("code", 1).takeIf { it > 0 } ?: 1,
+            iconUrl = iconUrl,
+            version = versionCode,
             iconHost = firstSourceHost(o),
         )
     }
 
     /**
-     * The entries of an Aniyomi `index.min.json`, however the repo serves them.
+     * The entries of a Mihon/Aniyomi extension index, however the repo serves
+     * them.
      *
-     * The official repo serves a BARE ARRAY. Community repos (and mirrors)
-     * commonly wrap the same entries in an object — `{"extensions":[…]}`,
-     * `{"plugins":[…]}` — or key them by package name. Demanding an array threw
-     * "Invalid index.min.json: Value {…} of type JSONObject cannot be converted
-     * to JSONArray" at the user, which is the error people hit adding an Aniyomi
-     * repo whose index is perfectly valid. Returns null when the text really is
-     * not an index.
+     *  * Aniyomi's own repo serves a BARE ARRAY.
+     *  * **keiyoushi's `index.json` — the one Mihon 0.20.1+ reads — nests them
+     *    under `extensionList.extensions`** (`{"name":"Keiyoushi",
+     *    "signingKey":"…","extensionList":{"extensions":[…]}}`). Missing that key
+     *    is why the Keiyoushi repo listed nothing at all once the real index was
+     *    fetched: the array was there, one level down.
+     *  * Community repos (and mirrors) wrap the same entries in an object —
+     *    `{"extensions":[…]}` or `{"plugins":[…]}` — or key them by package
+     *    name. Demanding an array threw "Invalid index.min.json: Value {…} of
+     *    type JSONObject cannot be converted to JSONArray" at the user, which is
+     *    the error people hit adding an Aniyomi repo whose index is perfectly
+     *    valid.
+     *
+     * Returns null when the text really is not an index.
      */
     fun indexEntries(text: String): JSONArray? {
         val trimmed = text.trim().removePrefix("\uFEFF").trim()
         if (trimmed.isEmpty()) return null
         runCatching { JSONArray(trimmed) }.getOrNull()?.let { return it }
         val root = runCatching { JSONObject(trimmed) }.getOrNull() ?: return null
+        // The modern shape: `extensionList` is an OBJECT with `extensions`
+        // inside it. (A couple of mirrors ship it as an array directly, so both
+        // are accepted.)
+        root.optJSONArray("extensionList")?.let { if (it.length() > 0) return it }
+        root.optJSONObject("extensionList")?.let { list ->
+            for (inner in listOf("extensions", "plugins", "items", "list")) {
+                list.optJSONArray(inner)?.let { if (it.length() > 0) return it }
+            }
+        }
         // An array under one of the names these indexes use.
         for (key in listOf("extensions", "plugins", "items", "data", "list", "apks", "scrapers")) {
             root.optJSONArray(key)?.let { if (it.length() > 0) return it }
@@ -470,14 +640,16 @@ object AniyomiExtensionManager {
         while (names.hasNext()) {
             val value = root.opt(names.next())
             if (value is JSONObject &&
-                (value.has("apk") || value.has("sources") || value.has("pkg"))
+                (value.has("apk") || value.has("sources") || value.has("pkg") ||
+                    value.has("packageName") || value.has("resources"))
             ) {
                 keyed.put(value)
             }
         }
         if (keyed.length() > 0) return keyed
-        // One more level: `{"data":{"extensions":[…]}}`.
-        for (key in listOf("data", "repo", "index")) {
+        // One more level: `{"data":{"extensions":[…]}}` /
+        // `{"extensionList":{"extensions":[…]}}` behind another object.
+        for (key in listOf("data", "repo", "index", "extensionList")) {
             root.optJSONObject(key)?.let { nested ->
                 for (inner in listOf("extensions", "plugins", "items", "list")) {
                     nested.optJSONArray(inner)?.let { if (it.length() > 0) return it }
@@ -487,15 +659,29 @@ object AniyomiExtensionManager {
         return null
     }
 
-    /** The host of the first `sources[].baseUrl` of an index entry, if any —
-     *  the key for the favicon fallback icon. */
+    /** The host of the first source's URL of an index entry, if any — the key
+     *  for the favicon fallback icon. `baseUrl` is the legacy field name,
+     *  `homeUrl` the modern one. */
     private fun firstSourceHost(o: JSONObject): String? {
         val sources = runCatching { o.getJSONArray("sources") }.getOrNull() ?: return null
         for (i in 0 until sources.length()) {
-            val base = sources.optJSONObject(i)?.optString("baseUrl").orEmpty()
+            val s = sources.optJSONObject(i) ?: continue
+            val base = s.optString("baseUrl").ifBlank { s.optString("homeUrl") }
             hostOf(base)?.let { return it }
         }
         return null
+    }
+
+    /** The language of the first source that declares one — the modern index
+     *  format has no top-level `lang`, only per-source `language`. */
+    private fun firstSourceLang(o: JSONObject): String {
+        val sources = runCatching { o.getJSONArray("sources") }.getOrNull() ?: return ""
+        for (i in 0 until sources.length()) {
+            val s = sources.optJSONObject(i) ?: continue
+            val lang = s.optString("lang").ifBlank { s.optString("language") }
+            if (lang.isNotBlank()) return lang
+        }
+        return ""
     }
 
     /**

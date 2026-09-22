@@ -184,15 +184,34 @@ object Http {
         false
     }
 
-    fun getStringStrict(url: String, headers: Map<String, String> = emptyMap()): Result<String> =
+    fun getStringStrict(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSec: Long = 30,
+    ): Result<String> =
         try {
-            get(url, headers).use { r ->
+            val call = clientFor(readTimeoutSec)
+            val builder = Request.Builder().url(url).header("User-Agent", UA)
+            headers.forEach { (k, v) -> builder.header(k, v) }
+            call.newCall(builder.build()).execute().use { r ->
                 if (r.isSuccessful) Result.success(r.body?.string() ?: "")
                 else Result.failure(Exception("HTTP ${r.code} for $url"))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+
+    /**
+     * The shared client with a longer per-read timeout, for the one kind of
+     * fetch that is genuinely big: a Mihon/Aniyomi repo index can be a 1.5 MB
+     * JSON file (keiyoushi's `index.json` is), and 30s per read is not always
+     * enough for that on a slow mobile connection. Built through `newBuilder()`
+     * so the connection pool, dispatcher and interceptors (Cloudflare handling,
+     * DoH) stay shared with every other request.
+     */
+    private fun clientFor(readTimeoutSec: Long): OkHttpClient =
+        if (readTimeoutSec <= 30) client
+        else client.newBuilder().readTimeout(readTimeoutSec, TimeUnit.SECONDS).build()
 
     private val GITHUB_RAW =
         Regex("^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$")
@@ -213,11 +232,15 @@ object Http {
         return variants
     }
 
-    fun fetchStringRobust(url: String, headers: Map<String, String> = emptyMap()): Result<String> {
+    fun fetchStringRobust(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSec: Long = 30,
+    ): Result<String> {
         var last: Throwable = Exception("Failed to fetch $url")
         for (u in urlVariants(url)) {
             for (attempt in 0 until 2) {
-                val r = getStringStrict(u, headers)
+                val r = getStringStrict(u, headers, readTimeoutSec)
                 if (r.isSuccess) return r
                 r.exceptionOrNull()?.let { last = it }
                 try {
@@ -243,6 +266,64 @@ object Http {
             }
         }
         return null
+    }
+
+    /**
+     * Downloads a whole file for an EXTENSION INSTALL, streaming it into memory
+     * with a per-read timeout and an overall call timeout that are both sized
+     * for a slow phone connection, and a FAILURE MESSAGE THAT SAYS WHICH failure
+     * it was.
+     *
+     * This exists because the old path (`fetchBytesRobust`'s `body.bytes()`
+     * behind a 30s read timeout) reported every failure the same way — "Download
+     * timed out — check your connection" — including the ones that were not
+     * timeouts at all: an index whose `apk` field is a bare file name resolved
+     * against the wrong repo root answers HTTP 404 in milliseconds, and the user
+     * was told to check their (perfectly fine) connection for it. The raw-GitHub
+     * ↔ jsDelivr mirror pair is tried as well, so an ISP block on one of them
+     * still installs.
+     */
+    fun downloadBytes(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSec: Long = 60,
+        callTimeoutSec: Long = 300,
+    ): Result<ByteArray> {
+        var last: Throwable = Exception("the file could not be downloaded")
+        for (variant in urlVariants(url)) {
+            val attempt = runCatching {
+                val perCall = client.newBuilder()
+                    .readTimeout(readTimeoutSec, TimeUnit.SECONDS)
+                    .callTimeout(callTimeoutSec, TimeUnit.SECONDS)
+                    .build()
+                val builder = Request.Builder().url(variant).header("User-Agent", UA)
+                headers.forEach { (k, v) -> builder.header(k, v) }
+                perCall.newCall(builder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw Exception(describeFailure(variant, resp.code, variant != url))
+                    }
+                    resp.body?.bytes() ?: throw Exception("the server sent an empty file")
+                }
+            }
+            attempt.getOrNull()?.let { return Result.success(it) }
+            attempt.exceptionOrNull()?.let { last = it }
+            try {
+                Thread.sleep(300L)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+        return Result.failure(last)
+    }
+
+    /** One line the user can act on, for a download that did not happen. */
+    private fun describeFailure(url: String, code: Int, mirrored: Boolean): String = when {
+        code == 404 -> "the file is not there (HTTP 404 at ${url.substringAfter("://")})" +
+            if (mirrored) " or at its jsDelivr mirror" else ""
+        code == 403 -> "the host refused the request (HTTP 403)"
+        code == 429 -> "the host is rate-limiting downloads right now (HTTP 429) — try again in a minute"
+        code in 500..599 -> "the host failed to serve the file (HTTP $code) — try again in a minute"
+        else -> "the host answered HTTP $code"
     }
 
     /**

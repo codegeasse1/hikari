@@ -371,6 +371,10 @@ fun EmptyState(
     subtitle: String,
     actionLabel: String? = null,
     action: (() -> Unit)? = null,
+    /** A second, usually quieter action beside [actionLabel] — Home's
+     *  "Verify site" next to "Retry" for an extension behind a bot wall. */
+    action2Label: String? = null,
+    action2: (() -> Unit)? = null,
 ) {
     Column(
         Modifier
@@ -399,6 +403,11 @@ fun EmptyState(
         if (actionLabel != null && action != null) {
             Button(onClick = action, modifier = Modifier.padding(top = 16.dp)) {
                 Text(tr(actionLabel))
+            }
+        }
+        if (action2Label != null && action2 != null) {
+            TextButton(onClick = action2, modifier = Modifier.padding(top = 4.dp)) {
+                Text(tr(action2Label))
             }
         }
     }

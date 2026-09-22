@@ -110,6 +110,11 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     private fun fail(msg: String): List<StreamSource> {
         streamErrors[config.id] = msg
         lastOutcome[config.id] = msg.take(80)
+        // A source that failed to LOAD is not a wall, but a site answering
+        // 403/503 on the episode or video call is — and that is the case the
+        // user can clear with the globe button (the extension's own client
+        // reuses whatever clearance the verification earns).
+        noteWall(msg)
         return emptyList()
     }
 
@@ -197,7 +202,7 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         val pageData = result.getOrElse {
-            return@gate failCatalog("Home failed: ${reason(it)}")
+            return@gate failCatalog("Home failed: ${reason(it)}", it)
         }
         if (page > 1 && !pageData.hasNextPage) return@gate emptyList()
         catalogErrors.remove(config.id)
@@ -212,6 +217,7 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             val why = reason(it)
             catalogErrors[config.id] = "Search failed: $why"
             lastOutcome[config.id] = "✗ $why".take(80)
+            noteWall(it)
             return@gate emptyList()
         }
         // It answered — any note left by an earlier failure is stale.
@@ -220,11 +226,47 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         pageData.animes.take(MAX_ITEMS_PER_ROW).map { toItem(it) }
     }
 
-    private fun failCatalog(msg: String): List<MediaItem> {
+    private fun failCatalog(msg: String, failure: Throwable? = null): List<MediaItem> {
         catalogErrors[config.id] = msg
         lastOutcome[config.id] = "✗ ${msg.take(72)}"
+        if (failure != null) noteWall(failure)
         return emptyList()
     }
+
+    /**
+     * Records the extension's OWN site as walled when a failure is a bot wall
+     * rather than a broken extension — HTTP 403/429/503, or a Cloudflare /
+     * "One moment, please" challenge body.
+     *
+     * The extension client clears these by itself where it can (see
+     * [com.hikari.app.net.CloudflareSolver], wired in on
+     * [eu.kanade.tachiyomi.network.NetworkHelper]'s client), and this is what
+     * happens when even that did not work: the host lands in
+     * [com.hikari.app.net.CloudflareVerifier], which is what lets Home offer the
+     * globe ("Verify site") for exactly this extension instead of reporting it
+     * as broken, and what keeps the cross-extension search from asking the same
+     * walled site on every lookup.
+     */
+    private fun noteWall(t: Throwable) = noteWall(t.message.orEmpty())
+
+    /** [noteWall] for a failure already reduced to text (the stream path keeps
+     *  its reason as a string, not a throwable). */
+    private fun noteWall(text: String) {
+        if (text.isBlank()) return
+        if (!WALL_MESSAGE.containsMatchIn(text)) return
+        val site = runCatching {
+            com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(config)
+        }.getOrNull()
+        if (!site.isNullOrBlank()) com.hikari.app.net.CloudflareVerifier.markBlocked(site)
+    }
+
+    /** A wall's own words. Deliberately not "any 4xx": a 404 is a missing page,
+     *  not a challenge the user can pass. */
+    private val WALL_MESSAGE = Regex(
+        "\\b(403|429|503)\\b|cloudflare|just a moment|one moment, please|wsidchk" +
+            "|verify you are human|ddos",
+        RegexOption.IGNORE_CASE,
+    )
 
     private fun toItem(anime: SAnime): MediaItem {
         val id = runCatching { anime.url }.getOrDefault("")
