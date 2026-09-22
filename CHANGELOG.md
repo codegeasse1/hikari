@@ -1,3 +1,18 @@
+## 0.10.10
+
+Two things were still wrong after 0.10.9, and both are fixed at the root this time.
+
+### Fixed
+
+- **The reader draws pages with the subsampling reader (the same one Nekoread uses), and that is what finally ends "the image is breaking".** 0.10.9's fix — decode the page, cut it into 2048px slices, stack the slices — was a recipe that had to guess the device's texture limit, and a page is not "smaller than the limit" just because it was cut up: a webtoon page is still 1600×8000, the phones that report a 2048 limit are exactly the ones the slices have to satisfy, and anything that still ends up over the limit goes straight back to the tiled draw that scatters the artwork. So the page is no longer drawn from a bitmap at all. A new `SubsamplingPageView` (the Tachiyomi fork of `SubsamplingScaleImageView`, the artifact Nekoread draws with) opens the page's file and **region-decodes only the part of it that is on screen, as tiles** — the page is never materialised, not once, at any size, so there is no page height, no page width and no device that can make it break. The loader keeps doing what it is good at (the extension's own headers, a complete image of a known format, ten attempts, a file per fetch) and stops at the file; the decode-it-into-a-bitmap-and-cache-it half is gone with it, so a page now costs its compressed bytes instead of up to 20MB of pixels.
+- **A dialog's panel is measured from the dialog's own frame, so it is the right width on every device.** The width was taken once from `windowSize()` — which on some devices answers in the display's natural orientation — and never re-checked, so a wrong answer stayed wrong for the life of the panel: the box came out a third of the screen wide (915px of 2460px) with the right-hand column of every row beyond its edge and nothing to drag. `applyPanelWidth` now re-derives it from the frame's own measured width on every layout pass, which is the width the window really got, in whatever orientation the device is in. `windowSize()` is only the opening estimate now.
+- **A panel can no longer be pushed off the bottom of the player.** 0.10.9 sized the dialog window's height itself from `windowSize()`; when that number came back in the wrong orientation the window was asked for a height taller than the screen, the platform kept its top on the display, and the panel — centred inside a frame taller than the screen — was drawn from the middle downwards with its last rows below the fold. The window is `MATCH_PARENT` in both axes again and left to the window manager, which is the only thing that knows the screen's real rect; every cap comes from the frame and the display area actually visible to it.
+
+### Notes
+
+- Nothing was published to the main release: this build is on the **continuous** release, like every push to `main`.
+- The reader's drawing path is now the same code as this app's manga sibling Nekoread (same `SubsamplingScaleImageView` artifact and commit), which is where the shape of this fix comes from.
+
 ## 0.10.9
 
 Two reports, both fixed at the root: **a manga page that is drawn as a wreck**

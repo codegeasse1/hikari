@@ -3516,9 +3516,17 @@ class PlayerActivity : ComponentActivity() {
      * video, and the rows under the fold are unreachable no matter how far the
      * list is scrolled — the "unscrollable box" report. So the room is the
      * SMALLEST of everything that puts a bound on it: the frame that was really
-     * laid out, the area of the display that is actually visible to the window
-     * (which the platform reports and which is clipped by the system bars), and
-     * the window size ([windowSize], rotation-corrected).
+     * laid out and the area of the display that is actually visible to the
+     * window (which the platform reports, in the current orientation, clipped by
+     * the system bars).
+     *
+     * [windowSize] is deliberately NOT one of those bounds any more. It is the
+     * one number here that can be wrong (it can answer in the display's natural
+     * orientation — see there), and a cap that takes the smallest of a right
+     * number and a wrong one is only as good as the wrong one: on a portrait
+     * screen a bogus landscape height would clamp the whole list to a third of
+     * the room it has. The frame and the visible display frame are both
+     * measurements the platform took from THIS window, in THIS orientation.
      */
     private fun visibleRoomPx(frame: View): Int {
         val win = windowSize()
@@ -3526,7 +3534,6 @@ class PlayerActivity : ComponentActivity() {
         val visible = android.graphics.Rect()
         runCatching { frame.getWindowVisibleDisplayFrame(visible) }
         if (visible.height() > 0 && visible.height() < room) room = visible.height()
-        if (win.y > 0 && win.y < room) room = win.y
         return room
     }
 
@@ -3857,6 +3864,14 @@ class PlayerActivity : ComponentActivity() {
         // narrow for its bow to read as a pane rather than a wall, while a
         // slab/deck/card is mostly a container for rows — and a wider one fits
         // the longer option labels without clipping them.
+        //
+        // This is only the OPENING estimate — [applyPanelWidth] replaces it with
+        // the width the dialog frame really measured before the first frame is
+        // drawn. That is the rule the whole shell follows: a panel's size is
+        // measured, never assumed. `windowSize()` can answer in the display's
+        // natural orientation (see there), and a panel whose width is taken from
+        // a wrong number and then never re-checked is exactly the box that came
+        // out a third of the screen wide with its right-hand column out of reach.
         // The width budget the panel's own silhouette can actually use inside
         // the window (the halo is painted around it, and a few dp are kept on
         // each side so the glow has somewhere to fade).
@@ -3898,12 +3913,14 @@ class PlayerActivity : ComponentActivity() {
             .coerceAtMost(roomW)
             .coerceAtLeast(minOf(minW, roomW).coerceAtLeast(1))
         // The panel view carries its own halo, so its silhouette comes out
-        // exactly panelW in the middle of it. The HEIGHT is WRAP_CONTENT: the
+        // exactly panelW in the middle of it — which is why the VIEW is asked
+        // for panelW + a halo on each side. The HEIGHT is WRAP_CONTENT: the
         // scroll view inside is capped instead (see [MaxHeightScrollView]), which
         // is what keeps the panel's rounded bottom on screen and makes every row
         // above it reachable.
         root.addView(panel, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            (panelW + 2 * halo).coerceAtLeast(1),
+            LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
         // The root (hint + close button + panel) sits inside a full-height
@@ -3919,6 +3936,47 @@ class PlayerActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER,
             ))
+        }
+
+        /**
+         * Re-sizes the panel from the frame's own measured width.
+         *
+         * The frame is the dialog's content view, so its width IS the width the
+         * window really got — laid out by the platform, in whatever orientation
+         * the device is in, whatever the insets are. Nothing here has to reason
+         * about rotation at all, and nothing can be silently wrong: the panel is
+         * re-derived from a measurement every time the frame's layout changes.
+         *
+         * That self-correction is what was missing. The opening estimate above
+         * comes from [windowSize], which on some devices answers in the display's
+         * natural orientation — and the width was only ever set ONCE, from that
+         * number, so a wrong answer stayed wrong for the life of the panel: the
+         * box came out a third of the screen wide (915px of 2460px in the user's
+         * report) with the right-hand column of every row beyond its edge, and
+         * there was nothing to drag because the panel believed it was already as
+         * wide as it should be. Measured instead, the same panel comes out at
+         * 620dp — the width the rows were designed for.
+         */
+        var appliedPanelW = -1
+        fun applyPanelWidth() {
+            val room = if (outer.width > 0) outer.width else win.x
+            val roomForPanel = room - 2 * halo - (8 * density).toInt()
+            val target = minOf(
+                (room * if (flatPanel) 0.97f else 0.95f).toInt(),
+                (620 * density).toInt(),
+            )
+                .coerceAtMost(roomForPanel)
+                .coerceAtLeast(minOf(minW, roomForPanel).coerceAtLeast(1))
+            if (target == appliedPanelW) return
+            appliedPanelW = target
+            // The halo is painted INSIDE the panel's bounds (see
+            // [CurvedGlassPanel]), so the view is the silhouette plus a halo on
+            // each side.
+            panel.layoutParams = LinearLayout.LayoutParams(
+                (target + 2 * halo).coerceAtLeast(1),
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+            panel.requestLayout()
         }
 
         dialog.setContentView(
@@ -3938,47 +3996,30 @@ class PlayerActivity : ComponentActivity() {
         // refusal is simply "no panel" rather than a crash.
         if (isFinishing || isDestroyed) return null
         if (runCatching { dialog.show() }.isFailure) return null
-        // Narrower than a stock dialog: the reference panel is ~3/4 of the window
-        // height wide and never spans the full width, which is a large part of
-        // why it reads as a lightweight overlay instead of a full-screen sheet.
-        // The halo is added back on top so the PANEL keeps that width.
-        var appliedWinW = -1
-        var appliedWinH = -1
-        fun sizeDialogWindow() {
-            // Re-read the window every time this is asked for. The size a dialog
-            // is shown with is whatever the window said at that instant, and on a
-            // rotation, a split-screen resize or a window that has not settled
-            // yet that instant's answer is wrong — which is how a panel ended up
-            // wider or taller than the screen and got its edges sliced off, with
-            // the scroll view unable to help because it believed it fit.
-            val w = windowSize()
-            val maxW = (if (w.x > 0) minOf(win.x, w.x) else win.x)
-            val wantW = (panelW + 2 * halo).coerceAtMost(maxW).coerceAtLeast(1)
-            // The window's HEIGHT is asked for explicitly rather than left as
-            // MATCH_PARENT. MATCH_PARENT hands the decision to the window manager,
-            // which can lay a dialog out TALLER than the display (it then hangs
-            // off the bottom, and the frame inside it measures a room that does
-            // not exist — the panel is centred in the window, so its last rows
-            // sit below the screen no matter how well the LIST is capped). Asking
-            // for the room we believe in gives the same window on a healthy
-            // device and a window that is clamped to the screen on an unhealthy
-            // one — and because the frame is then the real room, the caps
-            // measured from it are real too.
-            val wantH = (if (w.y > 0) minOf(win.y, w.y) else win.y).coerceAtLeast(1)
-            if (wantW == appliedWinW && wantH == appliedWinH) return
-            appliedWinW = wantW
-            appliedWinH = wantH
-            dialog.window?.setLayout(wantW, wantH)
-        }
+        // The window is left to the window manager: MATCH_PARENT in both axes,
+        // centred. The WM is the only thing that knows the screen's real rect in
+        // the current orientation, minus the insets, and it is what a dialog is
+        // supposed to ask — so the frame inside it measures the room that really
+        // exists and every cap is taken from that (see [visibleRoomPx]).
+        //
+        // Sizing this window by hand was actively harmful. An explicit height
+        // taken from [windowSize] — which can answer in the display's natural
+        // orientation — asks for a window TALLER than the screen; the platform
+        // keeps the window's top on the display, the frame is then taller than
+        // the screen, and the panel, centred inside that frame, is drawn from
+        // the middle of the screen downwards: half of it (and its last rows) end
+        // up below the display. That is the "the boxes in the player go out of
+        // the player" report, and MATCH_PARENT is the whole fix — the window can
+        // then never be bigger than the display.
         dialog.window?.apply {
+            setLayout(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+            )
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
-        // The window is sized by [sizeDialogWindow] alone — one place that knows
-        // the rule, so the size the dialog opens with is the size every later
-        // re-check would ask for.
-        sizeDialogWindow()
         // The window now fills the screen (it has to, for the frame to measure
         // the room that really exists), so a tap in the dim area lands INSIDE
         // the window and the platform's own "canceled on touch outside" never
@@ -4030,6 +4071,11 @@ class PlayerActivity : ComponentActivity() {
         var appliedCap = -1
         var barShown = false
         fun applyHeightCap() {
+            // The panel's WIDTH is re-derived first: the frame has been laid out
+            // by now, so its width is the real room (see [applyPanelWidth]) and
+            // everything below — the cap, the nested scrollers — is measured
+            // against the panel that is actually on screen.
+            applyPanelWidth()
             // A nested sideways scroller is sized against the panel's own inner
             // width (see [boundNestedHScrollers]) before anything is measured
             // from the heights below: the room the panel was given decides that
@@ -4088,7 +4134,6 @@ class PlayerActivity : ComponentActivity() {
             if (reach.isHorizontalScrollBarEnabled != canReach) {
                 reach.isHorizontalScrollBarEnabled = canReach
             }
-            sizeDialogWindow()
         }
         // The frame's height only exists after the dialog is shown, and the rows
         // can change height while it is up (a server landing mid-search), so cap

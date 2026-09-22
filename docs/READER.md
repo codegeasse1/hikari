@@ -2,11 +2,12 @@
 
 `ui/screens/MangaReaderScreen.kt` is the biggest screen in the app, and four of
 its rules are load-bearing enough that they are written down here: **nothing moves
-the pages except a request**, **a webtoon is a run of chapters**, **a page image
-is fetched AND decoded by `manga/MangaPageLoader`, never by a bare `AsyncImage`**,
-and **webtoon is the default reading mode** (an aggregator's chapters are
-vertical strips; the paged modes are one tap away in the settings, and a stored
-choice wins). Breaking any of them reintroduces a bug that was reported by name.
+the pages except a request**, **a webtoon is a run of chapters**, **a page is
+fetched by `manga/MangaPageLoader` and drawn by `manga/SubsamplingPageView`, and
+is NEVER decoded whole**, and **webtoon is the default reading mode** (an
+aggregator's chapters are vertical strips; the paged modes are one tap away in the
+settings, and a stored choice wins). Breaking any of them reintroduces a bug that
+was reported by name.
 
 ## 1. One lane for every move: `ScrollRequest` + `ReaderMover`
 
@@ -61,19 +62,33 @@ aggregator lists the same chapter once per group, and walking the raw list made
 "next chapter" open the SAME chapter from another group. The chapter sheet
 (`ChapterSheet`) still lists every release — `chapters`, not `navChapters`.
 
-## 4. Page images: `manga/MangaPageLoader`
+## 4. Page images: `manga/MangaPageLoader` → `manga/SubsamplingPageView`
 
-`MangaPageLoader` owns a page from bytes to PIXELS. It fetches the page with the
-extension's own headers, checks it, writes it to `cacheDir/manga-pages/`, decodes
-it, and hands the reader a `Bitmap` — the reader never hands a network URL to
-Coil, and never decodes a page itself.
+Two objects own a page, and the split between them is the point:
 
-Why (this is the "some pages are broken" report, twice): a decoder given a
-**truncated** body does not fail — Skia fills the missing macroblocks with black
-slabs, so a half-fetched page is drawn as artwork cut into rectangles with black
-gaps through it, and nothing ever retried. And a page can pass every structural
-check and still be garbage: a complete, correctly-terminated JPEG whose scan data
-is damaged decodes to displaced blocks. So the loader checks, in this order:
+* **`MangaPageLoader` owns a page from bytes to a FILE.** It fetches the page with
+  the extension's own headers, checks it, and writes it to
+  `cacheDir/manga-pages/`. It does not decode the picture.
+* **`SubsamplingPageView` owns a page from a FILE to pixels.** It is a
+  `SubsamplingScaleImageView` (the Tachiyomi fork,
+  `com.github.tachiyomiorg:subsampling-scale-image-view`, pinned in
+  `gradle/libs.versions.toml` — the same artifact and commit the manga sibling
+  Nekoread draws with, so the drawing path here and there is the same code) that
+  opens the file, reads its bytes once, and decodes only the REGION the viewport
+  is showing, as tiles.
+
+`PageContent` is the only place a page is drawn: a `SubsamplingPageView` inside
+an `AndroidView`, handed the file and the mode's shape, with a spinner over it
+until its first layer is up. A file the view cannot OPEN at all is reported back
+through `MangaPageLoader.markUndecodable`, which drops the file and puts the page
+on the `Failed` row — where the Retry button already is. The reader never hands a
+page URL to Coil, and never decodes a page itself.
+
+Why the loader checks as hard as it does (this is the "some pages are broken"
+report, twice): a decoder given a **truncated** body does not fail — Skia fills the
+missing macroblocks with black slabs, so a half-fetched page is drawn as artwork
+cut into rectangles with black gaps through it, and nothing ever retried. So the
+loader checks, in this order:
 
 * the response's status, a 404/410 answered as "do not retry this one", and a
   non-empty body;
@@ -82,8 +97,9 @@ is damaged decodes to displaced blocks. So the loader checks, in this order:
   hotlink refusal or a bot wall answering with a 200;
 * the format's own end-of-image marker (`looksComplete`: JPEG `FF D9`, PNG
   `IEND`, GIF `0x3B`, WebP's declared RIFF length);
-* and finally **a real decode at the width the reader will draw** (`decodeFor`),
-  which is the only test that can catch damaged-but-complete bytes.
+* and the file's own header, through `bounds()` — the page's true pixel size (what
+  the strip lays a page out at before it is drawn) and, since a file whose header
+  will not parse is a file that will not decode, the last cheap gate there is.
 
 Anything that fails is fetched again — `MAX_ATTEMPTS` (10) tries with a capped
 backoff — and after that the page reports `MangaPageState.Failed` so
@@ -91,91 +107,85 @@ backoff — and after that the page reports `MangaPageState.Failed` so
 once: `load` is single-flight per URL. From the second attempt on, the request
 carries `Cache-Control: no-cache`: a retry means the last body was unusable, and
 the likeliest reason a later attempt gets the same one is a CDN edge holding it
-(a header rather than a URL change, so a signed link stays valid).
+(a header rather than a URL change, so a signed link stays valid). Files are
+written under a FRESH name on every fetch, because a decoder keeps what it read
+keyed by the file — the same path with new bytes would keep serving the old page.
 
-**The decode is cached, and that is what makes scrolling smooth.** Decoded pages
-live in `pages`, an `LruCache<String, MangaPage>` budgeted by BYTES (a sixth of
-the process heap, 48MB–320MB floor/ceiling). A page is decoded at most
-`MAX_DECODE_W` wide and `MAX_DECODE_H` tall — powers of two, so `BitmapFactory`
-does the skipping while it decodes — and as `RGB_565`, because a page is opaque:
-that is half the memory and half the upload for every frame it is on screen.
-`page(url, targetW, targetH)` is what the UI calls (off the main thread, once per
-page per composition); it returns cached pixels or decodes, SLICES and caches
-them, and it is keyed by the url **and the decode target**, because the same page
-is legitimately wanted at two sizes (full width for the strip, fitted to the
-viewport for the paged fit modes) and the two must not evict each other.
-**Never recycle** a cached slice: the cache hands them straight to a drawing
-frame, so a recycled one is a crash rather than a saved allocation. Eviction just
-drops the reference.
+### 4a. A page is NEVER decoded whole — this is the whole reader
 
-### 4a. A drawn page is SLICED — `MAX_DRAW_H`
+Both versions of "the image in the reader is breaking" came from decoding a page
+into one bitmap and drawing it, and neither could be fixed from the fetch side:
+the bytes were always fine. The second one is worth writing down, because it looks
+like it should have worked.
 
-A page is not handed to the GPU as one bitmap. It is cut into horizontal slices
-no taller than `MangaPageLoader.MAX_DRAW_H` (2048px — half the smallest
-`GL_MAX_TEXTURE_SIZE` any GLES2 device may report, so every slice is a legal
-texture everywhere), and `PageContent` draws them as a `Column` inside a box of
-the page's aspect ratio, one `Image` per slice at the slice's own ratio. The
-slices are cut from one decoded bitmap, so the stack is exactly the page.
+A bitmap handed to the compositor becomes a GPU texture, and a texture cannot be
+larger than the device's `GL_MAX_TEXTURE_SIZE`. An image bigger than that is not
+drawn by Skia — it is drawn as a GRID OF TILES, and that fallback mis-places the
+tiles' source rectangles on the drivers these phones have. What the reader shows
+is bands of the page displaced sideways, artwork repeated at a fixed offset, a
+white seam at every tile boundary and the whole thing running off both screen
+edges. 0.10.9 tried to fix that by cutting the decoded page into slices no taller
+than 2048px and stacking them — and it did not hold, because "smaller than the
+limit" is not a property of the page: a webtoon page is still 1600×8000, the
+phones that report a 2048 limit are exactly the ones the slices have to satisfy,
+and any page that still ends up over the limit goes back to the tiled draw. A
+recipe that has to guess a device's texture limit will be wrong on some device.
 
-This is the fix for "the image in the reader is still breaking", and the reason
-it is not a fetch problem: an image bigger than the device's largest texture is
-not drawn by Skia — it is drawn as a GRID OF TILES, and that fallback mis-places
-the tiles' source rectangles on the drivers these phones have. What that looks
-like is bands of the page displaced sideways, artwork repeated at a fixed offset,
-a white seam at every tile boundary, and the whole thing running off both screen
-edges. The bytes on disk are fine, so no amount of re-fetching, retrying or
-validating changes anything. Handing the GPU only legally-sized pieces is the
-whole fix.
+So the page is not drawn from a bitmap at all. `SubsamplingPageView` region-decodes
+the file: the page is never materialised, not once, at any size — the view asks
+the decoder for the rectangle the viewport is showing, at the scale the screen
+needs, as tiles, and it does that again as the reader scrolls. A 1080×20000 strip
+costs its compressed bytes plus the tiles on screen, and it draws the same on
+every device, because nothing here depends on a texture limit.
 
 Consequences to respect:
 
-* `slice(full)` takes ownership of the bitmap it is given and RECYCLES it after
-  cutting (it was decoded only to be cut up and no composable ever saw it — the
-  `pages` cache is the thing that must never recycle). The single exception is a
-  page already ≤ `MAX_DRAW_H`, which is handed back as-is.
-* A mode that scales the whole page into the viewport (the paged fit/whole/height
-  modes) cannot draw a stack, so it asks for a decode that already fits the
-  viewport (`targetH = min(viewport height, MAX_DRAW_H)`) and draws the single
-  slice it gets with its `ContentScale`. `stackSlices = true` is for the modes
-  that draw the page at full width and its real height: the webtoon strip and
-  `MangaFit.WIDTH`.
-* Anything that asks for pixels must pass a target (`page(url, targetW,
-  targetH)`); `targetH = 0` means "no height ceiling, slice it".
+* **Never** hand a page's pixels to a Compose `Image`/`AsyncImage`, however
+  "small" the page looks. That is the path that breaks.
+* The file is the unit. A page's pixels come from `MangaPageState.Ready.file` and
+  nowhere else, and `showPage` is a no-op for the file already open (the reader
+  recomposes on every scroll frame).
+* The view refuses every touch (`onTouchEvent` returns `false`), and zoom is off,
+  because the container owns the gestures: a tap toggles the chrome and a drag
+  scrolls the strip or swipes the pager. If a zoom gesture is ever added, enable
+  it in `SubsamplingPageView` and disambiguate in the container — do not take
+  touches away from the container silently.
+* `fitWidth` is the `SubsamplingScaleImageView` scale type, and it is a property
+  of the MODE: full width for the webtoon strip and `MangaFit.WIDTH`, fitted
+  inside the viewport for the paged fit modes.
+* The page's real size still comes from the loader's header read, which is what
+  sizes each strip item BEFORE it is drawn — a strip of unknown-height boxes jumps
+  under the reader's thumb as pages land.
 
 Things the loader also owns:
 
 * **the preload window** — `plan(pages, current)` asks for ten pages ahead, eight
-  behind, then the rest of the chapter forward, four at a time. The ahead/behind
-  window is fetched EAGERLY (`load(..., eager = true)`: bytes decoded into the
-  cache as they land, so the next swipe is a blit); the long tail is fetched to
-  disk only. `plan` skips itself when the reader has moved less than two pages
-  since the last call, because it runs on every scroll step.
+  behind, then the rest of the chapter forward, four at a time, and skips itself
+  when the reader has moved less than two pages since the last call (it runs on
+  every scroll step). There is nothing else to warm up: a page whose bytes are on
+  disk is a page that appears when the thumb reaches it.
 * **the page's real size**, read from the file header (`bounds`), which is what
   lets the strip and the paged fit lay a page out at its true aspect ratio before
-  it is drawn (a strip of unknown-height boxes jumps under the reader's thumb as
-  pages land).
-* **`decodeWidth`** — the reader sets it from its own window width (one
-  `LaunchedEffect`), because the loader cannot know it and a page wider than the
-  screen is decoded down to the screen, not up to the site's original.
-* **What the sheet's switches mean.** `Enhance images` is a `ColorFilter`
-  (a colour matrix, `mangaEnhanceFilter`) applied when the page is DRAWN, not a
-  second copy of the artwork: it costs no decode and no memory, which is why it
-  can stay on while the strip scrolls.
+  it is drawn.
+* **What the sheet's switches mean.** `Enhance images` is a colour matrix
+  (`manga/MangaEnhance.kt`) applied when the page is DRAWN — as a Compose
+  `ColorFilter` on the few `Image`s in the reader's own chrome, and as a platform
+  `ColorFilter` on the page view (which paints its tiles itself and cannot hold
+  one, so `SubsamplingPageView.onDraw` draws the page through a saved layer that
+  carries it). No second decode and no extra bitmap, which is why it can stay on
+  while the strip scrolls.
 
 The page cache is capped (`CACHE_CAP_BYTES`, pruned least-recently-used at most
-once a minute; a pruned page's file, bitmap and `Ready` state all go together).
-Files are written under a FRESH name on every fetch, because a same-path rewrite
-would keep a stale decode alive.
+once a minute; a pruned page's file and `Ready` state go together, so the page is
+fetched again rather than drawn blank).
 
 ## 5. If you touch the reader
 
 * Do not add an effect that scrolls in response to `page`/`firstVisibleItemIndex`.
   Add a `ScrollRequest`.
 * Do not key a `LazyColumn` item by index. `RunItem.key` is the identity.
-* Do not pass a page URL to `AsyncImage` and do not decode a page file yourself.
-  Go through `MangaPageLoader.page`, and remember that what it hands back is
-  SLICES (see 4a) — a drawn page may never be one bitmap taller than
-  `MAX_DRAW_H`.
+* Do not pass a page URL to `AsyncImage` and do not decode a page file yourself
+  (see 4a). A page is drawn by `SubsamplingPageView`, from the loader's file.
 * `MangaReaderScreen`'s reader-mode/fit/background preferences are declared near
   the TOP of the composable (before the run): which mode is in force decides
   whether a run exists at all.

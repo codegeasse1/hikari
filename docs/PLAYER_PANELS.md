@@ -74,20 +74,62 @@ is cut and it will not scroll sideways" report.
   is dragged. Bounded, the strip scrolls **inside** the panel, which is what it
   is for, and the rows stay the panel's width.
 
-## `windowSize()` must be told what orientation it is in
+## The panel's width is MEASURED, never assumed — `applyPanelWidth`
 
-`windowSize()` is the number every width and height cap is measured from, and it
-has three sources (the decor, `currentWindowMetrics`, `getRealSize`) that can
-each answer in the display's NATURAL orientation. Before any axis is compared
-with its configuration twin, they are **swapped when the decor's orientation
-disagrees with the configuration's** — the configuration always follows the
-current rotation.
+The width comes from the **frame** (`outer`, the dialog's content view) as soon as
+it has been laid out: its width IS the width the window really got, in whatever
+orientation the device is in, insets and all. `applyPanelWidth` re-derives the
+panel from that measurement on every layout change, so the wrong answer cannot
+survive:
 
-Skipping that swap was the bug behind the whole "the boxes are cut off and
-unscrollable" report: in the landscape player the decor was not laid out yet, so
-`currentWindowMetrics` answered 1080×2460 inside a 2460×1080 window, and the old
-cross-check (which only ever SHRANK an axis) could not put them back the right way
-round. The panel was then sized from `win.x == 1080` — a third of the screen wide,
-so the right-hand column of a long row was unreachable — while the height caps
-were measured against the other axis, so they never bit and the panel grew past
+```
+room   = outer.width                       // the real width, or windowSize() before layout
+panel  = min(room * 0.95|0.97, 620dp)      // never wider than the room, never a wall
+         .coerceAtMost(room - 2*halo - 8dp) // the glow needs somewhere to fade
+         .coerceAtLeast(min(140dp, room))   // the floor yields to the room
+panel.view.width = panel + 2*halo           // the halo is painted INSIDE the panel
+```
+
+`windowSize()` is only the **opening estimate** now, and that is deliberate: it can
+answer in the display's natural orientation (see there), and the width used to be
+taken from it ONCE and never re-checked, so a wrong answer was wrong for the life
+of the panel. That is the box that came out a third of the screen wide (915px of
+2460px) with the right-hand column of every row beyond its edge, and nothing to
+drag because the panel believed it was already as wide as it should be. Measured
+from the frame instead, the same panel comes out at 620dp — the width the rows
+were designed for — on every device and in both orientations.
+
+## The WINDOW is left to the window manager
+
+`dialog.window` is asked for `MATCH_PARENT` in both axes, centred. The window
+manager is the only thing that knows the screen's real rect in the current
+orientation minus the insets, and it is what a dialog is supposed to ask for.
+
+Sizing the window by hand was actively harmful. An explicit height taken from
+`windowSize()` — which can answer in the display's natural orientation — asks for a
+window TALLER than the screen; the platform keeps the window's top on the display,
+the frame is then taller than the screen, and the panel, centred inside that
+frame, is drawn from the middle of the screen downwards: half of it, and its last
+rows, end up below the display. That is the "the boxes in the player go out of the
+player" report. `MATCH_PARENT` is the whole fix — the window can then never be
+bigger than the display — and every number the panel needs comes from the frame
+inside it.
+
+## `windowSize()`
+
+It is a **best-effort opening estimate** (see `applyPanelWidth`), and it has three
+sources (the decor, `currentWindowMetrics`, `getRealSize`) that can each answer in
+the display's NATURAL orientation. Before any axis is compared with its
+configuration twin, they are **swapped when the orientation disagrees with the
+configuration's** — the configuration always follows the current rotation.
+
+That swap was the bug behind the whole "the boxes are cut off and unscrollable"
+report: in the landscape player the decor was not laid out yet, so the metrics
+answered 1080×2460 inside a 2460×1080 window, and the old cross-check (which only
+ever SHRANK an axis) could not put them back the right way round. The height caps
+were measured against the wrong axis, so they never bit and the panel grew past
 the bottom of the video.
+
+Nothing depends on it being right any more, which is the point: the caps come from
+`visibleRoomPx` (the frame and the display area really visible to this window) and
+the width from the frame.
