@@ -8,7 +8,6 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
@@ -16,6 +15,11 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 /**
  * QR codes, both directions, with zxing-core (a small pure-Java library and the
  * only new dependency pairing needs — see the note in app/build.gradle.kts).
+ *
+ * Encoding a pairing payload and decoding ONE camera frame are both here, and
+ * nothing else: there is no still-image path (a screenshot of the code would
+ * need a picker and a full-size bitmap decode) because the typed code is the
+ * fallback every device already has.
  *
  * The code is written DARK-ON-LIGHT and rendered with a white margin, always,
  * whatever the app's theme is: a QR is read by a camera that knows nothing about
@@ -51,20 +55,6 @@ object QrCode {
             }
         }
         Bitmap.createBitmap(pixels, sizePx, sizePx, Bitmap.Config.ARGB_8888)
-    }.getOrNull()
-
-    /** Reads a QR out of a still image (a saved screenshot, a photo). Only used
-     *  as a fallback path; the live scanner decodes frames with [decodePlanes]. */
-    fun decode(bitmap: Bitmap): String? = runCatching {
-        val width = bitmap.width
-        val height = bitmap.height
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        val source = RGBLuminanceSource(width, height, pixels)
-        val reader = MultiFormatReader().apply {
-            setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
-        }
-        reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
     }.getOrNull()
 
     /**

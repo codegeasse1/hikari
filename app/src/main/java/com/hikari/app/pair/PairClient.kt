@@ -112,7 +112,7 @@ object PairClient {
                 if (!response.isSuccessful) {
                     throw PairException("The other device answered with ${response.code}")
                 }
-                val body = response.body ?: throw PairException("The other device sent nothing")
+                val body = response.body
                 val length = body.contentLength()
                 if (length > MAX_BUNDLE_BYTES) throw PairException("That transfer is too large")
                 val bytes = body.bytes()
