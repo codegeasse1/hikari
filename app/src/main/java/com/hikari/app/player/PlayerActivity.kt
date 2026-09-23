@@ -709,6 +709,11 @@ class PlayerActivity : ComponentActivity() {
     private var loadingBackdrop: ImageView? = null
     private var loadingTitleBox: View? = null
     private var loadingTitle: TextView? = null
+    /** The title's own wordmark, drawn instead of [loadingTitle] when the title
+     *  has one and the setting is on (Settings → App Layout → Loading screen →
+     *  Title logo). Inside [loadingTitleBox], so it breathes with the card. */
+    private var loadingLogo: ImageView? = null
+    private var loadingLogoPercent: Int = 100
     private var loadingEpisode: TextView? = null
     private var loadingDetail: TextView? = null
     private var loadingStatus: TextView? = null
@@ -1113,6 +1118,7 @@ class PlayerActivity : ComponentActivity() {
         loadingBackdrop = findViewById(R.id.loading_backdrop)
         loadingTitleBox = findViewById(R.id.loading_title_box)
         loadingTitle = findViewById(R.id.loading_title)
+        loadingLogo = findViewById(R.id.loading_logo)
         loadingEpisode = findViewById(R.id.loading_episode)
         loadingDetail = findViewById(R.id.loading_detail)
         loadingStatus = findViewById(R.id.loading_status)
@@ -9306,6 +9312,37 @@ class PlayerActivity : ComponentActivity() {
         val box = loadingTitleBox ?: return
         val style = com.hikari.app.ui.LoadingStyles.normalize(loadingStyle)
         loadingTitle?.text = intent.getStringExtra("title").orEmpty().ifBlank { "Loading" }.uppercase()
+
+        // The title WORDMARK (Settings → App Layout → Loading screen → Title
+        // logo). Given the art, the cover draws it INSTEAD of the name — the same
+        // picture the detail page's header was showing a moment ago, so tapping
+        // Play never swaps the design under the user. No wordmark (every
+        // extension-only title) or the setting off: the text name, exactly as
+        // before. It sits inside loading_title_box, so the card's breathing
+        // animation grows and shrinks the wordmark exactly like the text.
+        loadingLogoPercent = intent.getIntExtra("titleLogoSize", 100).coerceIn(50, 160)
+        val logoModel = PosterLoader.model(
+            intent.getStringExtra("titleLogo")?.takeIf { it.isNotBlank() }
+        )
+        loadingLogo?.apply {
+            if (logoModel != null) {
+                val widthFrac = (0.78f * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
+                val screenW = resources.displayMetrics.widthPixels
+                visibility = View.VISIBLE
+                val lp = layoutParams
+                if (lp != null) {
+                    lp.width = (screenW * widthFrac).toInt()
+                    lp.height = LinearLayout.LayoutParams.WRAP_CONTENT
+                    layoutParams = lp
+                }
+                load(logoModel)
+            } else {
+                setImageDrawable(null)
+                visibility = View.GONE
+            }
+        }
+        // The name and the wordmark are the same slot: only one of them is drawn.
+        loadingTitle?.visibility = if (logoModel != null) View.GONE else View.VISIBLE
 
         // Episode line, mirroring the player's own two-line title block.
         val epText = findViewById<TextView>(R.id.subtitle_text)?.text?.toString().orEmpty()

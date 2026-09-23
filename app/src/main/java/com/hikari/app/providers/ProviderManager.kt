@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
@@ -17,6 +18,12 @@ class ProviderManager(private val store: AppStore, private val context: Context)
 
     private val _providers = MutableStateFlow<List<ContentProvider>>(emptyList())
     val providers: StateFlow<List<ContentProvider>> = _providers.asStateFlow()
+
+    private val refreshLock = Mutex()
+
+    /** True when a refresh arrived while one was already building (see [refresh]). */
+    @Volatile
+    private var refreshQueued = false
 
     /**
      * Builds the provider list from the stored configs.
@@ -34,8 +41,27 @@ class ProviderManager(private val store: AppStore, private val context: Context)
      * [com.hikari.app.HikariApp] re-runs this when the preference changes.
      */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        val configs = ExtensionNsfw.filter(context, store.providers())
-        _providers.value = configs.mapNotNull { instantiate(it) }
+        // COALESCED. An install asks for a rebuild when it finishes AND the
+        // extension manager asks again as its own load lands, and an
+        // "Install all" run asks after every single entry — while building the
+        // list costs one instantiation per installed provider and gets more
+        // expensive as the list grows. A request that arrives while a build is
+        // running is therefore answered by ONE more build afterwards instead of
+        // a build of its own, which keeps installing fast on a machine that is
+        // already busy with a download and a dex load.
+        if (!refreshLock.tryLock()) {
+            refreshQueued = true
+            return@withContext
+        }
+        try {
+            do {
+                refreshQueued = false
+                val configs = ExtensionNsfw.filter(context, store.providers())
+                _providers.value = configs.mapNotNull { instantiate(it) }
+            } while (refreshQueued)
+        } finally {
+            refreshLock.unlock()
+        }
     }
 
     fun instantiate(c: ProviderConfig): ContentProvider? = when (c.type) {

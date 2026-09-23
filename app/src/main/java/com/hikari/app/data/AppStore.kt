@@ -21,8 +21,11 @@ import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.UiScale
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -300,6 +303,13 @@ class AppStore(private val ctx: Context) {
         val LOADING_EFFECTS = stringSetPreferencesKey("loadingEffects")
         /** A single treatment stored by a build before multi-select existed. */
         val LOADING_EFFECT = stringPreferencesKey("loadingEffect")
+        /** Draw the title as its TMDB wordmark on the loading cover too, the way
+         *  the detail page's header does — instead of the plain text title. */
+        val LOADING_LOGO = booleanPreferencesKey("loadingLogo")
+        /** How big that wordmark is drawn on the loading cover, as a percentage
+         *  of its default size (see [DEFAULT_LOADING_LOGO_SIZE]). Kept apart
+         *  from [DETAIL_LOGO_SIZE] so the two screens are sized independently. */
+        val LOADING_LOGO_SIZE = intPreferencesKey("loadingLogoSize")
         /** The colour a poster card's "Aura ring" is drawn in — see
          *  [com.hikari.app.ui.AuraColors]. "theme" (the default) follows the app
          *  accent, which is what the ring always drew. */
@@ -378,6 +388,13 @@ class AppStore(private val ctx: Context) {
         /** Whether the first-run television defaults have been applied to this
          *  install already (they must be applied once, not on every launch). */
         val TV_SEEDED = booleanPreferencesKey("tvSeeded")
+        /** The PERFORMANCE BOOSTER (Settings → Performance): one switch that
+         *  drops the heaviest work Hikari does on a slow device — the blurred
+         *  poster halo, the animated poster/loading treatments, and the width of
+         *  a cross-extension search fan-out — without changing what the app can
+         *  play. Off by default: on a device that keeps up, none of it is worth
+         *  giving up. See [perfModeFlow]. */
+        val PERF_MODE = booleanPreferencesKey("perfMode")
     }
 
     // ---- Settings writes ----
@@ -469,7 +486,7 @@ class AppStore(private val ctx: Context) {
      *  the enabled `activity-alias`, so this mirror is what lets the app put the
      *  manifest back in sync after a backup restore drops the setting. */
     fun appIconFlow(): Flow<String> =
-        store.data.map { it[K.APP_ICON] ?: com.hikari.app.ui.AppIconManager.DEFAULT_KEY }
+        store.data.map { it[K.APP_ICON] ?: com.hikari.app.ui.AppIconManager.DEFAULT_KEY }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun appIcon(): String = appIconFlow().first()
 
@@ -483,7 +500,7 @@ class AppStore(private val ctx: Context) {
     // language, "none" = stay on English, otherwise an explicit TMDB code.
 
     fun tmdbLanguageFlow(): Flow<String> =
-        store.data.map { it[K.TMDB_LANGUAGE] ?: "" }
+        store.data.map { it[K.TMDB_LANGUAGE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
 
@@ -495,7 +512,7 @@ class AppStore(private val ctx: Context) {
 
     /** Key of the chosen font in [com.hikari.app.ui.AppFonts.CHOICES]. */
     fun appFontFlow(): Flow<String> =
-        store.data.map { it[K.APP_FONT] ?: com.hikari.app.ui.AppFonts.DEFAULT }
+        store.data.map { it[K.APP_FONT] ?: com.hikari.app.ui.AppFonts.DEFAULT }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun appFont(): String = appFontFlow().first()
 
@@ -507,13 +524,13 @@ class AppStore(private val ctx: Context) {
     /** File name (inside `filesDir/fonts`) of a font the user imported, or "".
      *  Only meaningful while [appFontFlow] is [com.hikari.app.ui.AppFonts.IMPORTED]. */
     fun appFontFileFlow(): Flow<String> =
-        store.data.map { it[K.APP_FONT_FILE] ?: "" }
+        store.data.map { it[K.APP_FONT_FILE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun appFontFile(): String = appFontFileFlow().first()
 
     /** The imported font's own name (the file's `familyName`), for Settings. */
     fun appFontLabelFlow(): Flow<String> =
-        store.data.map { it[K.APP_FONT_LABEL] ?: "" }
+        store.data.map { it[K.APP_FONT_LABEL] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun appFontLabel(): String = appFontLabelFlow().first()
 
@@ -537,7 +554,7 @@ class AppStore(private val ctx: Context) {
 
     /** The categories that exist right now (seeded with four on first read). */
     fun libraryCategoriesFlow(): Flow<List<LibraryCategory>> =
-        store.data.map { parseCategories(it[K.LIBRARY_CATEGORIES]) }
+        store.data.map { parseCategories(it[K.LIBRARY_CATEGORIES]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun libraryCategories(): List<LibraryCategory> = libraryCategoriesFlow().first()
 
@@ -571,7 +588,7 @@ class AppStore(private val ctx: Context) {
 
     /** Title uniqueId → the category ids it is filed under. */
     fun favoriteCategoriesFlow(): Flow<Map<String, Set<String>>> =
-        store.data.map { parseCategoryMap(it[K.FAVORITE_CATEGORIES]) }
+        store.data.map { parseCategoryMap(it[K.FAVORITE_CATEGORIES]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun favoriteCategories(): Map<String, Set<String>> = favoriteCategoriesFlow().first()
 
@@ -650,6 +667,10 @@ class AppStore(private val ctx: Context) {
     /** 100% = the size the logo has always been drawn at. */
     const val DEFAULT_DETAIL_LOGO_SIZE = 100
 
+    /** The same for the loading cover's wordmark — its own slider, so the two
+     *  screens can be sized apart. See [DEFAULT_DETAIL_LOGO_SIZE] for the scale. */
+    const val DEFAULT_LOADING_LOGO_SIZE = 100
+
         /** The player's control shell ([PlayerSkins]). */
         const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.NEON
 
@@ -670,7 +691,7 @@ class AppStore(private val ctx: Context) {
 
     /** Backdrop blur radius in dp behind a poster (0 = the plain art). */
     fun posterBlurFlow(): Flow<Int> =
-        store.data.map { (it[K.POSTER_BLUR] ?: DEFAULT_POSTER_BLUR).coerceIn(0, 24) }
+        store.data.map { (it[K.POSTER_BLUR] ?: DEFAULT_POSTER_BLUR).coerceIn(0, 24) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterBlur(): Int = posterBlurFlow().first()
 
@@ -680,7 +701,7 @@ class AppStore(private val ctx: Context) {
 
     /** Poster corner rounding in dp. */
     fun posterCornerFlow(): Flow<Int> =
-        store.data.map { (it[K.POSTER_CORNER] ?: DEFAULT_POSTER_CORNER).coerceIn(0, 28) }
+        store.data.map { (it[K.POSTER_CORNER] ?: DEFAULT_POSTER_CORNER).coerceIn(0, 28) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterCorner(): Int = posterCornerFlow().first()
 
@@ -689,7 +710,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun posterShowTitlesFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_SHOW_TITLES] ?: true }
+        store.data.map { it[K.POSTER_SHOW_TITLES] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterShowTitles(): Boolean = posterShowTitlesFlow().first()
 
@@ -698,7 +719,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun posterShowRatingsFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: true }
+        store.data.map { it[K.POSTER_SHOW_RATINGS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterShowRatings(): Boolean = posterShowRatingsFlow().first()
 
@@ -708,7 +729,7 @@ class AppStore(private val ctx: Context) {
 
     /** The movie/series tag in a poster's top-left corner. On by default. */
     fun posterShowTypeFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_SHOW_TYPE] ?: true }
+        store.data.map { it[K.POSTER_SHOW_TYPE] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterShowType(): Boolean = posterShowTypeFlow().first()
 
@@ -720,7 +741,7 @@ class AppStore(private val ctx: Context) {
      *  only be drawn for titles Hikari has actually seen the quality of, so it
      *  starts absent and is switched on deliberately. */
     fun posterShowQualityFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_SHOW_QUALITY] ?: false }
+        store.data.map { it[K.POSTER_SHOW_QUALITY] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterShowQuality(): Boolean = posterShowQualityFlow().first()
 
@@ -730,7 +751,7 @@ class AppStore(private val ctx: Context) {
 
     /** The glass hairline + soft sheen over every poster. */
     fun posterGlassFlow(): Flow<Boolean> =
-        store.data.map { it[K.POSTER_GLASS] ?: true }
+        store.data.map { it[K.POSTER_GLASS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterGlass(): Boolean = posterGlassFlow().first()
 
@@ -748,7 +769,7 @@ class AppStore(private val ctx: Context) {
                     ?: com.hikari.app.ui.PosterEffects.parse(prefs[K.POSTER_EFFECT])
                         .ifEmpty { DEFAULT_POSTER_EFFECTS },
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterEffects(): Set<String> = posterEffectsFlow().first()
 
@@ -771,7 +792,7 @@ class AppStore(private val ctx: Context) {
             com.hikari.app.ui.components.HeroStyles.normalize(
                 it[K.HERO_STYLE] ?: DEFAULT_HERO_STYLE,
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun heroStyle(): String = heroStyleFlow().first()
 
@@ -779,7 +800,7 @@ class AppStore(private val ctx: Context) {
         write("HERO_STYLE") { it[K.HERO_STYLE] = com.hikari.app.ui.components.HeroStyles.normalize(key) }
     }
 
-    fun heroOverviewFlow(): Flow<Boolean> = store.data.map { it[K.HERO_OVERVIEW] ?: true }
+    fun heroOverviewFlow(): Flow<Boolean> = store.data.map { it[K.HERO_OVERVIEW] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun heroOverview(): Boolean = heroOverviewFlow().first()
 
@@ -787,7 +808,7 @@ class AppStore(private val ctx: Context) {
         write("HERO_OVERVIEW") { it[K.HERO_OVERVIEW] = on }
     }
 
-    fun heroRatingFlow(): Flow<Boolean> = store.data.map { it[K.HERO_RATING] ?: true }
+    fun heroRatingFlow(): Flow<Boolean> = store.data.map { it[K.HERO_RATING] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun heroRating(): Boolean = heroRatingFlow().first()
 
@@ -795,7 +816,7 @@ class AppStore(private val ctx: Context) {
         write("HERO_RATING") { it[K.HERO_RATING] = on }
     }
 
-    fun heroMetaFlow(): Flow<Boolean> = store.data.map { it[K.HERO_META] ?: true }
+    fun heroMetaFlow(): Flow<Boolean> = store.data.map { it[K.HERO_META] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun heroMeta(): Boolean = heroMetaFlow().first()
 
@@ -809,7 +830,7 @@ class AppStore(private val ctx: Context) {
             com.hikari.app.ui.screens.DetailHeroStyles.normalize(
                 it[K.DETAIL_HERO_STYLE] ?: DEFAULT_DETAIL_HERO_STYLE,
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun detailHeroStyle(): String = detailHeroStyleFlow().first()
 
@@ -822,7 +843,7 @@ class AppStore(private val ctx: Context) {
      *  logo is drawn at: past the top of the range the art would be wider than
      *  the screen it is fitted into. */
     fun detailLogoSizeFlow(): Flow<Int> =
-        store.data.map { (it[K.DETAIL_LOGO_SIZE] ?: DEFAULT_DETAIL_LOGO_SIZE).coerceIn(50, 160) }
+        store.data.map { (it[K.DETAIL_LOGO_SIZE] ?: DEFAULT_DETAIL_LOGO_SIZE).coerceIn(50, 160) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun detailLogoSize(): Int = detailLogoSizeFlow().first()
 
@@ -836,7 +857,7 @@ class AppStore(private val ctx: Context) {
             com.hikari.app.player.PlayerSkins.normalize(
                 it[K.PLAYER_SKIN] ?: DEFAULT_PLAYER_SKIN,
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerSkin(): String = playerSkinFlow().first()
 
@@ -853,7 +874,7 @@ class AppStore(private val ctx: Context) {
     fun loadingStyleFlow(): Flow<String> =
         store.data.map {
             com.hikari.app.ui.LoadingStyles.normalize(it[K.LOADING_STYLE] ?: DEFAULT_LOADING_STYLE)
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun loadingStyle(): String = loadingStyleFlow().first()
 
@@ -872,7 +893,7 @@ class AppStore(private val ctx: Context) {
                     ?: com.hikari.app.ui.LoadingEffects.parse(prefs[K.LOADING_EFFECT])
                         .ifEmpty { DEFAULT_LOADING_EFFECTS },
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun loadingEffects(): Set<String> = loadingEffectsFlow().first()
 
@@ -888,7 +909,7 @@ class AppStore(private val ctx: Context) {
     fun posterAuraColorFlow(): Flow<String> =
         store.data.map {
             com.hikari.app.ui.AuraColors.normalize(it[K.POSTER_AURA_COLOR])
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterAuraColor(): String = posterAuraColorFlow().first()
 
@@ -913,7 +934,7 @@ class AppStore(private val ctx: Context) {
             val x = it[K.POSTER_GLOW_X] ?: DEFAULT_POSTER_GLOW_X
             val y = it[K.POSTER_GLOW_Y] ?: DEFAULT_POSTER_GLOW_Y
             x.coerceIn(0f, 1f) to y.coerceIn(0f, 1f)
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterGlowPoint(): Pair<Float, Float> = posterGlowPointFlow().first()
 
@@ -928,7 +949,7 @@ class AppStore(private val ctx: Context) {
     fun posterGlowStrengthFlow(): Flow<Int> =
         store.data.map {
             (it[K.POSTER_GLOW_STRENGTH] ?: DEFAULT_POSTER_GLOW_STRENGTH).coerceIn(0, 100)
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun posterGlowStrength(): Int = posterGlowStrengthFlow().first()
 
@@ -940,7 +961,7 @@ class AppStore(private val ctx: Context) {
     fun loadingAuraColorFlow(): Flow<String> =
         store.data.map {
             com.hikari.app.ui.AuraColors.normalize(it[K.LOADING_AURA_COLOR])
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun loadingAuraColor(): String = loadingAuraColorFlow().first()
 
@@ -948,6 +969,59 @@ class AppStore(private val ctx: Context) {
         write("LOADING_AURA_COLOR") {
             it[K.LOADING_AURA_COLOR] = com.hikari.app.ui.AuraColors.normalize(key)
         }
+    }
+
+    // ---- The title wordmark on the loading cover ----
+
+    /** Draw the title's own wordmark (the art the detail header uses) on the
+     *  loading cover instead of the plain text title. On by default: it is the
+     *  same picture the user just tapped Play on, so the hand-off into the
+     *  player looks continuous rather than like two different designs. A title
+     *  with no wordmark keeps the text title either way. */
+    fun loadingLogoFlow(): Flow<Boolean> =
+        store.data.map { it[K.LOADING_LOGO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun loadingLogo(): Boolean = loadingLogoFlow().first()
+
+    suspend fun setLoadingLogo(on: Boolean) {
+        write("LOADING_LOGO") { it[K.LOADING_LOGO] = on }
+    }
+
+    /** How big the loading cover's wordmark is drawn, in percent of its default
+     *  width (see [DEFAULT_LOADING_LOGO_SIZE]). Its own setting, independent of
+     *  the detail page's ([detailLogoSizeFlow]). */
+    fun loadingLogoSizeFlow(): Flow<Int> =
+        store.data.map { (it[K.LOADING_LOGO_SIZE] ?: DEFAULT_LOADING_LOGO_SIZE).coerceIn(50, 160) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun loadingLogoSize(): Int = loadingLogoSizeFlow().first()
+
+    suspend fun setLoadingLogoSize(percent: Int) {
+        write("LOADING_LOGO_SIZE") { it[K.LOADING_LOGO_SIZE] = percent.coerceIn(50, 160) }
+    }
+
+    // ---- Performance booster (Settings → Performance) ----
+
+    /**
+     * The performance booster: one switch for a device that cannot keep up.
+     *
+     * It is deliberately the ONLY thing the user has to know. Turning it on
+     * drops the work that costs the most frames per second for the least
+     * information — the blurred halo drawn behind every poster (two extra
+     * blurred artwork layers per card, the single most expensive thing in
+     * Hikari's UI), the animated poster and loading treatments, and it narrows
+     * how many extensions are searched at once so a slow device's CPU and
+     * network are not saturated by a fan-out it cannot afford.
+     *
+     * Nothing is removed from what the app can PLAY: every provider, every
+     * server and every setting stays exactly as it was.
+     */
+    fun perfModeFlow(): Flow<Boolean> =
+        store.data.map { it[K.PERF_MODE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun perfMode(): Boolean = perfModeFlow().first()
+
+    suspend fun setPerfMode(on: Boolean) {
+        write("PERF_MODE") { it[K.PERF_MODE] = on }
     }
 
     // ---- Server search (Settings → Playback) ----
@@ -964,7 +1038,7 @@ class AppStore(private val ctx: Context) {
      * from another site).
      */
     fun searchAllExtensionsFlow(): Flow<Boolean> =
-        store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: true }
+        store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchAllExtensions(): Boolean = searchAllExtensionsFlow().first()
 
@@ -981,7 +1055,7 @@ class AppStore(private val ctx: Context) {
      * default), they change nothing at all.
      */
     fun searchExceptionOnFlow(): Flow<Boolean> =
-        store.data.map { it[K.SEARCH_EXCEPTION_ON] ?: false }
+        store.data.map { it[K.SEARCH_EXCEPTION_ON] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchExceptionOn(): Boolean = searchExceptionOnFlow().first()
 
@@ -991,7 +1065,7 @@ class AppStore(private val ctx: Context) {
 
     /** The ids of the extensions chosen as exceptions (see [searchExceptionOnFlow]). */
     fun searchExceptionIdsFlow(): Flow<Set<String>> =
-        store.data.map { it[K.SEARCH_EXCEPTION_IDS] ?: emptySet() }
+        store.data.map { it[K.SEARCH_EXCEPTION_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun searchExceptionIds(): Set<String> = searchExceptionIdsFlow().first()
 
     suspend fun setSearchExceptionIds(ids: kotlin.collections.Collection<String>) {
@@ -1010,7 +1084,7 @@ class AppStore(private val ctx: Context) {
      * the row-by-row picker could not express either.
      */
     fun searchExceptionTypesFlow(): Flow<Set<String>> =
-        store.data.map { it[K.SEARCH_EXCEPTION_TYPES] ?: emptySet() }
+        store.data.map { it[K.SEARCH_EXCEPTION_TYPES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchExceptionTypes(): Set<String> = searchExceptionTypesFlow().first()
 
@@ -1028,7 +1102,7 @@ class AppStore(private val ctx: Context) {
      * the whole engine and tick 150 rows by hand.
      */
     fun searchExceptionExcludesFlow(): Flow<Set<String>> =
-        store.data.map { it[K.SEARCH_EXCEPTION_EXCLUDES] ?: emptySet() }
+        store.data.map { it[K.SEARCH_EXCEPTION_EXCLUDES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchExceptionExcludes(): Set<String> = searchExceptionExcludesFlow().first()
 
@@ -1059,7 +1133,7 @@ class AppStore(private val ctx: Context) {
                 .filter { it.type.name in types }
                 .map { it.id }
             (ids + byEngine) - excluded
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     // ---- Bottom navigation bar layout ----
 
@@ -1071,7 +1145,7 @@ class AppStore(private val ctx: Context) {
             com.hikari.app.ui.navigation.NavStyles.normalize(
                 it[K.NAV_STYLE] ?: com.hikari.app.ui.navigation.NavStyles.ANIMATED
             )
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun navStyle(): String = navStyleFlow().first()
 
@@ -1084,7 +1158,7 @@ class AppStore(private val ctx: Context) {
     /** Whether the bottom bar writes each button's name under its icon. On by
      *  default — that is how the bar ships. */
     fun tabLabelsFlow(): Flow<Boolean> =
-        store.data.map { it[K.TAB_LABELS] ?: true }
+        store.data.map { it[K.TAB_LABELS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tabLabels(): Boolean = tabLabelsFlow().first()
 
@@ -1097,7 +1171,7 @@ class AppStore(private val ctx: Context) {
     /** Whether the detail page draws the IMDb/RT/… badges. On unless the user
      *  turned it off (see [setShowDetailRating]). */
     fun showDetailRatingFlow(): Flow<Boolean> =
-        store.data.map { it[K.SHOW_DETAIL_RATING] ?: true }
+        store.data.map { it[K.SHOW_DETAIL_RATING] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun showDetailRating(): Boolean = showDetailRatingFlow().first()
 
@@ -1110,7 +1184,7 @@ class AppStore(private val ctx: Context) {
     /** True when the user asked for the normal, windowed layout: system status
      *  bar and the phone's own navigation bar visible on every screen. */
     fun fullscreenOffFlow(): Flow<Boolean> =
-        store.data.map { it[K.FULLSCREEN_OFF] ?: false }
+        store.data.map { it[K.FULLSCREEN_OFF] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun fullscreenOff(): Boolean = fullscreenOffFlow().first()
 
@@ -1122,7 +1196,7 @@ class AppStore(private val ctx: Context) {
 
     /** Which layout to draw: "auto" (follow the device), "tv" or "phone". */
     fun tvModeFlow(): Flow<String> =
-        store.data.map { com.hikari.app.tv.TvMode.normalize(it[K.TV_MODE]) }
+        store.data.map { com.hikari.app.tv.TvMode.normalize(it[K.TV_MODE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvMode(): String = tvModeFlow().first()
 
@@ -1135,7 +1209,7 @@ class AppStore(private val ctx: Context) {
         store.data.map {
             (it[K.TV_OVERSCAN] ?: com.hikari.app.tv.TvUi.DEFAULT_OVERSCAN_DP)
                 .coerceIn(0, com.hikari.app.tv.TvUi.MAX_OVERSCAN_DP)
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvOverscan(): Int = tvOverscanFlow().first()
 
@@ -1149,7 +1223,7 @@ class AppStore(private val ctx: Context) {
      *  [com.hikari.app.ui.rememberPosterStyle], which drops the poster
      *  treatments while it is on. */
     fun tvPerfFlow(): Flow<Boolean> =
-        store.data.map { it[K.TV_PERF] ?: false }
+        store.data.map { it[K.TV_PERF] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvPerf(): Boolean = tvPerfFlow().first()
 
@@ -1159,7 +1233,7 @@ class AppStore(private val ctx: Context) {
 
     /** True once the user has worked the performance-mode switch themselves. */
     fun tvPerfChosenFlow(): Flow<Boolean> =
-        store.data.map { it[K.TV_PERF_CHOSEN] ?: false }
+        store.data.map { it[K.TV_PERF_CHOSEN] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvPerfChosen(): Boolean = tvPerfChosenFlow().first()
 
@@ -1172,7 +1246,7 @@ class AppStore(private val ctx: Context) {
 
     /** True once the first-run television defaults have been applied. */
     fun tvSeededFlow(): Flow<Boolean> =
-        store.data.map { it[K.TV_SEEDED] ?: false }
+        store.data.map { it[K.TV_SEEDED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvSeeded(): Boolean = tvSeededFlow().first()
 
@@ -1186,7 +1260,7 @@ class AppStore(private val ctx: Context) {
      *  [com.hikari.app.ui.navigation.BottomTabs]). Hiding one only removes its
      *  button — the screen itself stays reachable from inside the app. */
     fun hiddenTabsFlow(): Flow<Set<String>> =
-        store.data.map { parseStringList(it[K.HIDDEN_TABS]).toSet() }
+        store.data.map { parseStringList(it[K.HIDDEN_TABS]).toSet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun hiddenTabs(): Set<String> = hiddenTabsFlow().first()
 
@@ -1201,7 +1275,7 @@ class AppStore(private val ctx: Context) {
      *  end in "No playable sources found". Off by default so fast connections
      *  keep their snappy timeouts. */
     fun slowConnectionFlow(): Flow<Boolean> =
-        store.data.map { it[K.SLOW_CONNECTION] ?: false }
+        store.data.map { it[K.SLOW_CONNECTION] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun slowConnection(): Boolean = slowConnectionFlow().first()
 
@@ -1213,7 +1287,7 @@ class AppStore(private val ctx: Context) {
      *  "system" — the phone's own DNS, with Hikari's encrypted fallback, i.e.
      *  exactly the app's behaviour before this setting existed. */
     fun dnsProviderFlow(): Flow<String> =
-        store.data.map { it[K.DNS_PROVIDER] ?: DnsProviders.SYSTEM }
+        store.data.map { it[K.DNS_PROVIDER] ?: DnsProviders.SYSTEM }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun dnsProvider(): String = dnsProviderFlow().first()
 
@@ -1224,7 +1298,7 @@ class AppStore(private val ctx: Context) {
     /** What a Custom DNS choice points at, as the user typed it (normalised to
      *  an endpoint by [DnsProviders.customEndpoint] when it is used). */
     fun customDnsFlow(): Flow<String> =
-        store.data.map { it[K.CUSTOM_DNS] ?: "" }
+        store.data.map { it[K.CUSTOM_DNS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun customDns(): String = customDnsFlow().first()
 
@@ -1238,7 +1312,7 @@ class AppStore(private val ctx: Context) {
      *  servers than the requested count still plays as soon as every installed
      *  extension has answered. */
     fun playWaitServersFlow(): Flow<Boolean> =
-        store.data.map { it[K.PLAY_WAIT_SERVERS] ?: false }
+        store.data.map { it[K.PLAY_WAIT_SERVERS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playWaitServers(): Boolean = playWaitServersFlow().first()
 
@@ -1248,7 +1322,7 @@ class AppStore(private val ctx: Context) {
 
     /** How many servers to wait for when [playWaitServersFlow] is on (1–5). */
     fun playMinServersFlow(): Flow<Int> =
-        store.data.map { (it[K.PLAY_MIN_SERVERS] ?: 2).coerceIn(1, 5) }
+        store.data.map { (it[K.PLAY_MIN_SERVERS] ?: 2).coerceIn(1, 5) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playMinServers(): Int = playMinServersFlow().first()
 
@@ -1265,7 +1339,7 @@ class AppStore(private val ctx: Context) {
      * own.
      */
     fun askServerOnPlayFlow(): Flow<Boolean> =
-        store.data.map { it[K.ASK_SERVER] ?: false }
+        store.data.map { it[K.ASK_SERVER] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun askServerOnPlay(): Boolean = askServerOnPlayFlow().first()
 
@@ -1286,7 +1360,7 @@ class AppStore(private val ctx: Context) {
      * a few dud servers never turns into a wall of dialogs.
      */
     fun failoverAskOnFailureFlow(): Flow<Boolean> =
-        store.data.map { it[K.FAILOVER_ASK] ?: true }
+        store.data.map { it[K.FAILOVER_ASK] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun failoverAskOnFailure(): Boolean = failoverAskOnFailureFlow().first()
 
@@ -1298,7 +1372,7 @@ class AppStore(private val ctx: Context) {
      *  until the first frame of video. Off = the player opens straight away
      *  with just a round loading spinner. On by default. */
     fun showLoadingBannerFlow(): Flow<Boolean> =
-        store.data.map { it[K.SHOW_LOADING_BANNER] ?: true }
+        store.data.map { it[K.SHOW_LOADING_BANNER] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun showLoadingBanner(): Boolean = showLoadingBannerFlow().first()
 
@@ -1311,7 +1385,7 @@ class AppStore(private val ctx: Context) {
      *  a user who keeps getting a wrong "your connection looks slow" verdict
      *  turns it off here and never sees the dialog again. */
     fun slowTipEnabledFlow(): Flow<Boolean> =
-        store.data.map { it[K.SLOW_TIP_ENABLED] ?: true }
+        store.data.map { it[K.SLOW_TIP_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun slowTipEnabled(): Boolean = slowTipEnabledFlow().first()
 
@@ -1322,7 +1396,7 @@ class AppStore(private val ctx: Context) {
     /** Set by the dialog's "Don't ask again" — permanent, unlike the timed
      *  cooldown of a plain dismissal. */
     fun slowTipDontAskFlow(): Flow<Boolean> =
-        store.data.map { it[K.SLOW_TIP_DONT_ASK] ?: false }
+        store.data.map { it[K.SLOW_TIP_DONT_ASK] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun slowTipDontAsk(): Boolean = slowTipDontAskFlow().first()
 
@@ -1333,7 +1407,7 @@ class AppStore(private val ctx: Context) {
     /** When the tip was last dismissed with "Not now" (0 = never). Keeps the
      *  dialog from reappearing on every single play. */
     fun slowTipLastDismissFlow(): Flow<Long> =
-        store.data.map { it[K.SLOW_TIP_LAST_DISMISS] ?: 0L }
+        store.data.map { it[K.SLOW_TIP_LAST_DISMISS] ?: 0L }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun slowTipLastDismiss(): Long = slowTipLastDismissFlow().first()
 
@@ -1344,7 +1418,7 @@ class AppStore(private val ctx: Context) {
     /** Set by the launch Telegram invitation's "Don't show this again" checkbox,
      *  so the dialog never comes back. */
     fun telegramDontShowFlow(): Flow<Boolean> =
-        store.data.map { it[K.TELEGRAM_DONT_SHOW] ?: false }
+        store.data.map { it[K.TELEGRAM_DONT_SHOW] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun telegramDontShow(): Boolean = telegramDontShowFlow().first()
 
@@ -1354,7 +1428,7 @@ class AppStore(private val ctx: Context) {
 
     /** How many downloads may run simultaneously (1–10). */
     fun downloadConcurrencyFlow(): Flow<Int> =
-        store.data.map { (it[K.DOWNLOAD_CONCURRENCY] ?: 3).coerceIn(1, 10) }
+        store.data.map { (it[K.DOWNLOAD_CONCURRENCY] ?: 3).coerceIn(1, 10) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun downloadConcurrency(): Int = downloadConcurrencyFlow().first()
 
@@ -1364,7 +1438,7 @@ class AppStore(private val ctx: Context) {
 
     /** Which provider the Home screen is currently showing (empty = All). */
     fun homeProviderFlow(): Flow<String> =
-        store.data.map { it[K.HOME_PROVIDER] ?: "" }
+        store.data.map { it[K.HOME_PROVIDER] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun homeProvider(): String = homeProviderFlow().first()
 
@@ -1377,7 +1451,7 @@ class AppStore(private val ctx: Context) {
      * selected more than one in the picker (see [setHomeProviders]).
      */
     fun homeProvidersFlow(): Flow<Set<String>> =
-        store.data.map { parseStringList(it[K.HOME_PROVIDERS]).toSet() }
+        store.data.map { parseStringList(it[K.HOME_PROVIDERS]).toSet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun homeProviders(): Set<String> = homeProvidersFlow().first()
 
@@ -1399,7 +1473,7 @@ class AppStore(private val ctx: Context) {
 
     /** True when the IPTV button has been switched on in the taskbar settings. */
     fun iptvTabFlow(): Flow<Boolean> =
-        store.data.map { it[K.IPTV_TAB] ?: false }
+        store.data.map { it[K.IPTV_TAB] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun iptvTab(): Boolean = iptvTabFlow().first()
 
@@ -1409,7 +1483,7 @@ class AppStore(private val ctx: Context) {
 
     /** Shape of the IPTV tab's tiles ([TileShapes] key; poster by default). */
     fun iptvShapeFlow(): Flow<String> =
-        store.data.map { TileShapes.normalize(it[K.IPTV_SHAPE]) }
+        store.data.map { TileShapes.normalize(it[K.IPTV_SHAPE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setIptvShape(shape: String) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
@@ -1426,7 +1500,7 @@ class AppStore(private val ctx: Context) {
      * followed titles, and one entry per manga extension to browse).
      */
     fun mangaTabFlow(): Flow<Boolean> =
-        store.data.map { it[K.MANGA_TAB] ?: true }
+        store.data.map { it[K.MANGA_TAB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun mangaTab(): Boolean = mangaTabFlow().first()
 
@@ -1438,7 +1512,7 @@ class AppStore(private val ctx: Context) {
 
     /** True when the Stats button has been switched on in the taskbar settings. */
     fun statsTabFlow(): Flow<Boolean> =
-        store.data.map { it[K.STATS_TAB] ?: false }
+        store.data.map { it[K.STATS_TAB] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun statsTab(): Boolean = statsTabFlow().first()
 
@@ -1455,7 +1529,7 @@ class AppStore(private val ctx: Context) {
 
     /** The whole statistics document (JSON; blank = nothing logged yet). */
     fun watchStatsFlow(): Flow<String> =
-        store.data.map { it[K.WATCH_STATS] ?: "" }
+        store.data.map { it[K.WATCH_STATS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun watchStats(): String = watchStatsFlow().first()
 
@@ -1512,7 +1586,7 @@ class AppStore(private val ctx: Context) {
     /** How pages advance: paged left-to-right, paged right-to-left, or one long
      *  vertical strip (see [com.hikari.app.manga.MangaReadMode]). */
     fun mangaReadModeFlow(): Flow<String> =
-        store.data.map { com.hikari.app.manga.MangaReadMode.normalize(it[K.MANGA_READ_MODE]) }
+        store.data.map { com.hikari.app.manga.MangaReadMode.normalize(it[K.MANGA_READ_MODE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaReadMode(mode: String) {
         write("MANGA_READ_MODE") { it[K.MANGA_READ_MODE] = com.hikari.app.manga.MangaReadMode.normalize(mode) }
@@ -1521,7 +1595,7 @@ class AppStore(private val ctx: Context) {
     /** How a page is fitted to the screen (see
      *  [com.hikari.app.manga.MangaFit]). */
     fun mangaFitFlow(): Flow<String> =
-        store.data.map { com.hikari.app.manga.MangaFit.normalize(it[K.MANGA_FIT]) }
+        store.data.map { com.hikari.app.manga.MangaFit.normalize(it[K.MANGA_FIT]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaFit(fit: String) {
         write("MANGA_FIT") { it[K.MANGA_FIT] = com.hikari.app.manga.MangaFit.normalize(fit) }
@@ -1530,7 +1604,7 @@ class AppStore(private val ctx: Context) {
     /** The reader's backdrop colour, so a bright page or a dark room both read
      *  well. Stored as a word, not a colour — the reader maps it to a theme. */
     fun mangaReaderBgFlow(): Flow<String> =
-        store.data.map { normalizeReaderBg(it[K.MANGA_READER_BG]) }
+        store.data.map { normalizeReaderBg(it[K.MANGA_READER_BG]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaReaderBg(bg: String) {
         write("MANGA_READER_BG") { it[K.MANGA_READER_BG] = normalizeReaderBg(bg) }
@@ -1539,7 +1613,7 @@ class AppStore(private val ctx: Context) {
     /** Keep the screen awake while reading (default ON — a reader is looked at,
      *  not tapped, and the OS timeout blanks the page mid-chapter otherwise). */
     fun mangaKeepAwakeFlow(): Flow<Boolean> =
-        store.data.map { it[K.MANGA_KEEP_AWAKE] ?: true }
+        store.data.map { it[K.MANGA_KEEP_AWAKE] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaKeepAwake(on: Boolean) {
         write("MANGA_KEEP_AWAKE") { it[K.MANGA_KEEP_AWAKE] = on }
@@ -1548,7 +1622,7 @@ class AppStore(private val ctx: Context) {
     /** Print "12 / 40" over the page while reading (default OFF: the chrome
      *  already shows it, and an always-on label over artwork is unwanted). */
     fun mangaShowPageNumberFlow(): Flow<Boolean> =
-        store.data.map { it[K.MANGA_SHOW_PAGE_NUMBER] ?: false }
+        store.data.map { it[K.MANGA_SHOW_PAGE_NUMBER] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaShowPageNumber(on: Boolean) {
         write("MANGA_SHOW_PAGE_NUMBER") { it[K.MANGA_SHOW_PAGE_NUMBER] = on }
@@ -1558,7 +1632,7 @@ class AppStore(private val ctx: Context) {
      *  [K.MANGA_ENHANCE]). Applied as a GPU colour matrix, so flipping it is
      *  instant and costs nothing per page. */
     fun mangaEnhanceFlow(): Flow<Boolean> =
-        store.data.map { it[K.MANGA_ENHANCE] ?: false }
+        store.data.map { it[K.MANGA_ENHANCE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaEnhance(on: Boolean) {
         write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
@@ -1580,7 +1654,7 @@ class AppStore(private val ctx: Context) {
      * instead of the hard defaults.
      */
     fun mangaReaderSettingsJsonFlow(): Flow<String?> =
-        store.data.map { it[K.MANGA_READER_SETTINGS] }
+        store.data.map { it[K.MANGA_READER_SETTINGS] }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaReaderSettingsJson(json: String) {
         write("MANGA_READER_SETTINGS") { it[K.MANGA_READER_SETTINGS] = json }
@@ -1596,7 +1670,7 @@ class AppStore(private val ctx: Context) {
      * which is also what deleting the entry means.
      */
     fun mangaSeriesModesFlow(): Flow<String?> =
-        store.data.map { it[K.MANGA_SERIES_MODES] }
+        store.data.map { it[K.MANGA_SERIES_MODES] }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMangaSeriesModesJson(json: String) {
         write("MANGA_SERIES_MODES") { it[K.MANGA_SERIES_MODES] = json }
@@ -1613,7 +1687,7 @@ class AppStore(private val ctx: Context) {
      * nothing behind but a stale string.
      */
     fun pinnedMangaEnginesFlow(): Flow<Set<String>> =
-        store.data.map { it[K.PINNED_MANGA_ENGINES] ?: emptySet() }
+        store.data.map { it[K.PINNED_MANGA_ENGINES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun pinnedMangaEngines(): Set<String> = pinnedMangaEnginesFlow().first()
 
@@ -1633,7 +1707,7 @@ class AppStore(private val ctx: Context) {
      * simply never matched when the list is ordered.
      */
     fun pinnedProvidersFlow(): Flow<List<String>> =
-        store.data.map { parseStringList(it[K.PINNED_PROVIDERS]) }
+        store.data.map { parseStringList(it[K.PINNED_PROVIDERS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun pinnedProviders(): List<String> = pinnedProvidersFlow().first()
 
@@ -1661,7 +1735,7 @@ class AppStore(private val ctx: Context) {
      * start-up); this flow is what the Settings switch itself renders.
      */
     fun nsfwEnabledFlow(): Flow<Boolean> =
-        store.data.map { it[K.NSFW_ENABLED] ?: true }
+        store.data.map { it[K.NSFW_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun nsfwEnabled(): Boolean = nsfwEnabledFlow().first()
 
@@ -1687,7 +1761,7 @@ class AppStore(private val ctx: Context) {
 
     /** Whether a section's pill is drawn in the My Stuff strip. */
     fun myStuffSectionFlow(section: String): Flow<Boolean> =
-        store.data.map { it[keyForSection(section)] ?: true }
+        store.data.map { it[keyForSection(section)] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setMyStuffSection(section: String, shown: Boolean) {
         write("MYSTUFF_" + section.uppercase()) { it[keyForSection(section)] = shown }
@@ -1712,7 +1786,7 @@ class AppStore(private val ctx: Context) {
      * override — a phone that renders a wall of GIFs smoothly and a TV stick
      * that cannot both get what they need from the same imported file.
      */
-    fun gifAnimFlow(): Flow<Boolean> = store.data.map { it[K.GIF_ANIM] ?: true }
+    fun gifAnimFlow(): Flow<Boolean> = store.data.map { it[K.GIF_ANIM] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun gifAnim(): Boolean = gifAnimFlow().first()
 
@@ -1724,7 +1798,7 @@ class AppStore(private val ctx: Context) {
 
     /** Provider ids whose web pages are always translated to English. */
     fun translateProvidersFlow(): Flow<Set<String>> =
-        store.data.map { parseStringList(it[K.TRANSLATE_PROVIDERS]).toSet() }
+        store.data.map { parseStringList(it[K.TRANSLATE_PROVIDERS]).toSet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun translateProviders(): Set<String> = translateProvidersFlow().first()
 
@@ -1736,7 +1810,7 @@ class AppStore(private val ctx: Context) {
 
     /** Persisted original→English translation pairs (title cache). */
     suspend fun translateCache(): List<Pair<String, String>> =
-        store.data.map { parsePairs(it[K.TRANSLATE_CACHE]) }.first()
+        store.data.map { parsePairs(it[K.TRANSLATE_CACHE]) }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
 
     suspend fun setTranslateCache(list: List<Pair<String, String>>) {
         write("TRANSLATE_CACHE") { it[K.TRANSLATE_CACHE] = encodePairs(list) }
@@ -1764,7 +1838,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun themeFlow(): Flow<String> =
-        store.data.map { it[K.THEME] ?: HikariThemeMode.DARK.key }
+        store.data.map { it[K.THEME] ?: HikariThemeMode.DARK.key }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun theme(): String = themeFlow().first()
 
@@ -1779,7 +1853,7 @@ class AppStore(private val ctx: Context) {
      *  the amber/gold the app has always used, so an existing install looks
      *  identical until the user picks something else. */
     fun appAccentFlow(): Flow<String> =
-        store.data.map { it[K.APP_ACCENT] ?: HikariAccent.DEFAULT_APP.key }
+        store.data.map { it[K.APP_ACCENT] ?: HikariAccent.DEFAULT_APP.key }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun appAccent(): String = appAccentFlow().first()
 
@@ -1791,7 +1865,7 @@ class AppStore(private val ctx: Context) {
     /** The player's own accent (used only while the app and the player are NOT
      *  linked). Defaults to the cyan→violet glow the player has always had. */
     fun playerAccentFlow(): Flow<String> =
-        store.data.map { it[K.PLAYER_ACCENT] ?: HikariAccent.DEFAULT_PLAYER.key }
+        store.data.map { it[K.PLAYER_ACCENT] ?: HikariAccent.DEFAULT_PLAYER.key }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerAccent(): String = playerAccentFlow().first()
 
@@ -1803,7 +1877,7 @@ class AppStore(private val ctx: Context) {
     /** "Match app & player theme": while ON the player follows the app accent
      *  and picking a colour in either place recolours both. */
     fun themeLinkedFlow(): Flow<Boolean> =
-        store.data.map { it[K.THEME_LINKED] ?: false }
+        store.data.map { it[K.THEME_LINKED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun themeLinked(): Boolean = themeLinkedFlow().first()
 
@@ -1830,7 +1904,7 @@ class AppStore(private val ctx: Context) {
     /** The player's control layout, as [com.hikari.app.player.PlayerControlsConfig]
      *  JSON (control key → slot key). Blank means "the default layout". */
     fun playerControlsFlow(): Flow<String> =
-        store.data.map { it[K.PLAYER_CONTROLS] ?: "" }
+        store.data.map { it[K.PLAYER_CONTROLS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerControls(): String = playerControlsFlow().first()
 
@@ -1847,7 +1921,7 @@ class AppStore(private val ctx: Context) {
      * preferences.
      */
     fun playerSwipesFlow(): Flow<Boolean> =
-        store.data.map { it[K.PLAYER_SWIPES] ?: true }
+        store.data.map { it[K.PLAYER_SWIPES] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerSwipes(): Boolean = playerSwipesFlow().first()
 
@@ -1857,7 +1931,7 @@ class AppStore(private val ctx: Context) {
 
     /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */
     fun enhancePresetFlow(): Flow<String> =
-        store.data.map { it[K.PLAYER_ENHANCE] ?: EnhancePreset.DEFAULT.key }
+        store.data.map { it[K.PLAYER_ENHANCE] ?: EnhancePreset.DEFAULT.key }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun enhancePreset(): String = enhancePresetFlow().first()
 
@@ -1872,7 +1946,7 @@ class AppStore(private val ctx: Context) {
      * EVERY play, not just the one where the user first picked a preset.
      */
     fun enhanceUnsupportedFlow(): Flow<Boolean> =
-        store.data.map { it[K.PLAYER_ENHANCE_UNSUPPORTED] ?: false }
+        store.data.map { it[K.PLAYER_ENHANCE_UNSUPPORTED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun enhanceUnsupported(): Boolean = enhanceUnsupportedFlow().first()
 
@@ -1886,7 +1960,7 @@ class AppStore(private val ctx: Context) {
      *  and scales its interface with [uiScaleFlow] instead — so it looks the
      *  same on every phone. OFF (default) follows the system settings. */
     fun uiScaleEnabledFlow(): Flow<Boolean> =
-        store.data.map { it[K.UI_SCALE_ENABLED] ?: false }
+        store.data.map { it[K.UI_SCALE_ENABLED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun uiScaleEnabled(): Boolean = uiScaleEnabledFlow().first()
 
@@ -1899,7 +1973,7 @@ class AppStore(private val ctx: Context) {
 
     /** The in-app scale (0.7f–1.3f) used while [uiScaleEnabledFlow] is on. */
     fun uiScaleFlow(): Flow<Float> =
-        store.data.map { (it[K.UI_SCALE_PERCENT] ?: 100).coerceIn(70, 130) / 100f }
+        store.data.map { (it[K.UI_SCALE_PERCENT] ?: 100).coerceIn(70, 130) / 100f }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun uiScale(): Float = uiScaleFlow().first()
 
@@ -1911,7 +1985,7 @@ class AppStore(private val ctx: Context) {
     // ---- Ad blocking (WebView only) ----
 
     fun adEnabledFlow(): Flow<Boolean> =
-        store.data.map { it[K.AD_ENABLED] ?: true }
+        store.data.map { it[K.AD_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun adEnabled(): Boolean = adEnabledFlow().first()
 
@@ -1920,7 +1994,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun adListsFlow(): Flow<List<AdBlocker.HostList>> =
-        store.data.map { parseHostLists(it[K.AD_LISTS]) }
+        store.data.map { parseHostLists(it[K.AD_LISTS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun adLists(): List<AdBlocker.HostList> = adListsFlow().first()
 
@@ -1929,7 +2003,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun adBlockFlow(): Flow<List<String>> =
-        store.data.map { parseStringList(it[K.AD_BLOCK]) }
+        store.data.map { parseStringList(it[K.AD_BLOCK]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun adBlock(): List<String> = adBlockFlow().first()
 
@@ -1938,7 +2012,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun adWhiteFlow(): Flow<List<String>> =
-        store.data.map { parseStringList(it[K.AD_WHITE]) }
+        store.data.map { parseStringList(it[K.AD_WHITE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun adWhite(): List<String> = adWhiteFlow().first()
 
@@ -1949,7 +2023,7 @@ class AppStore(private val ctx: Context) {
     // ---- WebView safety (redirect + popup protection; default ON) ----
 
     fun webviewRedirectFlow(): Flow<Boolean> =
-        store.data.map { it[K.WEBVIEW_REDIRECT] ?: true }
+        store.data.map { it[K.WEBVIEW_REDIRECT] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun webviewRedirect(): Boolean = webviewRedirectFlow().first()
 
@@ -1958,7 +2032,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun webviewPopupFlow(): Flow<Boolean> =
-        store.data.map { it[K.WEBVIEW_POPUP] ?: true }
+        store.data.map { it[K.WEBVIEW_POPUP] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun webviewPopup(): Boolean = webviewPopupFlow().first()
 
@@ -1972,7 +2046,7 @@ class AppStore(private val ctx: Context) {
      *  gone on purpose: no Cloudflare challenge is ever loaded on its own, so
      *  there is nothing to toggle (see CloudflareVerifier). */
     fun cfAutoSolveFlow(): Flow<Boolean> =
-        store.data.map { it[K.CF_AUTO_SOLVE] ?: false }
+        store.data.map { it[K.CF_AUTO_SOLVE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun cfAutoSolve(): Boolean = cfAutoSolveFlow().first()
 
@@ -1999,7 +2073,7 @@ class AppStore(private val ctx: Context) {
      * rare case where an extension only works through its own bypass screen.
      */
     fun extensionVerifyWebviewFlow(): Flow<Boolean> =
-        store.data.map { it[K.EXT_VERIFY_WEBVIEW] ?: false }
+        store.data.map { it[K.EXT_VERIFY_WEBVIEW] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun extensionVerifyWebview(): Boolean = extensionVerifyWebviewFlow().first()
 
@@ -2013,7 +2087,7 @@ class AppStore(private val ctx: Context) {
     /** Hosts the user allowed redirects to (blocked-elsewhere hosts allowed
      *  through). */
     fun webviewRedirectAllowFlow(): Flow<List<String>> =
-        store.data.map { parseStringList(it[K.WEBVIEW_REDIRECT_ALLOW]) }
+        store.data.map { parseStringList(it[K.WEBVIEW_REDIRECT_ALLOW]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun webviewRedirectAllow(): List<String> =
         webviewRedirectAllowFlow().first().also { RedirectAllow.set(it) }
@@ -2030,12 +2104,12 @@ class AppStore(private val ctx: Context) {
     // ---- WebView user agent (stock Android default vs custom) ----
 
     fun webviewUseDefaultUaFlow(): Flow<Boolean> =
-        store.data.map { it[K.WEBVIEW_DEFAULT_UA] ?: true }
+        store.data.map { it[K.WEBVIEW_DEFAULT_UA] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun webviewUseDefaultUa(): Boolean = webviewUseDefaultUaFlow().first()
 
     fun webviewCustomUaFlow(): Flow<String> =
-        store.data.map { it[K.WEBVIEW_CUSTOM_UA] ?: "" }
+        store.data.map { it[K.WEBVIEW_CUSTOM_UA] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun webviewCustomUa(): String = webviewCustomUaFlow().first()
 
@@ -2053,7 +2127,7 @@ class AppStore(private val ctx: Context) {
      *  resource strings — via AppCompatDelegate.setApplicationLocales (see
      *  com.hikari.app.ui.LanguageManager). */
     fun languageFlow(): Flow<String> =
-        store.data.map { it[K.LANGUAGE] ?: "" }
+        store.data.map { it[K.LANGUAGE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun language(): String = languageFlow().first()
 
@@ -2175,7 +2249,7 @@ class AppStore(private val ctx: Context) {
     // ---- Userscripts (run inside the WebView only) ----
 
     fun userscriptsFlow(): Flow<List<Userscript>> =
-        store.data.map { parseUserscripts(it[K.USERS]) }
+        store.data.map { parseUserscripts(it[K.USERS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun userscripts(): List<Userscript> = userscriptsFlow().first()
 
@@ -2220,7 +2294,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun providersFlow(): Flow<List<ProviderConfig>> =
-        store.data.map { parseProviders(it[K.PROVIDERS]) }
+        store.data.map { parseProviders(it[K.PROVIDERS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun providers(): List<ProviderConfig> = providersFlow().first()
 
@@ -2298,7 +2372,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun reposFlow(): Flow<List<Cs3Repo>> =
-        store.data.map { parseRepos(it[K.CS3_REPOS]) }
+        store.data.map { parseRepos(it[K.CS3_REPOS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun repos(): List<Cs3Repo> = reposFlow().first()
 
@@ -2380,7 +2454,7 @@ class AppStore(private val ctx: Context) {
 
     /** Every user-made collection, in creation order. */
     fun collectionsFlow(): Flow<List<Collection>> =
-        store.data.map { parseCollections(it[K.COLLECTIONS]) }
+        store.data.map { parseCollections(it[K.COLLECTIONS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun collections(): List<Collection> = collectionsFlow().first()
 
@@ -2414,14 +2488,14 @@ class AppStore(private val ctx: Context) {
      *  user who deliberately removes a default repo doesn't have it pushed back
      *  on the next launch. */
     suspend fun seededRepos(): Boolean =
-        store.data.map { it[K.SEEDED_REPOS] ?: false }.first()
+        store.data.map { it[K.SEEDED_REPOS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
 
     suspend fun markReposSeeded() {
         write("SEEDED_REPOS") { it[K.SEEDED_REPOS] = true }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =
-        store.data.map { parseMedia(it[K.FAVORITES]) }
+        store.data.map { parseMedia(it[K.FAVORITES]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun favorites(): List<MediaItem> = favoritesFlow().first()
 
@@ -2441,7 +2515,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun sitesFlow(): Flow<List<Site>> =
-        store.data.map { parseSites(it[K.SITES]) }
+        store.data.map { parseSites(it[K.SITES]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun sites(): List<Site> = sitesFlow().first()
 
@@ -2559,7 +2633,7 @@ class AppStore(private val ctx: Context) {
     // ---- Watch history ----
 
     fun historyFlow(): Flow<List<HistoryEntry>> =
-        store.data.map { parseHistory(it[K.HISTORY]) }
+        store.data.map { parseHistory(it[K.HISTORY]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun history(): List<HistoryEntry> = historyFlow().first()
 
@@ -2589,7 +2663,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun historyPausedFlow(): Flow<Boolean> =
-        store.data.map { it[K.HISTORY_PAUSED] ?: false }
+        store.data.map { it[K.HISTORY_PAUSED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun historyPaused(): Boolean = historyPausedFlow().first()
 
@@ -2600,7 +2674,7 @@ class AppStore(private val ctx: Context) {
     /** When true, the Home screen hides its "Continue Watching" row entirely
      *  (history keeps being recorded — this only hides the shelf). */
     fun hideContinueFlow(): Flow<Boolean> =
-        store.data.map { it[K.HIDE_CONTINUE] ?: false }
+        store.data.map { it[K.HIDE_CONTINUE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun hideContinue(): Boolean = hideContinueFlow().first()
 
@@ -2615,7 +2689,7 @@ class AppStore(private val ctx: Context) {
     // instantly instead of re-running the source search from scratch.
 
     fun lastSourcesFlow(): Flow<Map<String, LastSource>> =
-        store.data.map { parseLastSources(it[K.LAST_SOURCE]) }
+        store.data.map { parseLastSources(it[K.LAST_SOURCE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     /** The server this video was last played with (URL + name + the header
      *  variant that actually worked), or null. */
@@ -2664,7 +2738,7 @@ class AppStore(private val ctx: Context) {
     // ---- WebView element blocker (persistent CSS selectors) ----
 
     fun elementBlocksFlow(): Flow<List<String>> =
-        store.data.map { parseStringList(it[K.ELEMENT_BLOCKS]) }
+        store.data.map { parseStringList(it[K.ELEMENT_BLOCKS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun elementBlocks(): List<String> = elementBlocksFlow().first()
 

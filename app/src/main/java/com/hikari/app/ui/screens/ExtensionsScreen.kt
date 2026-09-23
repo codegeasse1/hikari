@@ -110,6 +110,8 @@ import com.hikari.app.net.Http
 import com.hikari.app.net.PromoGuard
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.ProviderManager
+import com.hikari.app.ui.ProviderPack
+import com.hikari.app.ui.ProviderPacks
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
@@ -123,9 +125,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -205,6 +210,49 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     /** Repos whose plugin list is being fetched right now — guards the window
      *  between a load starting and `repoState` reporting it as loading. */
     private val reposLoading = mutableSetOf<String>()
+
+    /** How long a burst of refresh requests settles for. Short enough that the
+     *  list moves under the user's eyes, long enough that a 249-entry
+     *  install-all run rebuilds a few times rather than 249. */
+    private val REFRESH_QUIET_MS = 500L
+
+    /**
+     * Rebuilding the provider list, at most once per quiet moment.
+     *
+     * Every install used to end with `manager.refresh(); reloadInstalled()`
+     * directly — and `refresh()` re-instantiates EVERY installed provider while
+     * `reloadInstalled()` re-reads and re-parses the whole stored list. An
+     * "Install all" run over a 249-extension repo therefore did that 249 times,
+     * each pass bigger than the last, which is the jitter reported while
+     * installing ("while installing extension the app also lags, jittery type
+     * lags"). The rebuild's result is identical whether it runs once per install
+     * or once after the burst, so it runs once after the burst: a request that
+     * arrives while the quiet timer is still running just restarts the timer.
+     */
+    private val refreshTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    init {
+        viewModelScope.launch {
+            refreshTicks.collectLatest {
+                delay(REFRESH_QUIET_MS)
+                refreshProvidersNow()
+            }
+        }
+    }
+
+    /** Ask for the provider list to be rebuilt (see [refreshTicks]). Never
+     *  suspends and never blocks: it is called from inside install paths that
+     *  are already holding a download open. */
+    fun requestRefresh() {
+        refreshTicks.tryEmit(Unit)
+    }
+
+    /** Rebuild + re-read, now. Used by the burst paths that must be settled
+     *  before they report success (see [installAllPlugins]). */
+    suspend fun refreshProvidersNow() {
+        runCatching { manager.refresh() }
+        reloadInstalled()
+    }
 
     /** True when the last [addRepo] hit a repo that was already in the list
      *  (same repo, possibly a different URL spelling) — the dialog says so
@@ -534,8 +582,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 url = url,
             )
         )
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         warmIptv()
         Result.success(count)
     }
@@ -760,8 +807,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             )
             added++
         }
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         // One source URL must never leave two copies behind — same as the CS3
         // path: a re-install that follows a name-only file left by an older
         // build would otherwise keep that old copy (and its file) as a phantom
@@ -775,8 +821,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val staleIds = stale.map { it.id }.toSet()
                 val stalePaths = stale.map { it.url }.toSet()
                 store.updateProviders { list -> list.filterNot { it.id in staleIds } }
-                manager.refresh()
-                reloadInstalled()
+                requestRefresh()
                 withContext(Dispatchers.IO) {
                     val keep = store.providers().map { it.url }.toSet()
                     val root = getApplication<Application>().filesDir.absolutePath
@@ -866,8 +911,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             )
             added++
         }
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         // One source URL must never leave two copies behind. Re-installing an
         // extension used to add a second config pointing at the SAME file; with
         // the name now stamped per source URL, an install that follows an older
@@ -944,7 +988,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 "$fileName.js",
                 sourceUrl = plugin.url,
                 iconUrl = plugin.iconUrl,
-            ).also { manager.refresh(); reloadInstalled() }
+            ).also { requestRefresh() }
         }
 
     /** Removes every NUVIO provider that came from [pluginUrl]. Returns how many
@@ -966,7 +1010,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         for (source in stored) {
             removed += com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
         }
-        reloadInstalled()
+        requestRefresh()
         return removed
     }
 
@@ -1001,7 +1045,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 bytes,
                 sourceUrl = plugin.url,
                 iconUrl = plugin.iconUrl,
-            ).also { manager.refresh(); reloadInstalled() }
+            ).also { requestRefresh() }
         }
 
     /** Removes every SKYSTREAM extension that came from [pluginUrl]. Returns how
@@ -1018,7 +1062,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         for (source in stored) {
             removed += com.hikari.app.skystream.SkyStreamPluginManager.uninstall(app, source)
         }
-        reloadInstalled()
+        requestRefresh()
         return removed
     }
 
@@ -1033,7 +1077,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             getApplication<Application>(),
             bytes,
             sourceUrl = clean,
-        ).also { manager.refresh(); reloadInstalled() }
+        ).also { requestRefresh() }
     }
 
     suspend fun installSkyStreamFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
@@ -1043,7 +1087,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         com.hikari.app.skystream.SkyStreamPluginManager.install(
             getApplication<Application>(),
             bytes,
-        ).also { manager.refresh(); reloadInstalled() }
+        ).also { requestRefresh() }
     }
 
     /**
@@ -1181,7 +1225,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 bytes,
                 sourceUrl = plugin.url,
                 iconUrl = plugin.iconUrl,
-            ).also { manager.refresh(); reloadInstalled() }
+            ).also { requestRefresh() }
         }
 
     /** Removes every ANIYOMI/MANGA provider that came from [pluginUrl] (and the
@@ -1205,8 +1249,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             removed += com.hikari.app.aniyomi.AniyomiExtensionManager.uninstall(app, source)
             removed += com.hikari.app.manga.MangaExtensionManager.uninstall(app, source)
         }
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         return removed
     }
 
@@ -1217,7 +1260,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
         val (bytes, failure) = downloadExtension(clean)
         if (bytes == null) return@withContext Result.failure(Exception(failure))
-        installExtension(bytes, sourceUrl = clean).also { manager.refresh(); reloadInstalled() }
+        installExtension(bytes, sourceUrl = clean).also { requestRefresh() }
     }
 
     /** Installs a local `.apk`/`.ext` the user picked (an Aniyomi or manga
@@ -1226,7 +1269,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val bytes = runCatching {
             getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull() ?: return@withContext Result.failure(Exception("Could not read the selected file"))
-        installExtension(bytes).also { manager.refresh(); reloadInstalled() }
+        installExtension(bytes).also { requestRefresh() }
     }
 
     suspend fun addCs3Repo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.CS3)
@@ -2171,8 +2214,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // the list at write time could match more than the file the user
         // uninstalled.
         store.updateProviders { list -> list.filterNot { it.id in ids } }
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         withContext(Dispatchers.IO) {
             val remaining = store.providers().map { it.url }.toSet()
             val base = getApplication<Application>().filesDir.absolutePath
@@ -2258,6 +2300,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     }.getOrNull()
                     if (r != null && r.isSuccess) ok++ else failed.add(p.name)
                 }
+                // The burst has settled: rebuild once, here, so the list the user
+                // is looking at is right the moment the run reports done (the
+                // debounced [requestRefresh] only fires after a quiet moment,
+                // which this run never gives it).
+                refreshProvidersNow()
                 val n = pending.size
                 val plurals = if (n == 1) "" else "s"
                 when {
@@ -2408,8 +2455,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val paths = targets.map { it.url }.toSet()
         // Locked read-modify-write: see [AppStore.updateProviders].
         store.updateProviders { list -> list.filterNot { it.id in ids } }
-        manager.refresh()
-        reloadInstalled()
+        requestRefresh()
         withContext(Dispatchers.IO) {
             val remaining = store.providers().map { it.url }.toSet()
             val base = getApplication<Application>().filesDir.absolutePath
@@ -4063,18 +4109,23 @@ private fun LazyListScope.extensionsSearchItems(
     }
 
     if (installedMatches.isNotEmpty()) {
-        item { SectionHeader("Installed · ${installedMatches.size}") }
-        items(installedMatches, key = { "inst-" + it.config.id }) { p ->
-            ProviderCard(
-                p = p,
-                onVerify = rememberVerifyAction(p),
-                status = pluginStatus(p),
-                onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
-                onDelete = { onDeleteProvider(p.config.id) },
-                onSettings = when {
-                    p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
-                    p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
-                    else -> null
+        // One row per extension (an Aniyomi/manga pack's sources fold into the
+        // extension's own row — see [ProviderPacks]), so the count is of
+        // EXTENSIONS, not of stored sources.
+        val installedRecords = ProviderPacks.rows(installedMatches)
+        item { SectionHeader("Installed · ${installedRecords.size}") }
+        items(installedRecords, key = { "inst-" + it.key }) { pack ->
+            ProviderRecordRow(
+                pack = pack,
+                statusFor = { p -> pluginStatus(p) },
+                onToggleProvider = onToggleProvider,
+                onDeleteProvider = onDeleteProvider,
+                settingsFor = { p ->
+                    when {
+                        p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
+                        p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
+                        else -> null
+                    }
                 },
             )
         }
@@ -4851,12 +4902,29 @@ private fun ProviderCard(
     onVerify: (() -> Unit)? = null,
     updateAvailable: Boolean = false,
     onUpdate: (() -> Unit)? = null,
+    /** The name to draw instead of the provider's own — used by the extension
+     *  row a [com.hikari.app.ui.ProviderPack] draws (its sources all share one
+     *  name, and repeating it nine times is the bug being fixed). */
+    labelOverride: String? = null,
+    /** One extra line under the engine name ("9 sources · Bengali · English"). */
+    supportingLine: String? = null,
+    /** Draw this card as a member of a pack: inset, and smaller. */
+    indent: Boolean = false,
+    /** Draw the caret that opens the pack's sources. */
+    expandable: Boolean = false,
+    expanded: Boolean = false,
+    onToggleExpand: (() -> Unit)? = null,
 ) {
     val glass = rememberGlassTokens()
     val tileShape = RoundedCornerShape(12.dp)
     GlassCard(Modifier
         .fillMaxWidth()
-        .padding(horizontal = 16.dp, vertical = 6.dp)) {
+        .padding(
+            start = if (indent) 34.dp else 16.dp,
+            end = 16.dp,
+            top = if (indent) 2.dp else 6.dp,
+            bottom = 6.dp,
+        )) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -4874,7 +4942,7 @@ private fun ProviderCard(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    p.config.name,
+                    labelOverride ?: p.config.name,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -4884,6 +4952,16 @@ private fun ProviderCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
+                if (!supportingLine.isNullOrBlank()) {
+                    Text(
+                        supportingLine,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
                 if (status != null) {
                     Text(
                         status,
@@ -4904,6 +4982,18 @@ private fun ProviderCard(
                 }
             }
             Switch(checked = p.config.enabled, onCheckedChange = onToggle)
+            if (expandable && onToggleExpand != null) {
+                IconButton(onClick = onToggleExpand) {
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = tr(
+                            if (expanded) "Hide this extension's sources"
+                            else "Show this extension's sources"
+                        ),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             if (updateAvailable && onUpdate != null) {
                 IconButton(onClick = onUpdate) {
                     Icon(
@@ -4938,6 +5028,78 @@ private fun ProviderCard(
                     tint = MaterialTheme.colorScheme.error
                 )
             }
+        }
+    }
+}
+
+/**
+ * One row of an installed-provider list: a single provider, or every source one
+ * Aniyomi/manga extension publishes, together.
+ *
+ * The extension case is the reported "I am installing one animeworld and in
+ * provider it showing 8 times": one `.apk` publishes nine sources (a generic
+ * feed plus eight language feeds), all under one name, and Hikari stores one
+ * provider per source. The row for the extension draws ONE card — its sources
+ * are a caret away, and each of them keeps its own switch and its own Remove, so
+ * turning off a language feed that never answers (which also takes it out of
+ * every search) is still possible without losing the extension.
+ */
+@Composable
+private fun ProviderRecordRow(
+    pack: ProviderPack,
+    statusFor: (ContentProvider) -> String?,
+    onToggleProvider: (String, Boolean) -> Unit,
+    onDeleteProvider: (String) -> Unit,
+    settingsFor: ((ContentProvider) -> (() -> Unit)?)? = null,
+    /** Non-null on the lists that offer "Update available". */
+    updateFlag: ((ContentProvider) -> Boolean)? = null,
+    onUpdateProvider: ((ContentProvider) -> Unit)? = null,
+) {
+    // Opened state is remembered per extension, so a list that re-sorts under
+    // the row (a search being typed, a provider being installed) does not fold
+    // it back up.
+    var open by remember(pack.key) { mutableStateOf(false) }
+    val ids = pack.members.map { it.config.id }
+    // Non-null call even when the list offers no updates, so nothing here
+    // depends on a smart cast inside a lambda.
+    val offersUpdate = updateFlag != null
+    val updateFlagOf: (ContentProvider) -> Boolean = updateFlag ?: { false }
+    val updateOf: (ContentProvider) -> Unit = onUpdateProvider ?: {}
+    val sourcesLine = if (!pack.isPack) null else {
+        pack.countLabel + if (pack.detailLabel.isBlank()) "" else " · " + pack.detailLabel
+    }
+    val updateAll: (() -> Unit)? = if (onUpdateProvider == null) null else {
+        { pack.members.forEach { m -> updateOf(m) } }
+    }
+    ProviderCard(
+        p = pack.primary,
+        status = pack.members.firstNotNullOfOrNull { statusFor(it) },
+        onToggle = { on -> ids.forEach { id -> onToggleProvider(id, on) } },
+        onDelete = { ids.forEach { id -> onDeleteProvider(id) } },
+        onSettings = settingsFor?.invoke(pack.primary),
+        onVerify = rememberVerifyAction(pack.primary),
+        labelOverride = pack.label.takeIf { pack.isPack },
+        supportingLine = sourcesLine,
+        expandable = pack.isPack,
+        expanded = open,
+        onToggleExpand = { open = !open },
+        updateAvailable = offersUpdate && pack.members.any { m -> updateFlagOf(m) },
+        onUpdate = updateAll,
+    )
+    if (pack.isPack && open) {
+        pack.members.forEachIndexed { i, member ->
+            ProviderCard(
+                p = member,
+                status = statusFor(member),
+                onToggle = { on -> onToggleProvider(member.config.id, on) },
+                onDelete = { onDeleteProvider(member.config.id) },
+                onSettings = settingsFor?.invoke(member),
+                onVerify = rememberVerifyAction(member),
+                labelOverride = pack.memberLabel(i),
+                indent = true,
+                updateAvailable = offersUpdate && updateFlagOf(member),
+                onUpdate = if (onUpdateProvider == null) null else ({ updateOf(member) }),
+            )
         }
     }
 }
@@ -6229,21 +6391,22 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
-                ProviderCard(
-                    p = p,
-                    onVerify = rememberVerifyAction(p),
-                    status = pluginStatus(p),
-                    onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
-                    onDelete = { onDeleteProvider(p.config.id) },
-                    onSettings = when {
-                        p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
-                        // A playlist has no settings screen — the gear opens what
-                        // it IS instead: where it was read from, how many channels
-                        // it holds, and a way to read it again.
-                        p.config.type == ProviderType.IPTV -> { { onOpenSettings(p) } }
-                        p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
-                        else -> null
+            items(ProviderPacks.rows(filteredProviders), key = { it.key }) { pack ->
+                ProviderRecordRow(
+                    pack = pack,
+                    statusFor = { p -> pluginStatus(p) },
+                    onToggleProvider = onToggleProvider,
+                    onDeleteProvider = onDeleteProvider,
+                    settingsFor = { p ->
+                        when {
+                            p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
+                            // A playlist has no settings screen — the gear opens what
+                            // it IS instead: where it was read from, how many channels
+                            // it holds, and a way to read it again.
+                            p.config.type == ProviderType.IPTV -> { { onOpenSettings(p) } }
+                            p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
+                            else -> null
+                        }
                     },
                 )
             }
@@ -6559,20 +6722,23 @@ private fun InstalledExtensionsView(
                     )
                 }
             }
-            items(filteredProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
-                ProviderCard(
-                    p = p,
-                    onVerify = rememberVerifyAction(p),
-                    status = pluginStatus(p),
-                    onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
-                    onDelete = { onDeleteProvider(p.config.id) },
-                    onSettings = when {
-                        p.config.type == ProviderType.NUVIO -> { { settingsProvider = p } }
-                        p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
-                        else -> null
+            items(ProviderPacks.rows(filteredProviders), key = { it.key }) { pack ->
+                ProviderRecordRow(
+                    pack = pack,
+                    statusFor = { p -> pluginStatus(p) },
+                    onToggleProvider = onToggleProvider,
+                    onDeleteProvider = onDeleteProvider,
+                    settingsFor = { p ->
+                        when {
+                            p.config.type == ProviderType.NUVIO -> { { settingsProvider = p } }
+                            p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
+                            else -> null
+                        }
                     },
-                    updateAvailable = providerSource(p)?.let { SourceUrls.anyKeyIn(it, outdatedUrls) } == true,
-                    onUpdate = { onUpdateProvider(p) },
+                    updateFlag = { p ->
+                        providerSource(p)?.let { SourceUrls.anyKeyIn(it, outdatedUrls) } == true
+                    },
+                    onUpdateProvider = { p -> onUpdateProvider(p) },
                 )
             }
         }

@@ -63,12 +63,19 @@ private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): L
         )
         val picked = kinds.firstOrNull { kind ->
             val details = idxs.map { kind(sources[it]) }
-            details.none { it.isNullOrBlank() } && details.distinct().size == details.size
+            details.distinct().size == details.size &&
+                details.count { it.isNullOrBlank() } <= 1
         }
+        // A row this kind cannot describe keeps the PLAIN name rather than a
+        // number: it is the group's own name (the generic, multi-audio source in
+        // a language pack), the plain name is unique here once the others are
+        // suffixed, and "(1)" told the user nothing. Numbers are left for the
+        // case where no kind could separate the rows at all.
         idxs.forEachIndexed { k, i ->
             val detail = picked?.invoke(sources[i])
             out[i] = when {
-                detail.isNullOrBlank() -> "$name (${k + 1})"
+                picked == null -> "$name (${k + 1})"
+                detail.isNullOrBlank() -> name
                 // Don't repeat what the name already says: "AnimeWorld India
                 // (Hindi) · Hindi" reads like a bug.
                 squashName(name).contains(squashName(detail)) -> name
@@ -80,39 +87,100 @@ private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): L
 }
 
 /** A readable name for a source's declared language, or null when it declares
- *  none (or one we have no name for). Aniyomi's multi-audio packs publish the
+ *  none that can tell two rows apart. Aniyomi's multi-audio packs publish the
  *  same site once per language under one name — this is the detail that tells
  *  those rows apart. */
 private fun languageLabel(s: AnimeSource): String? {
-    val code = runCatching { s.lang }.getOrNull()?.trim()?.lowercase().orEmpty()
-    return when (code) {
-        "en", "eng", "english" -> "English"
-        "hi", "hin", "hindi" -> "Hindi"
-        "ta", "tam", "tamil" -> "Tamil"
-        "te", "tel", "telugu" -> "Telugu"
-        "ml", "mal", "malayalam" -> "Malayalam"
-        "bn", "ben", "bengali" -> "Bengali"
-        "ur", "urd", "urdu" -> "Urdu"
-        "ja", "jp", "jpn", "japanese" -> "Japanese"
-        "ko", "kor", "korean" -> "Korean"
-        "zh", "chi", "chinese" -> "Chinese"
-        "es", "spa", "spanish" -> "Spanish"
-        "pt", "por", "portuguese" -> "Portuguese"
-        "fr", "fre", "french" -> "French"
-        "de", "ger", "german" -> "German"
-        "it", "ita", "italian" -> "Italian"
-        "ru", "rus", "russian" -> "Russian"
-        "ar", "ara", "arabic" -> "Arabic"
-        "id", "ind", "indonesian" -> "Indonesian"
-        "th", "tha", "thai" -> "Thai"
-        "vi", "vie", "vietnamese" -> "Vietnamese"
-        "fil", "tl", "tgl", "tagalog", "filipino" -> "Filipino"
-        // "all"/"multi" means the source itself carries several audio tracks, so
-        // it is a real answer but a poor tiebreaker — better to fall through to
-        // the site, and only then to a number.
-        else -> null
-    }
+    val raw = runCatching { s.lang }.getOrNull()?.trim()?.lowercase().orEmpty()
+    if (raw.isBlank()) return null
+    // Language tags arrive as "hi", "hi-IN" and "hi_IN" — the primary subtag is
+    // the language; the region is not what separates two feeds of one site.
+    val code = raw.substringBefore('-').substringBefore('_')
+    LANGUAGE_NAMES[code]?.let { return it }
+    // "all"/"multi" mean the source itself carries several audio tracks: a real
+    // answer, but a poor tiebreaker — better to fall through to the site, and
+    // only then to a number.
+    if (code == "all" || code == "multi") return null
+    // ANY other code is still a code. The AnimeWorld India pack (a generic
+    // source plus Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu)
+    // used to fall all the way through to "(1)…(9)" because one of its codes
+    // ("mr") was missing from the table — and a kind is only usable when it
+    // separates EVERY row of the group. Reading an unmapped code back to the
+    // user is honest, and it keeps the whole group's labels.
+    return code.uppercase()
 }
+
+/**
+ * The languages Hikari can name. Not exhaustive by design: anything not here
+ * still labels the row (as its own code — see [languageLabel]), so a new or
+ * exotic language tag degrades to "MR" rather than to a number.
+ */
+private val LANGUAGE_NAMES: Map<String, String> = mapOf(
+    "en" to "English", "eng" to "English", "english" to "English",
+    "hi" to "Hindi", "hin" to "Hindi", "hindi" to "Hindi",
+    "bn" to "Bengali", "ben" to "Bengali", "bengali" to "Bengali",
+    "ta" to "Tamil", "tam" to "Tamil", "tamil" to "Tamil",
+    "te" to "Telugu", "tel" to "Telugu", "telugu" to "Telugu",
+    "ml" to "Malayalam", "mal" to "Malayalam", "malayalam" to "Malayalam",
+    "mr" to "Marathi", "mar" to "Marathi", "marathi" to "Marathi",
+    "kn" to "Kannada", "kan" to "Kannada", "kannada" to "Kannada",
+    "gu" to "Gujarati", "guj" to "Gujarati", "gujarati" to "Gujarati",
+    "pa" to "Punjabi", "pan" to "Punjabi", "punjabi" to "Punjabi",
+    "or" to "Odia", "ori" to "Odia", "odia" to "Odia", "oriya" to "Odia",
+    "as" to "Assamese", "asm" to "Assamese", "assamese" to "Assamese",
+    "sa" to "Sanskrit", "san" to "Sanskrit",
+    "ne" to "Nepali", "nep" to "Nepali", "nepali" to "Nepali",
+    "si" to "Sinhala", "sin" to "Sinhala", "sinhala" to "Sinhala",
+    "ur" to "Urdu", "urd" to "Urdu", "urdu" to "Urdu",
+    "ja" to "Japanese", "jp" to "Japanese", "jpn" to "Japanese",
+    "japanese" to "Japanese",
+    "ko" to "Korean", "kor" to "Korean", "korean" to "Korean",
+    "zh" to "Chinese", "chi" to "Chinese", "zho" to "Chinese",
+    "chinese" to "Chinese",
+    "es" to "Spanish", "spa" to "Spanish", "spanish" to "Spanish",
+    "pt" to "Portuguese", "por" to "Portuguese", "portuguese" to "Portuguese",
+    "fr" to "French", "fre" to "French", "fra" to "French", "french" to "French",
+    "de" to "German", "ger" to "German", "deu" to "German", "german" to "German",
+    "it" to "Italian", "ita" to "Italian", "italian" to "Italian",
+    "ru" to "Russian", "rus" to "Russian", "russian" to "Russian",
+    "ar" to "Arabic", "ara" to "Arabic", "arabic" to "Arabic",
+    "fa" to "Persian", "fas" to "Persian", "per" to "Persian",
+    "he" to "Hebrew", "iw" to "Hebrew", "heb" to "Hebrew",
+    "tr" to "Turkish", "tur" to "Turkish", "turkish" to "Turkish",
+    "id" to "Indonesian", "ind" to "Indonesian", "indonesian" to "Indonesian",
+    "ms" to "Malay", "msa" to "Malay", "may" to "Malay",
+    "th" to "Thai", "tha" to "Thai", "thai" to "Thai",
+    "vi" to "Vietnamese", "vie" to "Vietnamese", "vietnamese" to "Vietnamese",
+    "fil" to "Filipino", "tl" to "Filipino", "tgl" to "Filipino",
+    "tagalog" to "Filipino", "filipino" to "Filipino",
+    "ceb" to "Cebuano", "my" to "Burmese", "mya" to "Burmese",
+    "km" to "Khmer", "khm" to "Khmer", "lo" to "Lao", "lao" to "Lao",
+    "sw" to "Swahili", "swa" to "Swahili", "ha" to "Hausa", "hau" to "Hausa",
+    "am" to "Amharic", "amh" to "Amharic", "zu" to "Zulu", "zul" to "Zulu",
+    "af" to "Afrikaans", "afr" to "Afrikaans",
+    "pl" to "Polish", "pol" to "Polish", "nl" to "Dutch", "dut" to "Dutch",
+    "nld" to "Dutch", "sv" to "Swedish", "swe" to "Swedish",
+    "no" to "Norwegian", "nor" to "Norwegian", "nb" to "Norwegian",
+    "da" to "Danish", "dan" to "Danish", "fi" to "Finnish", "fin" to "Finnish",
+    "cs" to "Czech", "ces" to "Czech", "cze" to "Czech",
+    "sk" to "Slovak", "slk" to "Slovak", "hu" to "Hungarian", "hun" to "Hungarian",
+    "ro" to "Romanian", "ron" to "Romanian", "rum" to "Romanian",
+    "bg" to "Bulgarian", "bul" to "Bulgarian",
+    "el" to "Greek", "ell" to "Greek", "gre" to "Greek",
+    "uk" to "Ukrainian", "ukr" to "Ukrainian",
+    "sr" to "Serbian", "srp" to "Serbian",
+    "hr" to "Croatian", "hrv" to "Croatian",
+    "sl" to "Slovenian", "slv" to "Slovenian",
+    "sq" to "Albanian", "sqi" to "Albanian",
+    "mk" to "Macedonian", "mkd" to "Macedonian",
+    "lt" to "Lithuanian", "lav" to "Latvian", "lv" to "Latvian",
+    "et" to "Estonian", "est" to "Estonian",
+    "az" to "Azerbaijani", "aze" to "Azerbaijani",
+    "kk" to "Kazakh", "kaz" to "Kazakh", "uz" to "Uzbek", "uzb" to "Uzbek",
+    "ca" to "Catalan", "cat" to "Catalan", "gl" to "Galician", "gle" to "Irish",
+    "eu" to "Basque", "ka" to "Georgian", "kat" to "Georgian",
+    "hy" to "Armenian", "hye" to "Armenian",
+)
 
 /** The site a source points at, without the scheme or `www.` — the second
  *  detail used to tell two same-named sources apart. */

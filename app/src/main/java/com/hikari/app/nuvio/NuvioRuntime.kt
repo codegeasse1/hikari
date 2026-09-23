@@ -77,6 +77,10 @@ object NuvioRuntime {
     // this problem. Two extra native VMs is a rounding error next to the
     // engines that then answer in the same window.
     private const val MAX_CONCURRENT = 12
+    /** [MAX_CONCURRENT] with the performance booster on (Settings →
+     *  Performance): half as many engines at once, for a device that cannot
+     *  afford twelve QuickJS VMs while it also draws the UI. */
+    private const val PERF_CONCURRENT = 5
     private const val FETCH_TIMEOUT_MS = 30_000L
     // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
     // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider
@@ -108,6 +112,20 @@ object NuvioRuntime {
 
     /** Bounds how many providers run their JS engines at once (see above). */
     private val concurrency = Semaphore(MAX_CONCURRENT)
+
+    /**
+     * The same gate at half width for the PERFORMANCE BOOSTER (Settings →
+     * Performance). A nuvio provider is the heaviest thing Hikari runs in-process
+     * — a QuickJS engine, its 440KB cheerio bundle when the provider needs it,
+     * and a memory cap — so on a device that is already struggling, twelve of
+     * them at once (see [MAX_CONCURRENT]) is the difference between a search that
+     * finishes and one that swaps. Chosen at ACQUIRE time, so flipping the
+     * booster applies to the very next lookup instead of the next launch.
+     */
+    private val perfConcurrency = Semaphore(PERF_CONCURRENT)
+
+    private val gate: Semaphore
+        get() = if (com.hikari.app.data.PerfMode.active) perfConcurrency else concurrency
 
     // A second, much smaller pool of slots for the engines a BACKGROUND sweep
     // asks (see [withBackgroundSlot]).
@@ -546,7 +564,7 @@ object NuvioRuntime {
         withCheerio: Boolean = true,
         buildCall: (String) -> String,
     ): String {
-        return concurrency.withPermit {
+        return gate.withPermit {
             withTimeoutOrNull(CALL_TIMEOUT_MS) {
                 withContext(Dispatchers.Default) {
                     val cid = java.util.UUID.randomUUID().toString()

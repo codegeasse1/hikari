@@ -244,7 +244,15 @@ fun rememberPosterStyle(): PosterStyle {
     // on the expensive per-poster work is dropped — the animated treatments and
     // the blurred halo behind each card — and the posters are drawn plain.
     val perfFlow = remember { app.store.tvPerfFlow() }
-    val perf by perfFlow.collectAsState(initial = false)
+    val tvPerf by perfFlow.collectAsState(initial = false)
+    // The PERFORMANCE BOOSTER (Settings → Performance) drops exactly the same
+    // work, because it is the same complaint from the other kind of device: the
+    // blur behind every poster is three artwork layers per card and a gaussian
+    // blur on API 31+, which is the single most expensive thing Hikari's UI does
+    // per frame. Read here, where that cost is decided.
+    val boosterFlow = remember { app.store.perfModeFlow() }
+    val booster by boosterFlow.collectAsState(initial = false)
+    val perf = tvPerf || booster
     val blur by blurFlow.collectAsState(initial = 0)
     val corner by cornerFlow.collectAsState(initial = 14)
     val titles by titlesFlow.collectAsState(initial = true)

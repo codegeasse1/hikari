@@ -1,3 +1,60 @@
+## 0.10.25
+
+**The lag while installing, the extension that listed itself nine times, the
+title's own wordmark on the loading screen, and a Performance switch to turn the
+heavy work off.**
+
+### Added
+
+- **Settings → Performance → "Performance booster".** One switch, for a device
+  that stutters, heats up or drains battery. It drops the heaviest things the app
+  does — the blurred glow drawn behind every poster (three artwork layers plus a
+  gaussian blur per card), the animated poster and loading treatments, how many
+  extensions are searched at once, and how many nuvio engines may run together —
+  without removing anything that can be played. The same work is dropped by the
+  television's own performance mode, and the two are OR'd, so a box with both on
+  simply stays light. It can be switched on while the app is running; the next
+  search and the next poster already see it.
+- **The title's wordmark on the loading screen**, the way the detail page's
+  header draws it: the film's own logo art instead of its name while a server is
+  being found, on BOTH the detail page's cover and the player's. Its size is its
+  own slider — Settings → Player → Loading screen → "Title logo size" (50%–160%)
+  — independent of the detail header's, and it breathes (grows and shrinks) with
+  the card exactly like the text title did. A title with no wordmark (most
+  extension-only titles) keeps the text title, and the switch is there to turn it
+  off.
+
+### Fixed
+
+- **Installing an extension no longer makes the app jitter.** Two causes, both
+  removed:
+  * Every install ended by rebuilding the provider list and re-reading the stored
+    list, and an "Install all" run over a 249-extension repo did that 249 times,
+    each pass bigger than the last. Refreshes are now coalesced (a burst of them
+    becomes one rebuild after the installs go quiet, plus one final rebuild when
+    the run reports done), and the provider manager itself coalesces overlapping
+    requests.
+  * Every preference flow re-parsed its own value on the MAIN THREAD on every
+    single write anywhere in the app — so an install's provider-list write
+    re-parsed the providers, the collections, the categories, the ad lists and
+    ~100 more, while the UI waited. Every one of those flows now drops unchanged
+    values and does its parsing off the main thread, which is also why toggling a
+    setting no longer hitches.
+- **An extension that publishes several sources under one name no longer looks
+  installed eight times.** AnimeWorld India is NINE sources in one `.apk` (a
+  generic feed plus Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu
+  feeds of the same site), all called "AnimeWorld India" — and the list drew one
+  row per source. Two fixes:
+  * the sources are named honestly again ("AnimeWorld India · Hindi", "·
+    Marathi", …): one of their language codes (Marathi) had no name in the table,
+    and a group is only labelled by a detail that separates EVERY row, so the
+    whole pack fell back to bare numbers "(1)…(9)";
+  * every list that draws providers — Extensions, the installed list, and Home's
+    "Choose an extension" sheet — now draws ONE row per extension, with its
+    sources a tap away (each still switchable on its own, so a language feed that
+    never answers can be turned off and stops being searched). A plain pick of the
+    row still means the extension's first source, exactly as before.
+
 ## 0.10.24
 
 **The lag, the cut-off nuvio engines, and the diagnostics to prove both — plus

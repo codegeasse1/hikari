@@ -1218,8 +1218,10 @@ class ContentRepository(private val manager: ProviderManager) {
      *  the queue by trust (origin's family, proven repos, then the rest), so
      *  the waves never cost a repo its turn — they only stagger its start. */
     private val CROSS_EXT_WAVE_START = 5
-    /** Ceiling on one wave of repo searches — see [deviceFanOut]. */
-    private val CROSS_EXT_WAVE_MAX: Int = deviceFanOut()
+    /** Ceiling on one wave of repo searches — see [deviceFanOut]. A getter, not
+     *  a value: the performance booster can be switched on while the app is
+     *  running, and the NEXT lookup has to see it. */
+    private val CROSS_EXT_WAVE_MAX: Int get() = deviceFanOut()
     private val CROSS_EXT_WAVE_GAP_MS = 1_200L
     private val CROSS_EXT_WAVE_SLOW_MS = 2_000L
 
@@ -1384,9 +1386,18 @@ class ContentRepository(private val manager: ProviderManager) {
      * Floored at 24 so even a small device keeps the "everything at once"
      * character that makes a search feel like nuvio's, and capped at 96 (the
      * old value) for a big tablet.
+     *
+     * With the PERFORMANCE BOOSTER on (Settings → Performance) the whole scale
+     * drops by half: this is the single biggest load a lookup puts on a slow
+     * device — dozens of extension calls at once, each holding an OkHttp
+     * connection and its own CPU — and the pass still walks every repo, just in
+     * more waves (see [launchWave]). Nothing is skipped, only staggered.
      */
-    private fun deviceFanOut(): Int =
-        (Runtime.getRuntime().availableProcessors() * 6).coerceIn(24, 96)
+    private fun deviceFanOut(): Int {
+        val cores = Runtime.getRuntime().availableProcessors()
+        if (com.hikari.app.data.PerfMode.active) return (cores * 3).coerceIn(12, 36)
+        return (cores * 6).coerceIn(24, 96)
+    }
 
     /** Effectively "every installed extension": the whole point of the pass is
      *  to find the repo that CAN play the title, so nothing is skipped up

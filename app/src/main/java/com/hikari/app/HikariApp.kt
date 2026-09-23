@@ -406,6 +406,22 @@ class HikariApp : Application() {
         appScope.launch {
             store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
         }
+        // The PERFORMANCE BOOSTER (Settings → Performance) and the television's
+        // own performance mode (Settings → TV & Remote): both are read
+        // SYNCHRONOUSLY on hot paths — the search fan-out sizes itself from this,
+        // and the Nuvio runtime gates its engine concurrency with it — so each is
+        // mirrored into a plain flag here, exactly like the slow-connection and
+        // DNS settings above (see [com.hikari.app.data.PerfMode]).
+        appScope.launch {
+            store.perfModeFlow().collect { mode ->
+                com.hikari.app.data.PerfMode.set(mode, com.hikari.app.data.PerfMode.tvOn)
+            }
+        }
+        appScope.launch {
+            store.tvPerfFlow().collect { on ->
+                com.hikari.app.data.PerfMode.set(com.hikari.app.data.PerfMode.on, on)
+            }
+        }
         // How wide a lookup may search (Settings → Playback → Server search).
         // Read synchronously mid-pass by the target builder, the sweeps and the
         // episode fallback, so it lives in a plain flag (see [SearchScope])

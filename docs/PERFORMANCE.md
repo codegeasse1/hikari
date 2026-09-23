@@ -42,6 +42,56 @@ one of these paths, keep the rule.
 * `ExtensionNsfw.isNsfw` loads an extension's metadata, so it is only ever asked
   when the adult-content switch is OFF (with the default ON nothing is looked up)
   and its answer is cached per `.ext` file.
+* **A burst of installs rebuilds the provider list ONCE, not once per install.**
+  Every install used to end with `manager.refresh(); reloadInstalled()` — and
+  `ProviderManager.refresh()` re-instantiates every installed provider while
+  `reloadInstalled()` re-reads and re-parses the whole stored list, so an
+  "Install all" run over a 249-extension repo did that 249 times, each pass bigger
+  than the last. `ExtensionsViewModel.requestRefresh()` now asks for the rebuild
+  through a debounced tick (`REFRESH_QUIET_MS`), `installAllPlugins` settles it
+  once at the end, and `ProviderManager.refresh()` coalesces overlapping requests
+  itself (a request that arrives mid-build is served by one more build at the end,
+  never a build of its own). If you add an install path, call `requestRefresh()` —
+  never `manager.refresh()` directly.
+
+## Preferences: deduplicate, and parse off the main thread
+
+Every preference is read as a flow (`AppStore`), and the readers are composables —
+which collect on the MAIN thread. `store.data` emits on every write ANYWHERE in
+the app, so an undeduped flow re-ran its own `map` — including `parseProviders`,
+`parseCollections`, `parseCategories` and the ad lists — on the main thread on
+every unrelated write, while the UI waited for the frame. That is what made
+installing an extension (whose very first act is a providers write) feel jittery,
+and what hitched the UI while a settings slider was dragged.
+
+So every one of those flows is `store.data.map { … }.distinctUntilChanged().flowOn(Dispatchers.Default)`,
+and the rule for new ones is the same: deduplicate the value, and do any parsing
+or list-building OFF the main thread. `distinctUntilChanged` also keeps Compose
+from being handed a fresh-but-equal list, which is one recomposition per write
+that nobody needs.
+
+## The performance booster
+
+`AppStore.perfModeFlow()` (Settings → **Performance**) is one switch that drops
+the work which costs the most frames per second for the least information, for a
+device that cannot keep up:
+
+* `ui/PosterStyle.rememberPosterStyle` drops the blurred halo and the animated
+  treatments — the halo is three artwork layers plus a gaussian blur *per poster
+  card*, the most expensive thing the UI does while a row is scrolled;
+* `ContentRepository.deviceFanOut()` has the fan-out (see below) — the same
+  servers are still found, in more waves;
+* `nuvio/NuvioRuntime` gates its engines with `PERF_CONCURRENT` instead of
+  `MAX_CONCURRENT` (twelve QuickJS VMs at once is a lot to ask of a phone that is
+  also drawing the screen).
+
+The television's own performance mode (`K.TV_PERF`) drops the same work, and the
+two are OR'd through `data/PerfMode` — a plain mirror of the two preferences that
+hot, non-composable paths (the fan-out, the engine gate) can read synchronously,
+the same way `NetTuning` and `SearchScope` mirror theirs. `PerfMode.tvOn` is set by
+`HikariApp` alongside the layout sync, so a TV stick that turns the layout's
+performance mode on is honoured everywhere at once. Nothing the booster turns off
+changes what can be played.
 
 ## Layout passes are bounded and never nested
 

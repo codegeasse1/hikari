@@ -118,6 +118,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.ContentRepository.StreamLookup
+import com.hikari.app.data.AppStore
 import com.hikari.app.data.CastMember
 import com.hikari.app.data.CompanyRef
 import com.hikari.app.data.Episode
@@ -1584,6 +1585,20 @@ fun DetailScreen(
     val loadingAuraArgb = com.hikari.app.ui.AuraColors
         .color(loadingAuraColorSetting, MaterialTheme.colorScheme.primary)
         .toArgb()
+    // The title wordmark on the loading cover (Settings → App Layout → Loading
+    // screen → Title logo). The cover draws the title as ART here — the same
+    // TMDB wordmark the header above draws — with the plain text title as the
+    // fallback for a title that has none (and for a user who turned it off).
+    // Both the switch and the size ride to the player as intent extras, so the
+    // hand-off into the player never changes the picture.
+    val loadingLogoOn by remember { app.store.loadingLogoFlow() }
+        .collectAsState(initial = true)
+    val loadingLogoPercent by remember { app.store.loadingLogoSizeFlow() }
+        .collectAsState(initial = AppStore.DEFAULT_LOADING_LOGO_SIZE)
+    // The wordmark itself. Declared HERE rather than beside the header art far
+    // below, because the Play intent needs it: it is fetched on a background
+    // request per title and read by both the header and the loading cover.
+    var heroLogo by remember { mutableStateOf<String?>(null) }
     // "Don't play directly — show all servers to choose": when on, the player
     // opens on its server list (grouped by engine) and never starts a server by
     // itself, so this screen must not hold playback back for a remembered
@@ -1694,6 +1709,12 @@ fun DetailScreen(
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
                 putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
+                // The title's own wordmark, for the cover's title block (see
+                // loadingLogoOn above) — tokenized like the artwork, so the
+                // intent never carries a URL that has to be re-fetched on the
+                // main thread when the player opens.
+                putExtra("titleLogo", if (loadingLogoOn) PosterLoader.tokenize(heroLogo.orEmpty()).orEmpty() else "")
+                putExtra("titleLogoSize", loadingLogoPercent)
                 // The aura ring's colour, resolved to the same ARGB this page
                 // draws it in, so the player's cover continues the exact picture
                 // the detail page put up (see loadingAuraArgb above).
@@ -2761,7 +2782,9 @@ fun DetailScreen(
     // background request per title, cached: a title whose logo is missing —
     // every extension-only row, most non-English ones — keeps the plain text
     // title exactly as before, so this can only ever ADD something.
-    var heroLogo by remember { mutableStateOf<String?>(null) }
+    // The wordmark STATE itself is declared far above (next to the loading
+    // cover's settings), because the Play intent has to carry it; this is the
+    // one place that fetches it.
     var headerPx by remember { mutableStateOf(0) }
     var logoSizePx by remember { mutableStateOf(0) }
     val detailList = rememberLazyListState()
@@ -3517,7 +3540,11 @@ fun DetailScreen(
                 else tr("Episode %s").replace("%s", it.number.toString())
             },
             detail = selectedEp?.name?.takeIf { it.isNotBlank() },
-            image = (m?.backdropUrl?.takeIf { it.isNotBlank() }) ?: posterUrl
+            image = (m?.backdropUrl?.takeIf { it.isNotBlank() }) ?: posterUrl,
+            // The title's own wordmark, drawn instead of the text title when the
+            // setting is on and this title has one (see LoadingTitleBlock).
+            logo = if (loadingLogoOn) heroLogo else null,
+            logoPercent = loadingLogoPercent,
         )
     }
 
@@ -3800,14 +3827,19 @@ private fun PlayLoadingBanner(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    /** The title's own wordmark art, or null/blank when it has none. */
+    logo: String? = null,
+    /** How big that wordmark is drawn, in percent of its default (see
+     *  AppStore.DEFAULT_LOADING_LOGO_SIZE). */
+    logoPercent: Int = 100,
 ) {
     val style = rememberLoadingStyle()
     val effects = rememberLoadingEffect()
     when (LoadingStyles.normalize(style)) {
-        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, effects)
-        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, effects)
-        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image, effects)
-        else -> CinematicLoadingCard(title, episodeLabel, detail, image, effects)
+        LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, logo, logoPercent, effects)
+        LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
+        LoadingStyles.POSTER -> PosterLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
+        else -> CinematicLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
     }
 }
 
@@ -4095,6 +4127,8 @@ private fun CinematicLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    logo: String?,
+    logoPercent: Int,
     effects: Set<String>,
 ) {
     val transition = rememberInfiniteTransition()
@@ -4160,7 +4194,7 @@ private fun CinematicLoadingCard(
                 },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            LoadingTitleBlock(title, episodeLabel, detail) { Color(0xFFF5C569) }
+            LoadingTitleBlock(title, episodeLabel, detail, logo, logoPercent) { Color(0xFFF5C569) }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
@@ -4171,22 +4205,52 @@ private fun CinematicLoadingCard(
     }
 }
 
-/** The title / episode / detail block, shared by every style (only the accent
- *  colour of the episode line differs). */
+/**
+ * The title / episode / detail block, shared by every style (only the accent
+ * colour of the episode line differs).
+ *
+ * When the title has a WORDMARK ([logo]) it is drawn instead of the text title —
+ * the same art the detail page's header draws, at the size the user chose for
+ * the loading screen (Settings → App Layout → Loading screen → Title logo size).
+ * Everything else about the block is unchanged, including the breathing its
+ * caller applies: the wordmark grows and shrinks with the card exactly like the
+ * text did.
+ */
 @Composable
 private fun LoadingTitleBlock(
     title: String,
     episodeLabel: String?,
     detail: String?,
+    /** The title's own wordmark art, or null/blank when it has none (or the
+     *  user turned it off) — the text title is then drawn instead. */
+    logo: String? = null,
+    logoPercent: Int = 100,
     accent: () -> Color,
 ) {
-    Text(
-        title.uppercase(),
-        style = MaterialTheme.typography.headlineMedium,
-        fontWeight = FontWeight.Bold,
-        color = Color.White,
-        textAlign = TextAlign.Center
-    )
+    val logoModel = PosterLoader.model(logo?.takeIf { it.isNotBlank() })
+    if (logoModel != null) {
+        AsyncImage(
+            model = logoModel,
+            contentDescription = title,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                // 100% is a little under the full width of the card, which is
+                // about the size a text title occupied; the slider moves it
+                // either way from there (50%…160%).
+                .fillMaxWidth(
+                    (0.78f * (logoPercent.coerceIn(50, 160) / 100f)).coerceIn(0.2f, 1f)
+                )
+                .heightIn(max = 148.dp)
+        )
+    } else {
+        Text(
+            title.uppercase(),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+    }
     if (!episodeLabel.isNullOrBlank()) {
         Text(
             episodeLabel,
@@ -4216,6 +4280,8 @@ private fun SpotlightLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    logo: String?,
+    logoPercent: Int,
     effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
@@ -4266,7 +4332,7 @@ private fun SpotlightLoadingCard(
                 },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            LoadingTitleBlock(title, episodeLabel, detail) { accent }
+            LoadingTitleBlock(title, episodeLabel, detail, logo, logoPercent) { accent }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
             LoadingStatusLine(accent, Color(0xCCFFFFFF))
@@ -4286,6 +4352,8 @@ private fun PosterLoadingCard(
     episodeLabel: String?,
     detail: String?,
     image: String?,
+    logo: String?,
+    logoPercent: Int,
     effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
@@ -4348,7 +4416,7 @@ private fun PosterLoadingCard(
                     )
                     Spacer(Modifier.height(14.dp))
                 }
-                LoadingTitleBlock(title, episodeLabel, detail) { accent }
+                LoadingTitleBlock(title, episodeLabel, detail, logo, logoPercent) { accent }
                 Spacer(Modifier.height(14.dp))
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(),
@@ -4374,6 +4442,8 @@ private fun MinimalLoadingCard(
     title: String,
     episodeLabel: String?,
     detail: String?,
+    logo: String?,
+    logoPercent: Int,
     effects: Set<String>,
 ) {
     val accent = MaterialTheme.colorScheme.primary
@@ -4389,15 +4459,33 @@ private fun MinimalLoadingCard(
                 .padding(horizontal = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-                Text(
-                    title.uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                val logoModel = PosterLoader.model(logo?.takeIf { it.isNotBlank() })
+                if (logoModel != null) {
+                    // The wordmark takes its own line and keeps the quiet of this
+                    // style: no breathing (Minimal draws nothing that moves) and
+                    // no scrim behind it, just the art where the name was.
+                    AsyncImage(
+                        model = logoModel,
+                        contentDescription = title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth(
+                                (0.62f * (logoPercent.coerceIn(50, 160) / 100f))
+                                    .coerceIn(0.2f, 1f)
+                            )
+                            .heightIn(max = 120.dp)
+                    )
+                } else {
+                    Text(
+                        title.uppercase(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 val sub = listOfNotNull(
                     episodeLabel?.takeIf { it.isNotBlank() },
                     detail?.takeIf { it.isNotBlank() },

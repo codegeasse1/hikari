@@ -32,6 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
@@ -86,6 +88,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.ProviderPacks
 import com.hikari.app.ui.components.ContinueWatchingRow
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassDialog
@@ -1321,14 +1324,24 @@ internal fun ProviderPickerSheet(
     // time they open the sheet, and an alphabetical list would break it for
     // every source whose name sorts low.
     val pinOrder = remember(pinned) { pinned.withIndex().associate { (i, id) -> id to i } }
-    val filtered = remember(providers, query, filter, pinOrder) {
+    // One row per EXTENSION. An Aniyomi/manga pack publishes many sources under
+    // one name (AnimeWorld India is nine: a generic feed plus
+    // Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu), and one
+    // row per source is what made one installed extension look like nine
+    // installs. [ProviderPacks] folds them into the extension's own row; its
+    // sources are a caret away and can still be picked one by one.
+    val packs = remember(providers, query, filter, pinOrder) {
         val narrowed = providers.filter { filter == null || it.config.type == filter }
         val matches = if (query.isBlank()) narrowed
         else narrowed.filter { it.config.name.contains(query, ignoreCase = true) }
-        matches.sortedWith(
+        val ordered = matches.sortedWith(
             compareBy({ pinOrder[it.config.id] ?: Int.MAX_VALUE }, { it.config.name.lowercase() })
         )
+        ProviderPacks.rows(ordered)
     }
+    // Which extension rows are opened to show their sources. Keyed by the row's
+    // own key, so the state survives the list re-sorting under it.
+    var expanded by remember { mutableStateOf(emptySet<String>()) }
     val shownCollections = remember(collections, query) {
         if (query.isBlank()) collections
         else collections.filter { it.name.contains(query, ignoreCase = true) }
@@ -1495,17 +1508,21 @@ internal fun ProviderPickerSheet(
                         onClick = { if (multi) working = emptyList() else onPick(null) },
                     )
                 }
-                items(filtered.distinctBy { it.config.id }, key = { it.config.id }) { p ->
+                items(packs, key = { it.key }) { pack ->
                     // A stream-only addon is named with its engine so the row
                     // explains itself: it adds servers, its browsing comes from
                     // TMDB (see TmdbBrowse).
+                    val key = pack.key
                     val streamOnly =
-                        com.hikari.app.providers.StremioAddon.streamOnlyAddons[p.config.id] == true
-                    val key = p.config.id
-                    val ticked = key in working
+                        com.hikari.app.providers.StremioAddon.streamOnlyAddons[key] == true
+                    val ids = pack.members.map { it.config.id }
+                    val tickedIds = ids.filter { it in working }
+                    val ticked = tickedIds.isNotEmpty()
+                    val allTicked = tickedIds.size == ids.size
                     val isPinned = pinOrder.containsKey(key)
+                    val open = key in expanded
                     PickerRow(
-                        label = p.config.name,
+                        label = pack.label,
                         isSelected = if (multi) ticked else selection.contains(key),
                         multi = multi,
                         // The pin is on EVERY row, not revealed by a hold: with
@@ -1514,12 +1531,24 @@ internal fun ProviderPickerSheet(
                         // about first cannot be found.
                         pinned = isPinned,
                         onTogglePin = { scope.launch { app.store.togglePinnedProvider(key) } },
+                        expandable = pack.isPack,
+                        expanded = open,
+                        onToggleExpand = {
+                            expanded = if (open) expanded - key else expanded + key
+                        },
                         supporting = when {
                             streamOnly -> I18n.t("%s addon · browses TMDB").replace(
                                 "%s",
-                                p.config.type.groupLabel,
+                                pack.primary.config.type.groupLabel,
                             )
-                            else -> null
+                            !pack.isPack -> null
+                            // In multi-select the row is a checkbox for a whole
+                            // extension, so it says how much of the pack is on.
+                            multi && ticked && !allTicked -> I18n.t("%s of %s picked")
+                                .replaceFirst("%s", tickedIds.size.toString())
+                                .replaceFirst("%s", ids.size.toString())
+                            else -> pack.countLabel +
+                                (pack.detailLabel.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
                         },
                         onLongClick = {
                             if (!multi) {
@@ -1529,14 +1558,55 @@ internal fun ProviderPickerSheet(
                         },
                         onClick = {
                             if (multi) {
-                                working = if (ticked) working - key else working + key
+                                // Ticking a COLLAPSED extension row ticks every
+                                // source it publishes — that is what the row is.
+                                // Its sources are one caret away for picking one.
+                                working = if (allTicked) working - ids.toSet()
+                                else (working + ids).distinct()
                             } else {
+                                // A plain pick still means the ONE source the row
+                                // stands for (the extension's first), exactly as
+                                // tapping that source's own row always did.
                                 onPick(key)
                             }
                         },
                     )
+                    if (pack.isPack && open) {
+                        pack.members.forEachIndexed { i, member ->
+                            val mkey = member.config.id
+                            val mticked = mkey in working
+                            Row(Modifier.fillMaxWidth()) {
+                                Spacer(Modifier.width(18.dp))
+                                Box(Modifier.weight(1f)) {
+                                    PickerRow(
+                                        label = pack.memberLabel(i),
+                                        isSelected = if (multi) mticked else selection.contains(mkey),
+                                        multi = multi,
+                                        pinned = pinOrder.containsKey(mkey),
+                                        onTogglePin = {
+                                            scope.launch { app.store.togglePinnedProvider(mkey) }
+                                        },
+                                        onLongClick = {
+                                            if (!multi) {
+                                                multi = true
+                                                working = (selection + mkey).distinct()
+                                            }
+                                        },
+                                        onClick = {
+                                            if (multi) {
+                                                working = if (mticked) working - mkey
+                                                else working + mkey
+                                            } else {
+                                                onPick(mkey)
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                if (filtered.isEmpty() && query.isNotBlank()) {
+                if (packs.isEmpty() && query.isNotBlank()) {
                     item {
                         Text(
                             I18n.t("No extension matches \"$query\""),
@@ -1630,6 +1700,12 @@ private fun PickerRow(
     showDivider: Boolean = true,
     multi: Boolean = false,
     pinned: Boolean = false,
+    /** Draw the caret that opens this row's own sources (an Aniyomi/manga
+     *  extension's pack — see [com.hikari.app.ui.ProviderPacks]). */
+    expandable: Boolean = false,
+    /** Whether those sources are on screen right now. */
+    expanded: Boolean = false,
+    onToggleExpand: (() -> Unit)? = null,
     onTogglePin: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
@@ -1689,6 +1765,29 @@ private fun PickerRow(
                             CircleShape,
                         ),
                 )
+            }
+            // The caret that opens an extension row's own sources. It is its own
+            // tap target (like the pin), so opening a pack never means picking
+            // it — and a row with one source draws no caret at all.
+            if (expandable && onToggleExpand != null) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onToggleExpand),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = tr(
+                            if (expanded) "Hide this extension's sources"
+                            else "Show this extension's sources"
+                        ),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
             }
             if (isSelected) {
                 Spacer(Modifier.width(10.dp))

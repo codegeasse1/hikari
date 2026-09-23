@@ -108,6 +108,25 @@
                     android:scaleType="centerCrop"
                     android:visibility="gone" />
 
+                <!-- The title's own WORDMARK, drawn instead of @id/loading_title
+                     when the title has one (Settings → App Layout → Loading
+                     screen → Title logo). GONE for every title without one, and
+                     then the text title below is drawn as it always was — the two
+                     occupy the same slot, never both. Its width is set in code
+                     from the loading-logo size setting; adjustViewBounds keeps
+                     the height the art's own, so nothing is cropped or squashed.
+                     It lives inside this LinearLayout on purpose: the breathing
+                     animation scales the whole box, so the wordmark grows and
+                     shrinks exactly like the text title did. -->
+                <ImageView
+                    android:id="@+id/loading_logo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:adjustViewBounds="true"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="@string/app_name"
+                    android:visibility="gone" />
+
                 <TextView
                     android:id="@+id/loading_title"
                     android:layout_width="wrap_content"

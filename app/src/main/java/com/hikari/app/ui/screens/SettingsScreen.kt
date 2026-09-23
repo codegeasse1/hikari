@@ -242,6 +242,16 @@ private enum class SettingsFolder(
         "UI scale, posters, ratings, taskbar & full screen",
         Icons.Filled.Dashboard,
     ),
+    // The one switch to reach for when the app stutters. Its own folder rather
+    // than a corner of App Layout: the user looking for it is not browsing how
+    // the app LOOKS, they are trying to make it run — and it must be findable
+    // while the app is being annoying to use.
+    PERFORMANCE(
+        "performance",
+        "Performance",
+        "Fix lag, stutter & battery drain",
+        Icons.Filled.Speed,
+    ),
     // The television half of "one APK, two layouts" (see com.hikari.app.tv.TvMode).
     // Offered on both kinds of device on purpose: a phone user can switch the TV
     // layout on to see it, and a television whose box reports itself as a phone
@@ -791,7 +801,10 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.LAYOUT_POSTER -> {
                     item { SettingsCard(top = 2.dp) { PosterStyleCard(app) } }
                 }
-                SettingsFolder.APPEARANCE_FONT -> {
+                // ---- Performance: the switch for a device that cannot keep up ----
+                SettingsFolder.PERFORMANCE -> {
+                    item { SettingsCard(top = 2.dp) { PerformanceBoosterCard(app) } }
+                }                SettingsFolder.APPEARANCE_FONT -> {
                     item { SettingsCard(top = 2.dp) { FontCard(app) } }
                 }
                 SettingsFolder.LAYOUT_NAV -> {
@@ -3748,8 +3761,7 @@ private fun ExceptionEngineChip(
 }
 
 @Composable
-private fun LoadingBannerCard(app: HikariApp) {
-    val scope = rememberCoroutineScope()
+private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(true) }
     val styleFlow = remember { app.store.loadingStyleFlow() }
     val style by styleFlow.collectAsState(initial = LoadingStyles.POSTER)
@@ -3757,6 +3769,14 @@ private fun LoadingBannerCard(app: HikariApp) {
         // No treatment until the store answers (the default is NONE — see
         // AppStore.DEFAULT_LOADING_EFFECTS), so the switch never flashes on.
         val effects by effectsFlow.collectAsState(initial = emptySet<String>())
+    // The title wordmark on the cover: whether it is drawn at all, and its own
+    // size (kept apart from the detail header's — see [AppStore.loadingLogoSizeFlow]).
+    val logoFlow = remember { app.store.loadingLogoFlow() }
+    val logoOn by logoFlow.collectAsState(initial = true)
+    val logoSizeFlow = remember { app.store.loadingLogoSizeFlow() }
+    val logoSize by logoSizeFlow.collectAsState(initial = 100)
+    var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
+    LaunchedEffect(logoSize) { logoSlider = logoSize.toFloat() }
     // The colour the cover's aura ring is drawn in (Settings → App Layout →
     // Loading screen → Aura ring colour). Handed to the player as a resolved
     // colour, so both screens showing the cover draw the same ring.
@@ -3828,6 +3848,50 @@ private fun LoadingBannerCard(app: HikariApp) {
                     onPick = { key -> scope.launch { runCatching { app.store.setLoadingAuraColor(key) } } },
                 )
             }
+            Spacer(Modifier.height(10.dp))
+            // The title's own WORDMARK on the cover, instead of the text title —
+            // the same art the detail page's header draws, so tapping Play never
+            // swaps the design under the user. Its size is its OWN slider: the
+            // cover is a full screen with a centred title block, while the header
+            // is a wide banner, so one number for both always looked wrong on one
+            // of them.
+            SettingsToggle(
+                label = tr("Title logo"),
+                supporting = if (logoOn) {
+                    tr("Draw the title's own wordmark here, like the detail header")
+                } else {
+                    tr("Draw the title as plain text")
+                },
+                checked = logoOn,
+                onCheckedChange = {
+                    logoOn = it
+                    scope.launch { runCatching { app.store.setLoadingLogo(it) } }
+                },
+            )
+            if (logoOn) {
+                Spacer(Modifier.height(10.dp))
+                SettingsSlider(
+                    label = tr("Title logo size"),
+                    value = logoSlider,
+                    valueText = logoSlider.roundToInt().toString() + "%",
+                    valueRange = 50f..160f,
+                    // 111 single-percent positions between 50% and 160%, like the
+                    // detail header's slider — and its own setting, so the two
+                    // screens are sized apart.
+                    steps = 109,
+                    onValueChange = { v -> logoSlider = v.roundToInt().toFloat().coerceIn(50f, 160f) },
+                    onValueChangeFinished = {
+                        val pct = logoSlider.roundToInt().coerceIn(50, 160)
+                        logoSlider = pct.toFloat()
+                        scope.launch { runCatching { app.store.setLoadingLogoSize(pct) } }
+                    },
+                )
+                Text(
+                    tr("How big the wordmark is drawn on the loading cover, as a percentage of its default size"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 tr("Applies to the next video you open."),
@@ -3877,6 +3941,76 @@ private fun LoadingBannerCard(app: HikariApp) {
 // (The "Universal extraction (yt-dlp)" settings card stood here. It was removed
 // in 0.9.1 along with the bundled yt-dlp runtime it controlled — see the
 // CHANGELOG. There is nothing left to switch on or off.)
+
+/**
+ * Settings → Performance: the ONE switch for a device that cannot keep up.
+ *
+ * It is deliberately a single toggle with no sub-options. The person who needs it
+ * is using an app that is stuttering and wants it to stop — asking them to pick
+ * between four renderer settings is asking them to do the diagnosis. What it
+ * does is stated in the card instead (they can read it if they want to), and
+ * every one of those things is dropped together:
+ *
+ *  * the blurred halo behind every poster (three artwork layers per card plus a
+ *    gaussian blur — the most expensive thing in the UI, and the one that costs
+ *    the most while scrolling a row of posters);
+ *  * the animated poster and loading treatments;
+ *  * the width of a cross-extension search fan-out (fewer extensions asked at
+ *    once, in more waves — the same servers are still found, just staggered);
+ *  * the number of nuvio engines that may run at once (twelve QuickJS VMs is a
+ *    lot to ask of a phone that is also drawing the screen).
+ *
+ * Nothing it turns off changes what can be PLAYED. The television gets the same
+ * treatment from its own switch in TV & Remote; the two are OR'd (see
+ * [com.hikari.app.data.PerfMode]), so a box with both on simply stays light.
+ */
+@Composable
+private fun PerformanceBoosterCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.perfModeFlow() }
+    val on by flow.collectAsState(initial = false)
+    val tvFlow = remember { app.store.tvPerfFlow() }
+    val tvOn by tvFlow.collectAsState(initial = false)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Speed, tr("Performance"))
+        SettingsToggle(
+            label = tr("Performance booster"),
+            supporting = if (on) {
+                tr("Heavy visual work is off and searches run in smaller batches")
+            } else {
+                tr("Turn this on if the app lags, stutters or heats up")
+            },
+            checked = on,
+            onCheckedChange = {
+                scope.launch { runCatching { app.store.setPerfMode(it) } }
+            },
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            tr(
+                "Off, Hikari draws and searches as it always has. On, it drops the " +
+                    "things that cost the most frames per second — the blurred glow " +
+                    "behind every poster, the animated cards, and how many extensions " +
+                    "are asked for servers at the same time. The same servers are " +
+                    "still found, just a few at a time, and nothing you can watch is " +
+                    "removed."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (tvOn) {
+                tr("Television performance mode is also on (Settings → TV & Remote).")
+            } else {
+                tr("On a television the same thing is switched on automatically — see Settings → TV & Remote.")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
 
 @Composable
 private fun LanguageCard(app: HikariApp, current: String) {
