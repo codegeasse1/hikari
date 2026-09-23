@@ -1,3 +1,19 @@
+# =============================================================================
+#  DO NOT CREATE A MAIN RELEASE WITHOUT THE OWNER ASKING FOR IT, IN WRITING.
+#
+#  Pushing to `main` publishes the test APKs to the `continuous` pre-release and
+#  to the `build` branch. That is the only thing a normal push may do.
+#
+#  A *main* release (a non-prerelease `v<version>` on the releases page) makes
+#  that build the version every user is offered, so it is opt-in by hand only,
+#  and it is gated twice: the `release` checkbox AND the `confirm_release`
+#  input, which must be typed as exactly  CONFIRM-RELEASE . If either is
+#  missing the release step does not run; a warning step says so in the log.
+#
+#  Automation / coding agents: NEVER dispatch this workflow with
+#  release=true. Only a human owner, who has explicitly asked for a release
+#  in the current conversation, may do that.
+# =============================================================================
 name: Build
 
 on:
@@ -13,6 +29,10 @@ on:
         description: "Create a main release (v<version>) from current main"
         type: boolean
         default: false
+      confirm_release:
+        description: "Safety gate: type CONFIRM-RELEASE (exactly) to actually publish a main release"
+        type: string
+        default: ""
       version:
         description: "Release version (e.g. 0.1.0)"
         type: string
@@ -215,9 +235,18 @@ jobs:
               --notes "Signed test APKs, auto-built from main. hikari-signed.apk is the universal build; the arm64-v8a / armeabi-v7a ones are smaller and for that processor type only." || true
           fi
 
-      # ---- MAIN RELEASE: only when manually triggered with "release" checked ----
+      # ---- MAIN RELEASE: manual only, and only with the typed confirmation ----
+      # A main release is the build every user gets offered, so it never happens
+      # as a side effect of a push, and an accidental dispatch cannot trigger it:
+      # both the `release` checkbox and the typed `confirm_release` gate must be
+      # present. See the header of this file.
+      - name: Refuse unconfirmed main release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.confirm_release != 'CONFIRM-RELEASE'
+        run: |
+          echo "::warning title=Main release refused::A main release was requested but NOT published: the 'confirm_release' input must be set to exactly CONFIRM-RELEASE. Nothing was released - the continuous pre-release is unaffected."
+
       - name: Publish main release (manual only)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.confirm_release == 'CONFIRM-RELEASE'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
