@@ -601,11 +601,12 @@ class AppStore(private val ctx: Context) {
      * looks its best out of the box instead of asking the user to go and find
      * the styling screen first:
      *
-     *  - posters wear the coloured halo + gallery frame, rounded and badged;
+     *  - posters wear their own halo, rounded and badged — no effect layer over
+     *    the art (the gallery frame, aura ring and edge light are opt-in);
      *  - Home's featured banner is the side-by-side Showcase;
      *  - the detail page opens on "Art + poster";
      *  - the player wears the Neon skin;
-     *  - the loading screen is the title's poster card with a sheen across it.
+     *  - the loading screen is the title's poster card, with no effect over it.
      *
      * They are only DEFAULTS: every one of them is a normal setting, and a user
      * who picks something else keeps it (a stored value always wins — see each
@@ -628,12 +629,18 @@ class AppStore(private val ctx: Context) {
          *  dark poster, weak enough not to wash out a bright one. */
         const val DEFAULT_POSTER_GLOW_STRENGTH = 55
 
-        /** The signature card treatment ([com.hikari.app.ui.PosterEffects]). */
-        val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.FRAME
+        /** The signature card treatment ([com.hikari.app.ui.PosterEffects]).
+         *
+         *  NONE: a first-run poster is plain artwork. The gallery frame, the
+         *  aura ring and the edge light are all opt-in (Settings → Poster
+         *  styling → Effect) — a fresh install asked for none of them, and every
+         *  layer is work the device pays for on every card in a grid. */
+        val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.NONE
 
-        /** The signature card treatmentS — a first-run poster wears the same
-         *  gallery frame as before. */
-        val DEFAULT_POSTER_EFFECTS: Set<String> = setOf(DEFAULT_POSTER_EFFECT)
+        /** The signature card treatmentS — empty, i.e. nothing drawn over the
+         *  art (see above; [com.hikari.app.ui.PosterEffects.normalizeSet] maps a
+         *  stored NONE to "no layer" the same way). */
+        val DEFAULT_POSTER_EFFECTS: Set<String> = emptySet()
 
         /** Home's featured banner shape ([HeroStyles]). */
         const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
@@ -651,11 +658,12 @@ class AppStore(private val ctx: Context) {
          *  new user sees while a server is found is the film's artwork. */
         const val DEFAULT_LOADING_STYLE = com.hikari.app.ui.LoadingStyles.POSTER
 
-        /** The treatments over that card ([LoadingEffects]) — a single sweep of
-         *  light, which is the least busy of them and reads well on every
-         *  style. */
-        val DEFAULT_LOADING_EFFECTS: Set<String> =
-            setOf(com.hikari.app.ui.LoadingEffects.SHEEN)
+        /** The treatments over that card ([LoadingEffects]) — NONE by default:
+         *  the loading card is the title's poster on plain glass (see
+         *  [DEFAULT_LOADING_STYLE]). The sheen, the aura ring, the gallery frame
+         *  and the glow are each one switch in Settings → App Layout → Loading
+         *  screen → Effect. */
+        val DEFAULT_LOADING_EFFECTS: Set<String> = emptySet()
     }
 
     // ---- Poster & icon styling ----
@@ -1407,18 +1415,18 @@ class AppStore(private val ctx: Context) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
     }
 
-    // ---- The Manga tab (off by default; Settings → Taskbar buttons) ----
+    // ---- The Manga tab (ON by default; Settings → Taskbar buttons) ----
 
     /**
-     * True when the Manga button has been switched on in the taskbar settings.
-     *
-     * Off by default for the same reason the IPTV button is: an install with no
-     * manga extension has no use for it, and a button costs every profile room.
-     * With it on, the tab is a reading-first home — continue reading, the
-     * followed titles, and one entry per manga extension to browse.
+     * True when the Manga button is drawn in the taskbar — on by default, so
+     * the reading half of the app is reachable from a fresh install, and a
+     * switch in Settings → Taskbar buttons turns it off for a user who has no
+     * manga extension at all (see [com.hikari.app.data.AppStore.mangaTabFlow]
+     * callers; the tab itself is a reading-first home — continue reading, the
+     * followed titles, and one entry per manga extension to browse).
      */
     fun mangaTabFlow(): Flow<Boolean> =
-        store.data.map { it[K.MANGA_TAB] ?: false }
+        store.data.map { it[K.MANGA_TAB] ?: true }
 
     suspend fun mangaTab(): Boolean = mangaTabFlow().first()
 

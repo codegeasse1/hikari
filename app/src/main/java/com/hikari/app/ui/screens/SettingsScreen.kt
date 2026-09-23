@@ -562,7 +562,17 @@ fun SettingsScreen(nav: NavHostController) {
     // Stats tab draws (Settings → Taskbar buttons switches that button on):
     // one screen with two doors, so the two can never drift apart.
     if (showStats) {
-        StatsScreen(app, onBack = { showStats = false })
+        StatsScreen(
+            app,
+            onBack = { showStats = false },
+            // Same as the Stats tab's own door: a row opens the title it is
+            // about (see Routes.fromStatsKey).
+            onOpenTitle = { t ->
+                com.hikari.app.ui.navigation.Routes
+                    .fromStatsKey(t.key, t.title, t.posterUrl)
+                    ?.let { nav.navigate(it) }
+            },
+        )
         return
     }
 
@@ -1576,11 +1586,12 @@ private fun TaskbarCard(app: HikariApp) {
     // (see AppStore.iptvTabFlow) — every other tab is on unless switched off.
     val iptvFlow = remember { app.store.iptvTabFlow() }
     val iptvTab by iptvFlow.collectAsState(initial = false)
-    // The manga button works the same way and for the same reason: most
-    // installs have no manga engine at all, so it stays off until it is
-    // switched on here (see AppStore.mangaTabFlow).
+    // Manga is the other way round: its button is ON by default (see
+    // AppStore.mangaTabFlow), so the reading half of the app is reachable
+    // without hunting through settings, and a user who does not read comics
+    // switches it off here.
     val mangaFlow = remember { app.store.mangaTabFlow() }
-    val mangaTab by mangaFlow.collectAsState(initial = false)
+    val mangaTab by mangaFlow.collectAsState(initial = true)
     // Stats is the third off-by-default button (see AppStore.statsTabFlow).
     val statsFlow = remember { app.store.statsTabFlow() }
     val statsTab by statsFlow.collectAsState(initial = false)
@@ -1648,7 +1659,7 @@ private fun TaskbarCard(app: HikariApp) {
                     }
                     if (tab.route == Routes.MANGA) {
                         Text(
-                            tr("Off by default — switch on to read comics"),
+                            tr("On by default — switch off to hide the Manga tab"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -3743,7 +3754,9 @@ private fun LoadingBannerCard(app: HikariApp) {
     val styleFlow = remember { app.store.loadingStyleFlow() }
     val style by styleFlow.collectAsState(initial = LoadingStyles.POSTER)
     val effectsFlow = remember { app.store.loadingEffectsFlow() }
-    val effects by effectsFlow.collectAsState(initial = setOf(LoadingEffects.SHEEN))
+        // No treatment until the store answers (the default is NONE — see
+        // AppStore.DEFAULT_LOADING_EFFECTS), so the switch never flashes on.
+        val effects by effectsFlow.collectAsState(initial = emptySet<String>())
     // The colour the cover's aura ring is drawn in (Settings → App Layout →
     // Loading screen → Aura ring colour). Handed to the player as a resolved
     // colour, so both screens showing the cover draw the same ring.

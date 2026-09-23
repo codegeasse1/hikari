@@ -314,6 +314,10 @@ class HikariApp : Application() {
             }
         }
         Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
+        // The device's memory budget, once per launch. "It gets laggy and almost
+        // crashes while servers load" is a memory question, and without this line
+        // the log could never answer which heap ran out (see [MemoryReport]).
+        Logs.log("Memory", com.hikari.app.data.MemoryReport.device(this))
         providers = ProviderManager(store, this)
         // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
         // verification page opens only when the user taps the WebView (globe)
@@ -347,7 +351,11 @@ class HikariApp : Application() {
                     if (com.hikari.app.tv.TvMode.isTv) {
                         store.setPosterEffects(emptySet())
                         store.setPosterBlur(0)
-                        store.setLoadingEffects(setOf(com.hikari.app.ui.LoadingEffects.SHEEN))
+                        // No effect over the loading card here either — the
+                        // quietest card for the weakest chip (the default is
+                        // NONE anyway; written out so a box that already had an
+                        // effect is brought in line with the phone default).
+                        store.setLoadingEffects(emptySet())
                         store.setUiScaleEnabled(true)
                         store.setUiScale(110)
                         store.setTvPerf(true)
@@ -650,6 +658,44 @@ class HikariApp : Application() {
      * another app stops the Activities too, and continuing to work through that
      * is the entire point of the service.
      */
+    /**
+     * Android's "your process is using more than the device can spare" callback
+     * — the level it chose goes in the log, with what the process held at that
+     * moment (see [com.hikari.app.data.MemoryReport]).
+     *
+     * There is deliberately no cache to drop here: the poster cache is already
+     * bounded (see the Coil memory cache in onCreate), the QuickJS engines are
+     * per-call and closed in a `finally`, and a search pass holds nothing but
+     * the server list — so the useful thing this callback can do is produce the
+     * evidence for "it nearly crashed while the servers loaded".
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // RUNNING_* is the device asking a FOREGROUND app to give memory back.
+        // Everything below the first of them is the routine background trim
+        // (UI_HIDDEN and friends), which every app gets and which says nothing
+        // about the user's problem.
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        runCatching {
+            Logs.log(
+                "Memory",
+                "onTrimMemory(" + trimLevelName(level) + ") · " +
+                    com.hikari.app.data.MemoryReport.short(),
+            )
+        }
+    }
+
+    private fun trimLevelName(level: Int): String = when (level) {
+        android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> "RUNNING_MODERATE"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> "RUNNING_LOW"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> "RUNNING_CRITICAL"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> "UI_HIDDEN"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> "BACKGROUND"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE -> "MODERATE"
+        android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> "COMPLETE"
+        else -> level.toString()
+    }
+
     private fun watchForTheUserClosingTheApp() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             /** Activities between onStart and onStop — 0 means nothing of ours is

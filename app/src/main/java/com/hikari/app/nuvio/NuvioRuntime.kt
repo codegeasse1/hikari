@@ -88,6 +88,20 @@ object NuvioRuntime {
     private const val CALL_TIMEOUT_MS = 60_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
 
+    /**
+     * Ceiling on the JavaScript heap ONE engine may allocate.
+     *
+     * Every fresh engine is a native QuickJS VM, and nothing bounded it before:
+     * a provider that loops building strings, or cheerio parsing a giant page,
+     * could allocate until the OS low-memory killer took the whole app — which
+     * is the "it almost crashes while the sources load" half of the report.
+     * 256MB is far above any provider that works today (a cheerio tree over a
+     * few MB of HTML is tens of MB) and far below what would endanger the
+     * process; a provider that really needs more is broken anyway, and it now
+     * fails as its own "provider failed" instead of taking the app with it.
+     */
+    private const val ENGINE_MEMORY_LIMIT = 256L * 1024 * 1024
+
     // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches.
     // Providers that set their own UA header still override this.
     private const val NUVIO_DEFAULT_UA = com.hikari.app.net.Http.UA
@@ -128,7 +142,12 @@ object NuvioRuntime {
      *  a failing provider reports exactly what HTTP really returned — a 403
      *  Cloudflare challenge (site blocked the device IP), a network error, or
      *  just slow. Cleared at the start of each sources search. */
-    private val fetchLogEntries = ConcurrentLinkedDeque<String>()
+    private val fetchLogEntries = ConcurrentLinkedDeque<Pair<Int, String>>()
+
+    /** Monotonic sequence behind [fetchLogEntries] — every entry carries its own
+     *  number so a call can ask for "what happened since I started" (see
+     *  [fetchLogMark]). */
+    private val fetchLogCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** When each provider's JS actually started (right after it acquired an
      *  engine slot) — lets the sources sheet distinguish "cut off while still
@@ -206,6 +225,36 @@ object NuvioRuntime {
     private fun readAsset(path: String): String =
         com.hikari.app.HikariApp.instance.assets.open(path).bufferedReader().readText()
 
+    /**
+     * Whether a provider's source wants the cheerio bundle.
+     *
+     * A cheap look at the TEXT, and deliberately permissive: any mention of
+     * cheerio (the module is imported under three names — see the harness's
+     * alias table) or of a `$(` selector keeps the bundle. Everything else skips
+     * ~440KB of JavaScript that this engine would otherwise have to execute
+     * before the provider ran a single line — and the skip is not a gamble: a
+     * provider that turns out to need it FAILS, and [getStreams] retries it once
+     * WITH the bundle (see there).
+     */
+    private fun needsCheerio(source: String): Boolean =
+        source.contains("cheerio", ignoreCase = true) || source.contains("$(")
+
+    /**
+     * Whether a failed payload is worth the [needsCheerio] retry.
+     *
+     * True for the failures cheerio could explain: a module-load error, a
+     * `cheerio.load is not a function`. Deliberately FALSE for a timeout — that
+     * call burned its whole 60s budget, and booting a second engine to repeat it
+     * would burn another one while the pass's own ceiling is what ends it (see
+     * `ContentRepository.NUVIO_TAIL_MS`); a slow site is not a missing bundle.
+     * An empty `data` array is an ANSWER, never a failure (see [NuvioScraper]).
+     */
+    private fun cheerioRetryWorthwhile(payload: String): Boolean {
+        if (payload.contains("timed out")) return false
+        return runCatching { org.json.JSONObject(payload).optBoolean("ok", false) }
+            .getOrDefault(false) == false
+    }
+
     fun resetRunTracking() {
         providerRunStart.clear()
     }
@@ -216,11 +265,25 @@ object NuvioRuntime {
         fetchLogEntries.clear()
     }
 
-    fun fetchLogSnapshot(): List<String> = fetchLogEntries.toList()
+    fun fetchLogSnapshot(): List<String> = fetchLogEntries.map { it.second }
+
+    /**
+     * A mark to take BEFORE asking a provider, so [fetchLogSince] can hand back
+     * exactly the HTTP trail that provider's own call produced — which is what
+     * makes "this engine found nothing" diagnosable from a log file instead of
+     * only from the sources sheet. See the per-provider line in
+     * [com.hikari.app.nuvio.NuvioScraper].
+     */
+    fun fetchLogMark(): Int = fetchLogCount.get()
+
+    fun fetchLogSince(mark: Int, limit: Int = 8): List<String> =
+        fetchLogEntries.filter { it.first > mark }.take(limit).map { it.second }
 
     private fun fetchLogLine(host: String, m: String, status: String, bytes: Int, ms: Long, extra: String) {
         val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        fetchLogEntries.addFirst("$ts $m $host -> $status ${bytes}b ${ms}ms$extra")
+        fetchLogEntries.addFirst(
+            fetchLogCount.incrementAndGet() to "$ts $m $host -> $status ${bytes}b ${ms}ms$extra",
+        )
         while (fetchLogEntries.size > 150) fetchLogEntries.pollLast()
     }
 
@@ -307,9 +370,22 @@ object NuvioRuntime {
     /** Boots a fresh engine: native bridges, then boot.js + cheerio.js +
      *  harness.js + the bridge/register glue. Returns the engine; caller must
      *  close() it in a finally. */
-    private suspend fun createEngine(deferred: CompletableDeferred<String>): QuickJs {
+    private suspend fun createEngine(
+        deferred: CompletableDeferred<String>,
+        /**
+         * Whether the cheerio bundle is evaluated into this engine. False for a
+         * provider whose own source never mentions it (see [needsCheerio]):
+         * cheerio is ~440KB of JavaScript that every fresh engine otherwise has
+         * to EXECUTE before the provider even starts, and most providers are
+         * fetch + JSON + a deobfuscation step. The registry still gets an empty
+         * module, so a require that slips through fails loudly (and gets one
+         * retry with the bundle — see [getStreams]).
+         */
+        withCheerio: Boolean = true,
+    ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
+        qjs.memoryLimit = ENGINE_MEMORY_LIMIT
 
         // Native bridges. The FETCH one is asynchronous — registered through
         // [asyncFunction], so JS gets a real promise and the provider's
@@ -343,7 +419,10 @@ object NuvioRuntime {
         //    runtime.html did (evaluateJavascript's size ceiling is a non-issue
         //    here, but booting it as a script keeps the exact same path).
         qjs.evaluateCached("cheerio-head.js", "var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;")
-        qjs.evaluateCached("cheerio.js", cheerioJs)
+        //    ...executed only for a provider that says it wants cheerio — this
+        //    one line is the whole boot cost of the engines that do not (see
+        //    [withCheerio]).
+        if (withCheerio) qjs.evaluateCached("cheerio.js", cheerioJs)
         qjs.evaluateCached("cheerio-tail.js", "globalThis.__nuvioCheerio = module.exports;")
         // 3. Provider harness (CommonJS require, fetch, provider loader, shims).
         qjs.evaluateCached("harness.js", harnessJs)
@@ -371,10 +450,45 @@ object NuvioRuntime {
         episode: Int?,
     ): String {
         val settings = loadSettings(providerId).ifBlank { "{}" }
+        val wantsCheerio = needsCheerio(source)
+        val first = runProvider(
+            source = source,
+            providerId = providerId,
+            settings = settings,
+            withCheerio = wantsCheerio,
+            buildCall = { cid ->
+                val s = if (season == null) "null" else season.toString()
+                val e = if (episode == null) "null" else episode.toString()
+                "(async function () {" +
+                "  try {" +
+                "    globalThis.__nuvioSetSettings($settings);" +
+                "    var provider = globalThis.__nuvioLoadProvider(${quote(source)}, ${quote(providerId)});" +
+                "    var getStreams = provider && typeof provider.getStreams === 'function' ? provider.getStreams : globalThis.getStreams;" +
+                "    if (typeof getStreams !== 'function') { globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: false, error: 'provider has no getStreams export' })); return; }" +
+                "    var result = await getStreams(${quote(tmdbId)}, ${quote(mediaType)}, $s, $e);" +
+                "    if (result === undefined || result === null) result = [];" +
+                "    globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: true, data: result }));" +
+                "  } catch (e) {" +
+                "    globalThis.__nuvioBridgeStub.onGetStreamsDone(${quote(cid)}, JSON.stringify({ ok: false, error: String(e && e.message || e) }));" +
+                "  }" +
+                "})();"
+            },
+        )
+        if (wantsCheerio || !cheerioRetryWorthwhile(first)) return first
+        // The source never names cheerio, but the run FAILED — a helper it
+        // requires could still be reaching for it (a bundled/obfuscated module
+        // the text does not spell out). One retry with the bundle on board is
+        // cheap next to a provider that silently stops working, and it can only
+        // ever happen for a call that was going to report an error anyway.
+        com.hikari.app.data.Logs.log(
+            "Nuvio",
+            "$providerId: failed without cheerio — retrying with it",
+        )
         return runProvider(
             source = source,
             providerId = providerId,
             settings = settings,
+            withCheerio = true,
             buildCall = { cid ->
                 val s = if (season == null) "null" else season.toString()
                 val e = if (episode == null) "null" else episode.toString()
@@ -407,6 +521,7 @@ object NuvioRuntime {
             source = source,
             providerId = providerId,
             settings = settings,
+            withCheerio = needsCheerio(source),
             buildCall = { cid ->
                 "(async function () {" +
                     "  try {" +
@@ -428,6 +543,7 @@ object NuvioRuntime {
         source: String,
         providerId: String,
         settings: String,
+        withCheerio: Boolean = true,
         buildCall: (String) -> String,
     ): String {
         return concurrency.withPermit {
@@ -435,7 +551,7 @@ object NuvioRuntime {
                 withContext(Dispatchers.Default) {
                     val cid = java.util.UUID.randomUUID().toString()
                     val deferred = CompletableDeferred<String>()
-                    val qjs = createEngine(deferred)
+                    val qjs = createEngine(deferred, withCheerio)
                     providerRunStart[providerId] = System.currentTimeMillis()
                     try {
                         qjs.evaluate<Any?>(buildCall(cid), "call.js", false)
@@ -464,6 +580,7 @@ object NuvioRuntime {
         withContext(Dispatchers.Default) {
             val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
             qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+            qjs.memoryLimit = ENGINE_MEMORY_LIMIT
             try {
                 NuvioCryptoBridge.bindAll(qjs)
                 qjs.function("__hikariFetch") { args ->

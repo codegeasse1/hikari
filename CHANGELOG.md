@@ -1,3 +1,59 @@
+## 0.10.24
+
+**The lag, the cut-off nuvio engines, and the diagnostics to prove both — plus
+the Manga tab on by default and clickable Stats rows.**
+
+### Fixed
+
+- **Nothing gets "cut off" without being heard from.** The pass's wall-clock
+  ceiling used to cancel a nuvio engine that was still working, and the teardown
+  then handed it to the background sweep — a SECOND VM boot and a second round of
+  fetches for the same answer (the reported "some providers are cut off, they
+  show servers in the nuvio app"). The pass now waits up to 25s past its ceiling
+  while a nuvio engine is still in flight; its own 60s call budget is the real
+  bound.
+- **A nuvio engine boots roughly twice as fast.** Each fresh engine used to
+  execute ~440KB of cheerio before the provider ran a single line. It is now
+  evaluated only for a provider whose own source mentions cheerio (or `$(`) —
+  most engines are fetch + JSON + a deobfuscation step — and a provider that
+  turns out to need it is retried once WITH the bundle rather than failing.
+- **Every engine has a memory ceiling (256MB).** Nothing bounded the JS heap
+  before: one runaway provider could allocate until the OS low-memory killer took
+  the whole app. That is the "it almost crashes while the sources load" half of
+  the report.
+- **The request fan-out is sized to the device.** A four-core phone and an
+  eight-core tablet were both given the same 96-way fan-out, which is why the app
+  froze while the servers loaded: searches, their parsing, the QuickJS engines
+  and the UI were all fighting for the same handful of cores. The wave ceiling
+  and the search gate now scale with the core count (24..96) — nothing is
+  skipped, the queue still drains in waves, and the tail lands sooner because the
+  head is not thrashing.
+
+### Added
+
+- **The log now answers "why did this provider have nothing?"** Every nuvio
+  provider that comes back empty gets one line: the exact TMDB id, media type and
+  season/episode it was asked with, the verdict, and the HTTP trail from that
+  call (`no HTTP request at all` = it gave up before touching its own site, i.e.
+  wrong arguments; a 403/404 = the site refusing it; a 200 = its own parsing
+  found nothing).
+- **Memory is in the log.** Startup prints the device's Java heap class, its
+  large-heap class, total/free RAM and what the process holds; every search pass
+  ends with `java used/max MB · native …MB`; `onTrimMemory` logs the level
+  Android chose. "It gets laggy" is now measurable instead of a feeling.
+
+### Changed
+
+- **The Manga tab is ON by default** (Settings → Taskbar buttons switches it off
+  for anyone who does not read comics).
+- **Poster effect and loading-screen effect default to NONE** — the gallery
+  frame, aura ring, edge light, sheen and glow are all opt-in now, so a fresh
+  install draws plain artwork and a plain loading card.
+- **Every row on the Stats page opens the title it is about** — the "Items
+  consumed" / "Time spent" rows, the day lists, and the favourite-title card
+  (a video row reopens its detail page, a manga row its chapter list, and a row
+  with no provider behind it opens Search on the name).
+
 ## 0.10.23
 
 **The nuvio engines are now asked the way the app they come from asks them.**

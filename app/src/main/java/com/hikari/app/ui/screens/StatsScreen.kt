@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -77,9 +78,18 @@ private const val PANEL_DAYS = "days"
  * page itself computes nothing it does not have to: the rank ladder, the
  * streaks, the daily averages and the heatmap are all derived in one pass from
  * the decoded document.
+ *
+ * Every title ROW (and the favourite-title card) is a door back to the title
+ * itself: [onOpenTitle] gets the row and the caller turns it into a route (see
+ * [com.hikari.app.ui.navigation.Routes.fromStatsKey]). Null leaves the rows as
+ * plain text, which is what a host that cannot navigate passes.
  */
 @Composable
-fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
+fun StatsScreen(
+    app: HikariApp,
+    onBack: (() -> Unit)? = null,
+    onOpenTitle: ((WatchStats.TitleTotal) -> Unit)? = null,
+) {
     val scope = rememberCoroutineScope()
     // A remembered Flow: an inline store call would be a NEW Flow on every
     // recomposition, so collectAsState would re-subscribe and reset to initial.
@@ -225,6 +235,7 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                     } else {
                         tr("Nothing logged yet.")
                     },
+                    onOpenTitle = onOpenTitle,
                 )
             }
         }
@@ -369,7 +380,12 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                 )
             }
             item {
-                GlassCard(Modifier.fillMaxWidth()) {
+                GlassCard(
+                    Modifier.fillMaxWidth(),
+                    // The card is about ONE title, so it is a door to it, the
+                    // same way every row below is.
+                    onClick = onOpenTitle?.let { open -> { open(favourite) } },
+                ) {
                     Row(
                         Modifier.fillMaxWidth().padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -657,12 +673,23 @@ private fun rowDetail(t: WatchStats.TitleTotal): String {
     return parts.joinToString(" · ")
 }
 
-/** One title inside a drill-down: poster, name, what it is and what was taken
- *  from it, and the time it accounts for. */
+/**
+ * One title inside a drill-down: poster, name, what it is and what was taken
+ * from it, and the time it accounts for.
+ *
+ * Tapping it opens that title (see [StatsScreen]'s `onOpenTitle`), which is what
+ * "1m — The End of Oak Street" is really saying: the row is a record of ONE
+ * title, so the row IS the way back to it. [onClick] is null when the host
+ * cannot navigate, and then the row is plain text with no chevron.
+ */
 @Composable
-private fun StatsTitleRow(t: WatchStats.TitleTotal) {
+private fun StatsTitleRow(t: WatchStats.TitleTotal, onClick: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 4.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (!t.posterUrl.isNullOrBlank()) {
@@ -702,6 +729,15 @@ private fun StatsTitleRow(t: WatchStats.TitleTotal) {
                 color = MaterialTheme.colorScheme.primary,
             )
         }
+        if (onClick != null) {
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 
@@ -722,6 +758,8 @@ private fun PanelCard(
     dayRows: List<Pair<String, WatchStats.Day>>,
     onPickDay: (String) -> Unit,
     emptyText: String,
+    /** Opens a title's own page; null leaves the rows unclickable. */
+    onOpenTitle: ((WatchStats.TitleTotal) -> Unit)? = null,
 ) {
     GlassCard(Modifier.fillMaxWidth().padding(top = 10.dp)) {
         Column(Modifier.padding(14.dp)) {
@@ -801,7 +839,12 @@ private fun PanelCard(
                     }
                 }
             } else if (rows.isNotEmpty()) {
-                rows.forEach { t -> StatsTitleRow(t) }
+                rows.forEach { t ->
+                    StatsTitleRow(
+                        t,
+                        onClick = onOpenTitle?.let { open -> { open(t) } },
+                    )
+                }
             } else {
                 Text(
                     emptyText,

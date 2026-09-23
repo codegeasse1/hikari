@@ -1566,8 +1566,11 @@ fun DetailScreen(
     // detail page's cover and the player's cover stay identical through the
     // hand-off (see [com.hikari.app.ui.LoadingEffects]).
     val loadingEffectsFlow = remember { app.store.loadingEffectsFlow() }
+    // Empty until the store answers: the default is NONE (see
+    // AppStore.DEFAULT_LOADING_EFFECTS), so no treatment is ever drawn for the
+    // frame before the real value arrives.
     val loadingEffectsSetting by loadingEffectsFlow
-        .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN))
+        .collectAsState(initial = emptySet<String>())
     // The colour the loading cover's aura ring is drawn in, resolved HERE and
     // handed to the player as an ARGB int — the ring is the one part of the
     // cover with its own colour setting, and the two screens showing it
@@ -3825,7 +3828,7 @@ private fun rememberLoadingEffect(): Set<String> {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as HikariApp
     val flow = remember(app) { app.store.loadingEffectsFlow() }
     return remember(flow) { flow }
-        .collectAsState(initial = setOf(com.hikari.app.ui.LoadingEffects.SHEEN)).value
+        .collectAsState(initial = emptySet<String>()).value
 }
 
 /** The colour the cover's aura ring is drawn in (Settings → App Layout →

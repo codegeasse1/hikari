@@ -61,6 +61,20 @@ object WatchStats {
         val videos: Int = 0,
         /** Chapters read on it. */
         val chapters: Int = 0,
+        /**
+         * The key this row is filed under — the string the writer used to
+         * identify the title ([titleKey]): the player's watch-history key
+         * (`"<providerId>|<MOVIE|SERIES>|<mediaId>|<episodeId>"`), or
+         * `"manga:<providerId>|<url>"` for a chapter, or `"title:<name>"`.
+         *
+         * It is what turns a Stats row back into a route to the title itself
+         * (see [com.hikari.app.ui.navigation.Routes.fromStatsKey]), so it is
+         * carried on the row rather than looked up again at draw time. Not a
+         * stored field: the document's maps are already keyed by it, so it is
+         * filled in at DECODE time — which also means rows an older build wrote
+         * get theirs for free.
+         */
+        val key: String = "",
     )
 
     /** One day of the heatmap. Only days that have already happened appear. */
@@ -317,7 +331,7 @@ object WatchStats {
                     val perTitle = LinkedHashMap<String, TitleTotal>()
                     o.optJSONObject("tt")?.let { tt ->
                         for (tk in tt.keys()) {
-                            tt.optJSONObject(tk)?.let { row -> perTitle[tk] = decodeTitle(row) }
+                            tt.optJSONObject(tk)?.let { row -> perTitle[tk] = decodeTitle(row, tk) }
                         }
                     }
                     days[k] = Day(
@@ -332,7 +346,7 @@ object WatchStats {
             root.optJSONObject("titles")?.let { obj ->
                 for (k in obj.keys()) {
                     val o = obj.optJSONObject(k) ?: continue
-                    titles[k] = decodeTitle(o)
+                    titles[k] = decodeTitle(o, k)
                 }
             }
             Snapshot(days, titles)
@@ -367,13 +381,16 @@ object WatchStats {
 
     /** One title row as it is STORED — shared by the all-time map and by each
      *  day's own breakdown, so the two can never drift apart. */
-    private fun decodeTitle(o: JSONObject): TitleTotal = TitleTotal(
+    private fun decodeTitle(o: JSONObject, key: String = ""): TitleTotal = TitleTotal(
         title = o.optString("t"),
         posterUrl = o.optString("p").takeIf { it.isNotBlank() },
         seconds = o.optLong("s", 0L),
         kind = o.optString("k"),
         videos = o.optInt("v", 0),
         chapters = o.optInt("c", 0),
+        // The document's own map key IS the row's key (nothing is stored for
+        // it), so the caller passes the key it was read under.
+        key = key,
     )
 
     private fun encodeTitle(t: TitleTotal): JSONObject = JSONObject().apply {
@@ -420,6 +437,10 @@ object WatchStats {
             kind = kind?.takeIf { it.isNotBlank() } ?: prev?.kind.orEmpty(),
             videos = (prev?.videos ?: 0) + videos,
             chapters = (prev?.chapters ?: 0) + chapters,
+            // The row's own key, so the Stats page can reopen the title (see
+            // TitleTotal.key). `tk` is fixed for this entry, so it never has to
+            // come from `prev`.
+            key = tk.orEmpty(),
         )
         val dayTitles = if (tk == null) {
             day.titles

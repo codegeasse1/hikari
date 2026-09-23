@@ -291,6 +291,58 @@ object Routes {
     /** Opens the Search tab with a pre-filled query (e.g. a genre tag). */
     fun searchQuery(q: String): String = "$SEARCH_QUERY_BASE?q=${Uri.encode(q)}&provider="
 
+    /**
+     * Where a Stats row leads: the title's own page, reopened from the key the
+     * row was filed under.
+     *
+     * The writers file every row under the same key they use everywhere else:
+     *
+     *  - a video under the player's watch-history key,
+     *    `"<providerId>|<MOVIE|SERIES>|<mediaId>|<episodeId>"` (see
+     *    PlayerActivity.statsRow), which is exactly what [detail] needs;
+     *  - a manga under `"manga:<providerId>|<source url>"` (see
+     *    MangaReaderScreen), which is exactly what [mangaDetail] needs;
+     *  - `"title:<name>"` — a playback that never had a history entry — and
+     *    anything a build before this logged: there is no provider to reopen, so
+     *    the Search tab opens on the name instead. The row still leads
+     *    somewhere useful rather than doing nothing.
+     *
+     * Null only when the row carries neither a usable key nor a name.
+     */
+    fun fromStatsKey(key: String, title: String, posterUrl: String? = null): String? {
+        val k = key.trim()
+        if (k.startsWith("manga:", ignoreCase = true)) {
+            val rest = k.substring(6)
+            val sep = rest.indexOf('|')
+            if (sep > 0) {
+                val providerId = rest.substring(0, sep)
+                val url = rest.substring(sep + 1)
+                if (providerId.isNotBlank() && url.isNotBlank()) {
+                    return mangaDetail(providerId, url, title.ifBlank { url }, posterUrl)
+                }
+            }
+        } else {
+            val parts = k.split('|')
+            if (parts.size >= 3) {
+                val providerId = parts[0]
+                val type = runCatching { MediaType.valueOf(parts[1].uppercase()) }.getOrNull()
+                val mediaId = parts[2]
+                if (providerId.isNotBlank() && type != null && mediaId.isNotBlank()) {
+                    return detail(
+                        providerId = providerId,
+                        type = type,
+                        mediaId = mediaId,
+                        title = title,
+                        posterUrl = posterUrl,
+                        episodeId = parts.getOrNull(3).orEmpty(),
+                    )
+                }
+            }
+        }
+        val q = title.trim()
+        return if (q.isBlank()) null else searchQuery(q)
+    }
+
     /** Opens the Search tab with the query scoped to one provider — Home's
      *  "Search this extension" entry point. */
     fun searchInProvider(providerId: String, q: String = ""): String =
@@ -801,10 +853,10 @@ val BottomTabs = listOf(
     // at the top of this page (see [com.hikari.app.ui.screens.MyStuffScreen]),
     // and each keeps its own route so every existing link still lands right.
     BottomTab(Routes.LIBRARY, "My Stuff", Icons.Filled.VideoLibrary),
-    // Manga sits beside it as its own tab, OFF by default (Settings → Taskbar
-    // buttons) — the same deal as IPTV. It is a whole reading surface (browse,
-    // follow, read) rather than "something to watch", so it does not belong in
-    // the merged My Stuff slot even though the two were designed together.
+    // Manga sits beside it as its own tab, ON by default (Settings → Taskbar
+    // buttons switches it off). It is a whole reading surface (browse, follow,
+    // read) rather than "something to watch", so it does not belong in the
+    // merged My Stuff slot even though the two were designed together.
     BottomTab(Routes.MANGA, "Manga", Icons.Filled.AutoStories),
     BottomTab(Routes.IPTV, "IPTV", Icons.Filled.LiveTv),
     // Stats is the other off-by-default tab (Settings → Taskbar buttons): a
@@ -844,10 +896,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // rail on a TV, the "never empty" rule) working unchanged.
     val iptvTabFlow = remember { app.store.iptvTabFlow() }
     val iptvTabOn by iptvTabFlow.collectAsState(initial = false)
-    // ...and neither is Manga (AppStore.mangaTabFlow) — most installs have no
-    // manga engine, so its button is off until the user asks for it.
+    // Manga is the exception to that rule the other way round: its switch is ON
+    // by default (AppStore.mangaTabFlow), so the reading half of the app is one
+    // tap from a fresh install and a user who does not read comics turns the
+    // button off in Settings → Taskbar buttons.
     val mangaTabFlow = remember { app.store.mangaTabFlow() }
-    val mangaTabOn by mangaTabFlow.collectAsState(initial = false)
+    val mangaTabOn by mangaTabFlow.collectAsState(initial = true)
     // ...and neither is Stats (AppStore.statsTabFlow): it is a page about what
     // the user has already watched, and the taskbar is for getting somewhere.
     val statsTabFlow = remember { app.store.statsTabFlow() }
@@ -1115,7 +1169,18 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 MangaReaderScreen(nav, providerId, url, chapter, title, poster)
             }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
-            composable(Routes.STATS) { StatsScreen(app) }
+            composable(Routes.STATS) {
+                // Every title on the page is a door back to that title (see
+                // Routes.fromStatsKey) — the Stats page is a record of what was
+                // watched, and "which one was that again?" is answered by
+                // tapping the row, not by going to search and typing it.
+                StatsScreen(
+                    app,
+                    onOpenTitle = { t ->
+                        Routes.fromStatsKey(t.key, t.title, t.posterUrl)?.let { nav.navigate(it) }
+                    },
+                )
+            }
             composable(Routes.COLLECTIONS) {
                 CollectionsScreen(nav, onBack = { nav.popBackStack() })
             }

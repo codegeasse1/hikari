@@ -444,6 +444,17 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             // which only ever sends "tv"/"movie". Map the hint here, at the one
             // place that hands a media type to a foreign engine.
             val mediaType = if (resolved.mediaType.equals("movie", true)) "movie" else "tv"
+            // Everything the engine is about to be told, plus the HTTP trail it
+            // leaves, in one line per provider that comes back empty — see
+            // [logNuvioOutcome]. "In nuvio this extension shows servers and in
+            // Hikari it says no sources" is only answerable with both halves:
+            // WHAT was asked (a wrong/short TMDB id or the wrong namespace makes
+            // a provider return [] with no request to its own site at all) and
+            // what actually came back from the network.
+            val asked = "tmdb=${resolved.tmdbId} $mediaType" +
+                (if (season != null) " S$season" else "") +
+                (if (season != null) "E$epNum" else "")
+            val fetchMark = NuvioRuntime.fetchLogMark()
             val payload = NuvioRuntime.getStreams(
                 HikariApp.instance,
                 source,
@@ -464,6 +475,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val msg = "✗ provider failed: unreadable result"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
+                logNuvioOutcome(config, asked, msg, fetchMark)
                 return@withContext emptyList()
             }
             if (!parsed.optBoolean("ok", false)) {
@@ -472,6 +484,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 else "✗ provider failed: $err"
                 streamErrors[config.id] = msg.take(400)
                 lastOutcome[config.id] = msg.take(80)
+                logNuvioOutcome(config, asked, msg, fetchMark)
                 return@withContext emptyList()
             }
             val data = parsed.optJSONArray("data")
@@ -482,6 +495,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val msg = "no sources for this title"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = "no sources"
+                logNuvioOutcome(config, asked, msg, fetchMark)
                 return@withContext emptyList()
             }
             val out = mutableListOf<StreamSource>()
@@ -500,6 +514,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 val msg = "✗ returned ${data.length()} rows but none playable"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
+                logNuvioOutcome(config, asked, msg, fetchMark)
             }
             val distinct = out.distinctBy { it.url }
             // Warm the probe cache the moment the sources are found, so a
@@ -508,6 +523,42 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             com.hikari.app.net.StreamProbe.warmAsync(distinct)
             distinct
         }
+
+    /**
+     * One line per nuvio provider that came back with NOTHING: what it was
+     * asked, what the bridge actually saw on the wire during that call, and the
+     * verdict.
+     *
+     * This is the line that answers "the same extension shows servers in the
+     * nuvio app and none here", because it separates the three cases that all
+     * used to read as one:
+     *
+     *  - **no HTTP request at all** — the provider gave up before touching its
+     *    own site, which means the arguments were wrong for it (a TMDB id that
+     *    resolves to something else, or a namespace it does not serve), not that
+     *    the site is empty;
+     *  - **a request, and what it returned** — a 403/503 is the site refusing
+     *    the device (a Cloudflare challenge), a 404 is a bad id/path, a 200 with
+     *    a body is the provider's own parsing finding nothing;
+     *  - **a failure before the first byte** — a timeout, a DNS error, a dead
+     *    host.
+     *
+     * Only logged when a provider produced nothing: a working engine needs no
+     * explanation, and the pass already prints its "✓ N sources" line.
+     */
+    private fun logNuvioOutcome(
+        config: ProviderConfig,
+        asked: String,
+        verdict: String,
+        mark: Int,
+    ) {
+        val trail = runCatching { NuvioRuntime.fetchLogSince(mark, 6) }.getOrDefault(emptyList())
+        com.hikari.app.data.Logs.log(
+            "Nuvio",
+            "${config.name}: $asked → $verdict" +
+                (if (trail.isEmpty()) " · no HTTP request at all" else " · " + trail.joinToString(" | ")),
+        )
+    }
 
     private fun toStreamSource(s: JSONObject): StreamSource? {
         // Some providers wrap url+headers in a nested object.

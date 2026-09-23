@@ -1218,7 +1218,8 @@ class ContentRepository(private val manager: ProviderManager) {
      *  the queue by trust (origin's family, proven repos, then the rest), so
      *  the waves never cost a repo its turn — they only stagger its start. */
     private val CROSS_EXT_WAVE_START = 5
-    private val CROSS_EXT_WAVE_MAX = 96
+    /** Ceiling on one wave of repo searches — see [deviceFanOut]. */
+    private val CROSS_EXT_WAVE_MAX: Int = deviceFanOut()
     private val CROSS_EXT_WAVE_GAP_MS = 1_200L
     private val CROSS_EXT_WAVE_SLOW_MS = 2_000L
 
@@ -1235,6 +1236,22 @@ class ContentRepository(private val manager: ProviderManager) {
      *  response is to stop WAITING on it, re-ask those repos with new calls,
      *  and let the count and the status line resolve. */
     private val CROSS_EXT_STALL_MS = 25_000L
+
+    /**
+     * How much longer the pass waits for an in-flight NUVIO engine once its
+     * ceiling is up.
+     *
+     * The ceiling exists so the other extensions cannot eat the whole budget.
+     * A nuvio engine is a different animal: it is the provider that answers
+     * purely from the TMDB id, it boots a VM, and it is routinely the slowest
+     * single call in the pass (a site behind a challenge). Cancelling it here
+     * does not produce its answer — the teardown hands it to the background
+     * sweep, which boots a SECOND VM and repeats every fetch — so the tail is
+     * both faster and more complete than the cancel. The engine's own call
+     * budget ([com.hikari.app.nuvio.NuvioRuntime.CALL_TIMEOUT_MS]) is the real
+     * bound.
+     */
+    private val NUVIO_TAIL_MS = 25_000L
 
     // 20s for search/episodes: a CloudStream/native plugin's first call has to
     // spin up its QuickJS runtime (and, for a .hiki, load a whole dex archive —
@@ -1329,7 +1346,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  few seconds), while the narrow one keeps only a handful of extractors
      *  running at once — so one slow extractor can never stop the other
      *  extensions' searches from even being attempted. */
-    private val CROSS_EXT_SEARCH_CONCURRENCY = 96
+    private val CROSS_EXT_SEARCH_CONCURRENCY: Int = deviceFanOut()
     /** How many extensions may extract at the same time. Six was low enough
      *  that, on a phone with a dozen installed repos, most targets queued behind
      *  the budget and never ran at all; with ~50 installed repos the searches
@@ -1349,6 +1366,27 @@ class ContentRepository(private val manager: ProviderManager) {
     private val CROSS_EXT_SEARCH_GATE = RefundableGate(CROSS_EXT_SEARCH_CONCURRENCY)
     private val CROSS_EXT_EXTRACT_GATE = RefundableGate(CROSS_EXT_EXTRACT_CONCURRENCY)
     private val CROSS_EXT_DETAIL_GATE = RefundableGate(CROSS_EXT_DETAIL_CONCURRENCY)
+
+    /**
+     * How many provider requests this DEVICE is asked to run at once.
+     *
+     * Every device used to be given the same 96-way fan-out. On a phone with
+     * four cores that is the freeze the user reports — the searches, the HTML
+     * and JSON parsing they do on return, the dozen QuickJS engines booting
+     * beside them and the UI's own drawing all land on the same handful of
+     * cores, so nothing has a core left and the app looks hung ("clicking the
+     * source button freezes it, and sometimes it almost crashes"). Scaling the
+     * fan-out to the device keeps the same result list — nothing is ever
+     * skipped, the queue still drains in waves ([launchWave]) — at a peak the
+     * device can actually service, which is also FASTER end to end: the tail
+     * finishes sooner when the head is not thrashing.
+     *
+     * Floored at 24 so even a small device keeps the "everything at once"
+     * character that makes a search feel like nuvio's, and capped at 96 (the
+     * old value) for a big tablet.
+     */
+    private fun deviceFanOut(): Int =
+        (Runtime.getRuntime().availableProcessors() * 6).coerceIn(24, 96)
 
     /** Effectively "every installed extension": the whole point of the pass is
      *  to find the repo that CAN play the title, so nothing is skipped up
@@ -2806,7 +2844,14 @@ class ContentRepository(private val manager: ProviderManager) {
                     // first-non-empty early-close cancelled every provider that
                     // hadn't answered within ~1.5s, which is why only one
                     // provider's servers ever showed up in the player.
-                    if (now > maxOf(deadline, started + CROSS_EXT_BUDGET_MS)) {
+                    // A nuvio engine still running is the one thing the ceiling
+                    // is allowed to wait for — see [NUVIO_TAIL_MS]: cancelling
+                    // it here just re-asks it from scratch in the sweep.
+                    val nuvioStillRunning = targets.indices.any { i ->
+                        targets[i].config.type == ProviderType.NUVIO && !jobs[i].isCompleted
+                    }
+                    val overCeiling = now > maxOf(deadline, started + CROSS_EXT_BUDGET_MS)
+                    if (overCeiling && !(nuvioStillRunning && now <= deadline + NUVIO_TAIL_MS)) {
                         // Out of time with repos still unasked. A large install
                         // cannot be swept inside one pass's budget — 180+ .hiki
                         // repos and 57 CloudStream repos against 96 search
@@ -3039,7 +3084,12 @@ class ContentRepository(private val manager: ProviderManager) {
                         (if (passCompleted) "" else " (pass was CUT OFF early)") +
                         (if (passStalled) " (pass STALLED — nothing was answering)" else "") +
                         " (time=$ranOutOfTime) → " +
-                        (if (worthSweeping) "sweeping them in the background" else "not sweeping"),
+                        (if (worthSweeping) "sweeping them in the background" else "not sweeping") +
+                        // What the pass cost the process. The line above says
+                        // what the search DID; this says what it took to do it,
+                        // which is the other half of "it gets laggy and almost
+                        // crashes while the servers load" (see [MemoryReport]).
+                        " · " + com.hikari.app.data.MemoryReport.short(),
                 )
                 if (primaryLeft.isNotEmpty()) {
                     com.hikari.app.data.Logs.log(

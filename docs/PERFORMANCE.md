@@ -145,3 +145,42 @@ same engines' servers in a couple of seconds.
 `__hikariFetch` that returns canned payloads, and assert (a) three concurrent
 300ms fetches finish in ~300ms, not ~900ms, and (b) a TMDB call with a dead
 `api_key` comes back with Hikari's key and an injected `imdb_id`.
+
+## The search fan-out is sized to the device, and every engine is bounded
+
+Three rules came out of the "it is slow AND it freezes while the servers load"
+report (a 390-target pass on a 4-core phone):
+
+- **The fan-out scales with the device.** `ContentRepository.deviceFanOut()`
+  (`cores × 6`, clamped to 24..96) sizes both `CROSS_EXT_SEARCH_CONCURRENCY`
+  and the wave ceiling `CROSS_EXT_WAVE_MAX`. The old fixed 96 was chosen on a
+  desktop-class assumption: searches, the HTML/JSON parsing they do on return,
+  ~12 QuickJS engines booting beside them and the UI's own drawing all compete
+  for the same cores, and on a phone that is the freeze. Nothing is skipped — the
+  queue still drains in waves (`launchWave`) — and the tail lands SOONER,
+  because the head is not thrashing.
+- **A nuvio engine is never cancelled while it is working.** The pass ceiling
+  exists so the other extensions cannot eat the whole budget, but cancelling an
+  in-flight nuvio engine produces no answer: the teardown hands it to the
+  background sweep, which boots a SECOND VM and repeats every fetch. So the pass
+  waits up to `NUVIO_TAIL_MS` (25s) past its ceiling while one is still running;
+  `NuvioRuntime.CALL_TIMEOUT_MS` (60s) is the real bound. This is the reported
+  "some extensions show servers in the nuvio app and are just cut off here".
+- **Every engine has a memory budget** (`NuvioRuntime.ENGINE_MEMORY_LIMIT`,
+  256MB). QuickJS allocates NATIVE memory, which the Java heap cap does not
+  cover — before this, one runaway provider could allocate until the low-memory
+  killer took the process ("it almost crashes while the sources load").
+- **Cheerio is loaded only when the provider asks for it.** `cheerio.js` is
+  ~440KB of JavaScript that every fresh engine used to execute before the
+  provider ran a line. `NuvioRuntime.needsCheerio(source)` is a permissive look
+  at the provider's TEXT (any mention of cheerio, or `$(`), and a provider that
+  fails without the bundle is retried once WITH it (`getStreams`), so the
+  optimization can only ever turn a silent breakage into a working engine.
+
+**How to check a change here:** the pass's own log line now ends with
+`MemoryReport.short()` (`java used/maxMB native …MB`), the app logs the device's
+heap classes at startup, `onTrimMemory` logs the level Android chose, and every
+nuvio provider that comes back empty logs the exact TMDB id/media type/season it
+was asked with plus the HTTP trail from its own call (`no HTTP request at all`
+means the arguments were wrong for it, not that its site was empty). One search
+with the log is enough to see both halves of the problem.
