@@ -64,9 +64,9 @@ it.**
   `getImage(page)`** (`reader/source/HikariPageSource`, Nekoread's
   `downloadPageImage` verbatim — the extension's `imageRequest` headers, its
   descrambler, its per-host limits, its client) and region-decoded from disk by
-  `SubsamplingScaleImageView` — the same memory-bounded renderer the reference
-  app uses. There is no second path: no tiled bitmap, no chunked view, no
-  whole-page bitmap held in the heap.
+  `SubsamplingScaleImageView` (or, for a strip too tall for one decode,
+  `WebtoonChunkedImageView` — Nekoread's own chunked renderer, ported unchanged).
+  The page is never held in the heap whole.
 * Every option lives in `reader/ui/YomiReaderChrome` (yomi/chimahon's own
   settings sheets): reading mode, page fit, orientation, crop borders (per
   mode), tap zones and their inversion, side padding, page scale, double-tap and
@@ -87,6 +87,39 @@ it.**
   the engine's site in the verification WebView (`WebViewActivity`, auto-closing
   once the clearance is in the cookie jar) and re-fetches the chapter on the way
   back; a chapter whose page list never arrives also shows `VerificationNudge`.
+
+## Images that only an extension's client can fetch
+
+Two images in this app are not ordinary URLs, and both belong to the manga
+feature: a reader **page** and a manga **cover**. These are the CDNs that refuse a
+bare request (no Referer, the wrong User-Agent) while serving the same bytes to the
+extension's own request, so the extension's client is the one that has to ask.
+`reader/source/ExtensionPageImageFetcher.kt` is Nekoread's own fetcher layer for
+exactly that, ported whole and registered on the app's single Coil loader
+(`HikariApp`):
+
+* `ExtensionPageImage(pageUrl, imageUrl, source)` — a page, fetched through
+  `HttpSource.getImage(Page(...))`, i.e. the extension's `imageRequest(page)`
+  headers and its client with its interceptors. `Fetcher` + `Keyer`, as Nekoread
+  has them.
+* `ExtensionCoverImage(imageUrl, source)` — a cover, fetched with
+  `HttpSource.headers` plus a Referer fallback, through a short-timeout clone of
+  the extension's client so a cover can never queue behind a burst of page
+  requests on the same host. This is what Nekoread's own card uses for every cover
+  it draws.
+* `ExtensionCoverRef(imageUrl, providerId)` — **the one addition**, and it is about
+  this app rather than a preference: Nekoread keeps every installed extension in a
+  live registry built at start-up, so its cells can hand Coil a model that already
+  holds the source. Here extension classes are loaded on demand (a dex load), and
+  that must never happen while a grid composes on the main thread — so the model
+  carries only the provider id and the Fetcher resolves the source on Coil's own
+  dispatcher. If it cannot resolve or fetch, it falls back to the plain URL through
+  the app's own client, so a cover is never WORSE than it was before this existed.
+* `MangaSource` (`reader/source/MangaSource.kt`) therefore carries Nekoread's own
+  members — `userAgent`, `getPageImageModels` and `coverImageModel` beside the page
+  descriptors and `downloadPageImage` — and `PosterLoader.model(url, providerId)` is
+  how a cell asks for the extension-aware cover model: `Artwork.model(item)` for an
+  item, `MangaPosterCard`/`ContinueCard` and the manga detail header for a raw URL.
 
 ## Browse: finding an engine, and keeping the two you read
 

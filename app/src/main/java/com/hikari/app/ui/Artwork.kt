@@ -64,6 +64,18 @@ object Artwork {
 
     /** Grid/row cell model: the item's own art, else the art we looked up. */
     fun model(item: MediaItem): Any? {
+        // A manga cover goes through its EXTENSION's own client rather than
+        // Coil's bare request (see PosterLoader.model(url, providerId)): a manga
+        // CDN is the kind that refuses a request with no Referer, which is why
+        // these covers were the blank tiles in a grid. `null` for every other
+        // provider, so nothing else in the app changes path.
+        val mangaPid = item.providerId
+            .takeIf { com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(it) }
+        if (mangaPid != null) {
+            item.posterUrl?.takeIf { it.isNotBlank() }?.let {
+                return PosterLoader.model(it, mangaPid)
+            }
+        }
         item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) }
         item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) }
         return PosterLoader.model(poster(item) ?: backdrop(item))

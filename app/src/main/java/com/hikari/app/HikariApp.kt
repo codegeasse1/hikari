@@ -1013,6 +1013,23 @@ class HikariApp : Application() {
                     // pages go through this same loader. Opt-in per request (see
                     // `cropBorders` on the builder), so nothing else is affected.
                     add(com.hikari.app.reader.coil.TachiyomiReaderDecoder.Factory())
+                    // IMAGES LOADED THROUGH AN EXTENSION'S OWN CLIENT — the fetcher
+                    // layer Nekoread registers into its image loader, ported whole
+                    // here (see ExtensionPageImageFetcher). A page or a cover whose
+                    // model carries an extension's source is fetched with that
+                    // source's headers, cookies and interceptors, which is what a
+                    // hotlink-protected CDN insists on; without it such an image is
+                    // requested bare and comes back refused. ExtensionCoverRef is
+                    // the one addition to that port: it names the provider and
+                    // resolves it lazily on Coil's dispatcher, because this app
+                    // loads extension classes on demand rather than keeping
+                    // Nekoread's start-up registry (see its own documentation).
+                    add(com.hikari.app.reader.source.ExtensionPageImageFetcherFactory())
+                    add(com.hikari.app.reader.source.ExtensionPageImageKeyer())
+                    add(com.hikari.app.reader.source.ExtensionCoverImageFetcherFactory())
+                    add(com.hikari.app.reader.source.ExtensionCoverImageKeyer())
+                    add(com.hikari.app.reader.source.ExtensionCoverRefFetcherFactory())
+                    add(com.hikari.app.reader.source.ExtensionCoverRefKeyer())
                     // Animated GIF covers (collections/folders): Coil's default
                     // decoders only ever draw the first frame. ImageDecoder
                     // handles GIFs on API 28+ (and is what the platform

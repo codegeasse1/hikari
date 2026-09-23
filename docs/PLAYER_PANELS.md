@@ -22,32 +22,32 @@ them.
    the panel's edge (hidden by the silhouette clip) inside a view that was itself
    too tall for its content to scroll into view. Honouring the spec makes that
    state impossible. `maxHeightPx == 0` still means "no cap".
-3. `presentGlass` opens with a cap derived from the **window** (`windowSize()`)
-   bounded by the SCREEN's height (`screenHeightPx`) — that number can be too
-   large, never too small, and `applyHeightCap` settles it before the first draw.
+3. `presentGlass` opens with a cap derived from the **SCREEN's own height in the
+   current orientation** (`screenHeightPx()`) — a number that can be too large,
+   never too small, and `applyHeightCap` settles it before the first draw.
 4. `applyHeightCap` computes the cap from the room the dialog **really has** —
-   `visibleRoomPx(outer)`, the smallest of:
-   * the frame's own measured height,
-   * the display area actually visible to this window
-     (`getWindowVisibleDisplayFrame`), and
-   * **`screenHeightPx()` — the CONFIGURATION's screen height, which follows the
-     rotation.**
+   `visibleRoomPx(outer)`, which is:
 
-   That third bound is the fix for the whole "subtitle and server box are
-   unscrollable" report, and it is the one that was missing for a dozen builds.
-   The first two are figures the platform reports for a WINDOW, and on this class
-   of device a floating dialog's window is built from the display's NATURAL
-   (portrait) metrics — the quirk `windowSize()` documents, where
-   `currentWindowMetrics` answers 1080×2460 inside a 2460×1080 window. So in the
-   landscape player both of them can say 2460 about a screen that is 1080 tall;
-   every cap derived from them was more than twice the room there was, the panel
-   grew far past the bottom of the video, and the rows below the fold could not be
-   scrolled into view however far the list was dragged. A dialog can never show
-   more than the screen is tall, so the screen's own height bounds the room safely
-   even when everything else is right. The cap is **always applied**; there is no
-   "the rows fit, so lift the limit" state (a `WRAP_CONTENT` scroll view with a
-   ceiling shrinks onto short rows by itself, so lifting it bought nothing and
-   cost exactly this bug class). The ceiling is a ceiling, never a size.
+   * the dialog frame's own **measured** height (`outer` is `MATCH_PARENT` in both
+     axes, so what it measures IS the window the manager gave the dialog), and
+   * never more than **`screenHeightPx()` — the CONFIGURATION's screen height,
+     which follows the rotation.**
+
+   Nothing else is consulted, and that is the point. Two earlier versions derived
+   the cap from `getWindowVisibleDisplayFrame()` and `windowSize()` as well, and
+   both are figures the platform reports for a WINDOW: on this class of device a
+   floating dialog's window is built from the display's NATURAL (portrait)
+   metrics — the quirk `windowSize()` documents, where `currentWindowMetrics`
+   answers 1080×2460 inside a 2460×1080 window. They could therefore say 2460
+   about a screen that is 1080 tall (making the cap more than twice the room, so
+   the panel grew past the bottom of the video and the rows below the fold could
+   not be dragged into view), and a window that is still being placed can make the
+   visible frame answer a band one row tall (the opposite failure: a box with a
+   scrollbar beside it and nothing to scroll to). Both are gone. The cap is
+   **always applied**; there is no "the rows fit, so lift the limit" state (a
+   `WRAP_CONTENT` scroll view with a ceiling shrinks onto short rows by itself, so
+   lifting it bought nothing and cost exactly this bug class). The ceiling is a
+   ceiling, never a size.
 5. A scrollbar is shown only when the scroll view **can actually scroll**
    (`canScrollVertically`, read after the pass that applied the cap). A bar
    beside a list that cannot move is a lie; a missing bar beside one that can is
@@ -60,20 +60,28 @@ them.
    exactly as the server sent it"), which is the text that makes the choice
    possible.
 
-**The cap is corrected against what the box actually came out as.** The panel's
-vertical padding is derived from its own size (`CurvedGlassPanel`), so a FIXED
-prediction of it drifts as the panel grows — and every pixel it drifts by is a
-pixel of the panel below the bottom of the video, where no drag can reach it (the
-"the subtitle box is unscrollable" report). `applyHeightCap` therefore:
+**The cap is corrected against what the box actually came out as — and the cap is
+re-derived from scratch whenever the room changes.** The panel's vertical padding is
+derived from its own size (`CurvedGlassPanel`), so a FIXED prediction of it drifts as
+the panel grows — and every pixel it drifts by is a pixel of the panel below the
+bottom of the video, where no drag can reach it (the "the subtitle box is
+unscrollable" report). `applyHeightCap` therefore:
 
 * reads that padding straight off the panel (`panel.paddingTop + paddingBottom` —
   the padding actually applied; the old `panel.height - scroll.height` is only the
-  fallback, because while the panel is clamped that difference is a leftover
-  sliver rather than the padding, and believing it kept the cap too big), and
+  fallback, because while the panel is clamped that difference is a leftover sliver
+  rather than the padding, and believing it kept the cap too big),
 * compares the height the box ACTUALLY came out as — the hint line, the list the
   scroll view was really given (`scroll.height`) and that padding — with the room it
   was given, and takes the excess off the list, which lays out again and calls this
-  again.
+  again, and
+* **resets that correction whenever `avail` changes** (`lastAvail`), so the cap is
+  always `ceiling − correction-at-THIS-room`. The correction used to be monotonic
+  across the dialog's whole life — a single early pass with a wrong (tiny) room
+  fixed the list at that height forever, which is the one-row box with a scrollbar
+  beside it and no way to see the other rows. Re-derivation makes that state
+  unreachable: a cap that is a little too LARGE is corrected a pass later, while
+  one that is too SMALL is the only one that strands the rows.
 
 It deliberately does not read `root.height` for this: a `LinearLayout`'s own
 measured height is CLAMPED to the spec its parent offers, so a root hanging off the
@@ -81,9 +89,12 @@ bottom of the display reports exactly the room it was given and the correction
 never fired — which is why it could not close this report on its own. The list's
 height is the figure that stays truthful in that state.
 
-`corrections` (12 passes) bounds the loop, and because the correction can only ever
-SHRINK, the passes converge. It re-runs on every layout change of the window outer
-frame, the panel, the scroll view and the root, plus three pre-draw passes.
+The correction stops at its floor (24dp), so a room genuinely too small for the
+hint line plus one row cannot make it accumulate without changing the layout, and
+the wrapper `applyHeightCap()` around `applyHeightCapBody()` refuses to re-enter: a
+layout pass this pass itself scheduled must not run it a second time inside the same
+frame. It re-runs on every layout change of the window outer frame, the panel, the
+scroll view and the root, plus three pre-draw passes.
 
 `presentGlass` has no height parameter on purpose. If a new caller "knows" how
 tall its content is, that knowledge belongs in the measurement, not in an
@@ -129,21 +140,25 @@ A row that genuinely needs to move sideways owns its own `SidewaysScrollView`.
 ## The panel's width — the restored geometry
 
 The width is the size of the box the dialog floats as, so it is a number this file
-COMPUTES from the window, and the smallest of three ceilings wins:
+COMPUTES from the SCREEN's own width and height in the current orientation
+(`screenWidthPx` / `screenHeightPx` — the configuration, which follows the
+rotation), and the smallest of three ceilings wins:
 
 ```
-room   = win.x - 2*halo - 8dp                  // the window, less the glow's margins
-panelW = min(win.x * 0.95|0.97,                // never a wall: the pane keeps floating
-             win.y * 0.93|0.97,                // landscape: this is the term that binds
+room   = scrW - 2*halo - 8dp                   // the screen, less the glow's margins
+panelW = min(scrW * 0.95|0.97,                 // never a wall: the pane keeps floating
+             scrH * 0.93|0.97,                 // landscape: this is the term that binds
              560dp)                            // a tablet does not become a sheet
            .coerceAtMost(room)                 // the floor never wins over the room
            .coerceAtLeast(min(140dp, room))    // ...and never over the screen
 ```
 
-`win.y * 0.93` is the term that decides on a phone held sideways: a landscape
-window is three times wider than it is tall, so the window's HEIGHT is the binding
+`scrH * 0.93` is the term that decides on a phone held sideways: a landscape screen
+is more than twice as wide as it is tall, so the screen's HEIGHT is the binding
 constraint and the panel comes out a ~41% box in the middle of the screen — which
-is what a dialog is supposed to look like.
+is what a dialog is supposed to look like. It used to be the WINDOW's height here,
+and a window can answer in the display's natural orientation (see `windowSize()`),
+which is how a landscape player could be handed a portrait-shaped wall of a panel.
 
 That is the geometry of the build the user screenshotted as correct. Three later
 versions (0.10.6-0.10.11) tried to MEASURE the width out of the layout instead of
@@ -169,10 +184,10 @@ the panel, centred inside it, is drawn from the middle downwards with its last r
 below the display. That is the "the boxes in the player go out of the player"
 report, and `MATCH_PARENT` height is what makes it impossible.
 
-`sizeDialogWindow()` re-reads the window and re-asserts that width on every layout
-pass (cheap, and a no-op when the width has not changed), because a rotation, a
-split-screen resize or a window that has not settled yet changes the number after
-the dialog was already shown.
+`sizeDialogWindow()` re-reads the **screen** and re-asserts that width on every
+layout pass (cheap, and a no-op when the width has not changed), because a rotation
+changes the configuration's figures after the dialog was already shown — and a
+window that has not settled yet is exactly the figure it no longer trusts.
 
 ## `windowSize()`
 
@@ -191,15 +206,16 @@ were measured against the wrong axis, so they never bit and the panel grew past
 the bottom of the video.
 
 Nothing depends on it being right any more, which is the point: the HEIGHT caps
-come from `visibleRoomPx` (the frame, the display area really visible to this
-window, **and the configuration's own screen height** — see the rule above) and the
-WIDTH from the window arithmetic above.
+come from `visibleRoomPx` — the dialog frame's MEASURED height, bounded by the
+configuration's own screen height — and the WIDTH from the screen's own width and
+height (`screenWidthPx` / `screenHeightPx`, see the arithmetic above).
 
-That last clause was the mistake behind the longest-running report in this file:
-the frame and the visible-display frame are both figures the platform reports for a
-WINDOW, and on this class of device a floating dialog's window is built from the
-display's NATURAL metrics (the very quirk this function exists to work around), so
-"neither of which can answer in the wrong orientation" was simply not true. The
-configuration's height is the bound that cannot be wrong, and it is what the caps
-use now. If you add a fourth source of vertical space to this file, bound it by
-`screenHeightPx()` too.
+`windowSize()` is now only the last-resort fallback for the opening cap, used when
+the configuration reports nothing usable. Two earlier versions fed it into the
+height caps and the panel width, and both failed for the same reason: the frame and
+the visible-display frame are also figures the platform reports for a WINDOW, and a
+floating dialog's window is built from the display's NATURAL metrics (the very quirk
+this function exists to work around), so "neither of which can answer in the wrong
+orientation" was simply not true. The configuration is the only source that follows
+the rotation, and it is what the panel's geometry uses now. If you add a fourth
+source of vertical space to this file, bound it by `screenHeightPx()` too.

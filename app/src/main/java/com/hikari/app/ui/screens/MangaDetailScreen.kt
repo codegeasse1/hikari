@@ -288,7 +288,7 @@ fun MangaDetailScreen(
                             modifier = Modifier.size(30.dp),
                         )
                         AsyncImage(
-                            model = PosterLoader.model(meta?.posterUrl ?: posterUrl),
+                            model = PosterLoader.model(meta?.posterUrl ?: posterUrl, providerId),
                             contentDescription = title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,

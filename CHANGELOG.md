@@ -1,3 +1,80 @@
+## 0.10.17
+
+**Two things this project had "already fixed" were fixed by guesswork, and this
+release is what happens when the guess is checked against the code.** The player's
+server and subtitle panels were re-derived from the same two window figures three
+times; the third look found the real shape of the bug: the cap was MONOTONIC — it
+could only ever shrink from the first number it ever computed — so a single early
+measurement pass with a wrong room fixed the list at that height for the dialog's
+whole life, which is a box one row tall with a scrollbar beside it and no drag that
+can ever reveal the rest. And "Nekoread's image loading, copied full to full" was
+half true: the viewer, the page cache and the page download were a line-for-line
+copy, while the fetcher layer that loads an image THROUGH an extension's own client
+— Nekoread's `ExtensionPageImageFetcher` — was never ported at all. Both are now in.
+
+### Fixed
+
+- **The player's panels are sized from measured numbers only, and the cap can
+  never be stuck.** `visibleRoomPx` is now the dialog frame's own measured height,
+  bounded by the configuration's screen height in the current orientation;
+  `getWindowVisibleDisplayFrame` and `windowSize()` — both of which report a
+  floating window's area from the display's natural metrics, and can also answer a
+  band one row tall while a window is still being placed — are no longer consulted
+  at all, and the panel's WIDTH comes from the configuration too. The ceiling is
+  re-derived on every pass and the correction that trims it is per-room
+  (`lastAvail`), so a cap that was fixed at a wrong size recovers instead of
+  staying wrong; the ceiling is also clipped by what the rows actually measure, so
+  a three-row sheet is three rows tall rather than a wall of glass; the correction
+  stops at its floor; and `applyHeightCap()` refuses to re-enter, because a layout
+  pass it scheduled must not run it a second time inside one frame. See
+  [docs/PLAYER_PANELS.md](docs/PLAYER_PANELS.md).
+- **Nekoread's image-loading layer, ported whole.**
+  `reader/source/ExtensionPageImageFetcher.kt` is Nekoread's own file: a Coil
+  `Fetcher` + `Keyer` for `ExtensionPageImage` (a page loaded through
+  `HttpSource.getImage`) and for `ExtensionCoverImage` (a cover loaded with the
+  source's own headers, plus a Referer fallback, through a short-timeout clone of
+  the extension's client so a cover can never queue behind a burst of page
+  requests). Both are registered on the app's Coil loader. The one addition is
+  `ExtensionCoverRef`, which names the provider and resolves it on Coil's
+  dispatcher — this app loads extension classes on demand rather than keeping
+  Nekoread's start-up registry, and that load must never happen while a grid is
+  composing — with a fallback to the plain URL so a cover can never be worse than
+  before. `MangaSource` carries Nekoread's members again (`userAgent`,
+  `getPageImageModels`, `coverImageModel`), and manga covers now go through the
+  extension's client (`PosterLoader.model(url, providerId)`, used by
+  `Artwork.model`, `MangaPosterCard`, `ContinueCard` and the manga detail header).
+- **The Play button looks like it did.** The mark check that sat beside it in the
+  same row stole a quarter of its width, so "Resume S1 E5" wrapped and Play came
+  out as a tall pill. The row is Play + Download + Library again, exactly as it was.
+
+### Added
+
+- **The mark state is drawn on the detail page.** Every mark a title carries —
+  Watched, Watching, Watch later — is now a chip in a strip under Play, so the
+  answer to "have I marked this?" is on the page instead of hidden behind a tap on
+  the button that sets it. The strip also carries the way into the sheet (`Mark`
+  when nothing is set, `Change` when something is), which keeps the actions that
+  are not a plain on/off — mark every episode, remove from history — one tap away.
+  See [docs/DETAIL_HEADER.md](docs/DETAIL_HEADER.md).
+
+### Performance
+
+- **An animated cover's still is decoded SAMPLED** (bounds pass, then
+  `inSampleSize` to 512px in `RGB_565`) instead of at full size: it used to be a
+  multi-megabyte bitmap per animated cover, held for the session, which is exactly
+  the allocation that gets a low-memory device killed while a grid scrolls.
+- **Installing an extension streams** instead of holding a second full copy of the
+  package in memory when the temp file has to be copied rather than renamed.
+- **The panel's cap pass cannot nest inside its own layout**, which removes the
+  "the box shudders while I scroll it" shape of jank.
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) is new: it records the main-thread,
+  decode-size, layout-pass and install-path rules the app is built to, each with
+  the symptom that breaking it produced.
+
+### Notes
+
+- Continuous channel only. Nothing is published to the main release.
+
 ## 0.10.16
 
 **The player's server and subtitle boxes were sized off numbers that do not

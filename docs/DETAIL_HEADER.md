@@ -55,7 +55,7 @@ does (their screenshots are the spec):
   `Hero`; a second one in the page's own box takes over once the art is mostly
   gone (`progress > 0.6`), from the same corner.
 
-## The mark button beside Play
+## The mark strip under Play
 
 The user asked for the reference client's check button next to Play — tap it and
 the title can be marked **watched**, **watching** or **for later**. Where the
@@ -80,6 +80,24 @@ reads, so a mark can never disagree with a play:
 * "Mark as watching" **never resets a saved position**: it is a status, and
   clobbering someone's 40th minute with a fresh entry would be the opposite of
   helping. Nothing is written when the title is already being watched.
-* The button wears the accent as soon as the title carries any mark, so the row
-  answers "is this tracked?" at a glance — the sheet itself is the app's shared
-  `ChoiceDialog`, so it looks and behaves like every other picker.
+
+### Why the marks are a STRIP on the page, not a button in the Play row
+
+The check button started in the Play row, mirroring the reference client. It cost
+the Play button a quarter of its width — that row is `Play (weight 1f)` plus fixed
+buttons, so "Resume S1 E5" wrapped and Play came out as a tall pill — and, more to
+the point, it HID its own answer: the only way to learn whether a title is marked
+was to tap it and read the sheet back.
+
+So the marks are drawn instead:
+
+* **Every mark the title carries is a chip**, in a row directly under Play
+  (`MarkChip`, filled in the accent colour with its tick), so one glance answers
+  "have I marked this, and how?" — which is what the user asked for.
+* The strip also carries the way INTO the sheet (`Mark` when nothing is set,
+  `Change` when something is), because the sheet owns the actions that are not a
+  plain on/off: mark every episode, remove from history.
+* An unset mark is a chip that is NOT THERE rather than a chip that says "no" — the
+  strip is a readout of state, so its absence is the state.
+* The Play row is therefore back to exactly what it was: Play + Download + Library,
+  with Play wide enough for its own label.

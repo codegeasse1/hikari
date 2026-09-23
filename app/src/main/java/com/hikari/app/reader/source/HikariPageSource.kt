@@ -101,4 +101,16 @@ class HikariPageSource(
     fun setHeaders(byImageUrl: Map<String, Map<String, String>>) {
         headers = byImageUrl
     }
+
+    /**
+     * A cover of this source, loaded through the extension's own client —
+     * Nekoread's `coverImageModel`, which its own card asks for on every cover it
+     * draws. The [HttpSource] behind this source is what makes it possible (its
+     * `headers` are the Referer/User-Agent a manga CDN insists on); with no source
+     * behind it yet — the reader sets one on each page-list fetch — the URL is
+     * returned unchanged, which is what a source that serves its covers to anyone
+     * needs anyway.
+     */
+    override fun coverImageModel(coverUrl: String): Any =
+        httpSource?.let { ExtensionCoverImage(coverUrl, it) } ?: coverUrl
 }

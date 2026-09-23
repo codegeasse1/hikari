@@ -2916,20 +2916,15 @@ fun DetailScreen(
                             // "Preparing…" spinner of its own.
                             Text(actionLabel)
                         }
-                        // The MARK button — the reference client's check beside
-                        // Play. It opens the sheet above (watched / watching / for
-                        // later), and it wears the accent as soon as this title
-                        // carries any mark at all, so the row answers "is this
-                        // tracked?" at a glance.
-                        FilledTonalButton(onClick = { markSheet = true }) {
-                            Icon(
-                                Icons.Filled.CheckCircle,
-                                contentDescription = tr("Mark as watched, watching or for later"),
-                                modifier = Modifier.size(18.dp),
-                                tint = if (markAnything) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        // The MARK state is deliberately NOT a button in this row
+                        // any more. It was one (a check beside Play, mirroring the
+                        // reference client) and it cost the Play button a quarter
+                        // of its width: the row is `Play (weight 1f)` plus three
+                        // fixed buttons, so Play's label — "Resume S1 E5" — wrapped
+                        // onto a second line and the button came out as a tall
+                        // pill. What the check was FOR is the strip under this row,
+                        // which shows the state itself instead of hiding it behind
+                        // a tap (see the mark strip item below).
                         // Download without watching first: opens the player on
                         // this episode and puts its download chooser up as soon
                         // as a server is ready (see launchPlayer's
@@ -2967,6 +2962,45 @@ fun DetailScreen(
                                 Text(tr("Library"))
                             }
                         }
+                    }
+                }
+                // ---- The mark state, ON the page --------------------------------
+                //
+                // The reference client's mark button hides its own answer: the only
+                // way to learn whether a title is watched, being watched, or filed
+                // for later is to tap the button and read the sheet back. The state
+                // is drawn here instead — every mark the title carries is a chip,
+                // so one glance at the page answers "have I marked this?" — and the
+                // sheet (which owns the actions that are not a plain on/off: mark
+                // every episode, remove from history) opens from the same strip.
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // In the order the sheet offers them, and only when they are
+                        // set: the strip IS the answer, so an unset mark is a chip
+                        // that is not there rather than a chip that says "no".
+                        if (markWatched) {
+                            MarkChip(tr("Watched"), active = true) { markSheet = true }
+                        }
+                        if (markWatching) {
+                            MarkChip(tr("Watching"), active = true) { markSheet = true }
+                        }
+                        if (markLater) {
+                            MarkChip(tr("Watch later"), active = true) { markSheet = true }
+                        }
+                        // The way into the sheet — and, when nothing is marked, the
+                        // answer that nothing is. An outlined chip reads as "not
+                        // set" as plainly as a filled one reads as "set", so the
+                        // strip is never empty and never ambiguous.
+                        MarkChip(
+                            if (markAnything) tr("Change") else tr("Mark"),
+                            active = false,
+                        ) { markSheet = true }
                     }
                 }
                 // "Show Details" block (Nuvio/Stremio style): the stat line
@@ -5752,4 +5786,55 @@ private suspend fun englishSearchName(title: String, isTmdbRow: Boolean): String
         }
     }?.takeIf { it.isNotBlank() && it != own } ?: return null
     return stripSearchDecorations(english).ifBlank { english }
+}
+
+/**
+ * One chip of the detail page's mark strip.
+ *
+ * A mark that is SET is a filled chip in the accent colour with its tick; the
+ * strip's own way into the sheet — which is also what the strip shows when
+ * nothing is set — is an outlined, muted chip. Both are tappable and both open
+ * the mark sheet, so the strip is a readout first and a control second: the user
+ * sees WHICH mark a title carries without having to open anything (the whole
+ * point of drawing it), and every action the sheet holds stays one tap away.
+ */
+@Composable
+private fun MarkChip(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (active) scheme.primary.copy(alpha = 0.18f) else Color.Transparent
+            )
+            .border(
+                width = 1.dp,
+                color = if (active) scheme.primary.copy(alpha = 0.55f)
+                else scheme.outline.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(50),
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (active) {
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = scheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (active) scheme.primary else scheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
 }

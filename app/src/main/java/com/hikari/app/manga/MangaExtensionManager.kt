@@ -437,7 +437,14 @@ object MangaExtensionManager {
             temp.writeBytes(bytes)
             if (target.exists()) target.delete()
             if (!temp.renameTo(target)) {
-                target.writeBytes(temp.readBytes())
+                // Streamed rather than `temp.readBytes()`: a rename across the
+                // same directory always succeeds, so this is the rare path — but
+                // when it does run, an extension is tens of megabytes and a
+                // second full copy of it in RAM is exactly the kind of spike that
+                // gets a low-memory device killed mid-install.
+                temp.inputStream().use { input ->
+                    target.outputStream().use { out -> input.copyTo(out) }
+                }
                 temp.delete()
             }
             cache.remove(target.absolutePath)

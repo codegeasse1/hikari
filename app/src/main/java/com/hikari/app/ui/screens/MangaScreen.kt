@@ -278,6 +278,7 @@ fun MangaScreen(nav: NavHostController) {
                         posterUrl = item.posterUrl,
                         title = item.title,
                         subtitle = engineName(engines, item.providerId),
+                        providerId = item.providerId,
                         onClick = {
                             Routes.safeNavigate(
                                 nav,
@@ -333,6 +334,7 @@ fun MangaScreen(nav: NavHostController) {
                     posterUrl = rec.posterUrl,
                     title = rec.title,
                     subtitle = rec.providerName,
+                    providerId = rec.providerId,
                     badge = {
                         val p = MangaStore.progressFor(rec.key)
                         if (p != null && p.pages > 0) {
@@ -751,7 +753,7 @@ private fun ContinueCard(
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
             AsyncImage(
-                model = PosterLoader.model(progress.posterUrl),
+                model = PosterLoader.model(progress.posterUrl, progress.providerId),
                 contentDescription = progress.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -833,6 +835,10 @@ private fun MangaPosterCard(
     subtitle: String,
     badge: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    /** The extension this cover came from, when it is a manga extension: the
+     *  cover is then fetched through that extension's own client, which is what
+     *  these CDNs require (see [PosterLoader.model]). */
+    providerId: String? = null,
     onClick: () -> Unit,
 ) {
     Column(Modifier.clickable(onClick = onClick)) {
@@ -846,7 +852,7 @@ private fun MangaPosterCard(
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
             AsyncImage(
-                model = PosterLoader.model(posterUrl),
+                model = PosterLoader.model(posterUrl, providerId),
                 contentDescription = title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,

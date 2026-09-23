@@ -3512,51 +3512,50 @@ class PlayerActivity : ComponentActivity() {
      * The room a dialog may really paint in, in px — the number every height cap
      * is measured from.
      *
-     * [View.getHeight] alone is not it. A dialog window can be laid out TALLER
-     * than the screen (a window created while the rotation was still settling, a
-     * window the window-manager places with its top at the screen's top edge),
-     * and then the frame measures a room that extends below the display: a cap
-     * taken from that number is too big, the panel grows past the bottom of the
-     * video, and the rows under the fold are unreachable no matter how far the
-     * list is scrolled — the "unscrollable box" report. So the room is the
-     * SMALLEST of everything that puts a bound on it: the frame that was really
-     * laid out, the area of the display that is actually visible to the window,
-     * and the height of the screen the device is holding — see the note on that
-     * third bound in the body, which is the one that finally closed this report.
+     * It is the window the dialog was actually given: [View.getHeight] of the
+     * dialog's own frame, which is MATCH_PARENT in both axes and therefore IS the
+     * window's rect — the one figure here that comes from a layout pass instead of
+     * a query, and the one a window manager cannot answer in the wrong
+     * orientation. Capped by the screen the device is holding (see
+     * [screenHeightPx], which follows the rotation), so even a window laid out
+     * taller than the display — the window created while the rotation was still
+     * settling — can never hand the cap a number that runs off the bottom of the
+     * video, which is the "unscrollable box" report.
      *
-     * [windowSize] is not one of those bounds, because it is the one figure here
-     * that can answer in the display's natural orientation (see there) and a cap
-     * that takes the smallest of a right number and a wrong one is only as good
-     * as the wrong one: on a portrait screen a bogus landscape height would clamp
-     * the whole list to a third of the room it has. [screenHeightPx] IS such a
-     * bound precisely because it does not have that fault — it comes from the
-     * configuration, which follows the rotation.
+     * Everything else that used to feed this number is gone on purpose: both
+     * [windowSize] and `getWindowVisibleDisplayFrame` report a floating window's
+     * area from the display's NATURAL metrics, so they can say 2460 for a
+     * 1080-tall landscape screen, and a still-placing window can make the visible
+     * frame answer a band one row tall. A cap that takes the smallest of a right
+     * figure and a wrong one is only as good as the wrong one — and a cap that is
+     * a little too LARGE is corrected a pass later by the measured correction in
+     * [presentGlass], while one that is too SMALL is what actually stranded the
+     * rows.
      */
     private fun visibleRoomPx(frame: View): Int {
-        val win = windowSize()
-        var room = if (frame.height > 0) frame.height else win.y
-        // …and the SCREEN itself, in the orientation the device is in right now.
-        // This is the bound that cannot be wrong, and it is the one this cap was
-        // missing: the frame and the visible display area are both figures the
-        // platform reports for a WINDOW, and a floating dialog's window can be
-        // built from the display's natural (portrait) metrics — the same quirk
-        // [windowSize] documents — so in the landscape player both of them can
-        // answer 2460 for a screen that is 1080 tall. A cap taken from either is
-        // then more than twice the room there is, the panel grows past the bottom
-        // of the video, and the rows under the fold cannot be reached no matter
-        // how far the list is scrolled: the "subtitle and server box are
-        // unscrollable" report, which no amount of re-deriving the cap from those
-        // two figures could fix, because they are the thing that is wrong.
+        val screen = screenHeightPx()
+        // The frame IS the window: the dialog's content is MATCH_PARENT in both
+        // axes, so what `outer` measures is the rect the window manager gave the
+        // window, insets and all — the honest room, straight from a layout pass
+        // rather than from a query. Only before that first pass (height 0) is the
+        // screen itself used instead.
+        var room = if (frame.height > 0) frame.height
+        else screen.takeIf { it > 0 } ?: windowSize().y
+        // …and never more than the screen the device is holding. The screen's
+        // height comes from the CONFIGURATION, so it follows the rotation — which
+        // is what makes it the only bound here that cannot answer in the display's
+        // natural orientation (see [screenHeightPx]).
         //
-        // A dialog can never show more than the screen is tall, so the smallest
-        // of the three is the room — and the screen's own height is safe to
-        // include even when everything else is right, because the window is
-        // inside it.
-        val cfgH = screenHeightPx()
-        if (cfgH > 0 && cfgH < room) room = cfgH
-        val visible = android.graphics.Rect()
-        runCatching { frame.getWindowVisibleDisplayFrame(visible) }
-        if (visible.height() > 0 && visible.height() < room) room = visible.height()
+        // `getWindowVisibleDisplayFrame` is deliberately NOT one of the bounds any
+        // more. For a floating window it is the figure that reports the display's
+        // NATURAL metrics (the same quirk [windowSize] documents — 2460 for a
+        // 1080-tall landscape screen), so it could only ever push the room UP; and
+        // while a window is still being placed it can also report a band far
+        // smaller than the display, which pushed the room DOWN and left the list
+        // in a box the height of a single row. Both failures came from the same
+        // number, so the number is gone: the room is now the measured window,
+        // capped by the screen, and nothing else.
+        if (screen > 0 && screen < room) room = screen
         return room
     }
 
@@ -3573,6 +3572,23 @@ class PlayerActivity : ComponentActivity() {
     private fun screenHeightPx(): Int {
         val density = resources.displayMetrics.density
         return (resources.configuration.screenHeightDp * density).toInt()
+    }
+
+    /**
+     * The WIDTH of the display in the orientation the device is in right now, in
+     * px — the twin of [screenHeightPx], and read from the same place for the same
+     * reason: the configuration follows the rotation, `displayMetrics` does not.
+     *
+     * The panel's width is computed from this pair now instead of from
+     * [windowSize], so the whole floating box — width, and the window it lives in
+     * — is derived from figures that cannot come back in the other orientation.
+     * A landscape player therefore always gets the narrow pane (the height term
+     * is the one that binds there) and a portrait one the wide box, whatever any
+     * window happens to report at the moment the sheet opens.
+     */
+    private fun screenWidthPx(): Int {
+        val density = resources.displayMetrics.density
+        return (resources.configuration.screenWidthDp * density).toInt()
     }
 
     /**
@@ -3763,25 +3779,20 @@ class PlayerActivity : ComponentActivity() {
         // light sweeping around them) visible. Its height is never decided by a
         // guess about its content: the panel is WRAP_CONTENT, and the cap on the
         // scroll view below is computed from the room the dialog frame actually
-        // MEASURED and from what the rows actually measure (see
-        // [MaxHeightScrollView] + applyHeightCap) — the two numbers that cannot
-        // be wrong on a device whose window differs from its screen.
+        // MEASURED and from what the rows actually want (see [MaxHeightScrollView]
+        // + applyHeightCap) — two measured numbers, neither of them a query the
+        // platform can answer in the display's natural orientation.
         //
         // The cap it opens with (before the frame has been laid out even once)
-        // is the room the WINDOW has, because the window is what the dialog is
-        // given and the frame is never larger than it. A previous version opened
-        // at a per-call ESTIMATE of the content's height (~34dp a row, plus a
-        // guess for the message line), and that estimate is exactly what cut the
-        // second option off the download sheet: the real rows are taller than
-        // 34dp, so the sheet opened one row short until a layout pass corrected
-        // it — and on a dialog with no hint line and nothing to scroll it never
-        // corrected at all. A room derived from the window can be too tall, never
-        // too short, and "too tall" is fixed a frame later by applyHeightCap.
-        val openWin = windowSize()
-        // …bounded by the screen's own height, so even the very first frame (the
-        // one laid out before [applyHeightCap] has run) can never open taller than
-        // the display, whatever the window reports (see [screenHeightPx]).
-        val openRoom = minOf(openWin.y, screenHeightPx().takeIf { it > 0 } ?: openWin.y)
+        // is the room the SCREEN has, in the orientation the device is in: the
+        // configuration's own height, which is the one figure no window of the
+        // platform's can answer in the other orientation (see [screenHeightPx]).
+        // It is deliberately generous — a ceiling that is a little too high is
+        // corrected a pass later, and the panel is WRAP_CONTENT so it only ever
+        // shrinks onto its rows — while a ceiling that is too LOW is what left
+        // the list in a box one row tall, with a scrollbar beside it and nothing
+        // to scroll to.
+        val openRoom = screenHeightPx().takeIf { it > 0 } ?: windowSize().y
         val panelH = (
             (openRoom * if (flatPanel) 0.94f else 0.86f).toInt()
                 - 2 * halo - (8 * density).toInt()
@@ -3875,27 +3886,35 @@ class PlayerActivity : ComponentActivity() {
         // was too wide (0.10.11 came out at ~72% of a 2460px screen, where this
         // puts ~41%) and not centred.
         //
+        // The figures it is computed from are the SCREEN's, not a window's (see
+        // [screenWidthPx] / [screenHeightPx]): the configuration is the one source
+        // that follows the rotation, so a window that answers in the display's
+        // natural metrics — the quirk this whole file keeps running into — can
+        // never turn a landscape pane into a portrait-shaped wall.
+        //
         // Three ceilings, and the SMALLEST wins:
-        //  * the window's width, less the halo and a little air for the glow to
+        //  * the screen's width, less the halo and a little air for the glow to
         //    fade into, so the panel always floats with both rounded sides
         //    visible;
-        //  * the window's HEIGHT — and in the landscape player this is the one
-        //    that binds, because a landscape window is three times wider than it
-        //    is tall. It is what makes the panel read as a pane rather than a
+        //  * the screen's HEIGHT — and in the landscape player this is the one
+        //    that binds, because a landscape screen is more than twice as wide as
+        //    it is tall. It is what makes the panel read as a pane rather than a
         //    wall, and it is why the same code gives a portrait player a wide
         //    panel and a landscape one a narrow box;
         //  * 560dp, so a tablet's panel does not grow into a full-width sheet.
         //
-        // The floor yields to the room that exists: on a small window (split
-        // screen, a phone-sized TV box, a window that has not settled yet) 140dp
-        // of "minimum width" once made the panel WIDER than the screen and sliced
-        // every row's right-hand column off with no way to reach it.
+        // The floor yields to the room that exists: on a small screen (split
+        // screen, a phone-sized TV box) 140dp of "minimum width" once made the
+        // panel WIDER than the screen and sliced every row's right-hand column off
+        // with no way to reach it.
         val win = windowSize()
-        val roomW = win.x - 2 * halo - (8 * density).toInt()
+        val scrW = screenWidthPx().takeIf { it > 0 } ?: win.x
+        val scrH = screenHeightPx().takeIf { it > 0 } ?: win.y
+        val roomW = scrW - 2 * halo - (8 * density).toInt()
         val minW = (140 * density).toInt()
         val panelW = minOf(
-            (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
-            (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
+            (scrW * if (flatPanel) 0.97f else 0.95f).toInt(),
+            (scrH * if (flatPanel) 0.97f else 0.93f).toInt(),
             (560 * density).toInt(),
         )
             .coerceAtMost(roomW)
@@ -3958,13 +3977,12 @@ class PlayerActivity : ComponentActivity() {
         // player" report, and MATCH_PARENT height is what makes it impossible.
         var appliedWinW = -1
         fun sizeDialogWindow() {
-            // Re-read the window every time this is asked for: the size a dialog
-            // is shown with is whatever the window said at that instant, and on a
-            // rotation, a split-screen resize or a window that has not settled
-            // yet that instant's answer is wrong.
-            val w = windowSize()
-            val maxW = if (w.x > 0) minOf(win.x, w.x) else win.x
-            val wantW = (panelW + 2 * halo).coerceAtMost(maxW.coerceAtLeast(1)).coerceAtLeast(1)
+            // Re-read the SCREEN every time this is asked for: the size a dialog
+            // is shown with is whatever the screen was at that instant, and on a
+            // rotation, a split-screen resize or a window that has not settled yet
+            // that instant's window figure is wrong (which is exactly why this
+            // reads the configuration and not a window — see [screenWidthPx]).
+            val wantW = (panelW + 2 * halo).coerceAtMost(scrW.coerceAtLeast(1)).coerceAtLeast(1)
             if (wantW == appliedWinW) return
             appliedWinW = wantW
             dialog.window?.setLayout(wantW, WindowManager.LayoutParams.MATCH_PARENT)
@@ -3997,12 +4015,10 @@ class PlayerActivity : ComponentActivity() {
         // "the box content is unscrollable":
         //
         //  1. The number is the room the dialog REALLY has — [visibleRoomPx],
-        //     which is the smallest of the frame's own measured height, the area
-        //     of the display that is actually visible to this window, and the
-        //     rotation-corrected window size. It is not the frame's height alone
-        //     (a window laid out taller than the screen measures a room that runs
-        //     off the bottom of the display, and a cap taken from it is too big)
-        //     and it is not an estimate.
+        //     which is the window's own measured height, capped by the screen's
+        //     (see [visibleRoomPx]). It is not an estimate, and it is not any
+        //     figure a floating window can answer in the display's natural
+        //     orientation — the two queries that used to feed it are gone.
         //
         //  2. The cap is ALWAYS applied — there is no "the rows fit, so remove
         //     the limit" state any more. That state is what made the box
@@ -4018,6 +4034,24 @@ class PlayerActivity : ComponentActivity() {
         //     none are cut off" behaviour is kept WITHOUT the state that could be
         //     entered wrongly. The cap is a ceiling, never a size.
         //
+        //  3. The ceiling is re-derived on EVERY pass, and it is clipped by what
+        //     the rows actually want. Both properties are new, and between them
+        //     they are the whole difference between a panel that can be stuck
+        //     wrong and one that cannot:
+        //
+        //      * A cap that is re-derived can never be STUCK. It used to be
+        //        monotonic — it could only ever shrink from the first number it
+        //        ever computed — so a single early pass with a wrong (tiny) room
+        //        fixed the list at that height for the dialog's whole life: the
+        //        box came up ONE ROW tall, with a scrollbar beside it and no drag
+        //        that could ever bring the other rows into view. The correction is
+        //        therefore per-room now: when the room changes, it starts again
+        //        from zero and the full ceiling is granted back (see `lastAvail`).
+        //      * A ceiling clipped by `content.measuredHeight` makes the panel
+        //        exactly as tall as its rows when they fit, and exactly as tall as
+        //        the room when they do not — never a wall of empty glass with the
+        //        rows parked off the bottom of it.
+        //
         // The scrollbar follows the truth rather than a guess about the fit
         // ([scroll.canScrollVertically], read after the pass that applied the
         // cap): a bar beside a list that cannot move is a lie that says something
@@ -4025,12 +4059,18 @@ class PlayerActivity : ComponentActivity() {
         // supposed to know" half of the same report.
         var appliedCap = -1
         var barShown = false
-        // How many measured corrections this dialog has taken (see below). The
-        // correction can only shrink, so a few passes always converge; the counter
-        // is what guarantees that even a silhouette that keeps re-measuring itself
-        // can never turn the correction into a loop.
-        var corrections = 0
-        fun applyHeightCap() {
+        // The room the current cap was derived for, and the correction it carries
+        // at that room. Both are per-room: when `avail` changes (a rotation, a
+        // split screen being resized, a window that has finally settled) the
+        // correction resets and the cap is granted the full ceiling again — which
+        // is what makes a cap that was fixed at a wrong size recover instead of
+        // staying wrong for the dialog's whole life.
+        var lastAvail = -1
+        var correction = 0
+        // Set while a cap pass is running (see the wrapper below): a layout pass
+        // this pass scheduled must not re-enter it.
+        var inCapPass = false
+        fun applyHeightCapBody() {
             // The window's own width is re-asserted on every pass as well: the
             // panel's width is what the window is built from, and a rotation, a
             // split-screen resize or a not-yet-settled window changes it after
@@ -4042,6 +4082,13 @@ class PlayerActivity : ComponentActivity() {
             // the arrangement note in [presentGlass]).
             val avail = visibleRoomPx(outer)
             if (avail <= 0) return
+            // A new room is a fresh start: the correction below was measured
+            // against the old one, so it is discarded rather than carried into a
+            // room it was never measured in (see the class note above).
+            if (avail != lastAvail) {
+                lastAvail = avail
+                correction = 0
+            }
             // Everything outside the scroll view: the hint line + its inset, and
             // the panel's own padding (the halo plus the row gap on both sides).
             // The hint row is root's FIRST child — measuring root itself would
@@ -4064,34 +4111,42 @@ class PlayerActivity : ComponentActivity() {
             // purpose: every pixel here is a row the list cannot show.
             val chromeNow = (24 * density).toInt()
             // The whole panel — the hint line above it plus the panel (list +
-            // its own halo padding) — has to fit inside `avail`. The arithmetic
-            // below is a first guess at the LIST height that achieves that; the
-            // measured correction underneath it is what makes it true on any
-            // device, whatever the metrics answer.
+            // its own halo padding) — has to fit inside `avail`, so that is the
+            // ceiling. It is re-derived here on every pass from the CURRENT room;
+            // nothing about it is remembered from an earlier one.
             val ceiling = (avail - hintH - chromeNow - panelPad).coerceAtLeast((48 * density).toInt())
-            // A dialog that is already open keeps the cap it settled on: the rows
-            // can grow while it is up (a server landing mid-search), and re-deriving
-            // the cap on every layout pass would make the panel breathe. It shrinks
-            // only through the measured correction below, which is monotonic.
-            var cap = if (appliedCap > 0) minOf(appliedCap, ceiling) else ceiling
+            // …and clipped by what the rows want, so a two-row sheet is two rows
+            // tall rather than a wall of glass with the rows at its top. The
+            // content is the scroller's own child and is measured with an
+            // UNSPECIFIED height, so its measured height is its full natural
+            // height — the honest "how tall do these rows want to be". A content
+            // that has not been measured yet (0) simply has no opinion and leaves
+            // the ceiling as the only bound.
+            val wanted = content.measuredHeight.takeIf { it > 0 } ?: Int.MAX_VALUE
+            var cap = minOf(ceiling - correction, wanted).coerceAtLeast((24 * density).toInt())
             // THE CORRECTION, and the reason the "unscrollable box" report is over:
-            // the number that decides is not any of the estimates above but the
-            // height the box ACTUALLY came out as. What has to fit is the hint line,
-            // the list the scroll view was really given and the panel's own
-            // padding; if that total is taller than the room, the excess comes off
-            // the list and the layout this schedules calls this function again —
-            // each pass shrinks toward the room and the pass after it finds nothing
-            // left to take. It deliberately does NOT read `root.height` for this:
-            // a LinearLayout's own measured height is CLAMPED to the spec its
-            // parent offers, so a root that hangs off the bottom of the display
-            // reports exactly the room it was given and the correction never fired.
-            // The list's height is the figure that is truthful in that state (it
-            // keeps its measured size however the panel around it is clamped).
+            // the number that decides is not any of the sums above but the height
+            // the box ACTUALLY came out as. What has to fit is the hint line, the
+            // list the scroll view was really given and the panel's own padding;
+            // if that total is taller than the room, the excess comes off the list
+            // and the layout this schedules calls this function again — each pass
+            // takes off what is left over, and the pass after it finds nothing to
+            // take. It deliberately does NOT read `root.height` for this: a
+            // LinearLayout's own measured height is CLAMPED to the spec its parent
+            // offers, so a root that hangs off the bottom of the display reports
+            // exactly the room it was given and the correction never fired. The
+            // list's height is the figure that is truthful in that state (it keeps
+            // its measured size however the panel around it is clamped).
+            //
+            // The correction stops at the floor: once the list is at its minimum
+            // there is nothing left to give, and accumulating further would only
+            // make every later pass re-request the same layout.
+            val floorPx = (24 * density).toInt()
             val listNow = if (scroll.height > 0) scroll.height else cap
             val needed = hintH + listNow + chromeNow + panelPad
-            if (needed > avail && corrections < 12) {
-                corrections++
-                cap = (cap - (needed - avail)).coerceAtLeast((24 * density).toInt())
+            if (needed > avail && cap > floorPx) {
+                correction += needed - avail
+                cap = minOf(ceiling - correction, wanted).coerceAtLeast(floorPx)
             }
             if (cap != appliedCap) {
                 appliedCap = cap
@@ -4108,6 +4163,27 @@ class PlayerActivity : ComponentActivity() {
             if (wantBar != barShown || wantBar != scroll.isVerticalScrollBarEnabled) {
                 barShown = wantBar
                 scroll.isVerticalScrollBarEnabled = wantBar
+            }
+        }
+
+        /**
+         * Runs [applyHeightCapBody], never nested.
+         *
+         * The pass ends by requesting layout on the views whose layout listeners
+         * call it back, and a listener can be dispatched from inside a layout that
+         * this pass itself scheduled — so without this the pass could re-enter
+         * synchronously and lay the same panel out two or three times for one
+         * frame. That is the "the box shudders while I scroll it" shape of jank,
+         * and it costs nothing to make impossible: the outer pass has already
+         * queued the follow-up pass that a re-entry would have performed.
+         */
+        fun applyHeightCap() {
+            if (inCapPass) return
+            inCapPass = true
+            try {
+                applyHeightCapBody()
+            } finally {
+                inCapPass = false
             }
         }
         // The frame's height only exists after the dialog is shown, and the rows

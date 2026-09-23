@@ -132,6 +132,31 @@ object PosterLoader {
         return pending.getOrPut(name) { mutableStateOf(0L) }.value
     }
 
+    /**
+     * Coil model for a cover that belongs to an installed MANGA EXTENSION.
+     *
+     * Every other cover in the app is a plain URL, and Coil fetches it bare. A
+     * manga cover is not like the others: those CDNs are the hotlink-protected
+     * ones, and the request they accept is the extension's own — its User-Agent,
+     * its Referer, its cookies, and its client's interceptors. This returns
+     * [com.hikari.app.reader.source.ExtensionCoverRef], which Coil passes to that
+     * model's fetcher (registered in HikariApp): the cover is then loaded through
+     * the extension's client exactly as Nekoread loads every cover, and the source
+     * is resolved lazily on Coil's own dispatcher (see the fetcher).
+     *
+     * Falls back to [model] for anything else — a non-extension provider, a
+     * `data:` poster (the provider's own inline base64, which needs no network
+     * request at all), or a phone where the extension is gone.
+     */
+    fun model(url: String?, providerId: String?): Any? {
+        val single = model(url)
+        val pid = providerId?.takeIf { it.isNotBlank() } ?: return single
+        if (!com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(pid)) return single
+        val u = normalize(url) ?: return single
+        if (u.startsWith(DATA_IMAGE) || u.startsWith(CACHE_TOKEN)) return single
+        return com.hikari.app.reader.source.ExtensionCoverRef(u, pid)
+    }
+
     /** Poster for a grid/row cell: the item's own poster, or its backdrop when
      *  the provider left the poster empty (some catalogs only fill the
      *  landscape `image`, and an empty model is a blank cell). */
@@ -152,6 +177,11 @@ object PosterLoader {
     /** Bound on the still cache and on the waiting map: covers are a handful per
      *  screen, and this must not grow with a catalog of thousands. */
     private const val STILLS_MAX = 64
+
+    /** Longest edge a decoded still is allowed to have. A still is drawn in the
+     *  same cell as any other cover, so anything past a couple of hundred pixels
+     *  is memory that buys nothing (see [decodeStill]). */
+    private const val STILL_MAX_PX = 512
 
     private val stillInFlight = ConcurrentHashMap.newKeySet<String>()
     private val stillLastAttempt = ConcurrentHashMap<String, Long>()
@@ -190,11 +220,7 @@ object PosterLoader {
         prepExecutor.execute {
             try {
                 val bytes = com.hikari.app.net.Http.getBytes(u)
-                val bmp = bytes?.let { b ->
-                    runCatching {
-                        android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size)
-                    }.getOrNull()
-                }
+                val bmp = bytes?.let { decodeStill(it) }
                 if (bmp != null) {
                     if (stills.size >= STILLS_MAX) {
                         stills.keys.firstOrNull()?.let { stills.remove(it) }
@@ -206,6 +232,36 @@ object PosterLoader {
                 stillInFlight.remove(u)
             }
         }
+    }
+
+    /**
+     * The first frame of an animated cover, decoded SMALL.
+     *
+     * A still is drawn in the same 116dp cell as every other cover, so a
+     * full-size decode is pure waste — and this path used to do exactly that:
+     * `decodeByteArray` with no options, i.e. a full-width ARGB_8888 bitmap per
+     * animated cover (several MB each) held in [stills] for the session. On a
+     * low-memory device that is the difference between a grid that scrolls and
+     * one that is killed. The bounds pass is free (it reads the header only) and
+     * the sample is computed from it, so a webtoon-strip GIF costs the same as a
+     * thumbnail.
+     */
+    private fun decodeStill(bytes: ByteArray): android.graphics.Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds) }
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= STILL_MAX_PX ||
+            bounds.outHeight / (sample * 2) >= STILL_MAX_PX
+        ) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+        return runCatching {
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        }.getOrNull()
     }
 
     /**
