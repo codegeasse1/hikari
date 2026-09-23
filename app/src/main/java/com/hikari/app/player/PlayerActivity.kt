@@ -2097,12 +2097,21 @@ class PlayerActivity : ComponentActivity() {
             clearUnlockIcon()
             unlockBtn?.visibility = View.GONE
             seekFeedback?.visibility = View.GONE
-            if (!codecOverlayPinned) hideCodecOverlay()
+            // A readout covering a large part of a thumbnail-sized window is
+            // worse than no readout: hidden here, restored (pinned or not) when
+            // the player comes back to the full screen.
+            codecOverlay?.visibility = View.GONE
+            stopCodecTicker()
         } else {
             pv.useController = true
             if (controlsLocked) {
                 pv.hideController()
                 flashUnlockIcon()
+            }
+            codecOverlay?.let {
+                it.visibility = View.VISIBLE
+                updateCodecOverlay()
+                startCodecTicker()
             }
         }
     }
