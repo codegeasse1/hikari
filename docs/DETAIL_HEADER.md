@@ -28,6 +28,7 @@ does (their screenshots are the spec):
   ```
   progress   = (art scrolled away) / (art height)        // 0 at the top, 1 when gone
   logo.width = screenWidth * lerp(0.62, 0.34, progress)  // shrinks as it rises
+                          * size                         // the user's own %, see below
   logo.top   = lerp(artBottom - logoHeight - 10dp,       // on the art...
                     statusBar + 5dp,                     // ...then pinned at the top
                     progress)
@@ -45,6 +46,13 @@ does (their screenshots are the spec):
 * **The height is measured, the position is interpolated.** Positioning the
   wordmark from a hard-coded fraction of the screen instead of the measured art
   height is what breaks on a different header style or a different aspect ratio.
+* **The user's logo size is a MULTIPLIER, clamped at both ends.**
+  `AppStore.detailLogoSizeFlow()` (Settings → App Layout → Details header →
+  "Title logo size", `DEFAULT_DETAIL_LOGO_SIZE` = 100%, 50…160%, one percent per
+  step) multiplies that width fraction — the logo's height follows from the art's
+  aspect ratio, so this is "bigger wordmark", never a stretch. The result is
+  clamped to `0.2f…1f` before it reaches `fillMaxWidth`, because a fraction above
+  1 would draw the art wider than the screen it is fitted into.
 * **A missing logo is not a failure.** A blank logo leaves the page exactly as it
   was before this feature (text title, same spacing), and the text title's *layout*
   (the `if (heroLogo.isNullOrBlank())` guard) is the only place the two cases

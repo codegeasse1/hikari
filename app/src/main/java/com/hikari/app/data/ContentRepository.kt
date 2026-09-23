@@ -688,6 +688,23 @@ class ContentRepository(private val manager: ProviderManager) {
             return key
         }
 
+        /** Stop this video's background sweep for now AND hold whatever it has
+         *  not finished. Called when the user leaves the player: a nuvio search
+         *  cold-starts a QuickJS engine per provider, and a title the user has
+         *  stopped watching must not keep doing that while they browse the rest
+         *  of the app (the reported "it stays laggy for a few seconds after I
+         *  come back from the player").
+         *
+         *  Nothing is lost by stopping it: every provider the cancelled sweep had
+         *  not really asked goes back on the unfinished-work ledger (see
+         *  [notePendingWork]), and the hold is released by the next play of the
+         *  same title — or by [SWEEP_HOLD_MAX_MS] — which re-asks them. */
+        fun pauseSweepFor(item: MediaItem, episode: Episode?): String {
+            val key = holdSweepFor(item, episode)
+            sweeps[key]?.job?.cancel()
+            return key
+        }
+
         /** Start whatever [holdSweepFor] held back for this key. Safe to call
          *  twice, and safe to call for a key that was never actually held. */
         fun releaseHeldSweepKey(key: String?) {

@@ -43,9 +43,30 @@ preference key `watchStats`:
   on the first tick that plays. Wall-clock seconds, deliberately: seeking and
   re-watching are still time spent, and the position would double-count a scrub
   and under-count a re-watch.
+  **Both writes go through `app.appScope`, never `lifecycleScope`** — see the
+  trap below.
 - `MangaReaderScreen`: one chapter per chapter opened (deduped per session — a
   webtoon strip walks the reader across chapters and back), and the wall-clock
-  time the reader is on screen, counted only while the activity is RESUMED.
+  time the reader is on screen, counted only while the activity is RESUMED. The
+  clock is ONE clock for the whole reader, keyed on the manga (`LaunchedEffect(key)`)
+  and **not** on the chapter: keying it on the chapter restarted it on every
+  chapter change, so a reader who moved faster than one tick — or whose webtoon
+  strip walked across chapters — was credited no time at all.
+
+**The trap that kept "time spent" at 0m.** Both of these are written from a
+place that is about to die (the player's `onStop`/`onDestroy`, the reader's
+screen leaving), and a write launched in an `Activity`/composable scope is
+cancelled the moment that scope dies:
+
+- the player's final flush was `lifecycleScope.launch { … }`, so leaving the
+  player cancelled the write of everything since the last 60 s flush — i.e. the
+  tail of every watch, and ALL of a watch shorter than a minute;
+- "items consumed" kept being written (a chapter opened, a video started), which
+  is why the page could honestly show 7 items and 0m spent at the same time.
+
+If you add another counter, launch the write in `app.appScope` (the process-wide
+scope) and keep counting on a single clock that outlives the chapter/screen
+change.
 
 **How it is written** — `AppStore.recordWatchSeconds/recordVideoStarted/`
 `recordChapterRead` do the read-modify-write **inside DataStore's atomic `edit`**,

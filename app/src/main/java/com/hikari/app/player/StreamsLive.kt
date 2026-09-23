@@ -23,6 +23,10 @@ object StreamsLive {
      *  [ContentRepository.holdSweepFor]). */
     private val sweepKeys = ConcurrentHashMap<String, String>()
 
+    /** The title each session's sweep belongs to, so the player can hand the
+     *  sweep back to the hold when it closes (see [pauseSweep]). */
+    private val sweepOwners = ConcurrentHashMap<String, Pair<MediaItem, Episode?>>()
+
     /**
      * Keep this session's background extension search off the loading screen.
      *
@@ -34,6 +38,7 @@ object StreamsLive {
      * backstop so unfinished work can never be stranded.
      */
     fun holdSweep(id: String, item: MediaItem, episode: Episode?) {
+        sweepOwners[id] = item to episode
         sweepKeys[id] = ContentRepository.holdSweepFor(item, episode)
     }
 
@@ -41,6 +46,18 @@ object StreamsLive {
     fun releaseSweep(id: String?) {
         if (id == null) return
         ContentRepository.releaseHeldSweepKey(sweepKeys.remove(id))
+    }
+
+    /** The player is closing: stop this title's background sweep and hold the
+     *  rest of its work (see [ContentRepository.pauseSweepFor]). A nuvio search
+     *  boots a QuickJS engine per provider, and continuing it while the user is
+     *  back on the app's own screens is what made leaving the player feel heavy
+     *  for a few seconds. The title's servers are untouched; the sweep resumes
+     *  the next time this title is played, or after the hold's own backstop. */
+    fun pauseSweep(id: String?) {
+        if (id == null) return
+        val owner = sweepOwners[id] ?: return
+        ContentRepository.pauseSweepFor(owner.first, owner.second)
     }
 
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
@@ -132,8 +149,13 @@ object StreamsLive {
         statusFlow(id).value = text
     }
 
-    fun remove(id: String) {
-        releaseSweep(id)
+    /** Drops the session. [holdSweep] is set by the player when the user left it
+     *  on purpose: instead of releasing the session's background sweep — which
+     *  would let a fresh nuvio search start the instant the player is destroyed,
+     *  right as the app is busy tearing a player down — the sweep is held, and
+     *  resumes on the next play of the same title (see [pauseSweep]). */
+    fun remove(id: String, holdSweep: Boolean = false) {
+        if (holdSweep) pauseSweep(id) else releaseSweep(id)
         sessions.remove(id)
         episodes.remove(id)
         dones.remove(id)
@@ -141,5 +163,6 @@ object StreamsLive {
         statuses.remove(id)
         originSettled.remove(id)
         sweepKeys.remove(id)
+        sweepOwners.remove(id)
     }
 }

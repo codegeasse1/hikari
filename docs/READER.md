@@ -140,6 +140,19 @@ uses on these phones.
    pages). Tall pages are left to the subsampling view. Do not key this effect on
    the page: an effect that restarts on every scroll step cancels its own
    downloads, which is what makes a slow source stutter.
+11. **The page slider lands where you tap** (`ChapterNavigatorPill` in
+   `YomiReaderChrome.kt`). Its value is the reader's REPORTED page, and a tap or
+   a drag only *asks* the viewer to go there — the viewer reports the new page
+   once its scroll has settled, so the knob used to sit on the old page and
+   "sync" only after the next manual scroll (the user's report). The pill now
+   holds the chosen page locally (`pendingPage`), shows that, and lets go when the
+   viewer reports the same page — or after 900 ms, in case a webtoon settles on a
+   neighbouring one. Nothing else consumes the slider's value, so the local hold
+   cannot disagree with the reader for longer than that.
+12. **The reading clock is one clock** — see [STATS.md](STATS.md). It is keyed on
+   the manga, not the chapter: a clock that restarted with every chapter change
+   credited no time at all to a reader flipping chapters (or whose webtoon strip
+   walked across them).
 
 ## 4. Settings
 

@@ -546,10 +546,17 @@ fun MangaReaderScreen(
     // The clock only counts while the activity is RESUMED: a reader left open
     // in the background is not being read, and counting it would turn "time
     // spent" into "time the app was open".
-    LaunchedEffect(activeChapterUrl) {
+    //
+    // One clock for the WHOLE reader, not one per chapter (it used to be keyed
+    // on [activeChapterUrl]): switching chapters — and, in webtoon mode,
+    // scrolling across the chapters the strip holds — restarted the timer, so a
+    // reader who moved faster than one tick, or who flipped through chapters,
+    // was never credited ANY time. That is why "time spent" could sit at 0m
+    // while chapters piled up in the same document.
+    LaunchedEffect(key) {
         var last = System.currentTimeMillis()
         while (true) {
-            delay(20_000L)
+            delay(10_000L)
             val now = System.currentTimeMillis()
             val seconds = (now - last) / 1000L
             last = now

@@ -1,3 +1,57 @@
+## 0.10.21
+
+**Nuvio engines actually finish, so the server list stops at 2-3, the reader's
+page slider lands where you tap it, and Stats finally counts your time.** The
+Nuvio one is the big one: with 20+ nuvio providers installed the search ran out
+of budget before most of them had even booted, which is why the list looked
+nothing like the same list in the Nuvio app.
+
+### Added
+
+- **A nuvio report in the sources sheet.** Under the server list (and in the
+  "no playable sources" state) there is now a line per installed nuvio engine:
+  what it answered — "3 sources", "no sources", an error, or "never ran — no
+  engine slot before the search ended" — plus a count of how many engines
+  answered at all. When a plugin's servers are missing, this says which plugin
+  and why instead of leaving you to guess.
+- **Title logo size** (Settings → App Layout → Details header). A slider that
+  sizes the title artwork drawn over the detail page's header image, 50% to
+  160%, moving one percent at a time.
+
+### Fixed
+
+- **Nuvio providers no longer lose their turn.** Three things were stopping most
+  of a 20+ provider install from ever answering: every provider call re-compiled
+  the ~550KB runtime (boot + cheerio + harness) from source in a brand-new
+  QuickJS engine (nuvio compiles it to bytecode once and reuses it — we now do
+  the same), only 6 engines ran at once (nuvio runs 10), and a provider had 45
+  seconds (nuvio gives 60). All three are now nuvio's numbers, so the tail of
+  the provider queue gets to run and its servers reach the player.
+- **The server list stops stuttering while servers are still arriving.** Bursts
+  of new servers rebuilt every open chooser (and re-created its whole chip
+  strip) once per server; they are now gathered and rebuilt at most four times a
+  second, and a rebuild that would produce the same chip strip is skipped.
+- **The app no longer stays heavy for a few seconds after leaving the player.**
+  Leaving used to hand the title's background search straight back to the
+  system, so a fresh nuvio sweep (one QuickJS engine per provider) started
+  exactly while the player was being torn down and the previous screen was
+  rebuilding. The sweep is now stopped and held when you leave the player, and
+  resumes the next time you play that title (or shortly after, on its own
+  backstop).
+- **The reader's page slider lands where you tap.** Tapping or dragging the
+  bottom bar jumped the chapter but the knob stayed on the old page until the
+  next scroll; it now follows your finger immediately and only waits for the
+  reader if the reader settles somewhere else.
+- **Stats counts real time.** Two separate leaks kept "time spent" at 0m while
+  items piled up: the player's final flush of watched seconds was written in the
+  activity's own scope, so it was cancelled the moment the player closed (losing
+  the last part of every watch, and all of a watch shorter than a minute), and
+  the manga reader's clock restarted on every chapter change — a reader who
+  flipped chapters, or whose webtoon strip walked across them, was credited no
+  time at all. Both now write through the app's own scope and one continuous
+  clock, so time spent, XP, the rank ladder and the favourite title's "spent"
+  figure follow what you actually watched and read.
+
 ## 0.10.20
 
 **Two devices can now set each other up, the source list can be pinned, and the

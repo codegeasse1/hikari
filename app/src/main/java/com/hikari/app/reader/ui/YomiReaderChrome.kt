@@ -83,6 +83,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -630,6 +631,24 @@ private fun ChapterNavigatorPill(
     // invalidates only this pill (the enclosing chrome and the whole reader screen stay put).
     val curPage = currentPage()
     val pageCount = totalPages().coerceAtLeast(1)
+    // The page the user just picked. A tap or drag on the slider only ASKS the reader to go
+    // there — the reader reports the new page back once its scroll has settled, so the knob used
+    // to stay on the old page (and "sync" only after the next manual scroll). Holding the chosen
+    // page until the reader reports it makes the bar land under the finger instantly; the timer
+    // gives up after a moment in case the reader settles on a different page (a webtoon jumping
+    // to a nearby one), so the bar can never lie for long.
+    var pendingPage by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(curPage, pendingPage) {
+        val target = pendingPage
+        if (target != null && curPage == target) pendingPage = null
+    }
+    LaunchedEffect(pendingPage) {
+        if (pendingPage != null) {
+            delay(900)
+            pendingPage = null
+        }
+    }
+    val shownPage = (pendingPage ?: curPage).coerceIn(1, pageCount)
     val buttonColors = IconButtonDefaults.filledIconButtonColors(
         containerColor = ChromeBarColor,
         disabledContainerColor = ChromeBarColor,
@@ -675,8 +694,12 @@ private fun ChapterNavigatorPill(
                 }
             }
             Slider(
-                value = curPage.toFloat().coerceIn(1f, pageCount.toFloat()),
-                onValueChange = { v -> onSeekPage(v.toInt() - 1) },
+                value = shownPage.toFloat(),
+                onValueChange = { v ->
+                    val page = v.toInt().coerceIn(1, pageCount)
+                    pendingPage = page
+                    onSeekPage(page - 1)
+                },
                 valueRange = 1f..pageCount.toFloat(),
                 colors = sliderAccentColors(),
                 // One tick dot per page (yomi-style), so tapping/dragging shows exactly how far

@@ -377,10 +377,34 @@ class PlayerActivity : ComponentActivity() {
     private fun notifySourcesChanged() {
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
-        val rebuildAll = Runnable { sourcesWatchers.toList().forEach { runCatching { it() } } }
-        if (Looper.myLooper() == Looper.getMainLooper()) rebuildAll.run()
-        else Handler(Looper.getMainLooper()).post(rebuildAll)
+        //
+        // Coalesced: a search that lands ten servers in one go used to run the
+        // whole rebuild ten times back to back (every watcher re-created its
+        // chip strip and re-walked its list), which is what made scrolling the
+        // server list stutter while results were still arriving — and what made
+        // the app feel briefly heavy right after coming back from the player,
+        // when the sweep lands its results. One rebuild per [REBUILD_COALESCE_MS]
+        // is imperceptible and costs a fraction of the work.
+        if (rebuildPosted) return
+        rebuildPosted = true
+        rebuildHandler.removeCallbacks(rebuildSources)
+        rebuildHandler.postDelayed(rebuildSources, REBUILD_COALESCE_MS)
     }
+
+    /** Set while a coalesced rebuild is queued (see [notifySourcesChanged]). */
+    @Volatile
+    private var rebuildPosted = false
+
+    private val rebuildHandler = Handler(Looper.getMainLooper())
+
+    private val rebuildSources = Runnable {
+        rebuildPosted = false
+        sourcesWatchers.toList().forEach { runCatching { it() } }
+    }
+
+    /** How long bursts of new servers are gathered before the open choosers are
+     *  rebuilt (see [notifySourcesChanged]). */
+    private val REBUILD_COALESCE_MS = 250L
 
     /** The detail screen's live-search session id, when the player was opened
      *  through it. Lets a player whose every server has died ask the still-
@@ -2542,7 +2566,10 @@ class PlayerActivity : ComponentActivity() {
                         val row = statsRow()
                         val app = applicationContext as? HikariApp
                         if (app != null) {
-                            lifecycleScope.launch {
+                            // Same reasoning as [flushWatchSeconds]: the
+                            // activity's own scope dies with the player, and this
+                            // write must not die with it.
+                            app.appScope.launch {
                                 runCatching {
                                     app.store.recordVideoStarted(
                                         row[0], row[1], row[2], row[3],
@@ -2572,7 +2599,13 @@ class PlayerActivity : ComponentActivity() {
         watchSecondsPending = 0L
         val row = statsRow()
         val app = applicationContext as? HikariApp ?: return
-        lifecycleScope.launch {
+        // Process-wide scope, exactly like [recordProgress]: the last flush comes
+        // from onStop/onDestroy, and a write launched in the ACTIVITY's scope is
+        // cancelled the moment the player is destroyed — which silently threw
+        // away the tail of every session (and, for a watch shorter than one
+        // flush interval, ALL of it: "time spent" sat at 0m no matter how much
+        // had actually been watched).
+        app.appScope.launch {
             runCatching {
                 app.store.recordWatchSeconds(seconds, row[0], row[1], row[2], row[3])
             }
@@ -5081,9 +5114,20 @@ class PlayerActivity : ComponentActivity() {
             builtSelected = currentIndex
         }
 
+        /** The pills the strip currently shows and which of them is selected, so
+         *  a rebuild that would produce exactly the same strip is skipped: a
+         *  server landing every second used to tear down and re-inflate the whole
+         *  chip row (and throw away the strip's scroll offset) for nothing. */
+        var builtChips = ""
+        var builtChipSelection = ""
         fun rebuildChips() {
+            val names = listOf("All") + sections().map { it.first }
+            val sig = names.joinToString("\u0000")
+            if (sig == builtChips && chip == builtChipSelection) return
+            builtChips = sig
+            builtChipSelection = chip
             chipRow.removeAllViews()
-            (listOf("All") + sections().map { it.first }).forEach { name ->
+            names.forEach { name ->
                 // The pill carries its own measured LayoutParams (see chipPill),
                 // so it is added bare — it can neither collapse nor be squeezed.
                 chipRow.addView(
@@ -10284,7 +10328,14 @@ class PlayerActivity : ComponentActivity() {
         liveStatusJob?.cancel()
         liveStatusJob = null
         stopLoadingTicker()
-        intent.getStringExtra("streamsLiveId")?.let { StreamsLive.remove(it) }
+        // holdSweep: the user left the player, so the title's background search
+        // is stopped and held rather than released — a fresh nuvio sweep (one
+        // QuickJS engine per provider) starting the instant this player is
+        // destroyed is exactly the "still laggy for a few seconds after going
+        // back" report. It resumes the next time this title plays.
+        intent.getStringExtra("streamsLiveId")?.let {
+            StreamsLive.remove(it, holdSweep = true)
+        }
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null
         dismissSlowDialog()

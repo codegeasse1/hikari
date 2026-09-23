@@ -2648,6 +2648,15 @@ private fun DetailHeaderCard(app: HikariApp) {
     val flow = remember { app.store.detailHeroStyleFlow() }
     val style by flow.collectAsState(initial = DetailHeroStyles.WIDE)
     var pickerOpen by remember { mutableStateOf(false) }
+    // The title logo's own size (Settings → App Layout → Details header): the
+    // wordmark art a title page draws over its header. Held locally while the
+    // finger is on it and written when the drag ends — the same pattern as the
+    // poster sliders above — but in SINGLE-percent steps (50%…160%), because
+    // "a bit bigger" is not a 10% jump.
+    val logoFlow = remember { app.store.detailLogoSizeFlow() }
+    val logoSize by logoFlow.collectAsState(initial = 100)
+    var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
+    LaunchedEffect(logoSize) { logoSlider = logoSize.toFloat() }
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Panorama, tr("Details header"))
@@ -2656,6 +2665,27 @@ private fun DetailHeaderCard(app: HikariApp) {
             supporting = tr(DetailHeroStyles.description(style)),
             leadingIcon = Icons.Filled.Panorama,
             onClick = { pickerOpen = true },
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingsSlider(
+            label = tr("Title logo size"),
+            value = logoSlider,
+            valueText = logoSlider.roundToInt().toString() + "%",
+            valueRange = 50f..160f,
+            // 111 single-percent positions between 50% and 160% (110 gaps): the
+            // slider moves one point at a time instead of leaping in tens.
+            steps = 109,
+            onValueChange = { v -> logoSlider = v.roundToInt().toFloat().coerceIn(50f, 160f) },
+            onValueChangeFinished = {
+                val pct = logoSlider.roundToInt().coerceIn(50, 160)
+                logoSlider = pct.toFloat()
+                scope.launch { runCatching { app.store.setDetailLogoSize(pct) } }
+            },
+        )
+        Text(
+            tr("How big the title artwork is drawn over the header image"),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 

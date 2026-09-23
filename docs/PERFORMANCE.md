@@ -54,6 +54,21 @@ one of these paths, keep the rule.
 * `CurvedGlassPanel.rebend()` is coalesced onto the next frame's animation phase:
   a scroll emits one change event per pixel, and bending rows on each of them laid
   the whole panel out several times per frame.
+* `PlayerActivity.notifySourcesChanged()` coalesces its rebuilds (one queued
+  rebuild at a time, `REBUILD_COALESCE_MS`) and the server chooser's chip strip
+  skips a rebuild that would produce exactly the same pills. A search that lands
+  ten servers in one go used to re-create every row and every pill ten times back
+  to back, which is what made the server list stutter while results were still
+  arriving. The chooser's LIST is append-only for the same reason (see
+  `builtSig`/`keep` in `showServerChooser`): a rebuild that re-created the row a
+  finger was already pressing turned the tap into an `ACTION_CANCEL`.
+* **Leaving the player holds the title's background sweep**
+  (`StreamsLive.remove(id, holdSweep = true)` → `ContentRepository.pauseSweepFor`).
+  A nuvio sweep cold-starts a JS engine per provider, and releasing it from
+  `onDestroy` started exactly that while the player was being torn down and the
+  previous screen rebuilt — the reported "it stays laggy for a few seconds after
+  I come back from the player". The sweep's unasked providers stay on the
+  `PendingWork` ledger and are re-asked when the title plays again.
 * `PosterLoader.pending` holds one state per poster, capped at `PENDING_MAX`; the
   still cache is capped at `STILLS_MAX`.
 

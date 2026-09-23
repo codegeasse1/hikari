@@ -216,3 +216,44 @@ other extension for server and only play with its own server."*
   screen's status line ("Searching your extension + N more…") and the "no
   playable server" note (which may only claim a single-repo verdict when there are
   no exceptions in play).
+
+### 7. A nuvio engine must get its turn — and its own budget
+
+The user's report: *"in our hikari it's not extracting all nuvio servers, while
+in nuvio app the extractor shows servers from all plugin"*, with 20+ nuvio
+providers installed and only 2-3 servers on the list. Three separate limits were
+stopping the tail of the provider queue from ever answering:
+
+- **The runtime is compiled once, not once per provider.** Every nuvio call boots
+  a fresh QuickJS engine and evaluates `assets/nuvio/{boot,cheerio,harness}.js`
+  into it — ~550KB of JavaScript, cheerio alone being 450KB. Compiling that from
+  source per provider meant a 20-provider search spent most of its budget
+  re-parsing the same bundle 20 times. `NuvioRuntime.bytecodeCache` (with
+  `evaluateCached`) compiles each script to QuickJS bytecode once and evaluates
+  the bytecode from then on, exactly as nuvio does (`JsRuntime`'s cached
+  polyfill/call bytecode). Bytecode is portable across engines of the same
+  QuickJS build, and a compile/run failure falls back to evaluating the source,
+  so a compiler hiccup can only cost speed, never a provider.
+- **The caps are nuvio's own numbers**: `MAX_CONCURRENT = 10`
+  (`PluginRuntime.MAX_CONCURRENT_PLUGINS`) and `CALL_TIMEOUT_MS = 60_000`
+  (`PLUGIN_TIMEOUT_MS`). At 6 engines and 45 s a provider, most of a 20+
+  provider install was still queued when the per-provider budget expired, and a
+  timeout is not an answer — so those providers were "cut off", re-asked by the
+  background sweep, and cut off again.
+- **The engines that produced nothing are now visible.** `nuvioReportLines` in
+  `DetailScreen.kt` prints one line per installed nuvio engine in the sources
+  sheet (both under the list and in the "no playable sources" state): what it
+  answered, or "never ran — no engine slot before the search ended". The maps it
+  reads (`NuvioScraper.lastOutcome`/`streamErrors`) are cleared at the start of
+  a search, so a provider with no entry genuinely was not asked. Do not remove
+  this: without it "why is this plugin's servers missing" is unanswerable from
+  the app itself.
+
+**Leaving the player holds the sweep** (`StreamsLive.remove(id, holdSweep =
+true)` → `ContentRepository.pauseSweepFor`). A nuvio sweep cold-starts an engine
+per provider, and releasing it at `onDestroy` started exactly that while the
+player was being torn down and the previous screen rebuilt — the *"it stays laggy
+for a few seconds after I come back from the player"* report. The cancelled
+sweep's unasked providers stay on the `PendingWork` ledger, and the hold is
+released by the next play of the same title (or by `SWEEP_HOLD_MAX_MS`), so
+nothing is lost.

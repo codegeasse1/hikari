@@ -278,6 +278,10 @@ class AppStore(private val ctx: Context) {
         /** How the detail page's header art is laid out — see
          *  [com.hikari.app.ui.screens.DetailHeroStyles]. */
         val DETAIL_HERO_STYLE = stringPreferencesKey("detailHeroStyle")
+        /** How big the title LOGO is drawn on the detail page's header, as a
+         *  percentage of its default size (see
+         *  [DEFAULT_DETAIL_LOGO_SIZE]) — the wordmark art TMDB provides. */
+        val DETAIL_LOGO_SIZE = intPreferencesKey("detailLogoSize")
         /** Which player control shell the player wears — see
          *  [com.hikari.app.player.PlayerSkins]. */
         val PLAYER_SKIN = stringPreferencesKey("playerSkin")
@@ -630,8 +634,10 @@ class AppStore(private val ctx: Context) {
         /** Home's featured banner shape ([HeroStyles]). */
         const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
 
-        /** The detail page's header art ([DetailHeroStyles]). */
-        const val DEFAULT_DETAIL_HERO_STYLE = com.hikari.app.ui.screens.DetailHeroStyles.SIDE
+    /** The detail page's header art ([DetailHeroStyles]). */
+    const val DEFAULT_DETAIL_HERO_STYLE = com.hikari.app.ui.screens.DetailHeroStyles.SIDE
+    /** 100% = the size the logo has always been drawn at. */
+    const val DEFAULT_DETAIL_LOGO_SIZE = 100
 
         /** The player's control shell ([PlayerSkins]). */
         const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.NEON
@@ -775,6 +781,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setDetailHeroStyle(key: String) {
         write("DETAIL_HERO_STYLE") { it[K.DETAIL_HERO_STYLE] = com.hikari.app.ui.screens.DetailHeroStyles.normalize(key) }
+    }
+
+    /** The detail page's title-logo size, in percent of its default (see
+     *  [DEFAULT_DETAIL_LOGO_SIZE]). Clamped, because it multiplies the width the
+     *  logo is drawn at: past the top of the range the art would be wider than
+     *  the screen it is fitted into. */
+    fun detailLogoSizeFlow(): Flow<Int> =
+        store.data.map { (it[K.DETAIL_LOGO_SIZE] ?: DEFAULT_DETAIL_LOGO_SIZE).coerceIn(50, 160) }
+
+    suspend fun detailLogoSize(): Int = detailLogoSizeFlow().first()
+
+    suspend fun setDetailLogoSize(percent: Int) {
+        write("DETAIL_LOGO_SIZE") { it[K.DETAIL_LOGO_SIZE] = percent.coerceIn(50, 160) }
     }
 
     /** Which player control shell the player wears. */

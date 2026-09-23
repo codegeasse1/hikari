@@ -1100,6 +1100,30 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ?.let { "$name: $it" }
 }
 
+/** Every INSTALLED nuvio engine's verdict for this search, one line each —
+ *  including the ones that never got an engine slot, which is the whole point:
+ *  "in nuvio every plugin shows servers, in hikari only 2-3" is only
+ *  diagnosable if the engines that produced nothing are visible. [NuvioScraper]
+ *  records an outcome for every provider it actually ran (sources, no sources,
+ *  error), and its maps are cleared at the start of a search, so a provider
+ *  with no entry was never asked. */
+private fun nuvioReportLines(providers: List<ContentProvider>): List<String> {
+    val nuvio = providers.filter { it.config.type == ProviderType.NUVIO && it.config.enabled }
+    if (nuvio.isEmpty()) return emptyList()
+    val answered = nuvio.count { com.hikari.app.nuvio.NuvioScraper.lastOutcome.containsKey(it.config.id) }
+    val withServers = nuvio.count {
+        com.hikari.app.nuvio.NuvioScraper.lastOutcome[it.config.id]?.startsWith("✓") == true
+    }
+    return listOf(
+        "Nuvio engines: $answered of ${nuvio.size} answered, $withServers found servers"
+    ) + nuvio.map { p ->
+        val outcome = com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id]
+            ?: com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
+            ?: "never ran — no engine slot before the search ended"
+        p.config.name + ": " + outcome
+    }
+}
+
 /** How long a replay waits for the server it was last played with to appear in
  *  the multi-provider source search before falling back to the first server
  *  found. Long enough for a slower provider to answer, short enough that a tap
@@ -1362,6 +1386,10 @@ fun DetailScreen(
     // blurred backdrop, or no art at all).
     val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
     val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
+    // How big the title LOGO is drawn (Settings → App Layout → Details header →
+    // Title logo size), in percent of the size it has always been drawn at.
+    val detailLogoFlow = remember { detailApp.store.detailLogoSizeFlow() }
+    val detailLogoPercent by detailLogoFlow.collectAsState(initial = 100)
     // The multi-provider source search must OUTLIVE this screen. Playback now
     // opens the player the instant Play is tapped, and on a memory-tight device
     // (the reported Infinix) the activity behind the player can be torn down
@@ -1380,6 +1408,7 @@ fun DetailScreen(
     }
 
     var showSheet by remember { mutableStateOf(false) }
+    var nuvioReportOpen by remember { mutableStateOf(false) }
     // The rating the user tapped in the score strip, or null when no
     // explanation dialog is up. Set by DetailsBlock, cleared by the dialog.
     var ratingInfo by remember { mutableStateOf<TitleRating?>(null) }
@@ -3338,7 +3367,12 @@ fun DetailScreen(
     // makes it "not move with the image": the art goes, the title stays.
     val logoArt = heroLogo
     if (!logoArt.isNullOrBlank()) {
-        val logoFrac = 0.62f + (0.34f - 0.62f) * headerProgress
+        // The user's own size for the wordmark scales the width it is fitted
+        // into (its height follows the art's aspect ratio, so this is "bigger
+        // logo", not "stretched logo"). Clamped: past the top of the range it
+        // would be wider than the screen.
+        val logoScale = (detailLogoPercent / 100f).coerceIn(0.5f, 1.6f)
+        val logoFrac = ((0.62f + (0.34f - 0.62f) * headerProgress) * logoScale).coerceIn(0.2f, 1f)
         // The wordmark's own height, read from the LAYOUT (its aspect ratio is
         // whatever TMDB's art is, and there is no reason to guess it): the width
         // only decides the height, never the other way round, so this settles on
@@ -3505,6 +3539,23 @@ fun DetailScreen(
                             )
                         }
                     }
+                    val nuvioReport = nuvioReportLines(providers)
+                    if (nuvioReport.isNotEmpty()) {
+                        Text(
+                            tr("Nuvio engines:"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                        nuvioReport.forEach { l ->
+                            Text(
+                                l,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
                 }
                 else -> Column(Modifier.fillMaxWidth()) {
                     LazyColumn(
@@ -3579,6 +3630,29 @@ fun DetailScreen(
                                 }
                         )
                     }
+                    }
+                    val nuvioReport = nuvioReportLines(providers)
+                    if (nuvioReport.isNotEmpty()) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            Text(
+                                (if (nuvioReportOpen) "▾ " else "▸ ") + nuvioReport.first(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clickable { nuvioReportOpen = !nuvioReportOpen }
+                                    .padding(vertical = 6.dp)
+                            )
+                            if (nuvioReportOpen) {
+                                nuvioReport.drop(1).forEach { l ->
+                                    Text(
+                                        l,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                     if (loadingStreams) {
                         Row(

@@ -49,20 +49,25 @@ import java.util.concurrent.TimeUnit
  */
 object NuvioRuntime {
 
-    // A small cap on concurrently-running engines. Each engine is a native
-    // QuickJS VM plus its own JS context (cheerio is ~450KB to parse), so we
-    // bound the count and let the extra providers queue on the semaphore
-    // instead of spawning 13 VMs at once. nuvio has no such cap (it runs one
-    // provider at a time); Hikari searches many providers in parallel, and
-    // this limit still lets the historically-fast ones answer in ~2s.
-    private const val MAX_CONCURRENT = 6
+    // Cap on concurrently-running engines. Each engine is a native QuickJS VM
+    // plus its own JS context, so the count is bounded and the extra providers
+    // queue on the semaphore instead of spawning 20+ VMs at once.
+    //
+    // This is nuvio's own limit (PluginRuntime.MAX_CONCURRENT_PLUGINS = 10).
+    // It used to be 6, which — with a 20+ provider install — meant the tail of
+    // the queue never got an engine before the search budget ran out, so only
+    // the first few providers' servers ever reached the player (the reported
+    // "in nuvio all the plugins show servers, in hikari only 2-3").
+    private const val MAX_CONCURRENT = 10
     private const val FETCH_TIMEOUT_MS = 30_000L
-    // CALL_TIMEOUT_MS bounds a provider's whole JS execution, matching the
-    // 45s ceiling planned for ContentRepository's per-provider budget. The
-    // same value is set as QuickJS's evaluationTimeoutMillis, so even a
-    // provider stuck in busy JS (infinite loop) is cut off natively instead
-    // of hanging the engine forever.
-    private const val CALL_TIMEOUT_MS = 45_000L
+    // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
+    // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider
+    // that needs its cold boot plus a slow site fetch plus extraction is
+    // normal, and 45s cut off providers that nuvio happily finishes. The same
+    // value is set as QuickJS's evaluationTimeoutMillis, so even a provider
+    // stuck in busy JS (infinite loop) is cut off natively instead of hanging
+    // the engine forever.
+    private const val CALL_TIMEOUT_MS = 60_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
 
     // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches.
@@ -89,6 +94,61 @@ object NuvioRuntime {
     private val bootJs: String by lazy { readAsset("nuvio/boot.js") }
     private val cheerioJs: String by lazy { readAsset("nuvio/cheerio.js") }
     private val harnessJs: String by lazy { readAsset("nuvio/harness.js") }
+
+    /** The glue that ties the harness to the native bridges (module registry,
+     *  fetch implementation, the bridge stub the harness calls back into). */
+    private val REGISTER_GLUE: String =
+        "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
+            "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
+            "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
+            "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
+            "};" +
+            "globalThis.__nuvioBridgeStub = {" +
+            "  onGetStreamsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
+            "  onSettingsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
+            "  fetch: null," +
+            "  log: function (msg) { if (typeof globalThis.__hikariLog === 'function') globalThis.__hikariLog(String(msg)); }" +
+            "};"
+
+    /** Same glue for the validate engine, whose bridge calls are no-ops: the
+     *  module is only loaded and inspected there, never run. */
+    private val REGISTER_GLUE_VALIDATE: String =
+        "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
+            "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
+            "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
+            "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
+            "};" +
+            "globalThis.__nuvioBridgeStub = { onGetStreamsDone: function () {}, onSettingsDone: function () {}, fetch: null, log: function () {} };"
+
+    /** Compiled QuickJS bytecode for the scripts above, keyed by script name.
+     *
+     *  Every provider call boots a FRESH engine, and the runtime scripts are
+     *  ~550KB of JS (cheerio alone is 450KB) — so compiling them from source in
+     *  every engine meant every provider call paid the full parse again, and a
+     *  20-provider search spent most of its budget parsing the same bundle 20
+     *  times. nuvio does exactly this caching (JsRuntime's cached
+     *  polyfill/call bytecode) and it is why its search returns far more
+     *  servers in the same wall-clock time.
+     *
+     *  QuickJS compiles to bytecode that any engine of the same build can run,
+     *  so one compile serves every later VM. The cache lives for the process
+     *  (the scripts are immutable assets). */
+    private val bytecodeCache = ConcurrentHashMap<String, ByteArray>()
+
+    /** Evaluates [source] in this engine through the bytecode cache: compile
+     *  once, evaluate the bytecode from then on. Falls back to evaluating the
+     *  source directly if compiling (or running the bytecode) fails, so a
+     *  compiler hiccup can never make a provider stop working. */
+    private suspend fun QuickJs.evaluateCached(name: String, source: String) {
+        val compiled = bytecodeCache[name]
+            ?: runCatching { compile(source, name, false) }
+                .getOrNull()
+                ?.also { bytecodeCache[name] = it }
+        if (compiled != null && runCatching { evaluate<Any?>(compiled) }.isSuccess) {
+            return
+        }
+        evaluate<Any?>(source, name, false)
+    }
 
     private fun readAsset(path: String): String =
         com.hikari.app.HikariApp.instance.assets.open(path).bufferedReader().readText()
@@ -189,35 +249,22 @@ object NuvioRuntime {
 
         // 1. Polyfills (console, TextEncoder/Decoder, Blob, URL, AbortController,
         //    crypto/CryptoJS backed by NuvioCryptoBridge, array/object/string).
-        qjs.evaluate<Any?>(bootJs, "boot.js", false)
+        qjs.evaluateCached("boot.js", bootJs)
         // 2. The real cheerio bundle, captured as a plain module like nuvio's
         //    runtime.html did (evaluateJavascript's size ceiling is a non-issue
         //    here, but booting it as a script keeps the exact same path).
-        qjs.evaluate<Any?>("var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;", "cheerio-head.js", false)
-        qjs.evaluate<Any?>(cheerioJs, "cheerio.js", false)
-        qjs.evaluate<Any?>("globalThis.__nuvioCheerio = module.exports;", "cheerio-tail.js", false)
+        qjs.evaluateCached("cheerio-head.js", "var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;")
+        qjs.evaluateCached("cheerio.js", cheerioJs)
+        qjs.evaluateCached("cheerio-tail.js", "globalThis.__nuvioCheerio = module.exports;")
         // 3. Provider harness (CommonJS require, fetch, provider loader, shims).
-        qjs.evaluate<Any?>(harnessJs, "harness.js", false)
+        qjs.evaluateCached("harness.js", harnessJs)
         // 4. Glue: register cheerio/crypto-js modules (harness aliases
         //    cheerio-without-node-native + react-native-cheerio), point the
         //    harness's fetch at the native bridge, and give __bridge() a stub
         //    whose onGetStreamsDone/onSettingsDone flow back to the native
         //    completion. This mirrors exactly what the WebView's
         //    addJavascriptInterface + runtime.html provided.
-        qjs.evaluate<Any?>(
-            "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
-                "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
-                "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
-                "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
-                "};" +
-                "globalThis.__nuvioBridgeStub = {" +
-                "  onGetStreamsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
-                "  onSettingsDone: function (cid, payload) { globalThis.__hikariOnStreamsDone(cid, payload); }," +
-                "  fetch: null," +
-                "  log: function (msg) { if (typeof globalThis.__hikariLog === 'function') globalThis.__hikariLog(String(msg)); }" +
-                "};",
-            "register.js", false,
-        )
+        qjs.evaluateCached("register.js", REGISTER_GLUE)
         return qjs
     }
 
@@ -339,20 +386,12 @@ object NuvioRuntime {
                         args.getOrNull(4) as? Boolean ?: true,
                     )
                 }
-                qjs.evaluate<Any?>(bootJs, "boot.js", false)
-                qjs.evaluate<Any?>("var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;", "cheerio-head.js", false)
-                qjs.evaluate<Any?>(cheerioJs, "cheerio.js", false)
-                qjs.evaluate<Any?>("globalThis.__nuvioCheerio = module.exports;", "cheerio-tail.js", false)
-                qjs.evaluate<Any?>(harnessJs, "harness.js", false)
-                qjs.evaluate<Any?>(
-                    "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
-                        "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
-                        "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
-                        "  return globalThis.__hikariFetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);" +
-                        "};" +
-                        "globalThis.__nuvioBridgeStub = { onGetStreamsDone: function () {}, onSettingsDone: function () {}, fetch: null, log: function () {} };",
-                    "register.js", false,
-                )
+                qjs.evaluateCached("boot.js", bootJs)
+                qjs.evaluateCached("cheerio-head.js", "var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;")
+                qjs.evaluateCached("cheerio.js", cheerioJs)
+                qjs.evaluateCached("cheerio-tail.js", "globalThis.__nuvioCheerio = module.exports;")
+                qjs.evaluateCached("harness.js", harnessJs)
+                qjs.evaluateCached("register-validate.js", REGISTER_GLUE_VALIDATE)
                 val result = qjs.evaluate<String?>(
                     "(function () { try { var m = globalThis.__nuvioLoadProvider(${quote(source)}, 'validate');" +
                         " if (m && typeof m.getStreams === 'function') return 'OK'; return 'NO';" +
