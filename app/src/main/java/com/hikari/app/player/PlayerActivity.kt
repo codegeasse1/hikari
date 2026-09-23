@@ -2470,9 +2470,8 @@ class PlayerActivity : ComponentActivity() {
 
     /** "HLS" / "DASH" / "File" / "Live" — what kind of stream is playing. */
     private fun streamKind(p: Player, url: String): String {
-        if (p.isCurrentMediaLive) return I18n.t("Live")
         val lower = url.lowercase()
-        return when {
+        val kind = when {
             lower.contains(".m3u8") -> "HLS"
             lower.contains(".mpd") -> "DASH"
             lower.startsWith("content:") -> I18n.t("File")
@@ -2480,6 +2479,16 @@ class PlayerActivity : ComponentActivity() {
                 I18n.t("File")
             lower.isBlank() -> ""
             else -> I18n.t("Stream")
+        }
+        // A LIVE stream is one the player cannot put an end on: media3 reports
+        // C.TIME_UNSET for a window whose duration is unknown, which for a
+        // prepared player means exactly this. Worth saying — it is the
+        // difference between a film and a channel.
+        val live = p.playbackState == Player.STATE_READY && p.duration == C.TIME_UNSET
+        return when {
+            live && kind.isBlank() -> I18n.t("Live")
+            live -> I18n.t("Live") + " · " + kind
+            else -> kind
         }
     }
 

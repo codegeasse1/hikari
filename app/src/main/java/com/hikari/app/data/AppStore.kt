@@ -162,6 +162,9 @@ class AppStore(private val ctx: Context) {
         /** The per-day/per-title totals behind the Stats page — see
          *  [com.hikari.app.data.WatchStats]. */
         val WATCH_STATS = stringPreferencesKey("watchStats")
+        /** Brightness/volume swipes on the player's video surface (ON by
+         *  default; Settings → Player → Player controls). */
+        val PLAYER_SWIPES = booleanPreferencesKey("playerSwipes")
         /** Reading mode of the manga reader ([com.hikari.app.manga.MangaReadMode]:
          *  paged left-to-right, paged right-to-left, or vertical webtoon). */
         val MANGA_READ_MODE = stringPreferencesKey("mangaReadMode")
