@@ -289,6 +289,21 @@ object NuvioRuntime {
             .build()
     }
 
+    /** The client a bridge fetch uses. Two of them, because "do not follow
+     *  redirects" is a per-CALL choice in nuvio's bridge — a provider asks with
+     *  `redirect: 'manual'` when it wants to read the 3xx itself — and OkHttp
+     *  only takes that flag per client. They share the dispatcher, the
+     *  connection pool and the DNS, so the only difference is the flag. */
+    private val noRedirectClient by lazy {
+        client.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
+
+    private fun clientFor(followRedirects: Boolean): OkHttpClient =
+        if (followRedirects) client else noRedirectClient
+
     /** Boots a fresh engine: native bridges, then boot.js + cheerio.js +
      *  harness.js + the bridge/register glue. Returns the engine; caller must
      *  close() it in a finally. */
@@ -526,12 +541,12 @@ object NuvioRuntime {
         val started = System.currentTimeMillis()
         val m = method.uppercase()
         val request = try {
-            buildFetchRequest(url, m, headersJson, body, followRedirects)
+            buildFetchRequest(url, m, headersJson, body)
         } catch (t: Throwable) {
             fetchLogLine(hostOf(url), m, "ERR", 0, 0L, " " + (t.message ?: "bad request"))
             return failureJson(url, t.message ?: "bad request")
         }
-        val fetched = withTimeoutOrNull(FETCH_TIMEOUT_MS) { executeFetch(request) }
+        val fetched = withTimeoutOrNull(FETCH_TIMEOUT_MS) { executeFetch(request, followRedirects) }
         if (fetched == null) {
             fetchLogLine(
                 hostOf(url), m, "TIMEOUT", 0, System.currentTimeMillis() - started,
@@ -557,9 +572,9 @@ object NuvioRuntime {
      * until the response headers (and body) are there. Cancellation cancels the
      * call, so an abandoned engine cannot keep a request alive.
      */
-    private suspend fun executeFetch(request: Request): Fetched =
+    private suspend fun executeFetch(request: Request, followRedirects: Boolean): Fetched =
         suspendCancellableCoroutine { cont ->
-            val call = client.newCall(request)
+            val call = clientFor(followRedirects).newCall(request)
             cont.invokeOnCancellation { runCatching { call.cancel() } }
             runCatching {
                 call.enqueue(object : Callback {
@@ -605,19 +620,16 @@ object NuvioRuntime {
     }
 
     /** The request a bridge fetch describes: the provider's own headers (with
-     *  the Accept-Encoding caveat below), the app's browser UA by default, and
-     *  the redirect behaviour the provider asked for. */
+     *  the Accept-Encoding caveat below) and the app's browser UA by default. */
     private fun buildFetchRequest(
         url: String,
         method: String,
         headersJson: String,
         body: String,
-        followRedirects: Boolean,
     ): Request {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", NUVIO_DEFAULT_UA)
-            .followRedirects(followRedirects)
         val h = runCatching { JSONObject(headersJson) }.getOrNull()
         if (h != null) {
             h.keys().forEach { k ->
