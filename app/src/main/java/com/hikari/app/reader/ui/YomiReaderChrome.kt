@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,6 +78,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -1756,6 +1758,14 @@ private fun ChapterListSheet(
     chapterCoverModel: Any? = null,
 ) {
     val ctx = LocalContext.current
+    // Open on the chapter being read, not on chapter 1: the list is the whole
+    // point of the sheet, and on a hundred-chapter title starting at the top
+    // every time meant scrolling to the reader's own chapter by hand.
+    val listState = rememberLazyListState()
+    LaunchedEffect(activeChapterId, chapters) {
+        val at = chapters.indexOfFirst { it.id == activeChapterId }
+        if (at >= 0) listState.scrollToItem((at - 1).coerceAtLeast(0))
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = SheetColor,
@@ -1767,6 +1777,7 @@ private fun ChapterListSheet(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         )
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 460.dp),

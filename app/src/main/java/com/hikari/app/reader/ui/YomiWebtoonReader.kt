@@ -57,6 +57,7 @@ fun YomiWebtoonReader(
     viewerRef: MutableState<WebtoonViewer?>,
     onPageChanged: (seg: Int, page: Int, pageTotal: Int) -> Unit,
     onNearEndChanged: (Boolean) -> Unit,
+    onNearStartChanged: (Boolean) -> Unit,
     onMenuTap: () -> Unit,
     onUserScroll: () -> Unit,
     onScrollingChanged: (Boolean) -> Unit,
@@ -95,6 +96,11 @@ fun YomiWebtoonReader(
         streamQueue.joinToString("|") { it.id } + "::" + streamSegments.joinToString("|") { it.size.toString() }
     }
     var lastSignature by remember { mutableStateOf("") }
+    // The chapter ids and page counts the viewer is currently showing. They are
+    // what tells a PREPEND (a chapter streamed in above the reader) from an
+    // append, so the viewer can hold the reader's place while the strip grows
+    // upwards — see WebtoonViewer.setItems.
+    var lastIds by remember { mutableStateOf<List<String>>(emptyList()) }
 
     AndroidView(
         modifier = modifier,
@@ -111,6 +117,7 @@ fun YomiWebtoonReader(
             v.decodeRgb565 = rgb565
             v.onPageChanged = { seg, page, total -> onPageChanged(seg, page, total) }
             v.onNearEndChanged = { near -> onNearEndChanged(near) }
+            v.onNearStartChanged = { near -> onNearStartChanged(near) }
             v.onMenuTap = { onMenuTap() }
             v.onUserScroll = { onUserScroll() }
             v.onScrollingChanged = { onScrollingChanged(it) }
@@ -130,9 +137,32 @@ fun YomiWebtoonReader(
             v.decodeWidth = decodeWidth
             v.decodeRgb565 = rgb565
             v.setTheme(bgColor.toArgb(), textColor.toArgb())
+            v.onNearStartChanged = { near -> onNearStartChanged(near) }
             if (lastSignature != itemsSignature) {
                 lastSignature = itemsSignature
-                v.setItems(items, segSizes, trailer, initialPageIndex)
+                val ids = streamQueue.map { it.id }
+                val oldIds = lastIds
+                // A PREPEND is the one list change that shifts the adapter
+                // positions of everything on screen: it is the case where the new
+                // chapter list ENDS with the old one. An append (the ordinary
+                // auto-continue) starts with it and needs no scroll fix-up at all.
+                // The items added at the head are the new segments' pages plus one
+                // divider for each — every segment but the first is preceded by
+                // one, and the segment that used to be first now gets its own.
+                val prependedSegments = when {
+                    oldIds.isEmpty() -> 0
+                    ids.take(oldIds.size) == oldIds -> 0
+                    ids.size > oldIds.size && ids.takeLast(oldIds.size) == oldIds ->
+                        ids.size - oldIds.size
+                    else -> 0
+                }
+                val prepended = if (prependedSegments > 0) {
+                    segSizes.take(prependedSegments).sum() + prependedSegments
+                } else {
+                    0
+                }
+                lastIds = ids
+                v.setItems(items, segSizes, trailer, initialPageIndex, prepended)
             } else if (v.trailer != trailer) {
                 v.setTrailer(trailer)
             }

@@ -1,15 +1,54 @@
 # Player dialog panels — the sizing rule
 
-Every dialog in the player (server list, quality, audio, subtitles, caption
-style, download destination, video enhance, speed) is one composable shell:
-`PlayerActivity.presentGlass(dialog, title, content, hint, iconRes, cancelable,
-rowHosts, headerActions)`. It builds the hint line, the round ✕, the glass panel
-and the scroll views, and it is skin-aware (`PlayerSkins.isFlat`) so **all four
-Player UI choices — Default, Neon, Cinema, Minimal — come through it**. A new
-dialog that builds its own window is a dialog that will be cut off on one of
-them.
+> **CURRENT GEOMETRY: the 0.9.8 shape, restored (0.10.18).** Every box in the
+> player — source list, subtitles, audio, quality, speed, enhance, the download
+> sheet — is sized by the code the 0.9.8 release shipped, because that is the
+> build the user screenshotted as correct and the one their "the box shows one
+> line and will not scroll" reports point back to. In short:
+>
+> 1. `presentGlass(dialog, title, content, preferredHeightDp, hint, iconRes,
+>    cancelable, rowHosts, headerActions)` takes the height the CALLER expects,
+>    in dp. `showGlassMenu` derives it from its rows (~34dp each, +10dp for a
+>    row with a second line, 3dp apart); the server chooser passes 700dp, the
+>    subtitle sheets 620dp.
+> 2. That height is clamped to the window and becomes the panel's height:
+>    `preferredHeightDp` → `min(fitsScreen, 0.66|0.76 of the window)`, floor
+>    110dp.
+> 3. The panel is added to the root at that height and holds ONE plain
+>    `ScrollView` with `layoutParams = (MATCH_PARENT, 0, weight 1)`. A definite
+>    panel height plus a weighted scroller is what makes the list scroll: the
+>    scroller is never taller than the panel, so whenever the rows are taller
+>    than it there IS somewhere to scroll to.
+> 4. `fitToContent()` then measures the content at the panel's inner width and
+>    shrinks the panel onto it (between `minPanel` and the same cap), so a sheet
+>    with two rows is two rows tall rather than a wall of glass.
+> 5. The dialog window is `WRAP_CONTENT` tall, `panelW + 2*halo` wide, centred.
+>    Only the width is ever explicit; `MATCH_PARENT` height, or a height read
+>    from `windowSize()`, is what used to ask for a window taller than the screen
+>    and draw the panel's last rows below the display.
+>
+> **Do not reintroduce a height CAP on the scroll view.** 0.10.6–0.10.17 replaced
+> this with a `MaxHeightScrollView` whose ceiling was computed from the dialog
+> frame's measured height (`visibleRoomPx`) and re-derived every layout pass, on
+> the theory that `WRAP_CONTENT` plus a measured ceiling is strictly better than
+> a computed height. Every build of that family shipped the same two reports —
+> a box one row tall with a scrollbar beside it and nothing to scroll to, and a
+> subtitle sheet whose remaining rows could not be dragged into view — because a
+> ceiling that comes out too small is unrecoverable (the list is laid out inside
+> a box shorter than one row) while the 0.9.8 shape cannot produce it at all.
+> The class, `visibleRoomPx`, `screenHeightPx`/`screenWidthPx` and the whole
+> `applyHeightCap` pass are deleted. `windowSize()` is back to its 0.9.8 form
+> (decor → `currentWindowMetrics` → `getRealSize`, cross-checked against the
+> configuration so an axis can never be the natural orientation's).
 
-## The rule: a panel's height is MEASURED, never estimated
+## History: the cap-based rewrite (0.10.6–0.10.17) — DO NOT RESTORE
+
+The rest of this file documents the measured-cap design that was replaced. It is
+kept because the individual findings in it are still true and still cheaper to
+read than to rediscover (the sideways-strip rule, the width arithmetic, the
+landscape metrics quirk), but the height mechanism it describes is gone.
+
+## The original rule: a panel's height is MEASURED, never estimated
 
 1. The panel view is `WRAP_CONTENT`. Nothing sizes the panel itself.
 2. `MaxHeightScrollView` caps the **scroll view**, not the panel — and the cap is

@@ -1,4 +1,56 @@
-## 0.10.17
+## 0.10.18
+
+**The player's boxes are the 0.9.8 boxes again, and the reader's chapter title is
+the chapter you are actually in.** Two reports, both traced to code rather than to
+another guess: the panel height caps of 0.10.6–0.10.17 are DELETED (the user
+pointed at the 0.9.8 APK — the build whose panels work — and they were right, so
+that geometry is back verbatim), and the reader's "it says Chapter 4 while I am
+reading Chapter 6, and ▶ loads the same chapter again" turned out to be four
+`derivedStateOf`s that had captured the FIRST chapter's `remember(chapter)` state
+objects and therefore reported the chapter the reader was opened on for the rest
+of the session.
+
+### Fixed
+
+- **The player's dialog panels are the 0.9.8 implementation.** `presentGlass`
+  takes the height the caller expects (in dp) again, clamps it to the window,
+  gives the panel that definite height and puts ONE plain `ScrollView` inside it
+  with `weight = 1`; `fitToContent()` shrinks the panel onto its rows afterwards.
+  A definite panel height with a weighted scroller cannot produce a box that is
+  one row tall and unscrollable, which is what every build of the cap family
+  shipped. `MaxHeightScrollView`, `visibleRoomPx`, `screenHeightPx`,
+  `screenWidthPx` and the whole `applyHeightCap` pass are deleted, and
+  `windowSize()` is back to its 0.9.8 form. All five call sites pass a height
+  again: `showGlassMenu` derives it from its rows, the server chooser passes
+  700dp, the subtitle sheets 620dp. Callers gained nothing else — the
+  `headerActions` gear/search buttons and the sideways strips are kept. See
+  [docs/PLAYER_PANELS.md](docs/PLAYER_PANELS.md).
+- **The reader's chapter title, page counter, saved progress and ◀ ▶ buttons now
+  follow the chapter the viewer is in.** `streamPosition`, `activeChapterUrl`,
+  `currentPage` and `pageTotal` were `remember(isWebtoon)` while the states they
+  read are `remember(chapter)` — a Compose closure captures the state OBJECT, so
+  once a chapter change recreated those states the derived values kept reading
+  the first chapter's for the rest of the session. The title froze on the chapter
+  the reader was opened on, `prevChapter`/`nextChapter` kept resolving the same
+  neighbour, and the progress debounce kept writing the wrong `chapterUrl`. They
+  are now keyed on the chapter too, and `viewerPos` is seeded by the seed effect
+  so the first frame is right even when a chapter is prepended above the reader.
+- **A chapter change lands at the TOP of the chapter it goes to.**
+  `openChapter` compares against the chapter the viewer is in (not the one the
+  screen was seeded with, which made the button a no-op for a chapter the strip
+  already held) and a chapter opened from inside the reader no longer restores its
+  old saved page; only the chapter the reader was opened on does.
+- **The strip is continuous in BOTH directions.** The webtoon viewer reports
+  `nearStart` as well as `nearEnd`, so scrolling up to the top of the first
+  streamed chapter streams the previous chapter in ABOVE the reader — the reader
+  can now be scrolled from the chapter it opened on all the way back to chapter 1
+  and forward to the last chapter without leaving the strip. A prepend shifts
+  every adapter position, so the viewer remembers the page under the reader and
+  puts the scroll back on it, and the shell asks for each previous chapter at most
+  once.
+- The reader's chapter sheet opens ON the chapter being read instead of always at
+  chapter 1.
+
 
 **Two things this project had "already fixed" were fixed by guesswork, and this
 release is what happens when the guess is checked against the code.** The player's

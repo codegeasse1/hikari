@@ -85,20 +85,53 @@ uses on these phones.
    any other chapter opens at its top. `openPage` and `pages` are assigned in the
    same breath so the viewer can never be created against a stale page.
 4. **The strip** — `streamQueue` (chapters) + `streamSegments` (their pages). The
-   seed effect puts the current chapter in, and prepends the previous one when
-   the chapter was reached by an in-reader jump (`jumpSeedChapter`) so scrolling
-   up returns to it. `segmentDescriptors` is the descriptor view of
-   `streamSegments`, remembered, and it is what the viewer and the prewarm both
-   take.
-5. **Auto-continue** — the viewer reports `nearEnd`; the shell fetches the next
+   seed effect puts the current chapter in and reports `viewerPos` for it, and
+   prepends the previous one when the chapter was reached by an in-reader jump
+   (`jumpSeedChapter`) so scrolling up returns to it. `segmentDescriptors` is the
+   descriptor view of `streamSegments`, remembered, and it is what the viewer and
+   the prewarm both take.
+5. **The strip is continuous in BOTH directions.** The viewer reports
+   `nearEnd` (the last few pages of the last streamed chapter) and the shell
+   appends the next chapter; it also reports `nearStart` (the first few pages of
+   the FIRST streamed chapter) and the shell prepends the previous one
+   (`prependIntoStream`). So the reader can be scrolled from the chapter it was
+   opened on all the way back to chapter 1 and forward to the last chapter
+   without ever leaving the strip. A prepend shifts every adapter position, so
+   the viewer remembers the page under the reader and puts the scroll back on it
+   (`WebtoonViewer.setItems(..., prependedItems)`); `YomiWebtoonReader` works out
+   how many items were added at the head by comparing the new chapter-id list
+   with the old (a suffix match = a prepend, a prefix match = an append). The
+   shell consumes `nearStart` (sets it false) before fetching and records the
+   chapter in `prependTried`, so a source that refuses a chapter cannot make it
+   fetch the whole back-catalogue at once.
+6. **Auto-continue** — the viewer reports `nearEnd`; the shell fetches the next
    chapter into the stream and the trailer shows loading / error+retry / idle /
    end-of-manga.
-6. **Progress** — `MangaStore.setProgress(MangaProgress(...))`, from
+7. **What the chrome says the current chapter is** — `activeChapterUrl` is
+   `streamQueue[viewerPos.first]`, i.e. the chapter the viewer last reported a
+   page in, NOT the chapter the screen was seeded with. `prevChapter`/
+   `nextChapter` (the ◀ ▶ buttons) are the neighbours of THAT, and `openChapter`
+   compares its target against THAT. `streamPosition`, `activeChapterUrl`,
+   `currentPage` and `pageTotal` are `remember`ed **keyed on `chapter` as well as
+   `isWebtoon`**, which matters: they read the `remember(chapter)` position
+   states by closure, so a `remember(isWebtoon)`-only derived state keeps reading
+   the first chapter's state objects for the rest of the session. That was the
+   "it says chapter 4 while I am in chapter 6, and the arrow loads the same
+   chapter again" report — the title, the page counter, the saved progress and
+   the ◀ ▶ neighbours were all frozen on the chapter the reader was opened on.
+   Seeding `viewerPos` in the seed effect is what keeps the first frame right
+   when a chapter is prepended above the reader.
+8. **Where a chapter change lands** — `openChapter` moves to the chapter's first
+   page: to the segment's own start when the strip already holds it
+   (`moveToPage`), and to the top on reload (`openPage` is 0 for any chapter
+   reached from inside the reader; the saved page is restored only for the
+   chapter the screen was opened on).
+9. **Progress** — `MangaStore.setProgress(MangaProgress(...))`, from
    `snapshotFlow { currentPage }` debounced 700 ms, and once on dispose through a
    `rememberUpdatedState` lambda (the position states are `remember`ed per
    chapter — a closure captured once would still be holding the chapter the
    reader was opened on).
-7. **Prewarm** — one `LaunchedEffect` keyed on the stream + decode settings and
+10. **Prewarm** — one `LaunchedEffect` keyed on the stream + decode settings and
    NOT on the page. It walks outward from the current page (nearest first, 12
    behind / 60 ahead), downloads in a small concurrent batch (`WEBTOON_BATCH`) via
    `WebtoonPageCache.fileFor`, and — short pages only — keeps a rolling

@@ -24,6 +24,13 @@ import java.io.IOException
 import kotlin.math.abs
 
 /**
+ * How close to the top of the first streamed chapter counts as "at the start" —
+ * the shell streams the previous chapter in when the reader is within this many
+ * pages of it, the mirror of the last-few-pages rule at the end.
+ */
+private const val NEAR_START_PAGES = 2
+
+/**
  * The yomi/chimahon webtoon reader, ported into Nekoread. A [RecyclerView] (with the
  * extra-layout-space [WebtoonLayoutManager]) displays every page through a [ReaderPageImageView]
  * that region-decodes each strip straight from its on-device cache file. Tap zones (configurable
@@ -118,6 +125,12 @@ class WebtoonViewer(context: Context) {
     /** Called when the user enters/leaves the last few pages of the last streamed chapter. */
     var onNearEndChanged: ((Boolean) -> Unit)? = null
 
+    /** Called when the user enters/leaves the first few pages of the FIRST streamed
+     *  chapter. The mirror of [onNearEndChanged], and the whole reason the strip can
+     *  be read UPWARDS as well as down: at the top of the stream the shell streams
+     *  the previous chapter in above the reader (see [setItems]'s `prependedItems`). */
+    var onNearStartChanged: ((Boolean) -> Unit)? = null
+
     /** Called when the user taps a menu region (toggle the reader menu). */
     var onMenuTap: (() -> Unit)? = null
 
@@ -144,6 +157,7 @@ class WebtoonViewer(context: Context) {
     private var positioned = false
     private var reportedPage: Triple<Int, Int, Int>? = null
     private var lastNearEnd: Boolean? = null
+    private var lastNearStart: Boolean? = null
     private var scrolling = false
     private var navigator: ViewerNavigation = config.buildNavigator()
 
@@ -167,6 +181,7 @@ class WebtoonViewer(context: Context) {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     updateCurrentPage()
                     updateNearEnd()
+                    updateNearStart()
                     // Hide the reader menu once the user scrolls fast enough (yomi's hide threshold).
                     if (scrolling && abs(dy) > config.readerHideThreshold.threshold) {
                         onHideMenu?.invoke()
@@ -230,8 +245,29 @@ class WebtoonViewer(context: Context) {
         return h
     }
 
-    /** Sets the reader's items, sizes and trailer, scrolling to [initialPage] on first layout. */
-    fun setItems(items: List<WebtoonItem>, segSizes: List<Int>, trailer: WebtoonTrailer, initialPage: Int) {
+    /**
+     * Sets the reader's items, sizes and trailer, scrolling to [initialPage] on first layout.
+     *
+     * [prependedItems] is the number of items that were added to the HEAD of the
+     * list by this call (an earlier chapter streamed in above the reader). The
+     * adapter positions of everything the user can see therefore shift by that
+     * much, so the page under the reader is remembered first and the scroll is put
+     * back on it afterwards — otherwise growing the strip upwards would yank the
+     * reader into the chapter that was just added, which is the exact opposite of
+     * what "keep scrolling up" means.
+     */
+    fun setItems(
+        items: List<WebtoonItem>,
+        segSizes: List<Int>,
+        trailer: WebtoonTrailer,
+        initialPage: Int,
+        prependedItems: Int = 0,
+    ) {
+        val anchorPos = if (prependedItems > 0) layoutManager.findFirstVisibleItemPosition()
+        else RecyclerView.NO_POSITION
+        val anchorOffset = if (anchorPos != RecyclerView.NO_POSITION) {
+            (layoutManager.findViewByPosition(anchorPos)?.top ?: 0) - recycler.paddingTop
+        } else 0
         adapter.segSizes = segSizes
         adapter.submit(items, trailer)
         this.trailer = trailer
@@ -239,11 +275,21 @@ class WebtoonViewer(context: Context) {
             positioned = true
             recycler.isVisible = true
             moveToPage(initialPage)
+        } else if (anchorPos != RecyclerView.NO_POSITION) {
+            layoutManager.scrollToPositionWithOffset(anchorPos + prependedItems, anchorOffset)
+            recycler.post { reportPosition() }
         } else {
-            recycler.post { updateCurrentPage() }
+            recycler.post { reportPosition() }
         }
         recycler.useConfirmedSingleTap = isContinuous
         recycler.post { applyWebtoonScaleType() }
+    }
+
+    /** Re-reports the position and both near-the-end flags after a list change. */
+    private fun reportPosition() {
+        updateCurrentPage()
+        updateNearEnd()
+        updateNearStart()
     }
 
     /** Updates only the trailing item (spinner / error / end) without touching the pages. */
@@ -282,7 +328,7 @@ class WebtoonViewer(context: Context) {
         layoutManager.scrollToPositionWithOffset(pos, 0)
         recycler.post {
             reportedPage = null
-            updateCurrentPage()
+            reportPosition()
         }
     }
 
@@ -427,6 +473,37 @@ class WebtoonViewer(context: Context) {
         if (lastNearEnd != near) {
             lastNearEnd = near
             onNearEndChanged?.invoke(near)
+        }
+    }
+
+    /** The first Page item at or below the top of the viewport. */
+    private fun currentFirstPage(): WebtoonItem.Page? {
+        if (adapter.items.isEmpty()) return null
+        val first = layoutManager.findFirstVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION) return null
+        val last = layoutManager.findLastVisibleItemPosition()
+        val end = (if (last == RecyclerView.NO_POSITION) adapter.items.size - 1 else last)
+            .coerceAtMost(adapter.items.size - 1)
+        for (i in first.coerceAtLeast(0)..end) {
+            (adapter.items.getOrNull(i) as? WebtoonItem.Page)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Reports whether the reader sits at the very top of the FIRST streamed chapter,
+     * which is the shell's cue to stream the previous chapter in above it.
+     *
+     * The window is a few pages rather than one, because the previous chapter has to
+     * be on its way before the user's finger reaches the top — the same lead time the
+     * end-of-chapter append gets.
+     */
+    private fun updateNearStart() {
+        val page = currentFirstPage()
+        val near = page != null && page.segIndex == 0 && page.number <= NEAR_START_PAGES
+        if (lastNearStart != near) {
+            lastNearStart = near
+            onNearStartChanged?.invoke(near)
         }
     }
 }

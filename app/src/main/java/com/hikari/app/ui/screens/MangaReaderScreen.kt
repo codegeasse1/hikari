@@ -315,7 +315,14 @@ fun MangaReaderScreen(
         // Where to start: the page saved for THIS chapter if the reader has been
         // here before, otherwise the top.
         val saved = MangaStore.progressFor(key)
-        val restored = if (saved != null && saved.chapterUrl == chapter) {
+        // Where to start: the page saved for THIS chapter if the reader has been
+        // here before, otherwise the top. A chapter the reader was moved to from
+        // inside the reader (`jumpSeedChapter`) always opens at its TOP — the
+        // saved page belongs to the last time that chapter was read, and opening a
+        // chapter the user just asked for at its first page is the whole point of
+        // going there.
+        val fromReaderJump = jumpSeedChapter == chapter
+        val restored = if (!fromReaderJump && saved != null && saved.chapterUrl == chapter) {
             saved.page.coerceIn(0, (out.size - 1).coerceAtLeast(0))
         } else {
             0
@@ -356,6 +363,24 @@ fun MangaReaderScreen(
         streamSegments.map { seg -> seg.map { MangaSource.PageDescriptor(pageUrl = it.pageUrl, imageUrl = it.url) } }
     }
 
+    // ---- Where the reader is ----
+    //
+    // The viewers report their own position; these are the readouts the chrome,
+    // the scrubber and the saved progress are built from. They are
+    // [derivedStateOf] so the values are read where they are USED (inside the
+    // chrome's own scope) rather than at this call site, which would recompose
+    // the whole reader once per page turn.
+    var viewerPos by remember(chapter) { mutableStateOf(Triple(0, 1, 1)) }
+    var pagerPos by remember(chapter) { mutableIntStateOf(1) }
+    var nearEnd by remember(chapter) { mutableStateOf(false) }
+    var nearStart by remember(chapter) { mutableStateOf(false) }
+    // Previous chapters already asked for, so a source that refuses one cannot be
+    // asked for it again and again while the user sits at the top.
+    var prependTried by remember(chapter) { mutableStateOf<Set<String>>(emptySet()) }
+    var userScrolling by remember { mutableStateOf(false) }
+    val viewerRef = remember(chapter) { mutableStateOf<WebtoonViewer?>(null) }
+    val pagerRef = remember(chapter) { mutableStateOf<PagerViewer?>(null) }
+
     val prevForStream = remember(navChapters, chapter) {
         neighbourOf(chapter, -1, navChapters, chapters)
     }
@@ -372,11 +397,18 @@ fun MangaReaderScreen(
                     ReaderChapter(chapter, labelOf(chapter)),
                 )
                 streamSegments = listOf(prevPages, pages)
+                // The reader is on the SECOND segment (the prepended chapter is
+                // above it) and on the page it was told to open at. Seeding the
+                // reported position here is what makes the chapter title, the page
+                // counter and the ◀ ▶ neighbours right from the first frame
+                // instead of for a moment reporting the chapter above.
+                viewerPos = Triple(1, openPage + 1, pages.size)
                 return@LaunchedEffect
             }
         }
         streamQueue = listOf(ReaderChapter(chapter, labelOf(chapter)))
         streamSegments = listOf(pages)
+        viewerPos = Triple(0, openPage + 1, pages.size)
     }
 
     /** Appends the next chapter to the strip (auto-continue, or the trailer's
@@ -396,36 +428,38 @@ fun MangaReaderScreen(
         }
     }
 
-    // ---- Where the reader is ----
-    //
-    // The viewers report their own position; these are the readouts the chrome,
-    // the scrubber and the saved progress are built from. They are
-    // [derivedStateOf] so the values are read where they are USED (inside the
-    // chrome's own scope) rather than at this call site, which would recompose
-    // the whole reader once per page turn.
-    var viewerPos by remember(chapter) { mutableStateOf(Triple(0, 1, 1)) }
-    var pagerPos by remember(chapter) { mutableIntStateOf(1) }
-    var nearEnd by remember(chapter) { mutableStateOf(false) }
-    var userScrolling by remember { mutableStateOf(false) }
-    val viewerRef = remember(chapter) { mutableStateOf<WebtoonViewer?>(null) }
-    val pagerRef = remember(chapter) { mutableStateOf<PagerViewer?>(null) }
+    /** Streams the PREVIOUS chapter in above the strip — the mirror of
+     *  [loadNextIntoStream], and what makes the strip readable upwards as well as
+     *  down: with it the reader can scroll from the chapter it opened on all the
+     *  way back to chapter 1, one chapter at a time, exactly as it already walks
+     *  forward to the last one. The viewer holds the reader's place while the list
+     *  grows at the head (see WebtoonViewer.setItems). */
+    fun prependIntoStream(prevUrl: String) {
+        scope.launch {
+            val list = fetchPages(prevUrl)
+            if (list.isNotEmpty() && streamQueue.none { it.id == prevUrl }) {
+                streamQueue = listOf(ReaderChapter(prevUrl, labelOf(prevUrl))) + streamQueue
+                streamSegments = listOf(list) + streamSegments
+            }
+        }
+    }
 
-    val streamPosition by remember(isWebtoon) {
+    val streamPosition by remember(isWebtoon, chapter) {
         derivedStateOf {
             if (isWebtoon) viewerPos else Triple(0, pagerPos, pages.size)
         }
     }
-    val activeChapterUrl by remember(isWebtoon) {
+    val activeChapterUrl by remember(isWebtoon, chapter) {
         derivedStateOf {
             if (isWebtoon) streamQueue.getOrNull(streamPosition.first)?.id ?: chapter else chapter
         }
     }
-    val currentPage by remember(isWebtoon) {
+    val currentPage by remember(isWebtoon, chapter) {
         derivedStateOf {
             if (isWebtoon) streamPosition.second else pagerPos.coerceIn(1, pages.size.coerceAtLeast(1))
         }
     }
-    val pageTotal by remember(isWebtoon) {
+    val pageTotal by remember(isWebtoon, chapter) {
         derivedStateOf { if (isWebtoon) streamPosition.third else pages.size }
     }
 
@@ -491,13 +525,19 @@ fun MangaReaderScreen(
 
     // ---- Navigation ---- (chapter jumps and page seeks)
     fun openChapter(url: String) {
-        if (url == chapter) return
+        // Compared against the chapter the VIEWER is in, not the one the screen was
+        // seeded with: after a jump into a chapter the strip already held, those two
+        // differ, and guarding on the seed made the button a no-op exactly when the
+        // user was trying to step back over a chapter they had just passed.
+        if (url == activeChapterUrl) return
         // A chapter the strip already holds (a neighbour it pulled in) is jumped
-        // to rather than rebuilt — its pages are right there.
+        // to rather than rebuilt — its pages are right there, and its first page is
+        // where a chapter change should land.
         if (streamQueue.any { it.id == url }) {
             val seg = streamQueue.indexOfFirst { it.id == url }
             if (seg >= 0) {
                 val start = streamSegments.take(seg).sumOf { it.size } + seg
+                nextError = null
                 viewerRef.value?.moveToPage(start)
                 return
             }
@@ -509,6 +549,7 @@ fun MangaReaderScreen(
     val prevChapter = neighbourOf(activeChapterUrl, -1, navChapters, chapters)
     val nextChapter = neighbourOf(activeChapterUrl, +1, navChapters, chapters)
     val streamNextChapter = neighbourOf(streamQueue.lastOrNull()?.id ?: chapter, +1, navChapters, chapters)
+    val streamPrevChapter = neighbourOf(streamQueue.firstOrNull()?.id ?: chapter, -1, navChapters, chapters)
 
     // When the reader nears the bottom of the strip, fetch and append the next
     // chapter. The viewer reports this: true while the last few pages of the
@@ -519,6 +560,24 @@ fun MangaReaderScreen(
         if (loadingNext || nextError != null) return@LaunchedEffect
         val next = streamNextChapter ?: return@LaunchedEffect
         if (streamQueue.none { it.id == next }) loadNextIntoStream(next)
+    }
+
+    // …and the same at the TOP of the strip: reaching the first pages of the first
+    // streamed chapter streams the previous one in above the reader, so the strip
+    // is continuous in BOTH directions and the reader can walk back to chapter 1
+    // without ever leaving it. The flag is consumed here rather than relied on
+    // again: the prepend shifts the reader into the second segment, so the viewer
+    // reports "not at the start" as soon as the list has grown and the next
+    // previous chapter is only asked for once the user really scrolls up again.
+    LaunchedEffect(nearStart, streamQueue.size, prependTried, isWebtoon) {
+        if (!isWebtoon) return@LaunchedEffect
+        if (!nearStart) return@LaunchedEffect
+        val prev = streamPrevChapter ?: return@LaunchedEffect
+        if (streamQueue.any { it.id == prev }) return@LaunchedEffect
+        if (prev in prependTried) return@LaunchedEffect
+        nearStart = false
+        prependTried = prependTried + prev
+        prependIntoStream(prev)
     }
 
     // ---- The reader's own way past a Cloudflare check ----------------------
@@ -1023,6 +1082,7 @@ fun MangaReaderScreen(
                 viewerRef = viewerRef,
                 onPageChanged = { seg, page, total -> viewerPos = Triple(seg, page, total) },
                 onNearEndChanged = { near -> nearEnd = near },
+                onNearStartChanged = { near -> nearStart = near },
                 onMenuTap = { showHud = !showHud },
                 onUserScroll = { if (settings.autoScroll) save(settings.copy(autoScroll = false)) },
                 onScrollingChanged = { userScrolling = it },
