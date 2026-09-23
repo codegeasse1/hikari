@@ -148,7 +148,7 @@ object PosterLoader {
      * `data:` poster (the provider's own inline base64, which needs no network
      * request at all), or a phone where the extension is gone.
      */
-    fun model(url: String?, providerId: String?): Any? {
+    fun coverModel(url: String?, providerId: String?): Any? {
         val single = model(url)
         val pid = providerId?.takeIf { it.isNotBlank() } ?: return single
         if (!com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(pid)) return single

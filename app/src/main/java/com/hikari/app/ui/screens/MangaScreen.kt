@@ -753,7 +753,7 @@ private fun ContinueCard(
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
             AsyncImage(
-                model = PosterLoader.model(progress.posterUrl, progress.providerId),
+                model = PosterLoader.coverModel(progress.posterUrl, progress.providerId),
                 contentDescription = progress.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -837,7 +837,7 @@ private fun MangaPosterCard(
     trailing: (@Composable () -> Unit)? = null,
     /** The extension this cover came from, when it is a manga extension: the
      *  cover is then fetched through that extension's own client, which is what
-     *  these CDNs require (see [PosterLoader.model]). */
+     *  these CDNs require (see [PosterLoader.coverModel]). */
     providerId: String? = null,
     onClick: () -> Unit,
 ) {
@@ -852,7 +852,7 @@ private fun MangaPosterCard(
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
             AsyncImage(
-                model = PosterLoader.model(posterUrl, providerId),
+                model = PosterLoader.coverModel(posterUrl, providerId),
                 contentDescription = title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,

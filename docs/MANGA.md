@@ -117,7 +117,7 @@ exactly that, ported whole and registered on the app's single Coil loader
   the app's own client, so a cover is never WORSE than it was before this existed.
 * `MangaSource` (`reader/source/MangaSource.kt`) therefore carries Nekoread's own
   members — `userAgent`, `getPageImageModels` and `coverImageModel` beside the page
-  descriptors and `downloadPageImage` — and `PosterLoader.model(url, providerId)` is
+  descriptors and `downloadPageImage` — and `PosterLoader.coverModel(url, providerId)` is
   how a cell asks for the extension-aware cover model: `Artwork.model(item)` for an
   item, `MangaPosterCard`/`ContinueCard` and the manga detail header for a raw URL.
 
