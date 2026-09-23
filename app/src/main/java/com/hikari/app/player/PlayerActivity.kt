@@ -6171,6 +6171,7 @@ class PlayerActivity : ComponentActivity() {
             dialog,
             "Caption style",
             panel,
+            620f,
             hint = I18n.t("Applies to every subtitle, from any server."),
             iconRes = R.drawable.ic_subtitles,
             rowHosts = listOf(panel),
