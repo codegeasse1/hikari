@@ -31,6 +31,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -89,6 +90,10 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     // that reads oddly as a glyph.
     var iconsPreview by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
+
+    // Brightness/volume swipes (AppStore.playerSwipesFlow, ON by default).
+    val swipesFlow = remember { app.store.playerSwipesFlow() }
+    val swipesOn by swipesFlow.collectAsState(initial = true)
 
     LaunchedEffect(json) { layout = PlayerControlsConfig.decode(json) }
 
@@ -158,6 +163,48 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(8.dp))
                     OverlaySketch(layout, icons = iconsPreview)
+                }
+            }
+        }
+
+        // ---- Gestures that are not a button --------------------------------
+        //
+        // Brightness/volume swipes are part of the player's surface rather than
+        // its chrome, so they cannot be placed like the fifteen controls above —
+        // but they ARE something a user may want off (a stray drag while
+        // scrubbing, or a child's fingers on the screen, changing the volume
+        // mid-film). Hence a switch here, next to the layout it belongs to.
+        item(key = "gestures") {
+            GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        tr("Gestures"),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("Brightness & volume swipes"),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                tr("Drag up or down on the video: the left half changes the brightness, the right half the volume. Off means the surface only plays."),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Switch(
+                            checked = swipesOn,
+                            onCheckedChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSwipes(on) }
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }

@@ -523,6 +523,55 @@ fun MangaReaderScreen(
         onDispose { runCatching { disposeSave.value() } }
     }
 
+    // ---- Reading statistics (the Stats page) ------------------------------
+    //
+    // The reader feeds the same store the video player does: one "chapter
+    // consumed" the first time a chapter is opened in this session, and the
+    // wall-clock time the reader was actually on screen. Counting a chapter
+    // once per session rather than per position change matters in webtoon
+    // mode, where scrolling through the strip walks the reader across several
+    // chapters and back again.
+    val countedChapters = remember { mutableSetOf<String>() }
+    LaunchedEffect(activeChapterUrl) {
+        val url = activeChapterUrl
+        if (url.isBlank() || !countedChapters.add(url)) return@LaunchedEffect
+        runCatching {
+            app.store.recordChapterRead(
+                "manga:$key",
+                title.ifBlank { mangaUrl },
+                posterUrl.takeIf { it.isNotBlank() },
+            )
+        }
+    }
+    // The clock only counts while the activity is RESUMED: a reader left open
+    // in the background is not being read, and counting it would turn "time
+    // spent" into "time the app was open".
+    LaunchedEffect(activeChapterUrl) {
+        var last = System.currentTimeMillis()
+        while (true) {
+            delay(20_000L)
+            val now = System.currentTimeMillis()
+            val seconds = (now - last) / 1000L
+            last = now
+            if (seconds <= 0L) continue
+            // The activity is an Activity (not a LifecycleOwner by type), so the
+            // state is asked for through the interface it also implements.
+            val owner = activity as? androidx.lifecycle.LifecycleOwner
+            val resumed = owner == null || owner.lifecycle.currentState
+                .isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+            if (!resumed) continue
+            runCatching {
+                app.store.recordWatchSeconds(
+                    seconds,
+                    "manga:$key",
+                    title.ifBlank { mangaUrl },
+                    posterUrl.takeIf { it.isNotBlank() },
+                    com.hikari.app.data.WatchStats.KIND_MANGA,
+                )
+            }
+        }
+    }
+
     // ---- Navigation ---- (chapter jumps and page seeks)
     fun openChapter(url: String) {
         // Compared against the chapter the VIEWER is in, not the one the screen was

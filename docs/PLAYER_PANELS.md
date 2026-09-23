@@ -258,3 +258,45 @@ this function exists to work around), so "neither of which can answer in the wro
 orientation" was simply not true. The configuration is the only source that follows
 the rotation, and it is what the panel's geometry uses now. If you add a fourth
 source of vertical space to this file, bound it by `screenHeightPx()` too.
+
+## Panels whose rows arrive AFTER they are shown (0.10.19)
+
+Every panel above is built completely before `presentGlass` shows it, so the
+panel's height is settled by the time the window is measured. The subtitle search
+("Load from internet") is the exception: its rows land as each subtitle site
+answers, which is the whole point of the panel.
+
+That made it the one box that opened WRONG and then fixed itself later — it
+appeared at the height of its empty search row and kept it, and only an unrelated
+relayout (the screen going off and on — a window re-measure) put it right.
+
+The cause is the platform, not the panel: a dialog window with
+`WRAP_CONTENT` height is measured when it is SHOWN and is not measured again
+when the content inside it grows. So `presentGlass` now takes
+`refitWindowOnResize` (default **false**), and when a panel opts in,
+`fitToContent()` re-applies the window's own layout — same width,
+`WRAP_CONTENT` height — every time it actually resizes the panel. Going through
+`window.setLayout` is what matters: it re-measures the window, which a bare
+`requestLayout()` on a visible dialog's decor does not.
+
+**Only the subtitle search opts in.** Do not turn it on for the other panels:
+they have nothing to re-measure, and every extra `setLayout` on a visible
+window is a chance to fight the window manager over a panel that was already
+correct.
+
+## The codec details overlay
+
+`showCodecOverlay()` is the ONE player panel that is not a `Dialog`, for two
+reasons:
+
+1. it reports rather than asks, and its numbers change (buffer, dropped frames,
+   rendition) while the film runs — a modal panel would have to be dismissed and
+   re-opened to see them;
+2. it can be **PINNED**: pinned, it stays over the picture and updates once a
+   second; unpinned, it follows the controls and goes away with them (the
+   controller-visibility listener calls `hideCodecOverlay()` when they hide).
+
+It is added with `addContentView` (a plain view over the player), sits below the
+top bar so a pinned panel never covers the buttons that drive it, and is NOT
+clickable as a whole — only its pin and close buttons take a touch, so a pinned
+readout cannot swallow the taps meant for the controls underneath.

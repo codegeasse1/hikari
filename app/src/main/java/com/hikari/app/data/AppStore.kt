@@ -152,6 +152,16 @@ class AppStore(private val ctx: Context) {
          */
         val IPTV_TAB = booleanPreferencesKey("showIptvTab")
         val MANGA_TAB = booleanPreferencesKey("showMangaTab")
+        /**
+         * Whether the Stats tab's button is drawn in the taskbar. Off by default
+         * for the same reason as IPTV/Manga: it is a page a user goes looking
+         * for, not one every install needs a button for (Settings → Taskbar
+         * buttons switches it on).
+         */
+        val STATS_TAB = booleanPreferencesKey("showStatsTab")
+        /** The per-day/per-title totals behind the Stats page — see
+         *  [com.hikari.app.data.WatchStats]. */
+        val WATCH_STATS = stringPreferencesKey("watchStats")
         /** Reading mode of the manga reader ([com.hikari.app.manga.MangaReadMode]:
          *  paged left-to-right, paged right-to-left, or vertical webtoon). */
         val MANGA_READ_MODE = stringPreferencesKey("mangaReadMode")
@@ -1361,6 +1371,74 @@ class AppStore(private val ctx: Context) {
         write("MANGA_TAB") { it[K.MANGA_TAB] = shown }
     }
 
+    // ---- The Stats tab (off by default; Settings → Taskbar buttons) ----
+
+    /** True when the Stats button has been switched on in the taskbar settings. */
+    fun statsTabFlow(): Flow<Boolean> =
+        store.data.map { it[K.STATS_TAB] ?: false }
+
+    suspend fun statsTab(): Boolean = statsTabFlow().first()
+
+    suspend fun setStatsTab(shown: Boolean) {
+        write("STATS_TAB") { it[K.STATS_TAB] = shown }
+    }
+
+    // ---- Watch/read statistics (the Stats page) --------------------------
+    //
+    // Written as a read-modify-write INSIDE the store's own atomic `edit`, so
+    // the player's 60-second flush and the reader's chapter tick can never lose
+    // each other's write (a get-then-set from Kotlin would). See
+    // [com.hikari.app.data.WatchStats] for the shape of the document.
+
+    /** The whole statistics document (JSON; blank = nothing logged yet). */
+    fun watchStatsFlow(): Flow<String> =
+        store.data.map { it[K.WATCH_STATS] ?: "" }
+
+    suspend fun watchStats(): String = watchStatsFlow().first()
+
+    /** Adds [seconds] of playback to today's bucket and to the title's total. */
+    suspend fun recordWatchSeconds(
+        seconds: Long,
+        key: String?,
+        title: String?,
+        posterUrl: String?,
+        kind: String?,
+    ) {
+        if (seconds <= 0L) return
+        val at = System.currentTimeMillis()
+        write("WATCH_STATS") { prefs ->
+            prefs[K.WATCH_STATS] = WatchStats.addSeconds(
+                prefs[K.WATCH_STATS].orEmpty(), at, seconds, key, title, posterUrl, kind,
+            )
+        }
+    }
+
+    /** Counts one video as consumed. Called once per playback, on the first
+     *  frame that actually plays. */
+    suspend fun recordVideoStarted(key: String?, title: String?, posterUrl: String?, kind: String?) {
+        val at = System.currentTimeMillis()
+        write("WATCH_STATS") { prefs ->
+            prefs[K.WATCH_STATS] = WatchStats.addVideo(
+                prefs[K.WATCH_STATS].orEmpty(), at, key, title, posterUrl, kind,
+            )
+        }
+    }
+
+    /** Counts one manga chapter as consumed. */
+    suspend fun recordChapterRead(key: String?, title: String?, posterUrl: String?) {
+        val at = System.currentTimeMillis()
+        write("WATCH_STATS") { prefs ->
+            prefs[K.WATCH_STATS] = WatchStats.addChapter(
+                prefs[K.WATCH_STATS].orEmpty(), at, key, title, posterUrl,
+            )
+        }
+    }
+
+    /** Forgets everything the Stats page counts (the page's own Reset). */
+    suspend fun clearWatchStats() {
+        write("WATCH_STATS") { it[K.WATCH_STATS] = "" }
+    }
+
     // ---- The manga reader's own settings ----
     //
     // Kept here (not in a private file) so they are part of the same store as
@@ -1665,6 +1743,23 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayerControls(json: String) {
         write("PLAYER_CONTROLS") { it[K.PLAYER_CONTROLS] = json }
+    }
+
+    /**
+     * Whether dragging up/down on the video surface changes the brightness (left
+     * half) and the volume (right half). ON by default — it is one of the
+     * player's advertised gestures — and switched off in Settings → Player →
+     * Player controls by anyone who would rather the surface did nothing but
+     * play. The player reads it when it opens, like the rest of its own
+     * preferences.
+     */
+    fun playerSwipesFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_SWIPES] ?: true }
+
+    suspend fun playerSwipes(): Boolean = playerSwipesFlow().first()
+
+    suspend fun setPlayerSwipes(on: Boolean) {
+        write("PLAYER_SWIPES") { it[K.PLAYER_SWIPES] = on }
     }
 
     /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */

@@ -1,3 +1,50 @@
+## 0.10.19
+
+**A Stats page, a pinnable codec readout, a lock icon that gets out of the way,
+and the two player panels that were still misbehaving.** Four requests, plus the
+subtitle search box that opened at the height of its empty search row.
+
+### Added
+
+- **Stats.** Settings → Stats, and an off-by-default **Stats taskbar button**
+  (Settings → Taskbar buttons switches it on). The page counts what you watched
+  and read: time spent, items consumed, days active, an Otaku rank with XP and
+  level progress, daily averages for episodes and chapters, the current and
+  longest streak, your favourite title and a twelve-week activity heatmap whose
+  squares can be tapped for a day's total. The numbers come from a small
+  per-day/per-title document (`WatchStats`) that the player and the reader write
+  as they go — the player adds wall-clock seconds of real playback every minute
+  and one "item" per session, the reader counts each chapter opened and the time
+  the reader is on screen — so nothing here is guessed from the watch history
+  (which holds one row per video and cannot report time spent at all).
+  Everything is in the same preferences store, so a backup carries it.
+- **Codec details** ("stats for nerds"), in the player's gear menu: the live
+  video and audio codecs, resolution, frame rate, bitrate, HDR range, languages,
+  the frame actually on screen, the decoder's rendered/dropped counters, the
+  stream type and host, the buffer and the playback state. It is a **pinnable**
+  overlay — pin it and it stays over the video and keeps updating once a second;
+  leave it unpinned and it goes away with the controls.
+- **Brightness & volume swipes can be switched off** in Settings → Player →
+  Player controls (the layout editor). ON by default; off means a vertical drag
+  on the video is not a gesture at all.
+
+### Fixed
+
+- **The subtitle search box ("Load from internet") opens at its proper size
+  immediately.** A `WRAP_CONTENT` dialog window is measured when it is SHOWN and
+  is not measured again when the rows inside it arrive, so the box kept the
+  nearly-empty height it opened with until an unrelated relayout (the screen
+  going off and on) sized it — which is exactly the report. The panel now
+  re-applies its window layout whenever `fitToContent()` resizes it
+  (`refitWindowOnResize`, opted into by this panel alone, so no other box
+  changes).
+- **The search button says "Searching…" while a search is in flight**, and goes
+  back to "Search" when it finishes. The panel's status line already said so, but
+  the button the user tapped never changed.
+- **The lock icon is no longer parked on the picture for the whole film.** It
+  appears for two seconds when the controls are locked and again on any tap on
+  the screen while locked (that is how it is found), then fades out.
+
 ## 0.10.18
 
 **The player's boxes are the 0.9.8 boxes again, and the reader's chapter title is

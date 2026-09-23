@@ -56,6 +56,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.ParserException
@@ -95,6 +96,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.MediaItem as AppMediaItem
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.data.WatchStats
 import com.hikari.app.download.DownloadEngine
 import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
@@ -564,6 +566,36 @@ class PlayerActivity : ComponentActivity() {
     private var unlockBtn: ImageButton? = null
     private var playHint: TextView? = null
 
+    /**
+     * Shows the unlock icon for [UNLOCK_ICON_MS] and then takes it away again.
+     *
+     * Locked playback is meant to be a clean picture — the whole reason the lock
+     * exists is that a hand on the phone should not change anything — so the
+     * icon is not left sitting on the video for the rest of the film. It appears
+     * when the lock is engaged and again on any tap on the screen while locked
+     * (which is how it is found when it is needed), and fades out on its own.
+     */
+    private val unlockHandler = Handler(Looper.getMainLooper())
+    private var unlockHideTask: Runnable? = null
+
+    /** Brightness/volume swipes (Settings → Player → Player controls). Read when
+     *  the player opens; ON unless the user turned them off. */
+    private var swipesEnabled = true
+
+    // ---- The codec details overlay ("stats for nerds") --------------------
+    //
+    // A live readout of what the player is actually decoding: the video and
+    // audio tracks' codecs, sizes, bitrates and languages, the stream type and
+    // host, and what the decoder is doing with it. It is a plain view added over
+    // the player (not a dialog), so it can be PINNED and left up while the film
+    // plays — an unpinned one follows the controls and goes away with them.
+    private var codecOverlay: View? = null
+    private var codecOverlayBody: TextView? = null
+    private var codecOverlayPin: ImageView? = null
+    private var codecOverlayPinned = false
+    private val codecHandler = Handler(Looper.getMainLooper())
+    private var codecTicker: Runnable? = null
+
     /** The favourite toggled by the top-bar heart button, and whether it is
      *  currently on. Built from the launch intent's history extras. */
     private var favouriteItem: AppMediaItem? = null
@@ -865,8 +897,11 @@ class PlayerActivity : ComponentActivity() {
                     // Locked = watch only: playback carries on and the small
                     // lock icon stays touchable, but nothing else reacts — no
                     // controls, no double-tap seek, no brightness/volume drags.
-                    // Say so once in a while so a tap doesn't look like a dead
-                    // screen.
+                    // The icon is not left on the picture (see [flashUnlockIcon]),
+                    // so a tap is what brings it back for a moment: that is how
+                    // it is found at all. Say so once in a while too, so a tap
+                    // doesn't look like a dead screen.
+                    flashUnlockIcon()
                     if (System.currentTimeMillis() - lockToastAt > 4_000L) {
                         lockToastAt = System.currentTimeMillis()
                         Toast.makeText(this@PlayerActivity, I18n.t("Locked — tap the small lock icon to unlock"), Toast.LENGTH_SHORT).show()
@@ -964,6 +999,9 @@ class PlayerActivity : ComponentActivity() {
                 // sat half cut off in portrait. Every fresh appearance of the
                 // controls starts the row at its left edge again.
                 if (controllerVisible) resetPillScroll()
+                // An UNPINNED codec readout lives and dies with the controls —
+                // pin it and it stays on the picture (see showCodecOverlay).
+                if (!controllerVisible && !codecOverlayPinned) hideCodecOverlay()
             }
         })
         speedChip = findViewById(R.id.speed_btn)
@@ -1129,6 +1167,19 @@ class PlayerActivity : ComponentActivity() {
                             iconRes = R.drawable.ic_server, marker = RowMarker.ICON,
                             selected = askServerOnPlay,
                         ),
+                        // "Stats for nerds": the codec/bitrate readout. Its own
+                        // row because it is the one player panel that is not a
+                        // choice — it reports, and can be pinned over the video.
+                        GlassOption(
+                            I18n.t("Codec details"),
+                            if (codecOverlayPinned) {
+                                I18n.t("Pinned over the video")
+                            } else {
+                                I18n.t("What is being decoded, right now")
+                            },
+                            iconRes = R.drawable.ic_codec, marker = RowMarker.ICON,
+                            selected = codecOverlay != null,
+                        ),
                     ),
                     hint = getString(R.string.player_options_hint),
                     iconRes = R.drawable.ic_settings,
@@ -1158,6 +1209,7 @@ class PlayerActivity : ComponentActivity() {
                             }
                             openOptions()
                         }
+                        4 -> showCodecOverlay()
                     }
                 }
             }
@@ -1252,6 +1304,18 @@ class PlayerActivity : ComponentActivity() {
             }.getOrDefault(false)
             applyVideoEnhance(force = true)
         }
+        // Brightness/volume swipes. Read with the other player preferences; ON
+        // until the answer lands, because that is what the player has always
+        // done (Settings → Player → Player controls turns them off).
+        lifecycleScope.launch {
+            swipesEnabled = runCatching {
+                (applicationContext as HikariApp).store.playerSwipes()
+            }.getOrDefault(true)
+        }
+        // The Stats page's stopwatch: it counts wall-clock seconds of actual
+        // playback and hands them to the store every minute (see
+        // [flushWatchSeconds]), so a session is never lost to a crash.
+        startStatsTicker()
 
         // Picture-in-picture: explicit pip button (top bar) plus YouTube-style
         // auto-enter when the user leaves the player with video playing (12+).
@@ -1327,7 +1391,11 @@ class PlayerActivity : ComponentActivity() {
                         // NOT while locked: the lock is "watch only", so a
                         // stray drag must not change the brightness or the
                         // volume either (only the small unlock button reacts).
-                        if (!controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
+                        // ...and not at all when the user has switched the
+                        // swipes off (Settings → Player → Player controls):
+                        // then a vertical drag is simply not a gesture, so the
+                        // pending speed-up is left alone and no HUD appears.
+                        if (swipesEnabled && !controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
                             holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                             holdSpeedTimer = null
                             if (holdingFast) {
@@ -2026,13 +2094,15 @@ class PlayerActivity : ComponentActivity() {
             hideLoadingBanner(immediate = true)
             pv.useController = false
             pv.hideController()
+            clearUnlockIcon()
             unlockBtn?.visibility = View.GONE
             seekFeedback?.visibility = View.GONE
+            if (!codecOverlayPinned) hideCodecOverlay()
         } else {
             pv.useController = true
             if (controlsLocked) {
                 pv.hideController()
-                unlockBtn?.visibility = View.VISIBLE
+                flashUnlockIcon()
             }
         }
     }
@@ -2073,16 +2143,437 @@ class PlayerActivity : ComponentActivity() {
         val pv = playerView ?: return
         pv.useController = false
         pv.hideController()
-        unlockBtn?.visibility = View.VISIBLE
+        // The icon shows itself for a moment (see [flashUnlockIcon]) instead of
+        // staying on the picture for the whole film.
+        flashUnlockIcon()
         hideSystemUi()
     }
 
     private fun unlockControls() {
         controlsLocked = false
         val pv = playerView ?: return
+        clearUnlockIcon()
         pv.useController = true
         unlockBtn?.visibility = View.GONE
         pv.showController()
+    }
+
+    /** How long the unlock icon stays up before it fades out, in ms. */
+    private val unlockIconMs = 2000L
+
+    /**
+     * Puts the unlock icon on screen for [unlockIconMs] and then fades it out.
+     * Called when the controls are locked and on every tap while locked, so the
+     * one button that gets a locked player out of its lock is there when it is
+     * looked for and gone when it is not.
+     */
+    private fun flashUnlockIcon() {
+        if (!controlsLocked) return
+        val btn = unlockBtn ?: return
+        unlockHideTask?.let { unlockHandler.removeCallbacks(it) }
+        btn.animate().cancel()
+        btn.visibility = View.VISIBLE
+        btn.alpha = 1f
+        val hide = Runnable {
+            btn.animate().alpha(0f).setDuration(220L).withEndAction {
+                if (controlsLocked) btn.visibility = View.GONE
+            }.start()
+        }
+        unlockHideTask = hide
+        unlockHandler.postDelayed(hide, unlockIconMs)
+    }
+
+    /** Cancels a pending fade-out and takes the icon away immediately. */
+    private fun clearUnlockIcon() {
+        unlockHideTask?.let { unlockHandler.removeCallbacks(it) }
+        unlockHideTask = null
+        unlockBtn?.let {
+            it.animate().cancel()
+            it.alpha = 1f
+        }
+    }
+
+    // ---- Codec details ("stats for nerds") --------------------------------
+
+    /**
+     * The live readout of what is being decoded: the video and audio tracks'
+     * codecs, sizes, frame rates, bitrates and languages, the frame actually on
+     * screen, the stream type and host, the decoder's own frame counters and the
+     * playback state.
+     *
+     * It is built here rather than as a [Dialog] because it is the one player
+     * panel that is not a question — and because it can be PINNED: a dialog
+     * would have to be dismissed, and the point of a stats readout is to watch a
+     * number (buffered seconds, dropped frames) while the film runs. Pinned, it
+     * stays over the picture; unpinned it goes away with the controls, like the
+     * chrome it belongs to.
+     */
+    private fun showCodecOverlay() {
+        val existing = codecOverlay
+        if (existing != null) {
+            existing.visibility = View.VISIBLE
+            updateCodecOverlay()
+            startCodecTicker()
+            return
+        }
+        val density = resources.displayMetrics.density
+        fun dp(value: Float) = (value * density).toInt()
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.hud_panel)
+            setPadding(dp(11f), dp(9f), dp(11f), dp(10f))
+            // NOT clickable as a whole: the readout is drawn over the video, and
+            // a pinned panel must not swallow the taps meant for the controls
+            // underneath it. Only its own two buttons take a touch.
+            isClickable = false
+        }
+        val title = TextView(this).apply {
+            text = I18n.t("Codec details")
+            dpText(10f)
+            includeFontPadding = false
+            setTextColor(0xFFFFFFFF.toInt())
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val pin = ImageView(this).apply {
+            setImageResource(R.drawable.ic_pin)
+            imageTintList = ColorStateList.valueOf(0x99FFFFFF.toInt())
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.circle_glass_ripple)
+            isClickable = true
+            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
+            contentDescription = I18n.t("Pin")
+            setOnClickListener { toggleCodecPin() }
+        }
+        val close = TextView(this).apply {
+            text = "\u2715"
+            dpText(10f)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            setTextColor(0xE6FFFFFF.toInt())
+            background = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.circle_glass_ripple)
+            isClickable = true
+            setOnClickListener { hideCodecOverlay() }
+        }
+        card.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    title,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        .apply { marginEnd = dp(8f) },
+                )
+                addView(
+                    pin,
+                    LinearLayout.LayoutParams(dp(20f), dp(20f)).apply { marginEnd = dp(4f) },
+                )
+                addView(close, LinearLayout.LayoutParams(dp(20f), dp(20f)))
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ),
+        )
+        val body = TextView(this).apply {
+            dpText(9f)
+            includeFontPadding = false
+            setTextColor(0xFFD7DEEA.toInt())
+            // Monospace: this is a technical readout, and its columns of num-
+            // bers only line up if every glyph is the same width.
+            typeface = Typeface.MONOSPACE
+        }
+        card.addView(
+            body,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(6f) },
+        )
+
+        codecOverlay = card
+        codecOverlayBody = body
+        codecOverlayPin = pin
+        codecOverlayPinned = false
+        addContentView(
+            card,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                // Below the controller's own top bar (back / title / buttons), so
+                // a pinned panel never sits over the buttons that drive it.
+                gravity = Gravity.TOP or Gravity.START
+                leftMargin = dp(8f)
+                topMargin = dp(44f)
+            },
+        )
+        updateCodecOverlay()
+        startCodecTicker()
+    }
+
+    /** Pins the readout over the video, or lets it go with the controls again. */
+    private fun toggleCodecPin() {
+        codecOverlayPinned = !codecOverlayPinned
+        codecOverlayPin?.imageTintList = ColorStateList.valueOf(
+            if (codecOverlayPinned) accentMidColor else 0x99FFFFFF.toInt()
+        )
+        Toast.makeText(
+            this,
+            if (codecOverlayPinned) I18n.t("Pinned — the readout stays on screen")
+            else I18n.t("Unpinned — it goes away with the controls"),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun hideCodecOverlay() {
+        stopCodecTicker()
+        codecOverlay?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+        codecOverlay = null
+        codecOverlayBody = null
+        codecOverlayPin = null
+        codecOverlayPinned = false
+    }
+
+    /** Re-reads the readout once a second while it is on screen. */
+    private fun startCodecTicker() {
+        if (codecTicker != null) return
+        val task = object : Runnable {
+            override fun run() {
+                updateCodecOverlay()
+                codecHandler.postDelayed(this, 1000L)
+            }
+        }
+        codecTicker = task
+        codecHandler.postDelayed(task, 1000L)
+    }
+
+    private fun stopCodecTicker() {
+        codecTicker?.let { codecHandler.removeCallbacks(it) }
+        codecTicker = null
+    }
+
+    private fun updateCodecOverlay() {
+        val body = codecOverlayBody ?: return
+        val text = codecDetailsText()
+        if (body.text != text) body.text = text
+    }
+
+    /**
+     * Everything in the readout is read from the PLAYER rather than from the
+     * source list: the interesting answer is what is being decoded right now. An
+     * adaptive stream can switch rendition — and so codec, resolution and
+     * bitrate — at any second, and the manifest's first variant says nothing
+     * about the frame on screen.
+     */
+    private fun codecDetailsText(): String {
+        val p = player ?: return I18n.t("Nothing is playing.")
+        val lines = ArrayList<String>(12)
+        val video = p.videoFormat
+        lines += I18n.t("VIDEO") + "   " + (video?.let { videoSummary(it) }
+            ?: I18n.t("no video track"))
+        val audio = p.audioFormat
+        lines += I18n.t("AUDIO") + "   " + (audio?.let { audioSummary(it) }
+            ?: I18n.t("no audio track"))
+        val size = p.videoSize
+        if (size.width > 0 && size.height > 0) {
+            lines += I18n.t("FRAME") + "   ${size.width}\u00D7${size.height}"
+        }
+        val counters = runCatching { p.videoDecoderCounters }.getOrNull()
+        if (counters != null && counters.renderedOutputBufferCount > 0) {
+            lines += I18n.t("DECODED") + "   " +
+                counters.renderedOutputBufferCount + " " + I18n.t("frames") + " · " +
+                counters.droppedBufferCount + " " + I18n.t("dropped")
+        }
+        val source = sources.getOrNull(currentIndex)
+        val bits = ArrayList<String>(4)
+        streamKind(p, source?.url.orEmpty()).takeIf { it.isNotBlank() }?.let { bits += it }
+        source?.url?.let { hostOf(it) }?.let { bits += it }
+        source?.name?.takeIf { it.isNotBlank() }?.let { bits += it }
+        if (bits.isNotEmpty()) lines += I18n.t("STREAM") + "   " + bits.joinToString(" · ")
+        if (p.duration > 0L) {
+            lines += I18n.t("POSITION") + "   " + formatDurationBadge(p.currentPosition) + " / " +
+                formatDurationBadge(p.duration)
+        }
+        val buffered = (p.bufferedPosition - p.currentPosition).coerceAtLeast(0L) / 1000L
+        lines += I18n.t("BUFFER") + "   " + buffered + "s · " +
+            String.format(java.util.Locale.US, "%.2fx", p.playbackParameters.speed) + " · " +
+            playbackStateLabel(p)
+        source?.url?.takeIf { it.isNotBlank() }?.let { lines += I18n.t("URL") + "   " + it }
+        return lines.joinToString("\n")
+    }
+
+    /** "H.264 (avc1.640028) · 1920×1080 · 23.98 fps · ~4.2 Mbps · HDR10". */
+    private fun videoSummary(f: Format): String {
+        val bits = ArrayList<String>(5)
+        bits += codecName(f.sampleMimeType, f.codecs)
+        if (f.width > 0 && f.height > 0) bits += "${f.width}\u00D7${f.height}"
+        if (f.frameRate > 0f) {
+            bits += String.format(java.util.Locale.US, "%.2f fps", f.frameRate)
+        }
+        val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+        bitrateBadge(bitrate)?.let { bits += it }
+        bits += rangeLabel(f)
+        return bits.filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    /** "E-AC-3 · 5.1 · 48 kHz · ~640 kbps · English". */
+    private fun audioSummary(f: Format): String {
+        val bits = ArrayList<String>(5)
+        bits += codecName(f.sampleMimeType, f.codecs)
+        channelsBadge(f.channelCount)?.let { bits += it }
+        if (f.sampleRate > 0) bits += (f.sampleRate / 1000).toString() + " kHz"
+        val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+        bitrateBadge(bitrate)?.let { bits += it }
+        languageOf(f.language)?.let { bits += it }
+        return bits.filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    /** "HDR10" / "HLG" / "Wide colour" / "SDR" — what the track's colour says. */
+    private fun rangeLabel(f: Format): String {
+        val info = f.colorInfo ?: return "SDR"
+        return when {
+            info.colorTransfer == C.COLOR_TRANSFER_ST2084 -> "HDR10"
+            info.colorTransfer == C.COLOR_TRANSFER_HLG -> "HLG"
+            info.colorSpace == C.COLOR_SPACE_BT2020 -> I18n.t("Wide colour")
+            else -> "SDR"
+        }
+    }
+
+    /** "H.264 (avc1.640028)" — a codec's name plus the manifest's own string. */
+    private fun codecName(mime: String?, codecs: String?): String {
+        // The null/blank case is tested OUTSIDE the `when` so the branch bodies
+        // get a non-null `mime` (the smart cast the compiler can prove).
+        val name = if (mime.isNullOrBlank()) "" else when {
+            // E-AC-3 before AC-3: "audio/eac3" contains "ac3".
+            mime.contains("eac3", true) -> "E-AC-3"
+            mime.contains("ac3", true) -> "AC-3"
+            mime.contains("truehd", true) -> "TrueHD"
+            mime.contains("dts", true) -> "DTS"
+            mime.contains("avc", true) || mime.contains("h264", true) -> "H.264"
+            mime.contains("hevc", true) || mime.contains("h265", true) -> "H.265"
+            mime.contains("av01", true) -> "AV1"
+            mime.contains("vp9", true) -> "VP9"
+            mime.contains("vp8", true) -> "VP8"
+            mime.contains("mp4v", true) -> "MPEG-4"
+            mime.contains("mpeg2", true) -> "MPEG-2"
+            mime.contains("mp4a", true) || mime.contains("aac", true) -> "AAC"
+            mime.contains("opus", true) -> "Opus"
+            mime.contains("vorbis", true) -> "Vorbis"
+            mime.contains("flac", true) -> "FLAC"
+            mime.contains("mpeg", true) -> "MP3"
+            mime.contains("subrip", true) -> "SRT"
+            mime.contains("vtt", true) -> "VTT"
+            else -> mime.substringAfter('/').uppercase()
+        }
+        val extra = codecs?.takeIf { it.isNotBlank() && !name.equals(it, true) }
+        return if (extra != null) "$name ($extra)" else name
+    }
+
+    /** "HLS" / "DASH" / "File" / "Live" — what kind of stream is playing. */
+    private fun streamKind(p: Player, url: String): String {
+        if (p.isCurrentMediaLive) return I18n.t("Live")
+        val lower = url.lowercase()
+        return when {
+            lower.contains(".m3u8") -> "HLS"
+            lower.contains(".mpd") -> "DASH"
+            lower.startsWith("content:") -> I18n.t("File")
+            lower.contains(".mp4") || lower.contains(".mkv") || lower.contains(".webm") ->
+                I18n.t("File")
+            lower.isBlank() -> ""
+            else -> I18n.t("Stream")
+        }
+    }
+
+    private fun playbackStateLabel(p: Player): String = when {
+        p.playbackState == Player.STATE_BUFFERING -> I18n.t("Buffering")
+        p.playbackState == Player.STATE_ENDED -> I18n.t("Ended")
+        p.isPlaying -> I18n.t("Playing")
+        p.playbackState == Player.STATE_READY -> I18n.t("Paused")
+        else -> I18n.t("Idle")
+    }
+
+    // ---- The Stats page's stopwatch ---------------------------------------
+
+    /** Playback seconds counted but not yet handed to the store. */
+    private var watchSecondsPending = 0L
+
+    /** False until this session has been counted as one "item consumed". */
+    private var watchItemCounted = false
+
+    private val statsHandler = Handler(Looper.getMainLooper())
+    private var statsTicker: Runnable? = null
+
+    /**
+     * Counts what is watching, for the Stats page (see
+     * [com.hikari.app.data.WatchStats]): wall-clock seconds of ACTUAL playback
+     * and one "item consumed" per session.
+     *
+     * Wall clock rather than the position, deliberately: seeking and
+     * re-watching are still time spent, and the position would double-count a
+     * scrub and under-count a re-watch. It is flushed every [STATS_FLUSH_SECONDS]
+     * so a crash or a kill costs at most that much, and again from [onStop] so
+     * leaving the player is never the thing that loses the count.
+     */
+    private fun startStatsTicker() {
+        if (statsTicker != null) return
+        val task = object : Runnable {
+            override fun run() {
+                if (player?.isPlaying == true) {
+                    watchSecondsPending += STATS_TICK_SECONDS
+                    if (!watchItemCounted) {
+                        watchItemCounted = true
+                        val row = statsRow()
+                        val app = applicationContext as? HikariApp
+                        if (app != null) {
+                            lifecycleScope.launch {
+                                runCatching {
+                                    app.store.recordVideoStarted(
+                                        row[0], row[1], row[2], row[3],
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (watchSecondsPending >= STATS_FLUSH_SECONDS) flushWatchSeconds()
+                }
+                statsHandler.postDelayed(this, STATS_TICK_SECONDS * 1000L)
+            }
+        }
+        statsTicker = task
+        statsHandler.postDelayed(task, STATS_TICK_SECONDS * 1000L)
+    }
+
+    private fun stopStatsTicker() {
+        statsTicker?.let { statsHandler.removeCallbacks(it) }
+        statsTicker = null
+    }
+
+    /** Hands the counted seconds to the store. Safe to call at any time. */
+    private fun flushWatchSeconds() {
+        val seconds = watchSecondsPending
+        if (seconds <= 0L) return
+        watchSecondsPending = 0L
+        val row = statsRow()
+        val app = applicationContext as? HikariApp ?: return
+        lifecycleScope.launch {
+            runCatching {
+                app.store.recordWatchSeconds(seconds, row[0], row[1], row[2], row[3])
+            }
+        }
+    }
+
+    /** (key, title, poster, kind) the Stats page files this playback under. */
+    private fun statsRow(): Array<String?> {
+        val title = playingTitle
+        return arrayOf(
+            historyKey.ifBlank { "title:$title" },
+            title,
+            intent.getStringExtra("histPoster"),
+            if (currentEpisode() != null || favouriteItem?.type == MediaType.SERIES) {
+                WatchStats.KIND_SERIES
+            } else {
+                WatchStats.KIND_MOVIE
+            },
+        )
     }
 
     /** Toggles the video resize mode between Fit and Crop (zoom to fill). */
@@ -3570,6 +4061,17 @@ class PlayerActivity : ComponentActivity() {
          *  way to reach its settings without scrolling to the bottom — this is
          *  that way. */
         headerActions: List<Pair<Int, () -> Unit>> = emptyList(),
+        /**
+         * Re-applies the dialog window's own layout every time [fitToContent]
+         * resizes the panel. A WRAP_CONTENT dialog window is measured when it is
+         * SHOWN and is not measured again when the content inside it grows, so a
+         * panel whose rows arrive later — the subtitle search, which fills in as
+         * each site answers — stayed at its opening, nearly-empty height until
+         * something unrelated (a rotation, the screen going off and on) forced a
+         * re-measure. Only such a panel opts in; a panel built before it is shown
+         * has nothing to re-measure.
+         */
+        refitWindowOnResize: Boolean = false,
     ): TextView? {
         val density = resources.displayMetrics.density
         // The halo is where the curved pane's neon blooms. A flat panel (every
@@ -3830,6 +4332,22 @@ class PlayerActivity : ComponentActivity() {
             appliedSil = sil
             panelLp.height = sil + 2 * halo
             panel.layoutParams = panelLp
+            // The panel has just been resized; a WRAP_CONTENT window does not
+            // hear about that on its own (see [refitWindowOnResize]). Handing
+            // the window its own layout back — same width, WRAP_CONTENT height —
+            // goes through WindowManager, which re-measures the window and so
+            // gives the taller panel the room the panel alone cannot claim.
+            if (refitWindowOnResize) {
+                panel.post {
+                    val win = dialog.window ?: return@post
+                    val width = win.attributes.width
+                    if (width > 0) {
+                        runCatching {
+                            win.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        }
+                    }
+                }
+            }
         }
         // Widths only exist after the dialog is shown, and the rows can change
         // height while it is up (a server landing mid-search), so fit now and
@@ -5477,6 +5995,13 @@ class PlayerActivity : ComponentActivity() {
         fun setBusy(busy: Boolean) {
             searchBtn.isEnabled = !busy
             searchBtn.alpha = if (busy) 0.55f else 1f
+            // The BUTTON says what it is doing. The panel's status line already
+            // reported the search, but the button — the thing the user just
+            // tapped — read "Search" throughout, so a search in flight looked
+            // exactly like a tap that had done nothing at all. It goes back to
+            // "Search" the moment the search is over, including when it ends
+            // with nothing found.
+            searchBtn.text = if (busy) I18n.t("Searching…") else I18n.t("Search")
         }
 
         val episode = currentEpisode()
@@ -5733,6 +6258,12 @@ class PlayerActivity : ComponentActivity() {
             },
             iconRes = R.drawable.ic_search,
             rowHosts = listOf(results),
+            // The rows arrive WHILE the panel is up (that is the point of it),
+            // so the window has to be re-measured as they land: without this the
+            // box opened at the height of its empty search row and stayed there
+            // until an unrelated relayout (the screen going off and on) sized it
+            // to what had arrived.
+            refitWindowOnResize = true,
         )
         // The keyboard is the point of this panel: the user came here to type.
         // ADJUST_RESIZE keeps the panel inside the room that is left once the
@@ -9672,6 +10203,10 @@ class PlayerActivity : ComponentActivity() {
         // background (home button, lock screen, app switch) — onDestroy may
         // come later or never (background process death).
         recordProgress()
+        // ...and the same for the Stats count: the ticker only adds up while
+        // something is playing, so whatever it is holding is real watch time
+        // that leaving the player must not throw away.
+        flushWatchSeconds()
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
         }
@@ -9681,6 +10216,11 @@ class PlayerActivity : ComponentActivity() {
     override fun onDestroy() {
         stopBannerAnimators()
         recordProgress()
+        flushWatchSeconds()
+        stopStatsTicker()
+        stopCodecTicker()
+        unlockHideTask?.let { unlockHandler.removeCallbacks(it) }
+        unlockHideTask = null
         liveStreamsJob?.cancel()
         liveStreamsJob = null
         liveEpisodeJob?.cancel()
@@ -9764,6 +10304,11 @@ class PlayerActivity : ComponentActivity() {
          *  covers the whole 0..100% range (the previous 1:1 mapping was reported
          *  as needing 8-9 full-screen swipes, i.e. far too insensitive). */
         private const val GESTURE_SWIPE_GAIN = 4f
+
+        /** The Stats page's stopwatch: it samples whether playback is running
+         *  this often, and hands the total to the store this often (seconds). */
+        private const val STATS_TICK_SECONDS = 10L
+        private const val STATS_FLUSH_SECONDS = 60L
 
         /** Fallback public trackers for addons that don't ship their own. */
         private val TORRENT_TRACKERS = listOf(

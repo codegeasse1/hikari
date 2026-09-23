@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Panorama
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
@@ -504,6 +505,7 @@ fun SettingsScreen(nav: NavHostController) {
     // back always has an obvious target.
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
     var showPlayerControls by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
 
     // Accent colours: the app accent repaints this whole screen live; the
@@ -551,6 +553,14 @@ fun SettingsScreen(nav: NavHostController) {
     // actions, plus the share-all row.
     if (showLogs) {
         LogsPage(app, onBack = { showLogs = false })
+        return
+    }
+
+    // Stats is a full page as well, and the SAME composable the off-by-default
+    // Stats tab draws (Settings → Taskbar buttons switches that button on):
+    // one screen with two doors, so the two can never drift apart.
+    if (showStats) {
+        StatsScreen(app, onBack = { showStats = false })
         return
     }
 
@@ -965,6 +975,35 @@ fun SettingsScreen(nav: NavHostController) {
                 .forEach { target ->
                 item {
                     SettingsFolderRow(folder = target, onClick = { openFolder = target })
+                }
+            }
+            // Stats: a page rather than a folder (it is one screen, like Logs),
+            // and the same page the off-by-default Stats tab draws. It sits on
+            // the index as well as in the taskbar settings so it is reachable
+            // whether or not the user ever switches that button on.
+            item {
+                SettingsCard(top = 12.dp) {
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.BarChart,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text(tr("Stats")) },
+                        supportingContent = {
+                            Text(tr("Time spent, streaks and what you watched most"))
+                        },
+                        trailingContent = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable { showStats = true }
+                    )
                 }
             }
             item {
@@ -1533,17 +1572,22 @@ private fun TaskbarCard(app: HikariApp) {
     // switched on here (see AppStore.mangaTabFlow).
     val mangaFlow = remember { app.store.mangaTabFlow() }
     val mangaTab by mangaFlow.collectAsState(initial = false)
+    // Stats is the third off-by-default button (see AppStore.statsTabFlow).
+    val statsFlow = remember { app.store.statsTabFlow() }
+    val statsTab by statsFlow.collectAsState(initial = false)
     fun shown(tab: BottomTab): Boolean = when (tab.route) {
         Routes.IPTV -> iptvTab
         Routes.MANGA -> mangaTab
+        Routes.STATS -> statsTab
         else -> tab.route !in hidden
     }
-    // The tabs that obey the "the last one cannot be switched off" rule. IPTV
-    // and Manga are not among them: they are extra pages, so switching either on
-    // or off can never leave the user without a way around the app.
-    val extras = setOf(Routes.IPTV, Routes.MANGA)
+    // The tabs that obey the "the last one cannot be switched off" rule. IPTV,
+    // Manga and Stats are not among them: they are extra pages, so switching any
+    // of them on or off can never leave the user without a way around the app.
+    val extras = setOf(Routes.IPTV, Routes.MANGA, Routes.STATS)
     val coreVisible = BottomTabs.filter { it.route !in extras && it.route !in hidden }
-    val visibleCount = coreVisible.size + (if (iptvTab) 1 else 0) + (if (mangaTab) 1 else 0)
+    val visibleCount = coreVisible.size + (if (iptvTab) 1 else 0) + (if (mangaTab) 1 else 0) +
+        (if (statsTab) 1 else 0)
     val labelsFlow = remember { app.store.tabLabelsFlow() }
     val labels by labelsFlow.collectAsState(initial = true)
 
@@ -1600,6 +1644,13 @@ private fun TaskbarCard(app: HikariApp) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (tab.route == Routes.STATS) {
+                        Text(
+                            tr("Off by default — switch on to see your watch time"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (tab.route == Routes.LIBRARY) {
                         // My Stuff is really THREE pages behind one button, so
                         // its own sections get their own switches directly under
@@ -1623,6 +1674,7 @@ private fun TaskbarCard(app: HikariApp) {
                             when (tab.route) {
                                 Routes.IPTV -> app.store.setIptvTab(on)
                                 Routes.MANGA -> app.store.setMangaTab(on)
+                                Routes.STATS -> app.store.setStatsTab(on)
                                 else -> app.store.setTabHidden(tab.route, !on)
                             }
                         }

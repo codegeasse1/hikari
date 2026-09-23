@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
@@ -102,6 +103,7 @@ import com.hikari.app.ui.screens.MyStuff
 import com.hikari.app.ui.screens.MyStuffScreen
 import com.hikari.app.ui.screens.SearchScreen
 import com.hikari.app.ui.screens.SettingsScreen
+import com.hikari.app.ui.screens.StatsScreen
 import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
@@ -147,6 +149,15 @@ object Routes {
      */
     const val MANGA_READER =
         "manga-reader?providerId={providerId}&url={url}&chapter={chapter}&title={title}&poster={poster}"
+
+    /**
+     * The Stats tab: what the user watched and read, and for how long (see
+     * [com.hikari.app.ui.screens.StatsScreen]). OFF by default and switched on
+     * in Settings → Taskbar buttons, like [IPTV] and [MANGA] — it is a page a
+     * user goes looking for rather than one every install needs a button for,
+     * and the Settings index has its own door to it either way.
+     */
+    const val STATS = "stats"
 
     /** Opens one manga. [url] is the source's own url for the title (its id). */
     fun mangaDetail(
@@ -796,6 +807,9 @@ val BottomTabs = listOf(
     // the merged My Stuff slot even though the two were designed together.
     BottomTab(Routes.MANGA, "Manga", Icons.Filled.AutoStories),
     BottomTab(Routes.IPTV, "IPTV", Icons.Filled.LiveTv),
+    // Stats is the other off-by-default tab (Settings → Taskbar buttons): a
+    // page about what you have already watched, not something to browse to.
+    BottomTab(Routes.STATS, "Stats", Icons.Filled.BarChart),
     BottomTab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -834,10 +848,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // manga engine, so its button is off until the user asks for it.
     val mangaTabFlow = remember { app.store.mangaTabFlow() }
     val mangaTabOn by mangaTabFlow.collectAsState(initial = false)
+    // ...and neither is Stats (AppStore.statsTabFlow): it is a page about what
+    // the user has already watched, and the taskbar is for getting somewhere.
+    val statsTabFlow = remember { app.store.statsTabFlow() }
+    val statsTabOn by statsTabFlow.collectAsState(initial = false)
     val visibleTabs: Set<String> = buildSet {
         addAll(hiddenTabs)
         if (!iptvTabOn) add(Routes.IPTV)
         if (!mangaTabOn) add(Routes.MANGA)
+        if (!statsTabOn) add(Routes.STATS)
     }
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
@@ -1096,6 +1115,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 MangaReaderScreen(nav, providerId, url, chapter, title, poster)
             }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
+            composable(Routes.STATS) { StatsScreen(app) }
             composable(Routes.COLLECTIONS) {
                 CollectionsScreen(nav, onBack = { nav.popBackStack() })
             }
