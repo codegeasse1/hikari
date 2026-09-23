@@ -51,6 +51,10 @@ class PairHost(private val app: HikariApp) {
         val payloadBytes: Int,
     ) {
         val reachable: Boolean get() = host.isNotBlank()
+
+        /** `192.168.1.5:8787`, what the guest would type if the QR cannot be
+         *  used and the broadcast cannot be heard. */
+        val label: String get() = "$host:$port"
     }
 
     @Volatile
@@ -232,7 +236,9 @@ class PairHost(private val app: HikariApp) {
          *  beacon advertise. Kept as our own property rather than read back from
          *  NanoHTTPD: before `start()` its own listener has no port at all. */
         val listenPort: Int,
-        private val code: String,
+        /** The pairing code this server accepts. Read by [PairHost.start] to
+         *  build the QR payload and the beacon filter, so it is not private. */
+        val code: String,
         private val payload: ByteArray,
         private val onServed: (String) -> Unit,
     ) : NanoHTTPD(listenPort) {
