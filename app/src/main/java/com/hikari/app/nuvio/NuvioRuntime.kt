@@ -3,25 +3,32 @@ package com.hikari.app.nuvio
 import android.util.Base64
 import android.content.Context
 import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
 import com.hikari.app.net.DohDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * Runs NuvioMobile-style JS providers inside a fresh embedded QuickJS engine
@@ -33,8 +40,11 @@ import java.util.concurrent.TimeUnit
  * `getStreams(tmdbId, mediaType, season, episode)` (plus an optional
  * `onSettings()`), following the official NuvioMobile plugin conventions. The
  * engine only ever executes the provider code — every network request goes
- * through the synchronous `__hikariFetch` bridge (OkHttp), so the JS runtime
- * needs no WebView and no network capability of its own. The shared runtime
+ * through the ASYNCHRONOUS `__hikariFetch` bridge (OkHttp, see
+ * [bridgeFetchAsync]), so the JS runtime needs no WebView and no network
+ * capability of its own, and a provider whose own code fires several requests
+ * at once (which is how the big all-in-one providers are fast at all) gets
+ * them all in flight together instead of one after another. The shared runtime
  * (assets/nuvio/boot.js polyfills + assets/nuvio/cheerio.js + assets/nuvio/
  * harness.js) is evaluated into the engine before each provider runs, so no
  * state ever leaks between providers and a hung/crashing provider can only
@@ -85,6 +95,34 @@ object NuvioRuntime {
     /** Bounds how many providers run their JS engines at once (see above). */
     private val concurrency = Semaphore(MAX_CONCURRENT)
 
+    // A second, much smaller pool of slots for the engines a BACKGROUND sweep
+    // asks (see [withBackgroundSlot]).
+    //
+    // A sweep re-asks the providers a pass never got an answer from while the
+    // video plays — including the nuvio engines, which each boot a native VM.
+    // Those calls used to compete for the same 12 slots as the pass's own, so
+    // with three searches running at once (a pass plus the sweeps of two other
+    // titles, which the user's own log shows) the engine the user was actually
+    // waiting for spent its whole budget QUEUED behind background work. A nuvio
+    // search that shows its servers in seconds in the reference client was
+    // reported as "no answer in 92s" here for exactly that reason.
+    //
+    // So background calls are capped at their own handful of slots: they still
+    // run (nothing is ever dropped), they just can never starve a pass — or a
+    // sweep's own foreground-ish direct asks — of the engines.
+    private const val BACKGROUND_CONCURRENT = 3
+    private val backgroundConcurrency = Semaphore(BACKGROUND_CONCURRENT)
+
+    /**
+     * Runs [block] holding one of the background engine slots — for calls made
+     * by a background sweep rather than by a search the user is waiting on (see
+     * [BACKGROUND_CONCURRENT]). Never deadlocks: a background call takes a
+     * background slot and then a normal engine slot, and a foreground call only
+     * ever takes the normal one.
+     */
+    suspend fun <T> withBackgroundSlot(block: suspend () -> T): T =
+        backgroundConcurrency.withPermit { block() }
+
     /** Diagnostic ring buffer of every bridgeFetch outcome (host, status,
      *  size, latency). Shown on the Detail screen when no sources are found so
      *  a failing provider reports exactly what HTTP really returned — a 403
@@ -104,7 +142,14 @@ object NuvioRuntime {
     private val harnessJs: String by lazy { readAsset("nuvio/harness.js") }
 
     /** The glue that ties the harness to the native bridges (module registry,
-     *  fetch implementation, the bridge stub the harness calls back into). */
+     *  fetch implementation, the bridge stub the harness calls back into).
+     *
+     *  `__nuvioFetchImpl` hands back whatever `__hikariFetch` returns, and that
+     *  is now a PROMISE (the native function is registered through
+     *  [asyncFunction], exactly like the reference client's `__native_fetch`) —
+     *  the harness awaits it (see `__nuvioFetch` in assets/nuvio/harness.js), so
+     *  a provider's `await fetch(...)` really suspends instead of blocking the
+     *  engine's thread until the response is back. */
     private val REGISTER_GLUE: String =
         "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
             "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
@@ -205,14 +250,31 @@ object NuvioRuntime {
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
-    private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(4)
-
     private val client by lazy {
         OkHttpClient.Builder()
             .followRedirects(true)
             .followSslRedirects(true)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // Every provider fetch in the whole app used to be submitted to a
+            // fixed pool of FOUR threads and BLOCKED on, so only four nuvio
+            // requests could ever be in flight —
+            // however many engines were running — and a single site that hung
+            // (NetMirror in the user's own log: three concurrent attempts, "no
+            // answer in 92s" each) took a quarter of that away from every other
+            // provider. The reference client has no such ceiling: its bridge is
+            // asynchronous, so all the providers' requests are simply in flight
+            // together. The pool is gone; OkHttp's own dispatcher hands the
+            // wait, and its limits are those of the network rather than of this
+            // class (see [executeFetch]).
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 64
+                    // The default of 5 per host throttles the many providers
+                    // that hammer one API with a dozen parallel calls.
+                    maxRequestsPerHost = 12
+                }
+            )
             // Plain OkHttp, mirroring NuvioMobile's own httpRequestRaw: no
             // cookie jar, no UA rewriting, transparent gzip via the bridge's
             // Accept-Encoding stripping, and — unlike the 0.3.5x builds — NO
@@ -234,14 +296,18 @@ object NuvioRuntime {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
 
-        // Native bridges (synchronous, called from JS on the engine thread).
-        qjs.function("__hikariFetch") { args ->
+        // Native bridges. The FETCH one is asynchronous — registered through
+        // [asyncFunction], so JS gets a real promise and the provider's
+        // `await fetch(...)` yields the engine instead of blocking its thread
+        // for the whole round trip (see [bridgeFetchAsync]). The rest are
+        // synchronous: they answer immediately and never touch the network.
+        qjs.asyncFunction("__hikariFetch") { args ->
             val url = args.getOrNull(0)?.toString() ?: ""
             val method = args.getOrNull(1)?.toString() ?: "GET"
             val headersJson = args.getOrNull(2)?.toString() ?: "{}"
             val body = args.getOrNull(3)?.toString() ?: ""
             val followRedirects = args.getOrNull(4) as? Boolean ?: true
-            bridgeFetch(url, method, headersJson, body, followRedirects)
+            bridgeFetchAsync(url, method, headersJson, body, followRedirects)
         }
         qjs.function("__hikariOnStreamsDone") { args ->
             val payload = args.getOrNull(1)?.toString() ?: ""
@@ -414,9 +480,43 @@ object NuvioRuntime {
             }
         }
 
-    /** Synchronous fetch bridge invoked from JS on the engine thread. Returns a
-     *  JSON string the harness parses into a fetch-like response. */
-    fun bridgeFetch(
+
+    /** One HTTP response that really arrived, already read into memory. */
+    private sealed class Fetched {
+        class Ok(
+            val status: Int,
+            val message: String,
+            val finalUrl: String,
+            val headers: Map<String, String>,
+            val bytes: ByteArray,
+        ) : Fetched()
+
+        class Failure(val reason: String) : Fetched()
+    }
+
+    /**
+     * One fetch for a provider, AWAITED rather than blocked.
+     *
+     * This is the reason a nuvio search can be quick here at all. The bridge
+     * used to be a synchronous native call: JS only got its answer once the
+     * request was over, so a provider's `Promise.all([fetch(a), fetch(b)])` ran
+     * its requests one after another, and every request in the app went through
+     * a four-thread pool — so at most four could be in flight whatever else was
+     * happening. The reference client's bridge is asynchronous (its QuickJS
+     * binding is an `asyncFunction` over its own HTTP client), which is why the
+     * SAME providers answer there in a couple of seconds and took tens of
+     * seconds here: a provider that fires ten requests at once gets all ten in
+     * flight, and the phone stops being the bottleneck.
+     *
+     * Being a real suspension point also makes this CANCELLABLE, which the
+     * blocking version could never be: when the pass's clock runs out, when the
+     * user leaves the player (see [ContentRepository.pauseSweepFor]) or when the
+     * engine is closed, the cancellation reaches `call.cancel()` and the socket
+     * really goes away — instead of a 90-second hung request holding a thread, a
+     * VM slot and a share of the network, which is what the reported "it stays
+     * laggy for a few seconds after I come back from the player" was made of.
+     */
+    suspend fun bridgeFetchAsync(
         url: String,
         method: String,
         headersJson: String,
@@ -425,106 +525,187 @@ object NuvioRuntime {
     ): String {
         val started = System.currentTimeMillis()
         val m = method.uppercase()
-        val task = fetchExecutor.submit<JSONObject> {
-            try {
-                val builder = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", NUVIO_DEFAULT_UA)
-                val h = runCatching { JSONObject(headersJson) }.getOrNull()
-                if (h != null) {
-                    h.keys().forEach { k ->
-                        // Strip the provider's explicit Accept-Encoding (nuvio
-                        // does the same: FetchBridge's withoutAcceptEncoding()).
-                        // OkHttp only transparently decompresses gzip/br when
-                        // the REQUEST doesn't carry its own Accept-Encoding —
-                        // passing "gzip, deflate, br" through made Hikari hand
-                        // the JS raw compressed bytes decoded as UTF-8, i.e.
-                        // garbage, so every provider that sets it (vidlink,
-                        // dvdplay, vidnest, vidrock, vixsrc, mallumv, castle,
-                        // xprime, ...) came back "no sources" here but fine in
-                        // nuvio. "identity" would be harmless, but drop it too
-                        // for exact parity.
-                        if (k.equals("Accept-Encoding", ignoreCase = true)) return@forEach
-                        runCatching { builder.header(k, h.getString(k)) }
-                    }
-                }
-                if (body.isNotEmpty() && (m == "POST" || m == "PUT" || m == "PATCH")) {
-                    val type = if (h != null && h.has("Content-Type")) h.getString("Content-Type")
-                    else "application/x-www-form-urlencoded; charset=utf-8"
-                    builder.method(m, okhttp3.RequestBody.create(type.toMediaTypeOrNull(), body))
-                } else {
-                    builder.method(if (m == "HEAD") "HEAD" else "GET", null)
-                }
-                val resp = client.newCall(builder.build()).execute()
-                resp.use { r ->
-                    val bytes = r.body?.bytes() ?: ByteArray(0)
-                    val host = hostOf(url)
-                    val extra = StringBuilder()
-                    if (r.code == 403 || r.code == 503) {
-                        val low = String(bytes, Charsets.ISO_8859_1).lowercase()
-                        if (low.contains("just a moment") || low.contains("attention required") ||
-                            low.contains("cf-chl") || low.contains("checking your browser")
-                        ) extra.append(" CF-CHALLENGE-UNSOLVED")
-                    }
-                    val ce = r.headers["Content-Encoding"]
-                    if (ce != null && ce.isNotBlank()) extra.append(" CE=").append(ce)
-                    // For failures or big bodies, log what the bytes actually
-                    // look like — tells us if a 200 is a JSON API hit, an HTML
-                    // challenge page, or (CE!=gzip) compressed garbage the
-                    // provider can't parse.
-                    if (r.code != 200 || bytes.size > 100_000) {
-                        val ct = (r.headers["Content-Type"] ?: "?").substringBefore(";")
-                        extra.append(" CT=").append(ct)
-                        val preview = String(bytes, Charsets.ISO_8859_1).trim().take(60)
-                            .replace(Regex("[^\\x20-\\x7E]"), ".")
-                        extra.append(" [").append(preview).append("]")
-                    }
-                    fetchLogLine(host, m, r.code.toString(), bytes.size, System.currentTimeMillis() - started, extra.toString())
-                    val out = JSONObject()
-                    out.put("ok", r.isSuccessful)
-                    out.put("status", r.code)
-                    out.put("statusText", r.message)
-                    out.put("url", r.request.url.toString())
-                    // Lowercase header names, exactly like nuvio's response
-                    // headers map (provider JS does headers['content-type'],
-                    // headers.get('location'), ...).
-                    val hdrs = JSONObject()
-                    runCatching {
-                        r.headers.forEach { (k, v) -> if (!hdrs.has(k.lowercase())) hdrs.put(k.lowercase(), v) }
-                    }
-                    out.put("headers", hdrs)
-                    // Honor the response charset (nuvio: contentType().charset()
-                    // ?: UTF-8).
-                    val charset = runCatching {
-                        val ct = r.headers["Content-Type"] ?: ""
-                        val enc = ct.substringAfter("charset=", "").trim().trim('"')
-                        if (enc.isEmpty()) Charsets.UTF_8 else Charset.forName(enc)
-                    }.getOrNull() ?: Charsets.UTF_8
-                    out.put("body", String(bytes, charset))
-                    out.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP))
-                    out.put("ms", System.currentTimeMillis() - started)
-                    return@submit out
-                }
-            } catch (e: Throwable) {
-                fetchLogLine(hostOf(url), m, "ERR", 0, System.currentTimeMillis() - started, " ${e.message ?: "network error"}")
-                val out = JSONObject()
-                out.put("ok", false)
-                out.put("status", 0)
-                out.put("statusText", e.message ?: "network error")
-                out.put("url", url)
-                out.put("headers", JSONObject())
-                out.put("body", "")
-                out.put("bodyBase64", "")
-                out.put("error", e.message ?: "network error")
-                return@submit out
+        val request = try {
+            buildFetchRequest(url, m, headersJson, body, followRedirects)
+        } catch (t: Throwable) {
+            fetchLogLine(hostOf(url), m, "ERR", 0, 0L, " " + (t.message ?: "bad request"))
+            return failureJson(url, t.message ?: "bad request")
+        }
+        val fetched = withTimeoutOrNull(FETCH_TIMEOUT_MS) { executeFetch(request) }
+        if (fetched == null) {
+            fetchLogLine(
+                hostOf(url), m, "TIMEOUT", 0, System.currentTimeMillis() - started,
+                " fetch did not finish in " + (FETCH_TIMEOUT_MS / 1000) + "s",
+            )
+            return failureJson(url, "fetch timed out")
+        }
+        return when (fetched) {
+            is Fetched.Ok -> okFetchJson(url, m, started, fetched)
+            is Fetched.Failure -> {
+                fetchLogLine(
+                    hostOf(url), m, "ERR", 0, System.currentTimeMillis() - started,
+                    " " + fetched.reason,
+                )
+                failureJson(url, fetched.reason)
             }
         }
-        return try {
-            task.get(FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS).toString()
-        } catch (e: Exception) {
-            fetchLogLine(hostOf(url), m, "TIMEOUT", 0, System.currentTimeMillis() - started, " fetch did not finish in ${FETCH_TIMEOUT_MS / 1000}s")
-            "{\"ok\":false,\"status\":0,\"statusText\":\"fetch timed out\",\"url\":${quote(url)}," +
-                "\"headers\":{},\"body\":\"\",\"bodyBase64\":\"\"}"
-        }
     }
+
+    /**
+     * Performs [request] without occupying a thread while it is in flight: the
+     * call is enqueued on OkHttp's own dispatcher and this coroutine suspends
+     * until the response headers (and body) are there. Cancellation cancels the
+     * call, so an abandoned engine cannot keep a request alive.
+     */
+    private suspend fun executeFetch(request: Request): Fetched =
+        suspendCancellableCoroutine { cont ->
+            val call = client.newCall(request)
+            cont.invokeOnCancellation { runCatching { call.cancel() } }
+            runCatching {
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (!cont.isCancelled) {
+                            cont.resume(Fetched.Failure(e.message ?: e.javaClass.simpleName))
+                        }
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        val outcome = try {
+                            val bytes = response.body?.bytes() ?: ByteArray(0)
+                            Fetched.Ok(
+                                status = response.code,
+                                message = response.message,
+                                finalUrl = response.request.url.toString(),
+                                headers = lowerHeaders(response.headers),
+                                bytes = bytes,
+                            )
+                        } catch (t: Throwable) {
+                            Fetched.Failure(t.message ?: t.javaClass.simpleName)
+                        } finally {
+                            runCatching { response.close() }
+                        }
+                        if (!cont.isCancelled) cont.resume(outcome)
+                    }
+                })
+            }.onFailure { t ->
+                if (!cont.isCancelled) cont.resume(Fetched.Failure(t.message ?: t.javaClass.simpleName))
+            }
+        }
+
+    /** The response's headers with lowercase names and one entry per name (the
+     *  shape the harness and the providers read: `headers['content-type']`). */
+    private fun lowerHeaders(headers: okhttp3.Headers): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (name in headers.names()) {
+            val key = name.lowercase()
+            if (out.containsKey(key)) continue
+            out[key] = headers.values(name).joinToString(", ")
+        }
+        return out
+    }
+
+    /** The request a bridge fetch describes: the provider's own headers (with
+     *  the Accept-Encoding caveat below), the app's browser UA by default, and
+     *  the redirect behaviour the provider asked for. */
+    private fun buildFetchRequest(
+        url: String,
+        method: String,
+        headersJson: String,
+        body: String,
+        followRedirects: Boolean,
+    ): Request {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", NUVIO_DEFAULT_UA)
+            .followRedirects(followRedirects)
+        val h = runCatching { JSONObject(headersJson) }.getOrNull()
+        if (h != null) {
+            h.keys().forEach { k ->
+                // Strip the provider's explicit Accept-Encoding (nuvio does
+                // the same: FetchBridge's withoutAcceptEncoding()). OkHttp only
+                // transparently decompresses gzip/br when the REQUEST doesn't
+                // carry its own Accept-Encoding — passing "gzip, deflate, br"
+                // through made Hikari hand the JS raw compressed bytes decoded
+                // as UTF-8, i.e. garbage, so every provider that sets it
+                // (vidlink, dvdplay, vidnest, vidrock, vixsrc, mallumv, castle,
+                // xprime, ...) came back "no sources" here but fine in nuvio.
+                // "identity" would be harmless, but drop it too for exact
+                // parity.
+                if (k.equals("Accept-Encoding", ignoreCase = true)) return@forEach
+                runCatching { builder.header(k, h.getString(k)) }
+            }
+        }
+        if (body.isNotEmpty() && (method == "POST" || method == "PUT" || method == "PATCH")) {
+            val type = if (h != null && h.has("Content-Type")) h.getString("Content-Type")
+            else "application/x-www-form-urlencoded; charset=utf-8"
+            builder.method(method, okhttp3.RequestBody.create(type.toMediaTypeOrNull(), body))
+        } else {
+            builder.method(if (method == "HEAD") "HEAD" else "GET", null)
+        }
+        return builder.build()
+    }
+
+    /** The `{ok:true,...}` payload the harness turns into a Response, for a
+     *  response that really arrived — plus the fetch-log line that makes a
+     *  failing provider diagnosable (a 403 Cloudflare wall, a compressed body
+     *  the provider cannot parse, or a JSON API hit). */
+    private fun okFetchJson(url: String, method: String, started: Long, ok: Fetched.Ok): String {
+        val extra = StringBuilder()
+        if (ok.status == 403 || ok.status == 503) {
+            val low = String(ok.bytes, Charsets.ISO_8859_1).lowercase()
+            if (low.contains("just a moment") || low.contains("attention required") ||
+                low.contains("cf-chl") || low.contains("checking your browser")
+            ) extra.append(" CF-CHALLENGE-UNSOLVED")
+        }
+        val ce = ok.headers["content-encoding"]
+        if (ce != null && ce.isNotBlank()) extra.append(" CE=").append(ce)
+        // For failures or big bodies, log what the bytes actually look like —
+        // tells us if a 200 is a JSON API hit, an HTML challenge page, or
+        // compressed garbage the provider can't parse.
+        if (ok.status != 200 || ok.bytes.size > 100_000) {
+            val ct = (ok.headers["content-type"] ?: "?").substringBefore(";")
+            extra.append(" CT=").append(ct)
+            val preview = String(ok.bytes, Charsets.ISO_8859_1).trim().take(60)
+                .replace(Regex("[^\\x20-\\x7E]"), ".")
+            extra.append(" [").append(preview).append("]")
+        }
+        fetchLogLine(
+            hostOf(url), method, ok.status.toString(), ok.bytes.size,
+            System.currentTimeMillis() - started, extra.toString(),
+        )
+        val out = JSONObject()
+        out.put("ok", ok.status in 200..299)
+        out.put("status", ok.status)
+        out.put("statusText", ok.message)
+        out.put("url", ok.finalUrl)
+        val hdrs = JSONObject()
+        ok.headers.forEach { (k, v) -> runCatching { hdrs.put(k, v) } }
+        out.put("headers", hdrs)
+        // Honor the response charset (nuvio: contentType().charset() ?: UTF-8).
+        val charset = runCatching {
+            val enc = (ok.headers["content-type"] ?: "").substringAfter("charset=", "").trim().trim('"')
+            if (enc.isEmpty()) Charsets.UTF_8 else Charset.forName(enc)
+        }.getOrNull() ?: Charsets.UTF_8
+        out.put("body", String(ok.bytes, charset))
+        out.put("bodyBase64", Base64.encodeToString(ok.bytes, Base64.NO_WRAP))
+        out.put("ms", System.currentTimeMillis() - started)
+        return out.toString()
+    }
+
+    /** The `{ok:false,...}` payload for a request that never produced a
+     *  response — the shape the harness's providers already handle. */
+    private fun failureJson(url: String, reason: String): String =
+        "{\"ok\":false,\"status\":0,\"statusText\":" + quote(reason) +
+            ",\"url\":" + quote(url) +
+            ",\"headers\":{},\"body\":\"\",\"bodyBase64\":\"\"}"
+
+    /** [bridgeFetchAsync] for the non-suspend engine paths ([validate], whose
+     *  module load only inspects the provider and never fetches). */
+    fun bridgeFetch(
+        url: String,
+        method: String,
+        headersJson: String,
+        body: String,
+        followRedirects: Boolean,
+    ): String = runBlocking { bridgeFetchAsync(url, method, headersJson, body, followRedirects) }
 }

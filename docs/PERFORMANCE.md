@@ -114,3 +114,34 @@ There is no profiler in this repository, so the honest check is:
    disk, chunked only for a strip too tall for one decode — see
    [READER.md](READER.md)); do not add a code path that holds a whole page in the
    heap.
+
+## The nuvio provider bridge is asynchronous, and it is the reason to care
+
+Everything above is about Hikari's own code. A nuvio provider is other people's
+code running in a native QuickJS engine, and the bridge it fetches through is the
+single biggest lever on how fast a search feels — the reference client lists the
+same engines' servers in a couple of seconds.
+
+- **Async, not blocking.** `NuvioRuntime.bridgeFetchAsync` is registered with
+  `QuickJs.asyncFunction`, so JS gets a real promise and `await fetch(...)`
+  suspends the engine's thread instead of parking it: a provider's own
+  `Promise.all` really overlaps. `assets/nuvio/harness.js` awaits it
+  (`__nuvioFetch`), and its response interceptors are `async` — but the
+  `Promise.resolve(...)` shape keeps working with a synchronous host.
+- **Bounded by the network, not by a pool.** The old code submitted every fetch
+  to `Executors.newFixedThreadPool(4)` and blocked on it — four nuvio requests in
+  flight, app-wide, no matter how many engines were running. It is now OkHttp's
+  own dispatcher (`maxRequests = 64`, `maxRequestsPerHost = 12`) with
+  `enqueue` + `suspendCancellableCoroutine`.
+- **Cancellable.** `invokeOnCancellation { call.cancel() }` — closing the engine,
+  the pass's deadline, or the user leaving the player really aborts the socket
+  instead of leaving a 90-second request running behind the next screen.
+- **Classified honestly.** A provider that crashes reports `✗ provider failed: …`
+  and is re-asked; a provider whose site has nothing reports `no sources for this
+  title` and is not (see docs/SEARCH.md §9).
+
+**How to check a change here:** the harness can be exercised without a phone — run
+`assets/nuvio/{boot,cheerio,crypto-js,harness}.js` in a JS sandbox with a stub
+`__hikariFetch` that returns canned payloads, and assert (a) three concurrent
+300ms fetches finish in ~300ms, not ~900ms, and (b) a TMDB call with a dead
+`api_key` comes back with Hikari's key and an injected `imdb_id`.

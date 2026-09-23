@@ -68,10 +68,15 @@ invariant.
   filterReasons`, never a shared field): two passes run at once all the time, and
   the shared field let one print the other's reasons.
 
-### 1. Every provider call is a plain blocking call
+### 1. Every EXTENSION provider call is a plain blocking call
 
 `withTimeoutOrNull` gives up *logically* while the thread stays parked forever.
 So anything that WAITS on such a call can be wedged indefinitely. Consequences:
+
+This is true of the extension families (hiki/cs3/universal/skystream/aniyomi):
+their plugin runtimes are other people's code and nothing can interrupt them.
+**A nuvio engine is the exception** — its fetch bridge is a real suspension
+point, so cancelling a nuvio call really cancels its HTTP (see invariant 8).
 
 - **Never wait unboundedly on provider work.** The sweep runs each repo through
   `detached(SWEEP_REPO_BUDGET_MS) { … }` and moves on when the budget expires.
@@ -245,6 +250,11 @@ stopping the tail of the provider queue from ever answering:
   it was far worse — most of a 20+ provider install was still queued when the
   budget expired, and a timeout is not an answer, so those providers were "cut
   off", re-asked by the background sweep, and cut off again.)
+  **Since 0.10.23 the slots are also the least of it**: the bridge is
+  asynchronous (invariant 8), so a queue of engines now actually drains at
+  network speed instead of at four-threads-at-a-time, and background sweeps take
+  their own small pool (`NuvioRuntime.withBackgroundSlot`) rather than competing
+  for these slots at all.
 - **The PASS must outlast the engines.** `ContentRepository`'s primary pass ends
   at a deadline, and it used to be 55 s — shorter than the 60 s a nuvio engine is
   allowed. So the tail of the engine set was cancelled mid-run, and because the
@@ -282,3 +292,58 @@ for a few seconds after I come back from the player"* report. The cancelled
 sweep's unasked providers stay on the `PendingWork` ledger, and the hold is
 released by the next play of the same title (or by `SWEEP_HOLD_MAX_MS`), so
 nothing is lost.
+
+### 8. A nuvio engine is asked asynchronously, and never behind a pass
+
+The report that produced this: *"see in nuvio i try playing something and it
+shows all this server in less than 5 second, so you know the real issue is not
+server time like 75second or 60second cap or anything, the real issue is
+something else"*. It was not the cap. Three things were true at once:
+
+- **The fetch bridge was SYNCHRONOUS.** `__hikariFetch` was registered with
+  `QuickJs.function` (a plain native call), so JS got its answer only once the
+  request was over: a provider doing `Promise.all([fetch(a), fetch(b)])` ran `a`
+  and then `b`, and — because every request was submitted to a fixed pool of
+  **four** threads and blocked on — at most four nuvio requests could be in
+  flight in the whole app, however many engines were running. The reference
+  client's bridge is `asyncFunction` over its own HTTP client
+  (`await __native_fetch(...)`), which is why the same providers answer there in
+  a couple of seconds. **`NuvioRuntime.bridgeFetchAsync`** now does the same:
+  `asyncFunction` + OkHttp's `enqueue` through `suspendCancellableCoroutine`,
+  with `Dispatcher(maxRequests = 64, maxRequestsPerHost = 12)`. The JS side had
+  to follow: `harness.js`'s `__nuvioFetch` awaits the bridge and its response
+  interceptors (`__nuvioIntercept`, `__nuvioFixTmdb`, `__nuvioJikanFallback`,
+  `__nuvioGraphQL`) are `async` — a *synchronous* fetch wrapped in
+  `Promise.resolve()` still works, so the same harness would run over a WebView
+  host.
+- **Cancellation now works.** The old bridge could not be interrupted
+  (`withTimeoutOrNull` gave up logically while the socket stayed open), so one
+  hung site — NetMirror in the user's log: three concurrent attempts, "no answer
+  in 92s" each — held a VM, a slot and a thread for a minute and a half *after*
+  the search that asked for it was over. `call.cancel()` on cancellation fixes
+  both the tail and the "it stays laggy for a few seconds after I come back from
+  the player".
+- **A sweep must never be the reason a pass is slow.** `ContentRepository`'s
+  companion keeps a foreground/background gate: `enterForegroundPass()` /
+  `exitForegroundPass()` wrap the pass body (the exit is in its `finally`, so a
+  cancelled pass still releases it), `quietFor(POST_PLAYER_QUIET_MS)` opens an
+  8-second window when the player closes, and `awaitBackgroundClearance()` is
+  what the sweep's worker loop calls before every repo. The wait is taken off the
+  sweep's round budget (`pausedMs`) and refreshes `sweep.lastProgressAt`, so a
+  parked sweep is neither starved nor mistaken for a wedged one.
+
+### 9. "No servers" is an ANSWER; a crash is not
+
+`isNoAnswer()` decides whether a provider is re-asked in the background. A
+nuvio engine that threw inside its own JS used to report `"✗ <js error>"`, which
+matched none of its keywords, so it was recorded as the answer **"no servers"** —
+never asked again, and its line in the sources sheet said the engine had looked
+and found nothing. `NuvioScraper` now says what happened:
+
+- `"✗ provider failed: …"` — a crash, a bridge failure, an unreadable payload, a
+  budget that ran out, or a TMDB id we could not resolve. Recognised by
+  `isNoAnswer()` (which matches `provider failed`), so it is re-asked.
+- `"no sources for this title"` — a real answer from a real run. Not re-asked.
+
+The per-provider log line prints the provider's own message instead of a blanket
+`no servers`, so a search that comes back thin says which of the two it was.

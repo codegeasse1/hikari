@@ -375,6 +375,14 @@ class PlayerActivity : ComponentActivity() {
     private var serverChooserDialog: Dialog? = null
 
     private fun notifySourcesChanged() {
+        // Every source list the player ever holds passes through here, and the
+        // servers' own NAMES are the only quality data this app gets
+        // ("MovieBlast 1080p", "4KHDHub 2160p") — so this is where the best of
+        // them is filed for the title, for the poster's optional quality badge to
+        // read back (see [com.hikari.app.data.TitleQuality]). The player used to
+        // record it only when the user switched EPISODE, which is why a title
+        // that was simply played showed no badge on its poster.
+        rememberTitleQuality()
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
         //
@@ -394,6 +402,19 @@ class PlayerActivity : ComponentActivity() {
     /** Set while a coalesced rebuild is queued (see [notifySourcesChanged]). */
     @Volatile
     private var rebuildPosted = false
+
+    /** Files the best quality among the servers currently known for this title
+     *  (see [com.hikari.app.data.TitleQuality]). Cheap and idempotent: the store
+     *  only ever keeps/upgrades a label and does its file I/O on its own scope,
+     *  so this is safe from the background threads that append servers. */
+    private fun rememberTitleQuality() {
+        val list = sources
+        if (list.isEmpty()) return
+        val item = favouriteItem ?: return
+        runCatching {
+            com.hikari.app.data.TitleQuality.remember(item, list.map { it.toStreamSource() })
+        }
+    }
 
     private val rebuildHandler = Handler(Looper.getMainLooper())
 

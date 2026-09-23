@@ -39,6 +39,17 @@ object TitleQuality {
 
     private val memory = ConcurrentHashMap<String, String>()
 
+    /**
+     * The same labels keyed by TITLE ALONE (no year), for the lookups the
+     * year-exact key cannot serve: a poster cell is drawn from whatever
+     * catalogue row happens to hold the title, and rows disagree about the year
+     * (one carries 2026, the next carries none at all), so a badge filed under
+     * "the end of oak street|2026" was invisible to the cell that drew
+     * "the end of oak street|0". Rebuilt from [memory] on load, so it costs one
+     * small map (see [remember]).
+     */
+    private val byTitle = ConcurrentHashMap<String, String>()
+
     @Volatile
     private var loaded = false
 
@@ -106,6 +117,15 @@ object TitleQuality {
         return title + "|" + (item.year ?: 0)
     }
 
+    /** The title-only keys a lookup may fall back to: the display name and the
+     *  original name, both lowercased and trimmed — whether an item carries both
+     *  depends on which provider's row it came from. */
+    private fun titleKeysOf(item: MediaItem): List<String> =
+        listOf(item.title, item.originalTitle)
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
     /** Starts the one-time background load of the persisted map. Does no I/O
      *  itself, so it is safe — and cheap — to call from composition, which is
      *  what [forItem] does on every poster cell. */
@@ -125,6 +145,7 @@ object TitleQuality {
     fun forItem(item: MediaItem): String? {
         warm()
         memory[keyOf(item)]?.let { return it }
+        titleKeysOf(item).firstNotNullOfOrNull { byTitle[it] }?.let { return it }
         return fromText(
             listOfNotNull(item.title, item.originalTitle, item.year?.toString())
                 .joinToString(" ")
@@ -147,16 +168,27 @@ object TitleQuality {
     fun remember(item: MediaItem, streams: List<StreamSource>) {
         val best = bestOf(streams) ?: return
         val key = keyOf(item)
+        val titleKeys = titleKeysOf(item)
         io.launch {
             val improved = synchronized(lock) {
                 ensureLoaded()
-                if (memory[key]?.let { rankOf(it) <= rankOf(best) } == true) {
-                    false
-                } else {
+                var better = false
+                if (memory[key]?.let { rankOf(it) <= rankOf(best) } != true) {
                     memory[key] = best
-                    save()
-                    true
+                    better = true
                 }
+                // …and under the title alone, so a poster cell that knows the
+                // title but not its year still finds it (see [byTitle]).
+                // [forItem] tries the exact key FIRST, so this can only ever ADD
+                // a badge — it can never overwrite a title's own exact answer.
+                for (t in titleKeys) {
+                    if (byTitle[t]?.let { rankOf(it) <= rankOf(best) } != true) {
+                        byTitle[t] = best
+                        better = true
+                    }
+                }
+                if (better) save()
+                better
             }
             if (improved) _revision.value++
         }
@@ -177,7 +209,17 @@ object TitleQuality {
                 if (!f.exists()) return@runCatching
                 val obj = JSONObject(f.readText())
                 for (k in obj.keys()) {
-                    obj.optString(k).takeIf { it.isNotBlank() }?.let { memory[k] = it }
+                    obj.optString(k).takeIf { it.isNotBlank() }?.let { label ->
+                        memory[k] = label
+                        // Rebuild the title-only index (see [byTitle]): the key
+                        // is "<title>|<year>", so the title is everything before
+                        // the LAST '|' (a title may contain one itself).
+                        k.substringBeforeLast('|').takeIf { it.isNotBlank() }?.let { t ->
+                            if (byTitle[t]?.let { rankOf(it) <= rankOf(label) } != true) {
+                                byTitle[t] = label
+                            }
+                        }
+                    }
                 }
             }
         }

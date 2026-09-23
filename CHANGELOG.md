@@ -1,3 +1,58 @@
+## 0.10.23
+
+**The nuvio engines are now asked the way the app they come from asks them.**
+The fetch bridge was a *synchronous* native call — JS got its answer only once a
+request was over — and every provider request in the app went through a fixed
+pool of **four** threads. That is why the same engines that list their servers in
+a couple of seconds in the reference client took tens of seconds here, and why
+one hung site could take the whole nuvio tab down with it. The bridge is now
+asynchronous and cancellable (each engine's requests really run in parallel, and
+a cancelled search really cancels its HTTP), background sweeps no longer compete
+with a search you are waiting on, and a provider that *crashed* is no longer
+filed away as "no servers".
+
+### Fixed
+
+- **Nuvio sources in seconds, not a minute.** The bridge is an `asyncFunction` over
+  OkHttp's own dispatcher, exactly like the reference client's `__native_fetch`:
+  a provider that fires ten requests at once gets all ten in flight, and every
+  engine's fetches run together instead of queueing behind four threads. A single
+  site that hangs no longer eats a quarter of the phone's capacity — and it can no
+  longer hold a VM slot for 90 seconds after the search it belonged to is over.
+- **"No servers" now means no servers.** A nuvio provider that threw inside its
+  own JS, or failed to resolve a TMDB id, was recorded as the *answer* "no
+  servers" — so it was never asked again and the report read as if the engine had
+  looked and found nothing. Those cases are now reported as what they are
+  ("provider failed: …"), and are re-asked in the background like any other
+  non-answer. The per-provider line also prints the provider's own reason
+  ("no sources for this title", "couldn't resolve a TMDB id") instead of a
+  blanket "no servers".
+- **The quality badge shows up for titles you have actually played.** The badge
+  is fed by completed source searches, but the recording was skipped whenever the
+  answer came from the cache, from the live feed, or from the player — which is
+  most plays. The player now files the best quality of every server list it holds,
+  the detail page files it for cached and fallback answers too, and the lookup
+  itself no longer depends on a catalogue row carrying the same year as the one
+  that filed it. (Settings → Poster styling → "Quality tag on posters".)
+- **Leaving the player no longer leaves the app heavy for a few seconds.** The
+  title's background sweep is stopped as before, but every other background
+  search now stands down for the moment the app needs to rebuild its own screens,
+  and a sweep's nuvio calls can no longer hold the engines the just-opened screen
+  is waiting for.
+
+### Changed
+
+- **A search you are waiting on always wins.** Background sweeps (the "keep
+  asking every installed extension" half of a pass) now park while a pass is
+  running, and their own budget clock pauses with them, so nothing they never got
+  to is lost. This is what stops the reported "Nuvio 12 · 11 still searching"
+  while every engine sits queued behind work for another title.
+- **Background nuvio calls take a small pool of their own slots** (3), so a sweep
+  re-asking engines for a title you are no longer watching can never crowd out
+  the engines for the title you are.
+- **At most two background sweeps run at once** (was three), which with 8 workers
+  each was 24 extensions being searched at once beside a pass.
+
 ## 0.10.22
 
 **Episodes now run newest-first with one tap, posters say whether a title is a
@@ -844,7 +899,7 @@ Search gets the year filter it should always have had — a scrollable, multi-se
 
 ### Added
 
-- **Five subtitle sites, built in.** The player's **Load from internet** panel could only ask the Stremio subtitle addons you had installed, so an install with none was told "No subtitle addon is installed" and had no way to get a subtitle at all — and an install WITH one got "No subtitles found" for every title whose IMDb id could not be resolved (those addons answer an empty list, with HTTP 200, to anything but a \`tt…\` id). Five sites are now asked directly, in parallel, each with its own timeout:
+- **Five subtitle sites, built in.** The player's **Load from internet** panel could only ask the Stremio subtitle addons you had installed, so an install with none was told "No subtitle addon is installed" and had no way to get a subtitle at all — and an install WITH one got "No subtitles found" for every title whose IMDb id could not be resolved (those addons answer an empty list, with HTTP 200, to anything but a `tt…` id). Five sites are now asked directly, in parallel, each with its own timeout:
 
   - **OpenSubtitles** — the catalogue behind its public mirror: a track per language with its own download URL, one request.
   - **OpenSubtitles search** — opensubtitles.org's own search API, which is the one that answers by **name** as well as by id, and reports each track's download count and rating.

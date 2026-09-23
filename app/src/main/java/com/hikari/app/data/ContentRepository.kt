@@ -613,8 +613,8 @@ class ContentRepository(private val manager: ProviderManager) {
          *
          * This is the "nothing is ever dropped" ledger. Before it existed, the
          * ONLY thing a pass could do with unfinished work was hand it to a sweep
-         * right there and then, and if that sweep was refused (three already
-         * running — see [MAX_PARALLEL_SWEEPS]) the work simply evaporated: the
+         * right there and then, and if that sweep was refused (the ceiling is
+         * [MAX_PARALLEL_SWEEPS]) the work simply evaporated: the
          * repos were never asked, no verdict was written for them, and the only
          * way to get their servers was for the user to leave and press Play
          * again. Now every hand-off is recorded here first, a refused sweep
@@ -702,6 +702,12 @@ class ContentRepository(private val manager: ProviderManager) {
         fun pauseSweepFor(item: MediaItem, episode: Episode?): String {
             val key = holdSweepFor(item, episode)
             sweeps[key]?.job?.cancel()
+            // …and hold every OTHER background search off too, for the moment
+            // the app needs to put its own screens back together (the player's
+            // activity is gone, the previous screen is being re-created, Home is
+            // reloading). Cancelling this title's sweep alone left the phone
+            // running everything else while it did that.
+            quietFor(POST_PLAYER_QUIET_MS)
             return key
         }
 
@@ -714,6 +720,74 @@ class ContentRepository(private val manager: ProviderManager) {
             // Any instance will do: every sweep's state is process-wide (the
             // maps above) and a ContentRepository holds nothing but its manager.
             ContentRepository(HikariApp.instance.providers).releaseHeldSweep(held)
+        }
+
+        // ---- The foreground/background gate ------------------------------
+        //
+        // A source PASS is the search the user is waiting on. A SWEEP is
+        // background work — "keep asking every installed extension" while the
+        // video plays. The two are not equal, and until this existed they
+        // competed for the same engines: the user's own log shows one title's
+        // pass running beside the sweeps of two others, so a nuvio engine that
+        // answers in a second or two in the reference client spent its whole
+        // budget QUEUED behind background work ("NetMirror: no answer in 92s",
+        // three times over, from three different searches).
+        //
+        // So a sweep never starts a provider while a pass is running, and it
+        // also stands down for a short moment after the player closes, while the
+        // app rebuilds its own screens — which is what "it stays laggy for a few
+        // seconds after I come back from the player" is made of.
+        //
+        // Nothing is lost by waiting: the sweep's own budget clock is paused
+        // with it (see [runSweep]) and every provider it never got to stays on
+        // the unfinished-work ledger for the next slot.
+        private val activePasses = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /** Wall-clock instant before which background sweeps stay parked. */
+        private val quietUntilMs = java.util.concurrent.atomic.AtomicLong(0L)
+
+        /** How long the background searches stand down while the app puts its
+         *  own screens back together after the player closes. */
+        const val POST_PLAYER_QUIET_MS = 8_000L
+
+        /** One more pass is searching: background work stands down. */
+        fun enterForegroundPass() {
+            activePasses.incrementAndGet()
+        }
+
+        /** The pass is over (finished, thrown or cancelled): background work may
+         *  go again. */
+        fun exitForegroundPass() {
+            activePasses.decrementAndGet()
+        }
+
+        /** Park every background sweep for [ms] from now (see [pauseSweepFor]). */
+        fun quietFor(ms: Long) {
+            val until = System.currentTimeMillis() + ms
+            if (quietUntilMs.get() < until) quietUntilMs.set(until)
+        }
+
+        /** True while a pass is searching, or while the quiet window is open. */
+        private fun foregroundBusy(): Boolean =
+            activePasses.get() > 0 || System.currentTimeMillis() < quietUntilMs.get()
+
+        /**
+         * Waits until no pass is running and the quiet window has passed;
+         * returns how long that took (0 when it never had to wait), so a caller
+         * with a clock of its own can keep it honest.
+         *
+         * Called by the sweep's worker loop before each provider, with [onWait]
+         * refreshing the caller's own "still making progress" timestamp, so a
+         * sweep that is deliberately waiting is never mistaken for a wedged one.
+         */
+        private suspend fun awaitBackgroundClearance(onWait: () -> Unit = {}): Long {
+            if (!foregroundBusy()) return 0L
+            val started = System.currentTimeMillis()
+            while (foregroundBusy()) {
+                onWait()
+                kotlinx.coroutines.delay(150)
+            }
+            return System.currentTimeMillis() - started
         }
 
         /** How many automatic sweeps may retry one video's unfinished work
@@ -1081,10 +1155,14 @@ class ContentRepository(private val manager: ProviderManager) {
      *  hand-off in the pass's `finally`), and on a big install that tail is real
      *  work — 250 extensions to search and extract from. Without a ceiling,
      *  browsing ten titles quickly would leave ten sweeps doing that at once on
-     *  a phone. Three is enough that the title being watched and the one just
-     *  left both keep filling in; past that a new sweep is not started, and the
-     *  pass's own list stands — which is where it was before the sweep existed. */
-    private val MAX_PARALLEL_SWEEPS = 3
+     *  a phone. Two is enough that the title being watched and the one just left
+     *  both keep filling in; past that a new sweep is not started, and the pass's
+     *  own list stands — which is where it was before the sweep existed. (It was
+     *  three, which with 8 workers each meant 24 extensions being searched at
+     *  once beside whichever pass was running: the phone was the bottleneck, and
+     *  the reported "laggy for a few seconds" after leaving the player came
+     *  partly from exactly that.) */
+    private val MAX_PARALLEL_SWEEPS = 2
 
     /** How long a BACKGROUND SWEEP keeps working after the pass that started it
      *  has ended. Deliberately long: this is the "keep searching every installed
@@ -1477,6 +1555,13 @@ class ContentRepository(private val manager: ProviderManager) {
                         ": " + when {
                             timedOut -> "✗ $why"
                             noAnswer -> "✗ " + (lastWhy ?: said ?: "the call never came back")
+                            // The provider's OWN answer, when it gave one:
+                            // "no sources for this title" and "couldn't resolve
+                            // a TMDB id" both read as a blanket "no servers"
+                            // before this, and telling those two apart from a
+                            // crash or a wall is the whole question whenever a
+                            // search comes back empty.
+                            said != null -> said
                             else -> "no servers"
                         },
                 )
@@ -2310,6 +2395,11 @@ class ContentRepository(private val manager: ProviderManager) {
              *  and the log says this is why. */
             var passStalled = false
             try {
+                // The user is waiting on this search, so background sweeps stand
+                // down until it is over (see the foreground/background gate in
+                // the companion). Renewed on every exit path, including a
+                // cancellation — which is the common case in practice.
+                enterForegroundPass()
                 val jobs = targets.mapIndexed { i, p ->
                     scope.async {
                         val isNuvio = p.config.type == ProviderType.NUVIO
@@ -2832,6 +2922,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 passCompleted = true
             } finally {
                 scope.cancel()
+                // Background work may go again — BEFORE the hand-off below, so
+                // the sweep this teardown is about to start can actually run
+                // instead of parking itself on the way out.
+                exitForegroundPass()
                 // ---- Hand the leftovers to the background sweep ----
                 //
                 // This is the pass's ONLY hand-off, and it is here — in the
@@ -3378,6 +3472,11 @@ class ContentRepository(private val manager: ProviderManager) {
         val started = System.currentTimeMillis()
         sweep.rounds++
         sweep.lastProgressAt = started
+        // Time this sweep has spent deliberately WAITING for the foreground (see
+        // the gate in the companion). It does not count against the round's
+        // budget — a sweep that stood down for a pass must not lose the repos it
+        // never got to because of it.
+        val pausedMs = java.util.concurrent.atomic.AtomicLong(0L)
         // Repos whose turn never came before the round's budget ran out. They are
         // carried into another round below rather than dropped, because a repo
         // that is never asked is exactly what "it stopped at 87 of 159 and just
@@ -3423,11 +3522,22 @@ class ContentRepository(private val manager: ProviderManager) {
                     while (true) {
                         val unit = queue.poll() ?: break
                         val p = unit.provider
+                        // A search the user is waiting on always wins, and so
+                        // does the moment right after the player closes: this
+                        // worker parks until the foreground is free. The wait is
+                        // taken off the round's clock (see [pausedMs]) and the
+                        // sweep's "still making progress" stamp is refreshed
+                        // while it waits, so a parked sweep is never reported as
+                        // a wedged one.
+                        val waited = awaitBackgroundClearance {
+                            sweep.lastProgressAt = System.currentTimeMillis()
+                        }
+                        if (waited > 0) pausedMs.addAndGet(waited)
                         // Past the ceiling: stop starting new work. Whatever is
                         // already in flight still lands (and is published), and
                         // the repos that lost their turn are handed to the NEXT
                         // round (see [unasked]).
-                        if (System.currentTimeMillis() - started >= budget) {
+                        if (System.currentTimeMillis() - started - pausedMs.get() >= budget) {
                             unasked.add(unit)
                             continue
                         }
@@ -3596,7 +3706,17 @@ class ContentRepository(private val manager: ProviderManager) {
         val repo = p.config.name.ifBlank { id }
         tally.primaryRunning[id] = repo
         bumpCrossStatus()
-        val got = detached(SWEEP_REPO_BUDGET_MS) { fetchStreams(p, item, episode) }
+        // A nuvio engine boots a native VM, and this is BACKGROUND work — the
+        // video is already playing — so it takes one of the small background
+        // slots instead of competing with a search the user is waiting on (see
+        // NuvioRuntime.withBackgroundSlot).
+        val got = if (p.config.type == ProviderType.NUVIO) {
+            com.hikari.app.nuvio.NuvioRuntime.withBackgroundSlot {
+                detached(SWEEP_REPO_BUDGET_MS) { fetchStreams(p, item, episode) }
+            }
+        } else {
+            detached(SWEEP_REPO_BUDGET_MS) { fetchStreams(p, item, episode) }
+        }
         try {
             if (got == null) {
                 com.hikari.app.data.Logs.log(
@@ -4206,6 +4326,12 @@ class ContentRepository(private val manager: ProviderManager) {
             t.contains("still searching") ||
             t.contains("waiting for an engine slot") ||
             t.contains("unreadable") ||
+            // What a provider's own engine says when it could not really run —
+            // a QuickJS crash, a bridge failure, a budget that ran out (see
+            // NuvioScraper). Without this a provider that THREW was recorded as
+            // the answer "no servers" and never asked again, which is exactly
+            // how a whole tab of working engines can read as "nothing here".
+            t.contains("provider failed") ||
             t.contains("failed to") ||
             t.contains("couldn't be searched") ||
             t.contains("could not be searched")

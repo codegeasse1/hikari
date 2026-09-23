@@ -162,3 +162,27 @@ label.
    collected in `rememberPosterStyle`, or a field with a default on `PosterStyle`.
 4. If it animates, teach `PosterEffects.animated` about it so the clock is created;
    if it wants the halo, teach `haloed`.
+
+## Where the quality label comes from (and what used to stop it appearing)
+
+`TitleQuality` (`data/TitleQuality.kt`) is the only source of the quality tag.
+`forItem` answers a poster cell, and it never touches the disk: it reads the
+title's own text first ("… 1080p WEB-DL"), then the map filed by completed
+searches.
+
+What fills that map is the point — a search only counts if **something records
+it**, and 0.10.23 fixed the paths that did not:
+
+- the pass's own non-empty result (always did);
+- **the cache hit in `prefetchFirstStreams`** — every re-entry into a detail page
+  takes this path, and it used to return without recording anything;
+- **the never-downgrade fallback** in `resolveStreams` (a cut-short pass handed
+  the cached/live list instead of a verdict);
+- **the player**: `notifySourcesChanged()` files the best quality of every
+  server list the player holds, so a title that was simply *played* gets its
+  badge. It used to record only when the user switched episode.
+
+Lookups also stop depending on the year matching: `byTitle` holds the same labels
+keyed by title alone, and `forItem` tries the exact `title|year` key first. Two
+catalogue rows for one film disagree about the year often enough that the badge
+was invisible to the poster cell that drew it.

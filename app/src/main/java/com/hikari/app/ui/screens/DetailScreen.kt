@@ -965,6 +965,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 val fallback = cached?.list?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                 if (fallback != null) {
+                    // This list IS this title's server list as far as the user
+                    // is concerned (it is what the player is playing), so the
+                    // quality it carries has to be filed like any other answer:
+                    // returning here without recording it is why a title that
+                    // was played yesterday showed no quality badge on its poster
+                    // even with the badge switched on.
+                    recordOutcome(fallback, item)
                     val answered = StreamLookup(fallback, complete = true)
                     deferred.complete(answered)
                     return answered
@@ -1012,6 +1019,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // links ready.
         if (cached != null && cached.list.isNotEmpty() &&
             System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS) {
+            // A cached answer is still an answer: file the quality it carries, so
+            // opening a title that was searched a minute ago (the common case —
+            // every re-entry into a detail page) keeps the poster's badge alive
+            // instead of only ever recording the FIRST, uncached search.
+            recordOutcome(cached.list, item)
             _streamsReady.value = true
             return
         }

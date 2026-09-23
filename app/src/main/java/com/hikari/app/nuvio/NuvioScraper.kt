@@ -407,14 +407,18 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             val startedAt = System.currentTimeMillis()
             val resolved = TmdbResolver.resolve(item)
             if (resolved == null) {
-                val msg = "✗ Couldn't resolve a TMDB id for this title."
+                // Hikari could not map this title to TMDB — the provider was
+                // never really asked, so this must not be recorded as its answer
+                // (a TMDB hiccup used to hide every nuvio engine for the rest of
+                // the session). "provider failed" gets it re-asked.
+                val msg = "✗ provider failed: couldn't resolve a TMDB id for this title"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             val source = runCatching { File(config.url).readText() }.getOrNull()
             if (source.isNullOrBlank()) {
-                val msg = "✗ Scraper file missing — reinstall this extension."
+                val msg = "✗ scraper file missing — reinstall this extension"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
                 return@withContext emptyList()
@@ -451,23 +455,33 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             )
             val parsed = runCatching { JSONObject(payload) }.getOrNull()
             if (parsed == null) {
-                val msg = "✗ Nuvio runtime returned an unreadable result."
+                // "provider failed" is a marker ContentRepository recognises as
+                // "this call did NOT answer" (see its isNoAnswer): the provider
+                // threw, crashed or ran out of budget, so the engine is asked
+                // again in the background rather than being recorded as having
+                // nothing for this title — which is what a bare "✗ …" used to
+                // turn into, hiding a whole tab of working engines.
+                val msg = "✗ provider failed: unreadable result"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
             if (!parsed.optBoolean("ok", false)) {
                 val err = parsed.optString("error").ifBlank { "no sources found" }
-                val msg = if (err == "timeout") "✗ provider timed out after 60s." else "✗ $err"
+                val msg = if (err == "timeout") "✗ provider failed: timed out after 60s"
+                else "✗ provider failed: $err"
                 streamErrors[config.id] = msg.take(400)
                 lastOutcome[config.id] = msg.take(80)
                 return@withContext emptyList()
             }
             val data = parsed.optJSONArray("data")
             if (data == null || data.length() == 0) {
-                val msg = "✗ Provider returned no sources for this title."
+                // A REAL answer: the engine ran and this provider's own site has
+                // nothing for this title. No "provider failed" marker, so it is
+                // reported as what it is and is not re-asked in a loop.
+                val msg = "no sources for this title"
                 streamErrors[config.id] = msg
-                lastOutcome[config.id] = msg
+                lastOutcome[config.id] = "no sources"
                 return@withContext emptyList()
             }
             val out = mutableListOf<StreamSource>()
@@ -479,7 +493,13 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 streamErrors.remove(config.id)
                 lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in ${(System.currentTimeMillis() - startedAt) / 1000}s"
             } else {
-                lastOutcome[config.id] = "✗ returned ${data.length()} rows but none playable"
+                // Rows came back but none of them is something the player can
+                // open. A real answer about this provider's links — recorded on
+                // both maps so the diagnosis says which, instead of keeping a
+                // stale message from an earlier search.
+                val msg = "✗ returned ${data.length()} rows but none playable"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
             }
             val distinct = out.distinctBy { it.url }
             // Warm the probe cache the moment the sources are found, so a

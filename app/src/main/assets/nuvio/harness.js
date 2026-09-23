@@ -657,6 +657,13 @@
     };
   }
 
+  // The bridge returns either the payload ITSELF (a synchronous host, e.g. the
+  // WebView's addJavascriptInterface) or a PROMISE for it: on a QuickJS host the
+  // fetch implementation is an async native function, exactly as in the
+  // reference client (`await __native_fetch(...)`), so a provider's own
+  // parallel requests are really in flight together instead of being run one
+  // after another. Everything below goes through Promise.resolve(), so both
+  // shapes work.
   function __bridgeFetch(url, method, headersJson, body, followRedirects) {
     if (typeof NuvioBridge !== 'undefined' && typeof NuvioBridge.fetch === 'function') {
       return NuvioBridge.fetch(String(url), String(method || 'GET'), headersJson || '{}', body == null ? '' : String(body), followRedirects !== false);
@@ -681,16 +688,23 @@
           if (init.body != null) body = String(init.body);
           if (init.redirect === 'manual' || init.redirect === 'error') followRedirects = false;
         }
-        var payload;
+        var rawOrPromise;
         try {
-          var raw = __bridgeFetch(url, method, JSON.stringify(headers), body, followRedirects);
-          payload = __parseBridgePayload(raw, url);
+          rawOrPromise = __bridgeFetch(url, method, JSON.stringify(headers), body, followRedirects);
         } catch (e) {
           reject(e);
           return;
         }
-        Promise.resolve(payload).then(function (p) {
-          resolve(__makeResponse(__nuvioIntercept(url, method, headers, body, followRedirects, p), url));
+        Promise.resolve(rawOrPromise).then(function (raw) {
+          var payload;
+          try {
+            payload = __parseBridgePayload(raw, url);
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          return Promise.resolve(__nuvioIntercept(url, method, headers, body, followRedirects, payload))
+            .then(function (p) { resolve(__makeResponse(p, url)); }, function (e) { reject(e); });
         }, function (e) { reject(e); });
       } catch (e) { reject(e); }
     });
@@ -712,15 +726,18 @@
   //     AniList's GraphQL API instead.
   g.__nuvioTmdbKeys = ["68e094699525b18a70bab2f86b1fa706", "439c478a771f35c05022f9feabcca01c"];
 
-  function __nuvioIntercept(url, method, headers, body, followRedirects, p) {
+  // ASYNC, because a replacement response means another round trip through the
+  // (asynchronous) bridge. With nothing to fix it resolves to the provider's own
+  // response, so the common path costs nothing but a microtask.
+  async function __nuvioIntercept(url, method, headers, body, followRedirects, p) {
     try {
       var tmdb = __nuvioTmdbMatch(url);
       if (tmdb) {
-        var fixed = __nuvioFixTmdb(url, method, followRedirects, p, tmdb);
+        var fixed = await __nuvioFixTmdb(url, method, followRedirects, p, tmdb);
         if (fixed) p = fixed;
       }
       if (/^https?:\/\/api\.jikan\.moe\/v4\/anime/i.test(url)) {
-        var j = __nuvioJikanFallback(url, method, followRedirects, p);
+        var j = await __nuvioJikanFallback(url, method, followRedirects, p);
         if (j) p = j;
       }
     } catch (e) {
@@ -754,7 +771,7 @@
     return { type: m[1], id: m[2], isExternal: !!m[3] };
   }
 
-  function __nuvioFixTmdb(url, method, followRedirects, p, tmdb) {
+  async function __nuvioFixTmdb(url, method, followRedirects, p, tmdb) {
     if (method !== 'GET') return null;
     var origKey = __nuvioKeyFromUrl(url);
     var key = origKey;
@@ -769,7 +786,7 @@
         if (keys[i] === origKey) continue;
         var altUrl = __nuvioReplaceKey(url, keys[i]);
         var alt = null;
-        try { alt = __parseBridgePayload(__bridgeFetch(altUrl, 'GET', '{}', '', followRedirects), altUrl); } catch (e) { alt = null; }
+        try { alt = __parseBridgePayload(await __bridgeFetch(altUrl, 'GET', '{}', '', followRedirects), altUrl); } catch (e) { alt = null; }
         var altObj = __nuvioTryParse(alt);
         if (altObj) { q = alt; obj = altObj; key = keys[i]; failed = false; changed = true; break; }
       }
@@ -779,7 +796,7 @@
     if (!tmdb.isExternal && obj && typeof obj === 'object' && !obj.imdb_id) {
       var extUrl = 'https://api.themoviedb.org/3/' + tmdb.type + '/' + tmdb.id + '/external_ids?api_key=' + (key || '');
       var ext = null;
-      try { ext = __parseBridgePayload(__bridgeFetch(extUrl, 'GET', '{}', '', followRedirects), extUrl); } catch (e) { ext = null; }
+      try { ext = __parseBridgePayload(await __bridgeFetch(extUrl, 'GET', '{}', '', followRedirects), extUrl); } catch (e) { ext = null; }
       var extObj = __nuvioTryParse(ext);
       if (extObj && extObj.imdb_id) { obj.imdb_id = extObj.imdb_id; changed = true; }
     }
@@ -790,10 +807,10 @@
     return out;
   }
 
-  function __nuvioGraphQL(query, vars) {
+  async function __nuvioGraphQL(query, vars) {
     try {
       var bodyStr = JSON.stringify({ query: query, variables: vars || {} });
-      var raw = __bridgeFetch(
+      var raw = await __bridgeFetch(
         'https://graphql.anilist.co', 'POST',
         JSON.stringify({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
         bodyStr, true
@@ -802,7 +819,7 @@
     } catch (e) { return null; }
   }
 
-  function __nuvioJikanFallback(url, method, followRedirects, p) {
+  async function __nuvioJikanFallback(url, method, followRedirects, p) {
     if (method !== 'GET') return null;
     if (__nuvioTryParse(p)) return null; // Jikan answered fine — pass through.
     var mId = url.match(/^https?:\/\/api\.jikan\.moe\/v4\/anime\/(\d+)/i);
@@ -810,7 +827,7 @@
     var synth = null;
     if (mId) {
       var gql = 'query ($id: Int) { Media(idMal: $id, type: ANIME) { idMal title { romaji english } } }';
-      var r = __nuvioGraphQL(gql, { id: parseInt(mId[1], 10) });
+      var r = await __nuvioGraphQL(gql, { id: parseInt(mId[1], 10) });
       if (r && r.data && r.data.Media) {
         var t = r.data.Media.title || {};
         synth = { data: { mal_id: r.data.Media.idMal, title: t.english || t.romaji || '' } };
@@ -821,7 +838,7 @@
       if (title) {
         var typeMovie = /[?&]type=movie/i.test(url);
         var q2 = 'query ($s: String) { Media(search: $s, type: ANIME' + (typeMovie ? ', format: MOVIE' : '') + ') { idMal } }';
-        var r2 = __nuvioGraphQL(q2, { s: title });
+        var r2 = await __nuvioGraphQL(q2, { s: title });
         if (r2 && r2.data && r2.data.Media) synth = { data: [{ mal_id: r2.data.Media.idMal }] };
       }
     }
