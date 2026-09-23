@@ -266,7 +266,7 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                     label = tr("Avg chapters"),
                     value = String.format(java.util.Locale.US, "%.1f", snapshot.averageChaptersPerDay) + "/" +
                         tr("day"),
-                    icon = Icons.Filled.MenuBook,
+                    icon = Icons.AutoMirrored.Filled.MenuBook,
                     modifier = Modifier.weight(1f),
                 )
                 StatTile(
