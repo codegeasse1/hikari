@@ -33,13 +33,21 @@ Share or Save, and there is a **Clear all logs** button on the same page.
 
 ## Screenshots
 
-| Home | Extensions | Extension repo |
+| Home | Search | Add sources |
 |---|---|---|
-| <img src="https://user.uploads.dev/file/4c8cf9302ff9f189a7ae931b817c4e5e.jpg" width="240"/> | <img src="https://user.uploads.dev/file/63660b0117b875606e0bd26532f801cc.jpg" width="240"/> | <img src="https://user.uploads.dev/file/3abef8ccd845e097495b8d28e82190da.jpg" width="240"/> |
+| <img src="https://user.uploads.dev/file/c66f351e2488a6ac4b289525edbb42f6.jpg" width="240"/> | <img src="https://user.uploads.dev/file/d43f5aed39cb44e3f680395ad95cfa69.jpg" width="240"/> | <img src="https://user.uploads.dev/file/8b3dadf41c34b28fb67b74cb0618285d.jpg" width="240"/> |
 
-| Choose a source | Player |
-|---|---|
-| <img src="https://user.uploads.dev/file/61555fdf433dbe85a8960677e6279923.jpg" width="240"/> | <img src="https://user.uploads.dev/file/fb99309c5e1a41a6048cb602e211c774.jpg" width="240"/> |
+| Manga | IPTV | Settings |
+|---|---|---|
+| <img src="https://user.uploads.dev/file/bd25246bc02e01cc0b98e0463d333077.jpg" width="240"/> | <img src="https://user.uploads.dev/file/caac3f4d80a8598b9bf737b2a37647d2.jpg" width="240"/> | <img src="https://user.uploads.dev/file/ba7f07dd3a8d04b7a7c181326e8ff728.jpg" width="240"/> |
+
+<!-- Earlier screenshots, kept (not deleted) in case they are wanted again:
+     Home             https://user.uploads.dev/file/4c8cf9302ff9f189a7ae931b817c4e5e.jpg
+     Extensions       https://user.uploads.dev/file/63660b0117b875606e0bd26532f801cc.jpg
+     Extension repo   https://user.uploads.dev/file/3abef8ccd845e097495b8d28e82190da.jpg
+     Choose a source  https://user.uploads.dev/file/61555fdf433dbe85a8960677e6279923.jpg
+     Player           https://user.uploads.dev/file/fb99309c5e1a41a6048cb602e211c774.jpg
+-->
 
 ## Installing the app
 
