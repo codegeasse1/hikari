@@ -1594,7 +1594,7 @@ fun DetailScreen(
     val loadingLogoOn by remember { app.store.loadingLogoFlow() }
         .collectAsState(initial = true)
     val loadingLogoPercent by remember { app.store.loadingLogoSizeFlow() }
-        .collectAsState(initial = AppStore.DEFAULT_LOADING_LOGO_SIZE)
+        .collectAsState(initial = 100)
     // The wordmark itself. Declared HERE rather than beside the header art far
     // below, because the Play intent needs it: it is fetched on a background
     // request per title and read by both the header and the loading cover.

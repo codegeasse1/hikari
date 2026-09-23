@@ -3771,8 +3771,10 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
         val effects by effectsFlow.collectAsState(initial = emptySet<String>())
     // The title wordmark on the cover: whether it is drawn at all, and its own
     // size (kept apart from the detail header's — see [AppStore.loadingLogoSizeFlow]).
-    val logoFlow = remember { app.store.loadingLogoFlow() }
-    val logoOn by logoFlow.collectAsState(initial = true)
+    // The switch is held locally and seeded from the store, the same pattern as
+    // [enabled] above; the size is a plain read.
+    var logoOn by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) { logoOn = app.store.loadingLogo() }
     val logoSizeFlow = remember { app.store.loadingLogoSizeFlow() }
     val logoSize by logoSizeFlow.collectAsState(initial = 100)
     var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
