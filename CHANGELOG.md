@@ -1,60 +1,54 @@
 ## 0.10.25
 
-**The lag while installing, the extension that listed itself nine times, the
-title's own wordmark on the loading screen, and a Performance switch to turn the
-heavy work off.**
+Everything added and fixed since 0.9.8.
 
 ### Added
 
-- **Settings → Performance → "Performance booster".** One switch, for a device
-  that stutters, heats up or drains battery. It drops the heaviest things the app
-  does — the blurred glow drawn behind every poster (three artwork layers plus a
-  gaussian blur per card), the animated poster and loading treatments, how many
-  extensions are searched at once, and how many nuvio engines may run together —
-  without removing anything that can be played. The same work is dropped by the
-  television's own performance mode, and the two are OR'd, so a box with both on
-  simply stays light. It can be switched on while the app is running; the next
-  search and the next poster already see it.
-- **The title's wordmark on the loading screen**, the way the detail page's
-  header draws it: the film's own logo art instead of its name while a server is
-  being found, on BOTH the detail page's cover and the player's. Its size is its
-  own slider — Settings → Player → Loading screen → "Title logo size" (50%–160%)
-  — independent of the detail header's, and it breathes (grows and shrinks) with
-  the card exactly like the text title did. A title with no wordmark (most
-  extension-only titles) keeps the text title, and the switch is there to turn it
-  off.
+- Manga reader: paged left-to-right, paged right-to-left and webtoon, with a chapter picker, page slider, zoom, page fit, saved progress and continue reading.
+- Manga tab: installed engines, browse, search, Popular/Latest lists, and a search box inside a repo's index.
+- Manga extensions install the same way Aniyomi ones do (same files, same repos).
+- Stats: watch time, items consumed, day heatmap and your top titles. Every row opens what it is about.
+- Codec details in the player (stats for nerds): resolution, codec, bitrate, dropped frames.
+- Performance booster in Settings: one switch that drops the poster blur and the animated effects and searches fewer providers at once, for a phone that stutters or heats up.
+- Pin button on a source, to keep it at the top of Home's picker.
+- Year filter, and a Movies / Series / Both filter, on the search screen - no second search needed.
+- Advanced filters for a custom source: genres, release dates, rating, votes, language, country.
+- Title logo on the detail screen and on the loading screen, each with its own size slider.
+- Episode order filter: first to last, or last to first.
+- Mark as watched, watching and watch later on the detail page, drawn on the poster too.
+- Pair and sync with another device: one shows a code, the other types it.
+- Collections and folders: pin to Home, reorder, browse as rows or tabs, folder cover art and logo, hide the name, animated covers, export and import as JSON.
+- IPTV tab, with the playlist dialog right there and groups drawn as folder tiles.
+- Android TV, Google TV and Fire TV support in the same APK: rail layout, remote controls, TV settings folder and a TV banner.
+- Pick several sources at once in the provider picker.
+- Subtitles from the internet: five sites built in, search from inside the player, and auto-find in your language.
+- Franchise row, production companies, the full release date, and film/series and quality tags on posters.
+- 20 languages fully translated.
 
 ### Fixed
 
-- **Installing an extension no longer makes the app jitter.** Two causes, both
-  removed:
-  * Every install ended by rebuilding the provider list and re-reading the stored
-    list, and an "Install all" run over a 249-extension repo did that 249 times,
-    each pass bigger than the last. Refreshes are now coalesced (a burst of them
-    becomes one rebuild after the installs go quiet, plus one final rebuild when
-    the run reports done), and the provider manager itself coalesces overlapping
-    requests.
-  * Every preference flow re-parsed its own value on the MAIN THREAD on every
-    single write anywhere in the app — so an install's provider-list write
-    re-parsed the providers, the collections, the categories, the ad lists and
-    ~100 more, while the UI waited. Every one of those flows now drops unchanged
-    values and does its parsing off the main thread, which is also why toggling a
-    setting no longer hitches.
-- **An extension that publishes several sources under one name no longer looks
-  installed eight times.** AnimeWorld India is NINE sources in one `.apk` (a
-  generic feed plus Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu
-  feeds of the same site), all called "AnimeWorld India" — and the list drew one
-  row per source. Two fixes:
-  * the sources are named honestly again ("AnimeWorld India · Hindi", "·
-    Marathi", …): one of their language codes (Marathi) had no name in the table,
-    and a group is only labelled by a detail that separates EVERY row, so the
-    whole pack fell back to bare numbers "(1)…(9)";
-  * every list that draws providers — Extensions, the installed list, and Home's
-    "Choose an extension" sheet — now draws ONE row per extension, with its
-    sources a tap away (each still switchable on its own, so a language feed that
-    never answers can be turned off and stops being searched). A plain pick of the
-    row still means the extension's first source, exactly as before.
+- Player dialogs and panels: no more cut off text or buttons, correct size in portrait and landscape, every box scrolls.
+- Lag and jitter while installing extensions, and while nothing is happening on screen.
+- Nuvio providers not showing all their servers: engines boot faster, run together instead of queueing, are no longer cut off mid-pass, and say why when they come back empty.
+- Aniyomi extensions loading again, including ones behind Cloudflare and ones that use the JavaScript engine.
+- Manga pages breaking: pages are drawn with the same renderer Nekoread uses, and preloaded around the page you are on.
+- Reader page slider landing on the page you tapped, and the chapter arrows going to the next chapter instead of another group's copy of the same one.
+- Subtitle box opening with the original title, and results that could never download are gone.
+- Home going back to "all providers" after coming out of the player.
+- Stats counting real time and the right day.
+- Importing a collections JSON file, and the titles it carries.
+- IPTV channel logos loading however the playlist wrote them.
+- R-rated titles leaving the catalogues while the adult switch is off.
+- The interface language changing on the spot.
+- The extension that listed itself nine times is one row now, with its sources underneath.
+- No crash on a device without a WebView.
 
+### Changed
+
+- The Manga tab is on by default.
+- Webtoon is the default reading mode.
+- Poster effects and loading-screen effects default to NONE.
+- The background extension search waits until the video is playing.
 ## 0.10.24
 
 **The lag, the cut-off nuvio engines, and the diagnostics to prove both — plus

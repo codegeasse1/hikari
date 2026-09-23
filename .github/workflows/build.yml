@@ -282,3 +282,24 @@ jobs:
               --title "Hikari $VERSION" \
               --notes "$NOTES" || true
           fi
+          # Give each file a readable name on the releases page. GitHub shows an
+          # asset's `label` INSTEAD of its file name, so "hikari.apk" reads as
+          # "Hikari Android & TV Universal" while the download URL keeps the
+          # file name the in-app updater and every existing link already use.
+          REL_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          if [ -n "$REL_ID" ]; then
+            for spec in \
+              "hikari.apk=Hikari Android & TV Universal" \
+              "hikari-arm64-v8a.apk=Hikari Android & TV 64-bit (arm64-v8a)" \
+              "hikari-armeabi-v7a.apk=Hikari Android & TV 32-bit (armeabi-v7a)"
+            do
+              FILE="${spec%%=*}"
+              LABEL="${spec#*=}"
+              ASSET_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/$REL_ID/assets" \
+                --jq ".[] | select(.name==\"$FILE\") | .id" 2>/dev/null | head -n1 || true)
+              if [ -n "$ASSET_ID" ]; then
+                gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+                  -f label="$LABEL" --jq '"asset label: " + .name + " -> " + .label' || true
+              fi
+            done
+          fi
