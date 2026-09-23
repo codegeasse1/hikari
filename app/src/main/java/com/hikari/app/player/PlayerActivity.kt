@@ -4642,6 +4642,10 @@ class PlayerActivity : ComponentActivity() {
                 ).show()
                 return@launch
             }
+            // Same as the detail page's search: the server names are the only
+            // quality data the app gets, and the poster's quality badge reads it
+            // back (see [com.hikari.app.data.TitleQuality]).
+            runCatching { com.hikari.app.data.TitleQuality.remember(item, streams) }
             // The origin session's servers belong to the episode we just left —
             // stop appending them, and stop restoring its remembered server.
             liveStreamsJob?.cancel()

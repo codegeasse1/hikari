@@ -52,7 +52,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -427,6 +429,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
         _searchedProviders.value = streamTargets(item).size
+        // The servers' own names are the only real quality data this app ever
+        // sees ("HdHub 4K", "NetMirror 720p"), so the completed search files the
+        // best of them for this title — the poster's optional quality badge
+        // reads it back (see [com.hikari.app.data.TitleQuality]).
+        if (result.isNotEmpty()) {
+            runCatching { com.hikari.app.data.TitleQuality.remember(item, result) }
+        }
         if (result.isEmpty()) {
             // Attribute the failure to the ORIGIN provider only — a global
             // "last error" from a different video (e.g. iStreamFlare on the
@@ -1432,6 +1441,14 @@ fun DetailScreen(
     var selectedSeason by rememberSaveable { mutableStateOf<Int?>(null) }
     var seasonExpanded by remember { mutableStateOf(false) }
     var rangeExpanded by remember { mutableStateOf(false) }
+    /**
+     * Which way round the episode list runs. Off = oldest first (episode 1 at
+     * the top), which is how every provider hands the list over and what most
+     * shows want; on = newest first, for the long-running shows where the
+     * episode you actually came for is the last one. Toggled by the arrow
+     * beside the episode count, and remembered across a rotation.
+     */
+    var epsNewestFirst by rememberSaveable { mutableStateOf(false) }
 
     // Related/Similar cells. Tapping a cell opens the title directly instead of
     // dropping the user on the Search tab with a bare name query (which lists
@@ -1487,20 +1504,28 @@ fun DetailScreen(
     val shownEps = remember(sortedEps, seasons, activeSeason) {
         if (seasons.size <= 1) sortedEps else sortedEps.filter { it.season == activeSeason }
     }
+    // The arrow's order, applied to the SEASON's list before it is paged: on a
+    // 600-episode donghua "newest first" has to mean the newest 30 make up the
+    // FIRST page, not that the reader scrolls to the bottom to find them.
+    val orderedEps = remember(shownEps, epsNewestFirst) {
+        if (epsNewestFirst) shownEps.asReversed() else shownEps
+    }
     // Episode pagination: a long-running donghua can have 600+ episodes in a
     // single season, which used to force one enormous scroll. Split the current
     // season into 30-episode pages and expose a page picker (just like the
-    // season picker) right next to the episode count. `remember(activeSeason)`
-    // snaps back to page 1 whenever the user switches season.
+    // season picker) right next to the episode count. `remember(activeSeason,
+    // epsNewestFirst)` snaps back to page 1 whenever the user switches season or
+    // flips the order — page 3 of the oldest-first list is a different set of
+    // episodes from page 3 of the newest-first one.
     val epPageSize = 30
-    var rangeStart by remember(activeSeason) { mutableStateOf(0) }
-    val ranges = remember(shownEps) {
-        if (shownEps.size <= epPageSize) emptyList()
-        else (0 until shownEps.size step epPageSize).toList()
+    var rangeStart by remember(activeSeason, epsNewestFirst) { mutableStateOf(0) }
+    val ranges = remember(orderedEps) {
+        if (orderedEps.size <= epPageSize) emptyList()
+        else (0 until orderedEps.size step epPageSize).toList()
     }
     val safeStart = if (ranges.isEmpty()) 0 else rangeStart.coerceIn(0, ranges.last())
-    val pageEps = remember(shownEps, safeStart) {
-        shownEps.drop(safeStart).take(epPageSize)
+    val pageEps = remember(orderedEps, safeStart) {
+        orderedEps.drop(safeStart).take(epPageSize)
     }
 
     LaunchedEffect(providerId, mediaId) {
@@ -2743,8 +2768,58 @@ fun DetailScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    // ---- What stays on screen while the header art leaves ----
+    //
+    // How far the art has scrolled away: 0 at the top of the page, 1 once it is
+    // gone. The art is the list's first item, so this is its own scroll distance
+    // over its own measured height (which is why the height is read from the
+    // layout rather than assumed from the style). Computed HERE, above the list,
+    // because the page's first content item has to reserve room for the pinned
+    // wordmark (see [pinnedLogoDp]) — the same number the wordmark itself is
+    // positioned and sized with.
+    val headerScroll = if (detailList.firstVisibleItemIndex > 0) {
+        headerPx.coerceAtLeast(1)
+    } else {
+        detailList.firstVisibleItemScrollOffset
+    }
+    val headerProgress =
+        (headerScroll.toFloat() / headerPx.coerceAtLeast(1)).coerceIn(0f, 1f)
     val density = LocalDensity.current
+
+    // The user's own size for the wordmark (Settings → App Layout → Details
+    // header → Title logo size), as a multiplier over the two widths it is drawn
+    // at: [logoRestFrac] while it sits low in the header art, and
+    // [logoPinnedFrac] once the art has scrolled away and it is acting as the
+    // page's title.
+    //
+    // The PINNED end takes the setting at full strength — the same multiplier is
+    // applied to the pinned width itself — because that end is the one the reader
+    // looks at while reading the page, and it is the end that used to ignore the
+    // setting entirely: the pinned width was a constant, so raising the slider
+    // enlarged the wordmark on the header art and then handed back the same small
+    // title the moment the art scrolled away (the reported "when I scroll, even
+    // though the logo size from the setting changes on the image, on scrolling it
+    // stays the same small size").
+    //
+    // So: "Title logo size: 130%" means 1.3x at BOTH ends — a plain size
+    // multiplier, not a curve that disagrees with the number on the slider. At
+    // the default 100% both ends are exactly what they always were (rest 0.62,
+    // pinned 0.34), so nobody who never touched the slider sees any change.
+    val logoScale = (detailLogoPercent / 100f).coerceIn(0.5f, 1.6f)
+    val logoRestFrac = (0.62f * logoScale).coerceIn(0.2f, 1f)
+    val logoPinnedFrac = (0.34f * logoScale).coerceIn(0.17f, 0.72f)
+    val logoFrac = logoRestFrac + (logoPinnedFrac - logoRestFrac) * headerProgress
+    // How much room the pinned wordmark needs at the top of the page, in dp. Its
+    // height is measured from the layout (its aspect ratio is whatever TMDB's art
+    // is) and its height follows its width, so the ratio of the two fractions is
+    // the ratio of the two heights. Zero while there is no wordmark to draw.
+    val pinnedLogoDp = if (logoSizePx > 0 && logoFrac > 0.01f && !heroLogo.isNullOrBlank()) {
+        with(density) { (logoSizePx * logoPinnedFrac / logoFrac).toDp() }
+    } else {
+        0.dp
+    }
+
+    Box(Modifier.fillMaxSize()) {
     // The status bar's height, in dp (a composable read, so it is taken here
     // rather than inside the arithmetic that positions the wordmark).
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -2776,7 +2851,20 @@ fun DetailScreen(
                     // looked like it had been pushed up into the header — the
                     // user circled it on a screenshot). Styles that fade the art
                     // into the background need the gap most.
-                    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                    Column(
+                        Modifier.padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            // The pinned wordmark is drawn OVER this list (it
+                            // lives in the page's own box, which is what keeps
+                            // it still while the art scrolls), so as the header
+                            // leaves, the first line reserves exactly the height
+                            // the wordmark needs at its pinned size — a big
+                            // setting must not put the year, the genres and the
+                            // Play button underneath the title.
+                            top = 16.dp + pinnedLogoDp * headerProgress,
+                        )
+                    ) {
                         // The title as TEXT is drawn only when there is no logo to
                         // draw instead: the reference client never repeats the
                         // title twice on one page, and the wordmark above is the
@@ -3137,6 +3225,28 @@ fun DetailScreen(
                                 )
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // The order arrow. Up = episode 1 first (the way
+                                // the providers hand the list over), down = the
+                                // last episode first for shows whose newest
+                                // episode is the one you came for. The icon
+                                // always shows the order the list is in, so one
+                                // tap flips both.
+                                IconButton(
+                                    onClick = { epsNewestFirst = !epsNewestFirst },
+                                    modifier = Modifier.size(32.dp),
+                                ) {
+                                    Icon(
+                                        if (epsNewestFirst) Icons.Filled.ArrowDownward
+                                        else Icons.Filled.ArrowUpward,
+                                        contentDescription = if (epsNewestFirst) {
+                                            tr("Newest episode first")
+                                        } else {
+                                            tr("Oldest episode first")
+                                        },
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                                 if (seasons.size > 1) {
                                     Box {
                                         OutlinedButton(
@@ -3328,20 +3438,6 @@ fun DetailScreen(
     }
     }
 
-    // ---- What stays on screen while the header art leaves ----
-    //
-    // How far the art has scrolled away: 0 at the top of the page, 1 once it is
-    // gone. The art is the list's first item, so this is its own scroll distance
-    // over its own measured height (which is why the height is read from the
-    // layout rather than assumed from the style).
-    val headerScroll = if (detailList.firstVisibleItemIndex > 0) {
-        headerPx.coerceAtLeast(1)
-    } else {
-        detailList.firstVisibleItemScrollOffset
-    }
-    val headerProgress =
-        (headerScroll.toFloat() / headerPx.coerceAtLeast(1)).coerceIn(0f, 1f)
-
     // The way OUT of the page is never allowed to scroll off: the header's own
     // back button is drawn inside the art, so this one takes over from the same
     // corner, at the same size, as soon as the art is mostly gone.
@@ -3367,12 +3463,10 @@ fun DetailScreen(
     // makes it "not move with the image": the art goes, the title stays.
     val logoArt = heroLogo
     if (!logoArt.isNullOrBlank()) {
-        // The user's own size for the wordmark scales the width it is fitted
-        // into (its height follows the art's aspect ratio, so this is "bigger
-        // logo", not "stretched logo"). Clamped: past the top of the range it
-        // would be wider than the screen.
-        val logoScale = (detailLogoPercent / 100f).coerceIn(0.5f, 1.6f)
-        val logoFrac = ((0.62f + (0.34f - 0.62f) * headerProgress) * logoScale).coerceIn(0.2f, 1f)
+        // [logoFrac] (above) is the width this frame's wordmark is fitted into:
+        // bigger setting = bigger logo, at BOTH ends of the scroll. Its height
+        // follows the art's aspect ratio, so this is "bigger logo", never
+        // "stretched logo".
         // The wordmark's own height, read from the LAYOUT (its aspect ratio is
         // whatever TMDB's art is, and there is no reason to guess it): the width
         // only decides the height, never the other way round, so this settles on
@@ -4909,6 +5003,10 @@ private fun ShelfCell(
             imdb = badge,
             // The kebab owns the top-right corner of this cell.
             ratingAlignment = Alignment.TopStart,
+            item = item,
+            // …so the score badge has the top-LEFT here, and the type/quality
+            // tags take the free corner below it.
+            badgeAlignment = Alignment.BottomStart,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)

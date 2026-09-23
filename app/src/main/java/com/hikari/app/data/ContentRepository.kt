@@ -2396,7 +2396,22 @@ class ContentRepository(private val manager: ProviderManager) {
                 // through the concurrency cap plus a few fallbacks. Results are
                 // emitted progressively via onProgress, so the UI never sits on
                 // an empty spinner while this runs.
-                val deadline = started + minOf(NetTuning.timeout(55_000L), 60_000L)
+                //
+                // Nuvio engines get a LONGER ceiling, because their own call
+                // budget is 60s (nuvio's per-plugin timeout, see
+                // NuvioRuntime.CALL_TIMEOUT_MS) — a pass that gave up at 55s
+                // cancelled the tail of a 12-engine install MID-RUN, and the
+                // pass's scope cancellation kills the engine outright, so the
+                // provider had to be re-asked from scratch in the background
+                // sweep (a second VM boot plus a second round of network work
+                // for the same answer). The ceiling only binds while engines are
+                // still working, and results stream in as they land, so waiting
+                // for them is strictly cheaper than redoing them.
+                val deadline = started + if (nuvioTargets.isNotEmpty()) {
+                    minOf(NetTuning.timeout(70_000L), 75_000L)
+                } else {
+                    minOf(NetTuning.timeout(55_000L), 60_000L)
+                }
                 passStartedAt = started
                 passDeadlineAt = deadline
                 // With no main targets at all (e.g. a title opened from a repo

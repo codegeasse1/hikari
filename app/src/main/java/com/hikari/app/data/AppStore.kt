@@ -260,6 +260,10 @@ class AppStore(private val ctx: Context) {
         val POSTER_CORNER = intPreferencesKey("posterCorner")
         val POSTER_SHOW_TITLES = booleanPreferencesKey("posterShowTitles")
         val POSTER_SHOW_RATINGS = booleanPreferencesKey("posterShowRatings")
+        /** The movie/series tag in the poster's top-left corner. */
+        val POSTER_SHOW_TYPE = booleanPreferencesKey("posterShowType")
+        /** The quality tag above it ([com.hikari.app.data.TitleQuality]). */
+        val POSTER_SHOW_QUALITY = booleanPreferencesKey("posterShowQuality")
         val POSTER_GLASS = booleanPreferencesKey("posterGlass")
         /** The animated/visual treatment drawn over every poster card — see
          *  [com.hikari.app.ui.PosterEffects]. A SET, so a card can wear several
@@ -692,6 +696,28 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPosterShowRatings(show: Boolean) {
         write("POSTER_SHOW_RATINGS") { it[K.POSTER_SHOW_RATINGS] = show }
+    }
+
+    /** The movie/series tag in a poster's top-left corner. On by default. */
+    fun posterShowTypeFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_TYPE] ?: true }
+
+    suspend fun posterShowType(): Boolean = posterShowTypeFlow().first()
+
+    suspend fun setPosterShowType(show: Boolean) {
+        write("POSTER_SHOW_TYPE") { it[K.POSTER_SHOW_TYPE] = show }
+    }
+
+    /** The quality tag (4K/1080p/…) above the type tag. OFF by default: it can
+     *  only be drawn for titles Hikari has actually seen the quality of, so it
+     *  starts absent and is switched on deliberately. */
+    fun posterShowQualityFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_QUALITY] ?: false }
+
+    suspend fun posterShowQuality(): Boolean = posterShowQualityFlow().first()
+
+    suspend fun setPosterShowQuality(show: Boolean) {
+        write("POSTER_SHOW_QUALITY") { it[K.POSTER_SHOW_QUALITY] = show }
     }
 
     /** The glass hairline + soft sheen over every poster. */

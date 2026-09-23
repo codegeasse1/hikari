@@ -38,6 +38,14 @@ object WatchStats {
         val seconds: Long = 0L,
         val videos: Int = 0,
         val chapters: Int = 0,
+        /**
+         * What made up that day, per title — so tapping a square on the heatmap
+         * can say WHAT was watched and for how long, not just "2m watched".
+         * Keyed like [Snapshot.titles] ([titleKey]). Empty for a day that a
+         * build predating this field logged, which reads as a plain time with no
+         * breakdown rather than as wrong numbers.
+         */
+        val titles: Map<String, TitleTotal> = emptyMap(),
     ) {
         val isEmpty: Boolean get() = seconds <= 0L && videos == 0 && chapters == 0
     }
@@ -48,6 +56,11 @@ object WatchStats {
         val posterUrl: String?,
         val seconds: Long,
         val kind: String,
+        /** Videos started on this title (that day, or ever — the same row shape
+         *  serves the per-day breakdown and the whole log). */
+        val videos: Int = 0,
+        /** Chapters read on it. */
+        val chapters: Int = 0,
     )
 
     /** One day of the heatmap. Only days that have already happened appear. */
@@ -80,6 +93,22 @@ object WatchStats {
             get() = titles.values.filter { it.seconds > 0L }.maxByOrNull { it.seconds }
 
         fun secondsOn(day: String): Long = days[day]?.seconds ?: 0L
+
+        /** Everything logged on [day], longest first — the day panel's own list,
+         *  and what the headline figures drill into once a day is picked. */
+        fun titlesOn(day: String): List<TitleTotal> =
+            days[day]?.titles?.values?.sortedByDescending { it.seconds } ?: emptyList()
+
+        /** The whole log, longest first — what the "Time spent" and "Items
+         *  consumed" sheets list when no particular day is picked. */
+        val allTitles: List<TitleTotal>
+            get() = titles.values.sortedByDescending { it.seconds }
+
+        /** Every day with anything on it, newest first, for "Days active". */
+        val activeDays: List<Pair<String, Day>>
+            get() = days.entries.filter { !it.value.isEmpty }
+                .sortedByDescending { it.key }
+                .map { it.key to it.value }
 
         /**
          * Consecutive active days ending today. A day with nothing logged YET
@@ -285,10 +314,17 @@ object WatchStats {
             root.optJSONObject("days")?.let { obj ->
                 for (k in obj.keys()) {
                     val o = obj.optJSONObject(k) ?: continue
+                    val perTitle = LinkedHashMap<String, TitleTotal>()
+                    o.optJSONObject("tt")?.let { tt ->
+                        for (tk in tt.keys()) {
+                            tt.optJSONObject(tk)?.let { row -> perTitle[tk] = decodeTitle(row) }
+                        }
+                    }
                     days[k] = Day(
                         seconds = o.optLong("s", 0L),
                         videos = o.optInt("v", 0),
                         chapters = o.optInt("c", 0),
+                        titles = perTitle,
                     )
                 }
             }
@@ -296,12 +332,7 @@ object WatchStats {
             root.optJSONObject("titles")?.let { obj ->
                 for (k in obj.keys()) {
                     val o = obj.optJSONObject(k) ?: continue
-                    titles[k] = TitleTotal(
-                        title = o.optString("t"),
-                        posterUrl = o.optString("p").takeIf { it.isNotBlank() },
-                        seconds = o.optLong("s", 0L),
-                        kind = o.optString("k"),
-                    )
+                    titles[k] = decodeTitle(o)
                 }
             }
             Snapshot(days, titles)
@@ -310,28 +341,48 @@ object WatchStats {
 
     fun encode(snapshot: Snapshot): String {
         val root = JSONObject()
-        root.put("v", 1)
+        root.put("v", 2)
         val daysObj = JSONObject()
         for ((k, d) in snapshot.days) {
             if (d.isEmpty) continue
+            val perTitle = JSONObject()
+            for ((tk, t) in d.titles) perTitle.put(tk, encodeTitle(t))
             daysObj.put(k, JSONObject().apply {
                 put("s", d.seconds)
                 put("v", d.videos)
                 put("c", d.chapters)
+                // The day's own breakdown, so the heatmap can answer "what was
+                // that 2m?" without a second document.
+                if (perTitle.length() > 0) put("tt", perTitle)
             })
         }
         root.put("days", daysObj)
         val titlesObj = JSONObject()
         for ((k, t) in snapshot.titles) {
-            titlesObj.put(k, JSONObject().apply {
-                put("t", t.title)
-                if (!t.posterUrl.isNullOrBlank()) put("p", t.posterUrl)
-                put("s", t.seconds)
-                put("k", t.kind)
-            })
+            titlesObj.put(k, encodeTitle(t))
         }
         root.put("titles", titlesObj)
         return root.toString()
+    }
+
+    /** One title row as it is STORED — shared by the all-time map and by each
+     *  day's own breakdown, so the two can never drift apart. */
+    private fun decodeTitle(o: JSONObject): TitleTotal = TitleTotal(
+        title = o.optString("t"),
+        posterUrl = o.optString("p").takeIf { it.isNotBlank() },
+        seconds = o.optLong("s", 0L),
+        kind = o.optString("k"),
+        videos = o.optInt("v", 0),
+        chapters = o.optInt("c", 0),
+    )
+
+    private fun encodeTitle(t: TitleTotal): JSONObject = JSONObject().apply {
+        put("t", t.title)
+        if (!t.posterUrl.isNullOrBlank()) put("p", t.posterUrl)
+        put("s", t.seconds)
+        put("k", t.kind)
+        put("v", t.videos)
+        put("c", t.chapters)
     }
 
     /** The key a title is totalled under, when it has one at all. */
@@ -354,21 +405,36 @@ object WatchStats {
         val days = snapshot.days.toMutableMap()
         val dayKey = dayKey(at)
         val day = days[dayKey] ?: Day()
+        val tk = titleKey(key, title)
+        // The row this event belongs to, merged over whatever that day/whole-log
+        // total already held. Also used for the ONE-TIME events (`addVideo`,
+        // `addChapter`, which carry no seconds of their own): a title row is
+        // recorded for every event, not only for the ones with time on them —
+        // opening a chapter and closing it again is an item consumed, and it used
+        // to leave no row at all, so "Items consumed: 9" sat next to a title list
+        // that could account for none of them.
+        fun bump(prev: TitleTotal?): TitleTotal = TitleTotal(
+            title = title?.takeIf { it.isNotBlank() } ?: prev?.title.orEmpty(),
+            posterUrl = posterUrl?.takeIf { it.isNotBlank() } ?: prev?.posterUrl,
+            seconds = (prev?.seconds ?: 0L) + seconds,
+            kind = kind?.takeIf { it.isNotBlank() } ?: prev?.kind.orEmpty(),
+            videos = (prev?.videos ?: 0) + videos,
+            chapters = (prev?.chapters ?: 0) + chapters,
+        )
+        val dayTitles = if (tk == null) {
+            day.titles
+        } else {
+            day.titles.toMutableMap().apply { this[tk] = bump(day.titles[tk]) }
+        }
         days[dayKey] = day.copy(
             seconds = day.seconds + seconds,
             videos = day.videos + videos,
             chapters = day.chapters + chapters,
+            titles = dayTitles,
         )
         val titles = snapshot.titles.toMutableMap()
-        val tk = titleKey(key, title)
-        if (tk != null && seconds > 0L) {
-            val prev = titles[tk]
-            titles[tk] = TitleTotal(
-                title = title?.takeIf { it.isNotBlank() } ?: prev?.title.orEmpty(),
-                posterUrl = posterUrl?.takeIf { it.isNotBlank() } ?: prev?.posterUrl,
-                seconds = (prev?.seconds ?: 0L) + seconds,
-                kind = kind?.takeIf { it.isNotBlank() } ?: prev?.kind.orEmpty(),
-            )
+        if (tk != null && (seconds > 0L || videos > 0 || chapters > 0)) {
+            titles[tk] = bump(titles[tk])
         }
         return encode(Snapshot(days, titles))
     }

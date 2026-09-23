@@ -65,14 +65,79 @@ the real modifier over a stand-in card with a draggable dot, plus a strength
 slider; the drag is held locally and written when the gesture ends, because a
 DataStore write per frame would fight the finger it is following.
 
+## The two corner tags
+
+The poster's top-**left** corner carries up to two small chips, drawn by
+`rememberPosterBadges(item, style)` and stacked downwards:
+
+| key | chip | default |
+| --- | --- | --- |
+| `POSTER_SHOW_TYPE` | `Movie` / `Series` — which one this title is | **on** |
+| `POSTER_SHOW_QUALITY` | the best quality Hikari has SEEN (4K, 1080p, Blu-ray…) | **off** |
+
+Both are drawn by `PosterTag`: plain white text on a dark translucent pill, which
+is the shape the reference clients draw their own quality chips in (their "4K" /
+"Web" / "Blu-ray" labels are white on a dark rounded chip in the poster's
+top-left corner). They are deliberately NOT `RatingBadge` — that one is
+IMDb-yellow because a score IS an IMDb number, and a yellow "Movie" would read as
+one more rating on a cell that carries both.
+
+Why they live there and not on the top-right: that corner is the score badge's
+(`ratingAlignment`), on every grid, so the two can never land on each other. A
+cell that has already spent the top-LEFT on something of its own (the
+Related/Similar shelves put the score there, because the kebab owns the
+top-right) passes a different `badgeAlignment` instead of stacking them.
+
+**The stack order is fixed, and both ends matter.** `PosterArt` draws the badges
+as a `Column` anchored at `badgeAlignment` with a 3dp gap, so:
+
+- with BOTH switched on, the quality chip is first and the type chip sits
+  directly under it — and it is the same order on every poster, never swapped
+  between two cells;
+- with only ONE switched on, that chip is simply the top of a one-item column,
+  i.e. it sits at the top of the corner, never "down below" where the second one
+  would have been. That was an explicit request when these were added.
+
+`badges` is empty when there is nothing to draw, when both settings are off, or
+when the caller passed no `item` — a cast portrait, a collection's cover tile and
+the detail page's own hero art all draw art for something that is not a catalogue
+item, so they pass nothing and get no chips.
+
+**The quality chip is never a guess.** `data/TitleQuality.kt` only prints a label
+it has actually seen, cheapest source first:
+
+1. the item's own text — extension rows routinely name a title
+   "Movie (2024) 1080p WEB-DL", which is the site's own answer (`fromText`, over
+   a RANKED list of patterns: 4K/2160p, 1080p, 720p, 480p, 360p, HDR, Blu-ray,
+   Web, HD, CAM — a resolution always beats a release tag);
+2. the SERVERS found the last time the title was opened (`bestOf` over the
+   stream names: "HdHub 4K", "NetMirror 720p").
+
+A label is filed under `searchTitle|year`, so the same film seen from two
+extensions shares one badge and two different titles that share a name do not. A
+weaker label never overwrites a stronger one (a bad server day must not demote a
+title), and the small map is persisted in `filesDir/known-quality.json` alongside
+`Ratings`. `TitleQuality.revision` is a `StateFlow<Int>` that `rememberPosterBadges`
+collects, so a grid that is already on screen picks up a new badge the moment a
+search teaches the app the answer.
+
 ## Where the pieces are read
 
-* `PosterArt` — the card. Draws the halo, the treatments, the score badge and the
-  glass hairline in a fixed order (halo/treatment layers BEHIND the art, the
-  light and the scrims OVER it, the ring and the frame last), so two treatments
-  never fight about which is on top.
+* `PosterArt` — the card. Draws the halo, the treatments, the score badge, the
+  type/quality chips and the glass hairline in a fixed order (halo/treatment
+  layers BEHIND the art, the light and the scrims OVER it, the ring and the frame
+  last), so two treatments never fight about which is on top. It takes an
+  optional `item` — that is what the corner chips are derived from, so a grid
+  that forgets to pass it draws no chips.
 * `rememberPosterScore` — warms and prints the score badge (`Ratings`).
-* `RatingBadge` — the IMDb-yellow number on its dark pill (deliberately small).
+* `rememberPosterBadges` — the movie/series + quality chips (see above).
+* `TitleQuality` (`data/TitleQuality.kt`) — the quality labels the chips print,
+  and the `revision` they repaint on.
+* `RatingBadge` — the score: IMDb-yellow text on its dark pill (deliberately
+  small, and yellow because a score IS an IMDb number).
+* `PosterTag` — the corner tags: plain WHITE text on the same dark pill. Do not
+  swap these two: a yellow "Movie" reads as one more rating, and the reference
+  clients draw their own quality chips white-on-dark.
 * `AuraColors` — the aura ring's colour, `THEME` ("Accent") meaning "follow the
   app accent", which is what the ring always drew.
 

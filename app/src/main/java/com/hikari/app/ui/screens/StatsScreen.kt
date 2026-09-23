@@ -22,12 +22,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Spa
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +57,11 @@ import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
+
+/** Which drill-down the headline figures have open (null = none). */
+private const val PANEL_TIME = "time"
+private const val PANEL_ITEMS = "items"
+private const val PANEL_DAYS = "days"
 
 /**
  * The Stats page: what the user watched and read, and for how long.
@@ -82,6 +90,23 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
     // The day the heatmap has highlighted. It follows "today" until the user
     // taps a square, so the caption under the grid is never blank.
     var pickedDay by remember(today) { mutableStateOf(today) }
+    // True once the user has picked a day ON PURPOSE (a square, or a row in the
+    // "Days active" sheet).
+    var dayChosen by remember(today) { mutableStateOf(false) }
+    // Which drill-down panel is open under the headline figures (null = closed).
+    var openPanel by remember { mutableStateOf<String?>(null) }
+    // The day the headline figures and their sheets drill into.
+    //
+    // Today is the DEFAULT selection, and while it is only the default, "today
+    // so far" and "all time" are the same question for a log this young — so the
+    // figures start unscoped. Once a day is picked on purpose it scopes them,
+    // today included: tapping today's square and then "Time spent" means "what
+    // did I watch today", and a list that answered with the whole log instead
+    // would be answering a question nobody asked.
+    val scopeDay = if (dayChosen) pickedDay else null
+    val scopeTitles = remember(snapshot, scopeDay) {
+        if (scopeDay == null) snapshot.allTitles else snapshot.titlesOn(scopeDay)
+    }
 
     val rank = remember(snapshot) { WatchStats.rankFor(snapshot.totalSeconds) }
 
@@ -128,6 +153,12 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
         }
 
         // ---- The three headline figures ----
+        //
+        // Each is a DOOR: tapping one opens the list behind the number — what was
+        // watched and for how long, which items were consumed, which days were
+        // active. Whichever day the heatmap has picked scopes the first two, so
+        // "tap the 19th, then tap Time spent" answers "what did I watch on the
+        // 19th" instead of repeating the all-time figure.
         item {
             Row(
                 Modifier.fillMaxWidth(),
@@ -138,18 +169,62 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                     value = WatchStats.durationLabel(snapshot.totalSeconds),
                     icon = Icons.Filled.Schedule,
                     modifier = Modifier.weight(1f),
+                    onClick = { openPanel = if (openPanel == PANEL_TIME) null else PANEL_TIME },
                 )
                 StatTile(
                     label = tr("Items consumed"),
                     value = snapshot.totalItems.toString(),
                     icon = Icons.Filled.Movie,
                     modifier = Modifier.weight(1f),
+                    onClick = { openPanel = if (openPanel == PANEL_ITEMS) null else PANEL_ITEMS },
                 )
                 StatTile(
                     label = tr("Days active"),
                     value = snapshot.daysActive.toString(),
                     icon = Icons.Filled.CalendarMonth,
                     modifier = Modifier.weight(1f),
+                    onClick = { openPanel = if (openPanel == PANEL_DAYS) null else PANEL_DAYS },
+                )
+            }
+        }
+
+        // The list behind the tapped figure, in place (no second screen, and the
+        // tiles stay on screen so the choice can be changed without going back).
+        val open = openPanel
+        if (open != null) {
+            item {
+                PanelCard(
+                    title = when (open) {
+                        PANEL_TIME -> tr("Time spent")
+                        PANEL_ITEMS -> tr("Items consumed")
+                        else -> tr("Days active")
+                    },
+                    scopeDay = if (open == PANEL_DAYS) null else scopeDay,
+                    onClose = { openPanel = null },
+                    onScopeAllTime = {
+                        pickedDay = today
+                        dayChosen = false
+                    },
+                    rows = when (open) {
+                        PANEL_TIME -> scopeTitles
+                        PANEL_ITEMS -> scopeTitles.sortedByDescending { it.videos + it.chapters }
+                        else -> emptyList()
+                    },
+                    dayRows = if (open == PANEL_DAYS) snapshot.activeDays else emptyList(),
+                    onPickDay = { day ->
+                        pickedDay = day
+                        dayChosen = true
+                        // Tapping a day in the "Days active" list asks the
+                        // question the list implies — "what was that day?" — so
+                        // the sheet turns into that day's own item list instead
+                        // of leaving the reader to find the right tile again.
+                        if (open == PANEL_DAYS) openPanel = PANEL_ITEMS
+                    },
+                    emptyText = if (scopeDay != null) {
+                        tr("Nothing was watched or read on this day.")
+                    } else {
+                        tr("Nothing logged yet.")
+                    },
                 )
             }
         }
@@ -404,7 +479,10 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                                                             RoundedCornerShape(3.dp),
                                                         ) else Modifier
                                                     )
-                                                    .clickable { pickedDay = cell.dayKey },
+                                                    .clickable {
+                                                        pickedDay = cell.dayKey
+                                                        dayChosen = true
+                                                    },
                                             )
                                         }
                                     }
@@ -413,20 +491,32 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                         }
                     }
                     Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                WatchStats.prettyDay(pickedDay),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            val secs = snapshot.secondsOn(pickedDay)
-                            Text(
-                                if (secs <= 0L) tr("No activity")
-                                else WatchStats.durationLabel(secs) + " " + tr("watched"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                    // What the picked square actually contains: the date, the
+                    // day's own figures, and the titles that made them up. Every
+                    // day answers for itself — the whole page used to read out the
+                    // same number whichever day was tapped, because a day's
+                    // bucket held a time and nothing else.
+                    val dayTitles = remember(snapshot, pickedDay) { snapshot.titlesOn(pickedDay) }
+                    Text(
+                        WatchStats.prettyDay(pickedDay),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        daySummary(snapshot.days[pickedDay]),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (dayTitles.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        dayTitles.take(3).forEach { t -> StatsTitleRow(t) }
+                        if (dayTitles.size > 3) {
+                            TextButton(onClick = { openPanel = PANEL_ITEMS }) {
+                                Text(
+                                    tr("See all %s items")
+                                        .replace("%s", dayTitles.size.toString())
+                                )
+                            }
                         }
                     }
                 }
@@ -459,8 +549,11 @@ private fun StatTile(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    /** Opens the list behind this figure. A tile with no list (the averages and
+     *  the streak) passes nothing and stays a plain card. */
+    onClick: (() -> Unit)? = null,
 ) {
-    GlassCard(modifier) {
+    GlassCard(modifier = modifier, onClick = onClick) {
         Column(Modifier.padding(horizontal = 11.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -522,4 +615,201 @@ private fun monthLabelOf(weeks: List<List<WatchStats.HeatCell?>>): String {
     val a = label(first)
     val b = label(last)
     return if (a == b) a else "$a – $b"
+}
+
+/** One line under a picked day: what that day added up to. A day with nothing
+ *  on it says so instead of a bare "0m". */
+@Composable
+private fun daySummary(day: WatchStats.Day?): String {
+    if (day == null || day.isEmpty) return tr("No activity")
+    val parts = ArrayList<String>(3)
+    if (day.seconds > 0L) parts += WatchStats.durationLabel(day.seconds) + " " + tr("watched")
+    if (day.videos > 0) {
+        parts += day.videos.toString() + " " + tr(if (day.videos == 1) "Episode" else "Episodes")
+    }
+    if (day.chapters > 0) {
+        parts += day.chapters.toString() + " " + tr(if (day.chapters == 1) "Chapter" else "Chapters")
+    }
+    return parts.joinToString(" · ")
+}
+
+/** "Manga" / "Series" / "Movie" for a stored [WatchStats.TitleTotal.kind]. */
+@Composable
+private fun kindLabel(kind: String): String = when (kind) {
+    WatchStats.KIND_MANGA -> tr("Manga")
+    WatchStats.KIND_SERIES -> tr("Series")
+    else -> tr("Movie")
+}
+
+/** What was consumed of a title — "3 Episodes", "12 Chapters", or both when a
+ *  log holds the two halves of the same name. Falls back to "watched" when the
+ *  row only knows a duration (a build predating the per-event rows). */
+@Composable
+private fun rowDetail(t: WatchStats.TitleTotal): String {
+    val parts = ArrayList<String>(2)
+    if (t.videos > 0) {
+        parts += t.videos.toString() + " " + tr(if (t.videos == 1) "Episode" else "Episodes")
+    }
+    if (t.chapters > 0) {
+        parts += t.chapters.toString() + " " + tr(if (t.chapters == 1) "Chapter" else "Chapters")
+    }
+    if (parts.isEmpty()) parts += tr("watched")
+    return parts.joinToString(" · ")
+}
+
+/** One title inside a drill-down: poster, name, what it is and what was taken
+ *  from it, and the time it accounts for. */
+@Composable
+private fun StatsTitleRow(t: WatchStats.TitleTotal) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (!t.posterUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = t.posterUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .width(34.dp)
+                    .height(51.dp)
+                    .clip(RoundedCornerShape(6.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                t.title.ifBlank { tr("Untitled") },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                kindLabel(t.kind) + " · " + rowDetail(t),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (t.seconds > 0L) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                WatchStats.durationLabel(t.seconds),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+/**
+ * The sheet that opens under the headline figures when one of them is tapped:
+ * every title that made the figure up, or every active day, with the day the
+ * heatmap has picked scoping the first two. It renders IN the page rather than
+ * on a second screen, so the figure that opened it stays on screen (tapping it
+ * again closes the sheet) and a day can be picked from inside it.
+ */
+@Composable
+private fun PanelCard(
+    title: String,
+    scopeDay: String?,
+    onClose: () -> Unit,
+    onScopeAllTime: () -> Unit,
+    rows: List<WatchStats.TitleTotal>,
+    dayRows: List<Pair<String, WatchStats.Day>>,
+    onPickDay: (String) -> Unit,
+    emptyText: String,
+) {
+    GlassCard(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.BarChart,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(9.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (scopeDay == null) tr("All time") else WatchStats.prettyDay(scopeDay),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // Only offered when a day is actually scoping the sheet: from
+                // "all time" there is nothing to go back to.
+                if (scopeDay != null) {
+                    TextButton(onClick = onScopeAllTime) { Text(tr("All time")) }
+                }
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = tr("Close"),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+            Spacer(Modifier.height(6.dp))
+            if (dayRows.isNotEmpty()) {
+                dayRows.forEach { (key, day) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onPickDay(key) }
+                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                WatchStats.prettyDay(key),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                daySummary(day),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            WatchStats.durationLabel(day.seconds),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            } else if (rows.isNotEmpty()) {
+                rows.forEach { t -> StatsTitleRow(t) }
+            } else {
+                Text(
+                    emptyText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                )
+            }
+        }
+    }
 }

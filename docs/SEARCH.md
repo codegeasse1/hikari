@@ -234,12 +234,37 @@ stopping the tail of the provider queue from ever answering:
   polyfill/call bytecode). Bytecode is portable across engines of the same
   QuickJS build, and a compile/run failure falls back to evaluating the source,
   so a compiler hiccup can only cost speed, never a provider.
-- **The caps are nuvio's own numbers**: `MAX_CONCURRENT = 10`
-  (`PluginRuntime.MAX_CONCURRENT_PLUGINS`) and `CALL_TIMEOUT_MS = 60_000`
-  (`PLUGIN_TIMEOUT_MS`). At 6 engines and 45 s a provider, most of a 20+
-  provider install was still queued when the per-provider budget expired, and a
-  timeout is not an answer — so those providers were "cut off", re-asked by the
-  background sweep, and cut off again.
+- **The caps are nuvio's own numbers**: `CALL_TIMEOUT_MS = 60_000`
+  (`PLUGIN_TIMEOUT_MS`), and `MAX_CONCURRENT = 12` rather than nuvio's 10 — a
+  typical curated install is a dozen engines (the sources sheet reports it as
+  "Nuvio 12"), and with only 10 slots the last two QUEUE for a slot instead of
+  running, so on a phone already running the 400-repo cross-extension sweep their
+  whole budget can be spent waiting. nuvio never has this problem because it runs
+  nothing but the engines; two extra native VMs is a rounding error next to the
+  engines that then answer in the same window. (At 6 engines and 45 s a provider
+  it was far worse — most of a 20+ provider install was still queued when the
+  budget expired, and a timeout is not an answer, so those providers were "cut
+  off", re-asked by the background sweep, and cut off again.)
+- **The PASS must outlast the engines.** `ContentRepository`'s primary pass ends
+  at a deadline, and it used to be 55 s — shorter than the 60 s a nuvio engine is
+  allowed. So the tail of the engine set was cancelled mid-run, and because the
+  pass's cancellation kills the engine outright, the background sweep had to
+  re-ask it from scratch: a second VM boot plus a second round of network work for
+  the same answer. When the pass has nuvio targets the ceiling is now the longer
+  of `NetTuning.timeout(70_000L)` and 75 s; otherwise it stays at 55 s. The
+  deadline only binds while engines are still working, and results stream in as
+  they land, so waiting is strictly cheaper than redoing.
+- **An anime title must be asked for as a SERIES.** Every nuvio provider we ship
+  branches on `mediaType === "tv" ? "tv" : "movie"` (or builds
+  `${mediaType}/${tmdbId}` URL segments with it) — **no provider understands
+  "anime"**. So an anime resolved to the hint `anime` was looked up as a MOVIE:
+  `/movie/<tvId>` coming back 404 an empty list, i.e. a whole category of titles
+  with no servers, and the sweep re-asking the same wrong question. `getStreams`
+  now normalises the resolver's hint before any engine sees it —
+  `if (resolved.mediaType.equals("movie", true)) "movie" else "tv"` — so
+  series (including anime and every other `tv`-ish kind) are asked for as "tv"
+  and only real films as "movie". Do not add a third value here without
+  checking all 29 bundled providers; the contract is two-valued.
 - **The engines that produced nothing are now visible.** `nuvioReportLines` in
   `DetailScreen.kt` prints one line per installed nuvio engine in the sources
   sheet (both under the list and in the "no playable sources" state): what it

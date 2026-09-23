@@ -4721,6 +4721,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             style = style,
             rating = item.rating,
             imdb = badge,
+            item = item,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

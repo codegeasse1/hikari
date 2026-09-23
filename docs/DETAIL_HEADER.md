@@ -27,8 +27,9 @@ does (their screenshots are the spec):
 
   ```
   progress   = (art scrolled away) / (art height)        // 0 at the top, 1 when gone
+  size       = userLogoPercent / 100                     // clamped to 0.5…1.6
   logo.width = screenWidth * lerp(0.62, 0.34, progress)  // shrinks as it rises
-                          * size                         // the user's own %, see below
+                          * size                         // the user's %, applied at BOTH ends
   logo.top   = lerp(artBottom - logoHeight - 10dp,       // on the art...
                     statusBar + 5dp,                     // ...then pinned at the top
                     progress)
@@ -38,6 +39,10 @@ does (their screenshots are the spec):
   the style: one of the shapes wraps its content, and the wordmark's travel is
   measured against the real thing. The wordmark's own aspect ratio comes from the
   loaded image (`onSuccess`), so the 3:1 stand-in is used on the first frame only.
+  The wordmark's height at the pinned end (`pinnedLogoDp`) is what the page's
+  first content item reserves as top padding, multiplied by `progress` — drawn
+  OVER the list, a big pinned wordmark would otherwise sit on the year, the
+  genres and the Play button.
 
 ## Rules to keep
 
@@ -46,13 +51,20 @@ does (their screenshots are the spec):
 * **The height is measured, the position is interpolated.** Positioning the
   wordmark from a hard-coded fraction of the screen instead of the measured art
   height is what breaks on a different header style or a different aspect ratio.
-* **The user's logo size is a MULTIPLIER, clamped at both ends.**
+* **The user's logo size is a MULTIPLIER, applied at BOTH ends and clamped.**
   `AppStore.detailLogoSizeFlow()` (Settings → App Layout → Details header →
   "Title logo size", `DEFAULT_DETAIL_LOGO_SIZE` = 100%, 50…160%, one percent per
-  step) multiplies that width fraction — the logo's height follows from the art's
-  aspect ratio, so this is "bigger wordmark", never a stretch. The result is
-  clamped to `0.2f…1f` before it reaches `fillMaxWidth`, because a fraction above
-  1 would draw the art wider than the screen it is fitted into.
+  step) multiplies the width fraction — the logo's height follows from the art's
+  aspect ratio, so this is "bigger wordmark", never a stretch. **It multiplies
+  the pinned end too, by the same factor**: 130% is 1.3x the usual size over the
+  header image *and* 1.3x the usual size once the wordmark is pinned and acting
+  as the page's title. Only the first half used to obey — the pinned fraction was
+  a constant — which read as the setting doing nothing the moment you scrolled
+  (`0.34f` was hard-coded into the pinned width). Do not put a curve here: it has
+  to agree with the number on the slider. The result is clamped to `0.2f…1f`
+  before it reaches `fillMaxWidth`, because a fraction above 1 would draw the art
+  wider than the screen it is fitted into (the pinned one is clamped to
+  `0.17f…0.72f`).
 * **A missing logo is not a failure.** A blank logo leaves the page exactly as it
   was before this feature (text title, same spacing), and the text title's *layout*
   (the `if (heroLogo.isNullOrBlank())` guard) is the only place the two cases

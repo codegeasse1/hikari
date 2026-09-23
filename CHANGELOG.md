@@ -1,3 +1,69 @@
+## 0.10.22
+
+**Episodes now run newest-first with one tap, posters say whether a title is a
+film or a show, the pinned title logo finally obeys its own size setting, and
+Stats answers for the day you tapped.** The two behind-the-scenes fixes are the
+ones you will feel: nuvio engines were being asked for anime titles as *movies*,
+so a whole category of titles came back empty, and the search budget cut the
+engine pass off at 55s while nuvio's own plugins are allowed 60.
+
+### Added
+
+- **Episode order arrow** (Detail page → beside "Episodes (N)"). One tap flips
+  the list to newest-first and the arrow flips to match; tap again and it is
+  oldest-first, episode 1 at the top, the way it always was. It applies *before*
+  paging, so on a 600-episode donghua "newest first" means the newest 30 make up
+  the first page. The season picker and the page picker both follow the order,
+  and the choice survives a rotation.
+- **A film / series tag on posters** (Settings → App Layout → Poster styling →
+  "Movie / series tag on posters", on by default). A small "Movie" or "Series"
+  chip in the poster's top-left corner, so a grid tells a film from a show
+  without opening it — the same white-on-dark pill the quality chip uses, so the
+  two stack cleanly when both are on.
+- **A quality tag on posters** (same card → "Quality tag on posters", **off by
+  default**). Prints the best quality Hikari actually knows a title comes in —
+  read from the title's own name ("… 1080p WEB-DL") or from the servers found the
+  last time you opened it. A title Hikari has never seen shows nothing rather
+  than a guess.
+- **Every figure on Stats is now a door.** Tap **Time spent** for what was
+  watched and for how long, **Items consumed** for every item that made the
+  count up, **Days active** for the day-by-day list — and tap any of those days
+  to open it. Whichever day the heatmap has picked scopes the first two figures,
+  so tapping the 19th and then "Time spent" answers "what did I watch on the
+  19th" instead of repeating the all-time total. The sheet opens in the page,
+  and its own "All time" action puts the whole log back.
+
+### Fixed
+
+- **Anime titles now reach the nuvio engines as series.** Every nuvio provider
+  we ship does `mediaType === "tv" ? "tv" : "movie"` — none of them understands
+  "anime" — so an anime asked for as `anime` was looked up as a *movie* and came
+  back with an empty list (or a 404). Anime items are now asked for as "tv", and
+  films as "movie", which is what the providers expect.
+- **The nuvio engine pass is no longer cut off at 55 seconds.** The providers get
+  60 seconds each (nuvio's own number), but the pass they run inside gave up at
+  55 — so the tail of a full engine set was cancelled mid-run and had to be
+  re-asked from scratch in the background sweep, paying a second engine boot plus
+  a second round of network work for the same answer. A pass that is asking nuvio
+  engines now gets the longer ceiling, and twelve engines run at once rather than
+  ten, so a twelve-engine install stops queueing its last two behind the cap.
+- **The title logo obeys its size setting once it is pinned.** Raising "Title
+  logo size" used to enlarge the wordmark only while the header art was on
+  screen; the moment it scrolled up the title came back at the same small size,
+  which read as the setting doing nothing. The setting is now a plain size
+  multiplier applied at *both* ends — 130% is 1.3x the usual size over the header
+  image and 1.3x the usual size as the pinned title. At the default 100% nothing
+  changes for anyone who never touched the slider.
+- **Stats counts the day you actually tapped.** The heatmap read out the same
+  time and the same numbers whichever square was picked, because a day's bucket
+  held a time and nothing else. Each day now carries its own per-title
+  breakdown, so picking the 19th shows the 19th's own time, episodes and
+  chapters, and the titles that made them up.
+- **"Items consumed" can now list what it counted.** Opening a chapter and
+  closing it again is an item consumed, but it used to leave no title row at
+  all, so a count of 9 sat next to a list that could account for none of them.
+  Every event now records its title.
+
 ## 0.10.21
 
 **Nuvio engines actually finish, so the server list stops at 2-3, the reader's
@@ -1510,7 +1576,7 @@ Fixed:
 ## 0.5.16
 
 Fixed:
-- The crash some people hit while browsing ("Key \"…\" was already used"). Compose refuses to draw two items in the same list that share a key — it throws, and the screen goes down with it. Every key in Hikari is built out of data an extension handed us, and extensions repeat themselves: the same title twice in a scraped page, two catalogs sharing an id, the same repo installed twice, the same source added to a folder twice. Those repeats are now handled in Home, a catalog's "Show all" grid, search results, a detail page's shelf, the Library grid, a folder's catalogs and the extension and picker lists — a repeat in the data costs the item its own slot at worst, and can no longer take a screen (or the app) down with it.
+- The crash some people hit while browsing ("Key "…" was already used"). Compose refuses to draw two items in the same list that share a key — it throws, and the screen goes down with it. Every key in Hikari is built out of data an extension handed us, and extensions repeat themselves: the same title twice in a scraped page, two catalogs sharing an id, the same repo installed twice, the same source added to a folder twice. Those repeats are now handled in Home, a catalog's "Show all" grid, search results, a detail page's shelf, the Library grid, a folder's catalogs and the extension and picker lists — a repeat in the data costs the item its own slot at worst, and can no longer take a screen (or the app) down with it.
 - The same repo installed twice is only loaded once. The provider list could hold duplicates, so every catalog of that repo was fetched twice and produced two rows with the same key — which was one of the ways the crash above was reached.
 
 ## 0.5.15

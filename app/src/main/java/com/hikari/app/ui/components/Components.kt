@@ -323,6 +323,7 @@ fun PosterCard(
             style = style,
             rating = item.rating,
             imdb = badge,
+            item = item,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f),

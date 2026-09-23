@@ -2,6 +2,7 @@ package com.hikari.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -11,6 +12,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -192,6 +194,12 @@ data class PosterStyle(
     val showTitles: Boolean = true,
     /** Draw the score badge on the poster (only where a score is known). */
     val showRatings: Boolean = false,
+    /** Draw the movie/series tag on the poster. On by default: whether a tile is
+     *  a film or a show is the one thing a poster cannot say by itself. */
+    val showType: Boolean = true,
+    /** Draw the quality tag on the poster ([com.hikari.app.data.TitleQuality] —
+     *  only titles whose quality the app has actually seen get one). */
+    val showQuality: Boolean = false,
     /** The glass hairline + frosted backing every card in the app shares. */
     val glass: Boolean = true,
     /** The signature looks drawn over the card — a SET of [PosterEffects], so a
@@ -224,6 +232,8 @@ fun rememberPosterStyle(): PosterStyle {
     val cornerFlow = remember { app.store.posterCornerFlow() }
     val titlesFlow = remember { app.store.posterShowTitlesFlow() }
     val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
+    val typeFlow = remember { app.store.posterShowTypeFlow() }
+    val qualityFlow = remember { app.store.posterShowQualityFlow() }
     val glassFlow = remember { app.store.posterGlassFlow() }
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val auraFlow = remember { app.store.posterAuraColorFlow() }
@@ -239,6 +249,8 @@ fun rememberPosterStyle(): PosterStyle {
     val corner by cornerFlow.collectAsState(initial = 14)
     val titles by titlesFlow.collectAsState(initial = true)
     val ratings by ratingsFlow.collectAsState(initial = false)
+    val showType by typeFlow.collectAsState(initial = true)
+    val showQuality by qualityFlow.collectAsState(initial = false)
     val glass by glassFlow.collectAsState(initial = true)
     val effects by effectsFlow.collectAsState(initial = emptySet())
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
@@ -249,6 +261,8 @@ fun rememberPosterStyle(): PosterStyle {
         corner = corner.coerceIn(0, 28),
         showTitles = titles,
         showRatings = ratings,
+        showType = showType,
+        showQuality = showQuality,
         glass = glass,
         effects = if (perf) emptySet() else PosterEffects.normalizeSet(effects),
         auraColor = AuraColors.normalize(auraColor),
@@ -300,6 +314,52 @@ fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
     return Ratings.cachedBadge(item)
         ?: item.rating?.takeIf { it > 0.0 }
             ?.let { ((it * 10f).roundToInt() / 10f).toString() }
+}
+
+/**
+ * The tags a poster draws in its top-left corner, in the order they are stacked:
+ * first the one that is switched on alone, then the second directly under it.
+ *
+ *  - the QUALITY tag ([com.hikari.app.data.TitleQuality]) — the best quality the
+ *    app has actually seen for this title, never a guess;
+ *  - the TYPE tag — "MOVIE" or "SERIES", so a grid tells a film from a show
+ *    without opening it.
+ *
+ * The order is fixed rather than "quality first when it exists": with both
+ * switched on the pair must not swap places between two posters, and with only
+ * one switched on it must simply sit at the top (the reported "when only one is
+ * on it shows above, not down below") — which is exactly what a Column anchored
+ * at the top-left does, whatever it is handed.
+ */
+@Composable
+fun rememberPosterBadges(item: MediaItem?, style: PosterStyle): List<String> {
+    if (item == null || (!style.showType && !style.showQuality)) return emptyList()
+    // Re-reads itself when a new quality lands, so a grid that is already on
+    // screen picks up the badge the moment a search teaches the app the answer
+    // (see [com.hikari.app.data.TitleQuality.revision]).
+    val revision by com.hikari.app.data.TitleQuality.revision.collectAsState()
+    // The labels are resolved OUT here: `tr` is a composable, so it cannot be
+    // called from inside a `remember` lambda. They are also the two things that
+    // change when the app's language does, so the value below is keyed on them.
+    // NOT upper-cased: the reference chips read "Web" / "Blu-ray" in title case,
+    // and shouting "SERIES" next to a quiet "1080p" would be two different
+    // designs in one corner.
+    val movieLabel = com.hikari.app.i18n.tr("Movie")
+    val seriesLabel = com.hikari.app.i18n.tr("Series")
+    return remember(item, style.showType, style.showQuality, revision, movieLabel, seriesLabel) {
+        buildList {
+            if (style.showQuality) {
+                com.hikari.app.data.TitleQuality.forItem(item)?.let { add(it) }
+            }
+            if (style.showType) {
+                when (item.type) {
+                    com.hikari.app.data.MediaType.MOVIE -> add(movieLabel)
+                    com.hikari.app.data.MediaType.SERIES -> add(seriesLabel)
+                    else -> Unit
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -395,13 +455,27 @@ fun PosterArt(
      *  puts its own buttons in the top-right (Library's favourites) needs the
      *  badge somewhere else rather than on top of them. */
     ratingAlignment: Alignment = Alignment.TopEnd,
+    /** Corner the type/quality tag stack hangs from. The top-LEFT default is the
+     *  free corner on every standard grid (the score badge has the top-right);
+     *  a cell that already spends the top-left on its own badge — the
+     *  Related/Similar shelves put the score there, because the kebab owns the
+     *  top-right — passes another corner instead of stacking the two on top of
+     *  each other. */
+    badgeAlignment: Alignment = Alignment.TopStart,
     /** Where the artwork itself sits inside its frame. [Alignment.TopCenter] is
      *  what the personal-catalog cover tiles ask for: a phone photo used as a
      *  poster keeps its top rather than being cut in the middle. */
     imageAlignment: Alignment = Alignment.Center,
+    /** The catalogue item this art belongs to, when the caller has one: the
+     *  movie/series tag and the quality tag are derived from it (see
+     *  [rememberPosterBadges]). Optional, so a card that draws art for something
+     *  that is not a catalogue item (a cast portrait, a collection tile) simply
+     *  passes nothing and gets no tags. */
+    item: MediaItem? = null,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val shape = style.shape()
+    val badges = rememberPosterBadges(item, style)
     val glass = rememberGlassTokens()
     val effects = PosterEffects.normalizeSet(style.effects)
     val tilted = PosterEffects.TILT in effects
@@ -680,6 +754,22 @@ fun PosterArt(
                         .padding(5.dp),
                 )
             }
+            // The type/quality tags stack down from the top-LEFT corner — the
+            // score badge's own corner is the top-right on every grid, so the
+            // two can never land on each other. One tag sits at the top of the
+            // stack, two sit one above the other with a hairline gap.
+            if (badges.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .align(badgeAlignment)
+                        .padding(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    badges.forEach { label ->
+                        PosterTag(text = label)
+                    }
+                }
+            }
             overlay()
         }
         if (framed) {
@@ -706,6 +796,37 @@ fun PosterArt(
                     )
             )
         }
+    }
+}
+
+/**
+ * A poster's corner tag: the quality ("4K", "1080p", "Blu-ray") and the type
+ * ("Movie", "Series").
+ *
+ * Deliberately NOT [RatingBadge]: that one is IMDb-yellow because a score IS an
+ * IMDb number, and a yellow "Movie" would read as one more rating. The tags are
+ * plain white on the same dark translucent pill, which is the shape the
+ * reference clients draw their own quality chips in (their "4K" / "Web" /
+ * "Blu-ray" labels are white on a dark rounded chip in the poster's top-left
+ * corner), so the two kinds of badge stay distinguishable at a glance on a cell
+ * that carries both.
+ */
+@Composable
+fun PosterTag(text: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color.Black.copy(alpha = 0.66f))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            maxLines = 1,
+        )
     }
 }
 

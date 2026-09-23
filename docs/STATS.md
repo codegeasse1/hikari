@@ -23,17 +23,35 @@ preference key `watchStats`:
 
 ```json
 {
-  "v": 1,
-  "days":   { "2026-09-22": { "s": 720, "v": 1, "c": 0 } },
-  "titles": { "<key>":       { "t": "Chainsaw Man", "p": "<poster>", "s": 600, "k": "manga" } }
+  "v": 2,
+  "days": {
+    "2026-09-22": {
+      "s": 720, "v": 1, "c": 0,
+      "tt": { "<key>": { "t": "Chainsaw Man", "p": "<poster>", "s": 720, "k": "manga", "v": 0, "c": 1 } }
+    }
+  },
+  "titles": { "<key>": { "t": "Chainsaw Man", "p": "<poster>", "s": 600, "k": "manga", "v": 0, "c": 1 } }
 }
 ```
 
 - `days` is bucketed by the **device's local calendar day** ("days active", the
   streak and the heatmap are about the user's evenings, not about UTC midnight).
 - `s` = seconds, `v` = videos started, `c` = chapters opened.
+- `tt` is that DAY's own per-title breakdown — the same row shape as the
+  all-time `titles` map, written by the same `bump()` merge. It exists so the
+  heatmap can answer "what was that 2m?" for the day that was tapped: without it
+  a day's bucket held a time and nothing else, so every square read out the same
+  figures. Decoded into `WatchStats.Day.titles`, read back through
+  `Snapshot.titlesOn(day)`. A document from a build that predates the field
+  simply has no `tt` and reads as a plain time, never as wrong numbers.
 - `titles` totals the same seconds per title, which is what the favourite-title
   card reads; `k` is the kind (`movie` / `series` / `manga`).
+- **A row is recorded for every event, not only the ones with time on them.**
+  `withTotals` used to write a title row only when `seconds > 0`, so
+  `addVideo`/`addChapter` (which carry no seconds) left no row at all — which is
+  how "Items consumed: 9" could sit next to a list that accounted for none of
+  them. Opening a chapter and closing it again is an item consumed, and it is now
+  listed as one.
 
 **Who writes it**
 
@@ -79,7 +97,27 @@ carries it with no change (see docs/RELEASING.md's backup note).
 ## The page
 
 - Three tiles: **Time spent**, **Items consumed** (videos + chapters), **Days
-  active**.
+  active**. **Each one is a door**: tapping it opens the list behind the number
+  in place, under the tiles ([`PanelCard`]):
+  - **Time spent** / **Items consumed** → every title in scope, longest first
+    (Items sorts by episodes + chapters), each row showing its poster, its kind,
+    what was taken from it and its time. Only the titles that actually
+    contributed are listed, so the rows always add up to the figure.
+  - **Days active** → every day with something on it, newest first, each row
+    showing that day's own summary; tapping a row picks that day AND turns the
+    sheet into that day's own item list — the question the day list implies.
+  - Tapping the open tile again closes the sheet; the sheet's own header has a
+    close button and, when a day is scoping it, an **All time** action.
+- Which day scopes the first two figures — and the row lists inside those sheets
+  — is whichever day the heatmap has PICKED (a square, or a row in the "Days
+  active" sheet). The page starts UNscoped: today is only the *default*
+  selection, and while it is the default, "today so far" and "all time" are the
+  same question for a log this young. `dayChosen` is what tells those two apart,
+  so once a day is picked on purpose it scopes the figures — today included,
+  because "what did I watch today" is a real question. The sheet's own **All
+  time** action clears the pick (`pickedDay` returns to today, so the heatmap
+  caption is never blank). That is the whole "tap the 19th, then tap Time spent"
+  flow.
 - **Rank card**: the tier name, "Otaku Rank Level", an XP pill, and level
   progress. `WatchStats.rankFor` walks the ladder in `TIERS` (1h → 1000h) and
   `xp = totalSeconds / 360` — 1 XP per six minutes, so 12 minutes is exactly the
@@ -89,8 +127,11 @@ carries it with no change (see docs/RELEASING.md's backup note).
   (at 09:00 nobody has watched anything today).
 - **Favourite title**: the title with the most seconds, with its poster and kind.
 - **Activity heatmap**: twelve Sunday-first weeks, darker = more time, tap a
-  square for that day's total. Future days in the current week are blank rather
-  than "no activity".
+  square to pick that day. Future days in the current week are blank rather
+  than "no activity". Under the grid, the picked day's own block: its date, its
+  own time/episodes/chapters (`daySummary`), its top three titles
+  (`StatsTitleRow`) and a "See all N items" shortcut into the Items sheet — so a
+  square answers for itself instead of repeating the page totals.
 - **Reset** (in the header, only when there is something to reset) clears the
   document (`AppStore.clearWatchStats`).
 

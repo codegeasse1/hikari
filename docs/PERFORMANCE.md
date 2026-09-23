@@ -69,6 +69,18 @@ one of these paths, keep the rule.
   previous screen rebuilt — the reported "it stays laggy for a few seconds after
   I come back from the player". The sweep's unasked providers stay on the
   `PendingWork` ledger and are re-asked when the title plays again.
+* **`NuvioRuntime.MAX_CONCURRENT` is 12 on purpose — do not "tune it down".** Each
+  nuvio engine is a native QuickJS VM plus its own context, so the count IS
+  bounded, but the bound is set by how many engines a real install has, not by
+  how many a device "feels like" running: a curated install is about a dozen, and
+  a cap below that makes the last providers QUEUE for a slot rather than run, so
+  their whole 60 s budget is spent waiting and their servers never reach the
+  player (that was the "only 2-3 plugins answer" report). Two extra VMs is a
+  rounding error next to the engines that then answer inside the same window.
+  The pass's deadline is raised to match whenever nuvio targets are present (see
+  docs/SEARCH.md §7) — a pass that gives up before an engine's own timeout
+  cancels it mid-run and pays for a second boot plus a second round of network
+  work in the sweep, which is strictly more expensive than waiting.
 * `PosterLoader.pending` holds one state per poster, capped at `PENDING_MAX`; the
   still cache is capped at `STILLS_MAX`.
 

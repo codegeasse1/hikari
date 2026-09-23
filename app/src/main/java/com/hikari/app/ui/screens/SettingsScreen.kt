@@ -1920,6 +1920,10 @@ private fun PosterStyleCard(app: HikariApp) {
     val titles by titlesFlow.collectAsState(initial = true)
     val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
     val ratings by ratingsFlow.collectAsState(initial = false)
+    val typeBadgeFlow = remember { app.store.posterShowTypeFlow() }
+    val typeBadge by typeBadgeFlow.collectAsState(initial = true)
+    val qualityBadgeFlow = remember { app.store.posterShowQualityFlow() }
+    val qualityBadge by qualityBadgeFlow.collectAsState(initial = false)
     val glassFlow = remember { app.store.posterGlassFlow() }
     val glass by glassFlow.collectAsState(initial = true)
     val effectsFlow = remember { app.store.posterEffectsFlow() }
@@ -2044,6 +2048,25 @@ private fun PosterStyleCard(app: HikariApp) {
             label = tr("Score badges on posters"),
             checked = ratings,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowRatings(on) } } },
+        )
+        // The two tags in the poster's top-left corner. They stack downwards from
+        // that corner, so switching both on shows one above the other and
+        // switching one on shows it at the top — never "one of them down below"
+        // on some posters and at the top on others.
+        SettingsToggle(
+            label = tr("Movie / series tag on posters"),
+            supporting = tr("A small FILM or SERIES tag in the poster's top-left corner"),
+            checked = typeBadge,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowType(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Quality tag on posters"),
+            supporting = tr(
+                "The best quality Hikari knows for a title — from its name, or from the " +
+                    "servers found when you last opened it. Titles it has never seen show nothing."
+            ),
+            checked = qualityBadge,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowQuality(on) } } },
         )
         SettingsToggle(
             label = tr("Glass trim"),
@@ -2683,7 +2706,7 @@ private fun DetailHeaderCard(app: HikariApp) {
             },
         )
         Text(
-            tr("How big the title artwork is drawn over the header image"),
+            tr("How big the title artwork is drawn — over the header image, and as the pinned title once it scrolls up"),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

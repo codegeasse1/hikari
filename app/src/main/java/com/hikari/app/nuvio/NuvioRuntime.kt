@@ -53,12 +53,20 @@ object NuvioRuntime {
     // plus its own JS context, so the count is bounded and the extra providers
     // queue on the semaphore instead of spawning 20+ VMs at once.
     //
-    // This is nuvio's own limit (PluginRuntime.MAX_CONCURRENT_PLUGINS = 10).
-    // It used to be 6, which — with a 20+ provider install — meant the tail of
+    // nuvio's own limit is 10 (PluginRuntime.MAX_CONCURRENT_PLUGINS), and it
+    // used to be 6 here — which, with a 20+ provider install, meant the tail of
     // the queue never got an engine before the search budget ran out, so only
     // the first few providers' servers ever reached the player (the reported
     // "in nuvio all the plugins show servers, in hikari only 2-3").
-    private const val MAX_CONCURRENT = 10
+    //
+    // 12 rather than nuvio's 10, because a typical curated install is a dozen
+    // engines (the sources sheet reports it as "Nuvio 12"): with 10 slots the
+    // last two QUEUE for a slot instead of running, and on a phone that is
+    // already running the 400-repo cross-extension sweep their whole budget can
+    // be spent waiting — nuvio, which runs nothing but the engines, never has
+    // this problem. Two extra native VMs is a rounding error next to the
+    // engines that then answer in the same window.
+    private const val MAX_CONCURRENT = 12
     private const val FETCH_TIMEOUT_MS = 30_000L
     // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
     // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider

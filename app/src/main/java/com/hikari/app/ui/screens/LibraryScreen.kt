@@ -342,6 +342,7 @@ private fun LibraryCard(
             style = style,
             rating = item.rating,
             imdb = badge,
+            item = item,
             // The top-right corner is this card's own remove button and the
             // bottom-right its "Move to", so the score takes the free corner.
             ratingAlignment = Alignment.BottomStart,

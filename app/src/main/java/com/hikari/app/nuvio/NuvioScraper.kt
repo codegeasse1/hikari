@@ -423,12 +423,29 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             // id/name usually carries them ("S2E5", "2x3", …).
             val season = if (episode == null) null else seasonOf(episode)
             val epNum = if (episode == null) 1 else epNumberInSeason(episode)
+            // TMDB has exactly two namespaces, and every nuvio provider is
+            // written for those two: the whole ecosystem tests
+            // `mediaType === "tv" ? "tv" : "movie"` (or builds
+            // `${mediaType}/${tmdbId}` URL segments with it), so a series asked
+            // as anything else is asked as a MOVIE — the provider fetches
+            // /movie/<tvId>, gets a 404, and returns [] without a single
+            // network request to its own site.
+            //
+            // [TmdbResolver] carries one extra value, its own "anime" hint for a
+            // series (see [TmdbResolver.Resolved] — Ratings, TmdbMeta and the
+            // rest map it back through the same test), and this call used to
+            // pass that value straight into the engines. Every anime title
+            // therefore came back from every nuvio engine as "no sources" while
+            // the very same engines found servers in the real NuvioMobile app,
+            // which only ever sends "tv"/"movie". Map the hint here, at the one
+            // place that hands a media type to a foreign engine.
+            val mediaType = if (resolved.mediaType.equals("movie", true)) "movie" else "tv"
             val payload = NuvioRuntime.getStreams(
                 HikariApp.instance,
                 source,
                 config.id,
                 resolved.tmdbId,
-                resolved.mediaType,
+                mediaType,
                 season,
                 epNum,
             )
