@@ -27,6 +27,8 @@ newpipeextractor = "v0.26.3"
 cryptography = "0.6.0"
 viewbinding = "8.7.3"
 cardview = "1.0.0"
+zxing = "3.5.3"
+camerax = "1.4.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -79,6 +81,13 @@ cryptography-provider-optimal = { group = "dev.whyoleg.cryptography", name = "cr
 # (yt-dlp-android / Chaquopy was removed in 0.9.1 — see the CHANGELOG.)
 androidx-viewbinding = { group = "androidx.databinding", name = "viewbinding", version.ref = "viewbinding" }
 androidx-cardview = { group = "androidx.cardview", name = "cardview", version.ref = "cardview" }
+# Device pairing (Settings → Backup & Restore → Pair & sync): zxing for the QR
+# code itself, CameraX for the scanner that reads the other device's.
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

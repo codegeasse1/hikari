@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -1300,18 +1301,33 @@ internal fun ProviderPickerSheet(
     // saves nothing, so an accidental mode change can never change Home.
     var multi by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(selection) }
+    // The sources pinned to the top of this list, newest first. Read HERE rather
+    // than passed in by the caller: the sheet is the only thing that cares about
+    // them, and both of its callers (Home and Search) get the pins for free
+    // instead of each having to thread the same two arguments through.
+    val app = LocalContext.current.applicationContext as HikariApp
+    val scope = rememberCoroutineScope()
+    val pinned by remember { app.store.pinnedProvidersFlow() }
+        .collectAsState(initial = emptyList<String>())
     // Engine filter: every kind that has at least one installed extension, in a
     // stable order, so a user with dozens of installs can narrow the list to
     // just their CloudStream plugins, just their Nuvio providers, and so on.
     val kinds = remember(providers) {
         providers.map { it.config.type }.distinct().sortedBy { it.groupLabel }
     }
-    // Alphabetical (by extension name), so the picker isn't "install order".
-    val filtered = remember(providers, query, filter) {
+    // Pinned first — in the order they were pinned, so the row just pinned is
+    // the first one in the list — then everything else alphabetically. The pin
+    // is a promise that this source will be the first thing the user sees next
+    // time they open the sheet, and an alphabetical list would break it for
+    // every source whose name sorts low.
+    val pinOrder = remember(pinned) { pinned.withIndex().associate { (i, id) -> id to i } }
+    val filtered = remember(providers, query, filter, pinOrder) {
         val narrowed = providers.filter { filter == null || it.config.type == filter }
-        val sorted = narrowed.sortedBy { it.config.name.lowercase() }
-        if (query.isBlank()) sorted
-        else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
+        val matches = if (query.isBlank()) narrowed
+        else narrowed.filter { it.config.name.contains(query, ignoreCase = true) }
+        matches.sortedWith(
+            compareBy({ pinOrder[it.config.id] ?: Int.MAX_VALUE }, { it.config.name.lowercase() })
+        )
     }
     val shownCollections = remember(collections, query) {
         if (query.isBlank()) collections
@@ -1362,7 +1378,8 @@ internal fun ProviderPickerSheet(
                 } else {
                     tr(
                         "Only the selected extension's catalog is shown on Home. " +
-                            "Hold a source for a second to pick several."
+                            "Hold a source for a second to pick several, or tap its " +
+                            "pin to keep it at the top of this list."
                     )
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -1486,10 +1503,17 @@ internal fun ProviderPickerSheet(
                         com.hikari.app.providers.StremioAddon.streamOnlyAddons[p.config.id] == true
                     val key = p.config.id
                     val ticked = key in working
+                    val isPinned = pinOrder.containsKey(key)
                     PickerRow(
                         label = p.config.name,
                         isSelected = if (multi) ticked else selection.contains(key),
                         multi = multi,
+                        // The pin is on EVERY row, not revealed by a hold: with
+                        // hundreds of installed extensions the user is looking
+                        // for the pin itself, and a control they have to know
+                        // about first cannot be found.
+                        pinned = isPinned,
+                        onTogglePin = { scope.launch { app.store.togglePinnedProvider(key) } },
                         supporting = when {
                             streamOnly -> I18n.t("%s addon · browses TMDB").replace(
                                 "%s",
@@ -1581,6 +1605,12 @@ private fun PickerSectionLabel(text: String) {
  * ("Manage collections"); [showDivider] is turned off on the last row of a
  * section so the heading below it is not fenced off by two lines.
  *
+ * [onTogglePin] draws the pin button on the right of the row and is what the
+ * user taps to float this source to the top of the list; [pinned] is its state
+ * (an accent pin on a floatable row, a muted one on the rest). The pin is its
+ * own tap target inside the row and consumes its own taps, so tapping it never
+ * also picks the row — see the note on the gesture above.
+ *
  * In [multi] mode the tick box is drawn on EVERY row (empty ring when it is not
  * picked), so a row says "I can be ticked" rather than only the ticked ones
  * looking different.
@@ -1599,6 +1629,8 @@ private fun PickerRow(
     leadingIcon: ImageVector? = null,
     showDivider: Boolean = true,
     multi: Boolean = false,
+    pinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -1672,6 +1704,28 @@ private fun PickerRow(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
+            // The pin sits last, after the tick: it is a control on the row, not
+            // part of what the row is telling the user. It keeps a 34dp touch
+            // target on a 13dp-tall row, and being its own clickable is what
+            // makes a tap on it pin the source instead of choosing it.
+            if (onTogglePin != null) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onTogglePin),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.PushPin,
+                        contentDescription = tr(if (pinned) "Unpin" else "Pin to the top"),
+                        tint = if (pinned) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        modifier = Modifier.size(17.dp),
                     )
                 }
             }

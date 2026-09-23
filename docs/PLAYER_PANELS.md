@@ -259,30 +259,45 @@ orientation" was simply not true. The configuration is the only source that foll
 the rotation, and it is what the panel's geometry uses now. If you add a fourth
 source of vertical space to this file, bound it by `screenHeightPx()` too.
 
-## Panels whose rows arrive AFTER they are shown (0.10.19)
+## Panels that are a BOX rather than a stack of rows (0.10.20)
 
-Every panel above is built completely before `presentGlass` shows it, so the
-panel's height is settled by the time the window is measured. The subtitle search
-("Load from internet") is the exception: its rows land as each subtitle site
-answers, which is the whole point of the panel.
+Every panel above sizes itself from what is inside it: `fitToContent()` measures
+the rows and shrinks the panel onto them, which is right for a menu ("Speed ·
+Source · Subtitles") and is where most of this file's geometry comes from.
 
-That made it the one box that opened WRONG and then fixed itself later — it
-appeared at the height of its empty search row and kept it, and only an unrelated
-relayout (the screen going off and on — a window re-measure) put it right.
+The subtitle search ("Load from internet") is not that kind of panel, and the
+user's report of it was that it opens **small** (landscape phone, box about 40%
+of the screen's width and a third of its height). Two things were wrong at once:
 
-The cause is the platform, not the panel: a dialog window with
-`WRAP_CONTENT` height is measured when it is SHOWN and is not measured again
-when the content inside it grows. So `presentGlass` now takes
-`refitWindowOnResize` (default **false**), and when a panel opts in,
-`fitToContent()` re-applies the window's own layout — same width,
-`WRAP_CONTENT` height — every time it actually resizes the panel. Going through
-`window.setLayout` is what matters: it re-measures the window, which a bare
-`requestLayout()` on a visible dialog's decor does not.
+1. `fitToContent` sized it from the rows it happened to hold — and its rows
+   arrive over several seconds, one subtitle site at a time. A box that grows
+   from "one search field and no results yet" answers the wrong question for a
+   panel whose entire purpose is an unknown-length list.
+2. The width was capped on the window's HEIGHT axis (`win.y * 0.93`), a guard
+   meant for row lists in the landscape player. In landscape that is ~41% of the
+   window's width, so even a "big" box was narrow.
 
-**Only the subtitle search opts in.** Do not turn it on for the other panels:
-they have nothing to re-measure, and every extra `setLayout` on a visible
-window is a chance to fight the window manager over a panel that was already
-correct.
+An earlier attempt (`refitWindowOnResize` in 0.10.19, which re-applied the
+window's layout whenever the panel grew) changed nothing on the device: a
+`WRAP_CONTENT` window is measured when it is SHOWN, and re-measuring it is a
+race against rows that are still landing.
+
+So `presentGlass` takes `fillFractionX`/`fillFractionY` (defaults **0**, i.e.
+"behave exactly as before"), and a panel with a non-zero fraction:
+
+* takes that fraction of the window's width, with no height-axis cap;
+* takes that fraction of the window's height, capped only by what keeps the
+  whole thing on screen — the window minus the hint line's room (the hint is a
+  sibling in the same WRAP_CONTENT window, up to four lines) minus the halo the
+  panel view carries around its silhouette;
+* keeps that size for as long as it is up: `fitToContent()` returns early in
+  fill mode, so the rows arriving under it cannot shrink it, and its content
+  scrolls inside it instead.
+
+**Only the subtitle search opts in** (86% x 72% — the user's own sizing note),
+and it needs no re-measure precisely because its size never changes after the
+window is measured. Do not use fill mode for a menu: a box taller than its rows
+is a band of empty glass.
 
 ## The codec details overlay
 

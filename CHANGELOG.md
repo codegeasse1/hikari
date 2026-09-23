@@ -1,3 +1,48 @@
+## 0.10.20
+
+**Two devices can now set each other up, the source list can be pinned, and the
+subtitle search box is finally the size it should be.** The pairing is the big
+one: a QR code and a six-character code move your whole setup to a new phone or
+television over your own Wi-Fi, with no file and no account.
+
+### Added
+
+- **Pair & sync** (Settings → Backup & Restore → Pair & sync). The device that
+  is already set up taps **Show the code** and shows a QR code plus a six-
+  character code; the new device either **scans the QR** with its camera or
+  **types the code**. Your settings, installed extensions, sources, repos,
+  collections and history then travel straight from one device to the other over
+  the local network — nothing is uploaded anywhere, and the receiving device
+  asks before it replaces anything. What it sends is a **backup**, byte for
+  byte: the same payload the "Back up Hikari data" button writes to a file, so
+  the transfer cannot get right what a file restore gets wrong. A device with no
+  camera (a television) simply types the code, which is why the code is six
+  unconfusable characters shown large enough to read across a room, and why the
+  typed path finds the other device by itself (a Wi-Fi broadcast, so no IP
+  address ever has to be read off one screen and typed on another). The code is
+  the only key: nothing is listening once you leave the screen, and every
+  request without the right code is refused.
+- **Pin a source to the top of Home's picker.** Every row in "Choose an
+  extension" now carries a pin — tap it and that extension floats to the top of
+  the list (and above everything pinned before it), tap again to let it go. With
+  a hundred extensions installed, the two you actually use were otherwise as
+  hard to find as any other two. The pin is remembered across restarts, and it
+  is a pin on an extension's ID, so an extension update cannot drop it.
+
+### Fixed
+
+- **The subtitle search box ("Load from internet") now opens as a proper box**
+  — 86% of the screen's width and 72% of its height, with the results scrolling
+  inside it — instead of a nearly-empty panel that grew from whatever rows it
+  happened to hold. Two things were wrong: the box was sized from its contents
+  (and its contents arrive one subtitle site at a time, so it opened at the
+  height of its empty search row and stayed there), and its width was capped on
+  the window's *height* axis, which in the landscape player is about 41% of the
+  screen. The 0.10.19 attempt — re-applying the window's layout whenever the
+  panel grew — could not have worked: a dialog window is measured when it is
+  SHOWN, and re-measuring it is a race with rows that are still landing. The box
+  is now given a definite size and simply keeps it. See docs/PLAYER_PANELS.md.
+
 ## 0.10.19
 
 **A Stats page, a pinnable codec readout, a lock icon that gets out of the way,
@@ -37,7 +82,9 @@ subtitle search box that opened at the height of its empty search row.
   going off and on) sized it — which is exactly the report. The panel now
   re-applies its window layout whenever `fitToContent()` resizes it
   (`refitWindowOnResize`, opted into by this panel alone, so no other box
-  changes).
+  changes). *(Superseded in 0.10.20: the re-measure did not take on the device,
+  because a dialog window is measured once when it is shown — the box is now
+  given a definite size instead. See the 0.10.20 section.)*
 - **The search button says "Searching…" while a search is in flight**, and goes
   back to "Search" when it finishes. The panel's status line already said so, but
   the button the user tapped never changed.

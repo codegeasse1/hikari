@@ -21,6 +21,34 @@
         android:maxSdkVersion="28" />
 
     <!-- ==================================================================
+         DEVICE PAIRING (Settings → Backup & Restore → Pair & sync)
+
+         The camera is used for exactly one thing: reading the pairing QR code
+         the OTHER device is showing, so a phone can be set up from a phone
+         without typing anything. It is not used by the player, the browser or
+         the reader, and no frame ever leaves the device — the decoded text goes
+         straight into the pairing screen.
+
+         Both are declared as optional/degraded on purpose:
+          * android.hardware.camera.any required=false — a television has no
+            camera, and it is the device most likely to be the one being set up.
+            Requiring a camera would have made this APK uninstallable on exactly
+            the hardware the feature was built for; the scanner button simply is
+            not drawn when there is no camera.
+          * CHANGE_WIFI_MULTICAST_STATE is a normal permission (granted at
+            install) held only while the pairing screen is open. Wi-Fi power
+            saving filters broadcast packets away almost immediately unless
+            something holds a multicast lock, and the pairing beacon IS a
+            broadcast listener — without it, "the other device wasn't found" on
+            some phones and worked on others.
+         ================================================================== -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
+    <!-- ==================================================================
          ONE APK, PHONES AND TELEVISIONS
 
          The same APK installs on a phone/tablet and on a television (Android

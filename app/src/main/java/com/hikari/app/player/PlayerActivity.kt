@@ -4080,16 +4080,28 @@ class PlayerActivity : ComponentActivity() {
          *  that way. */
         headerActions: List<Pair<Int, () -> Unit>> = emptyList(),
         /**
-         * Re-applies the dialog window's own layout every time [fitToContent]
-         * resizes the panel. A WRAP_CONTENT dialog window is measured when it is
-         * SHOWN and is not measured again when the content inside it grows, so a
-         * panel whose rows arrive later — the subtitle search, which fills in as
-         * each site answers — stayed at its opening, nearly-empty height until
-         * something unrelated (a rotation, the screen going off and on) forced a
-         * re-measure. Only such a panel opts in; a panel built before it is shown
-         * has nothing to re-measure.
+         * A panel that must open as a BOX rather than as a stack of rows: this
+         * fraction of the window's own width and height. Non-zero turns the
+         * shrink-to-content behaviour OFF entirely (see the `panelH` computation
+         * below) — the panel keeps the size it was given and its content scrolls
+         * inside it.
+         *
+         * This exists for the subtitle search box. Every other panel in the
+         * player is a handful of rows and reads best with no empty glass around
+         * it, so they keep the fit-to-content default; the search box is a
+         * search FIELD, a status line and up to [MAX_SUBTITLE_ROWS] results,
+         * and the user's own report of it is that it opens small. A box that
+         * grows from its nearly-empty opening state answers the wrong question
+         * (how tall are my rows) for a panel whose whole point is an
+         * unknown-length list, and a WRAP_CONTENT window is measured once when
+         * it is shown — so the rows arriving a second later did not resize it
+         * at all (the reason the earlier re-fit-on-resize attempt changed
+         * nothing on the user's device). A definite box plus a scrolling list is
+         * what a results panel should be, and it needs no re-measure because its
+         * size never changes.
          */
-        refitWindowOnResize: Boolean = false,
+        fillFractionX: Float = 0f,
+        fillFractionY: Float = 0f,
     ): TextView? {
         val density = resources.displayMetrics.density
         // The halo is where the curved pane's neon blooms. A flat panel (every
@@ -4239,27 +4251,39 @@ class PlayerActivity : ComponentActivity() {
         // narrow for its bow to read as a pane rather than a wall, while a
         // slab/deck/card is mostly a container for rows — and a wider one fits
         // the longer option labels without clipping them.
-        val panelW = minOf(
-            // Wider than it used to be, for both the pane and the flat slabs:
-            // the rows, the engine chips ("All / CloudStream / Hikari / Nuvio /
-            // SkyStream") and the longer server names are all laid out inside
-            // this width, and at 0.86 the glass pane was clipping the leading
-            // edge of its own rows and pushing the last chip off the strip.
-            // Raised again on the user's report that the server box wants to be
-            // LONGER so everything under it reads perfectly ("make it length
-            // longer"): a long engine name, its quality and its host all have to
-            // fit on one row, and the panel is the only place that width can
-            // come from. Still short of the window so the panel keeps floating
-            // with both its rounded sides visible.
-            (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
-            // The height axis is only a "do not become a wall" guard, and in the
-            // LANDSCAPE player it is the binding one (the window is three times
-            // wider than it is tall), which is what kept the engine chips — five
-            // of them — wider than the panel on a phone. Raised so the chips and
-            // the longer server names fit on one line.
-            (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
-            (560 * density).toInt(),
-        ).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+        // A panel asked to FILL is given the window's own width and takes no
+        // notice of that height-axis guard: the guard exists so a ROW LIST in
+        // the landscape player does not become wider than the video it floats on
+        // (the window is three times wider than it is tall, so the height axis
+        // binds first there), and a results box left at ~40% of a landscape
+        // screen is exactly the "too small" the user reported. A fill panel is
+        // as wide as it asked to be, still short of the window so its rounded
+        // sides stay visible.
+        val panelW = (if (fillFractionX > 0f) {
+            (win.x * fillFractionX).toInt()
+        } else {
+            minOf(
+                // Wider than it used to be, for both the pane and the flat slabs:
+                // the rows, the engine chips ("All / CloudStream / Hikari / Nuvio /
+                // SkyStream") and the longer server names are all laid out inside
+                // this width, and at 0.86 the glass pane was clipping the leading
+                // edge of its own rows and pushing the last chip off the strip.
+                // Raised again on the user's report that the server box wants to be
+                // LONGER so everything under it reads perfectly ("make it length
+                // longer"): a long engine name, its quality and its host all have to
+                // fit on one row, and the panel is the only place that width can
+                // come from. Still short of the window so the panel keeps floating
+                // with both its rounded sides visible.
+                (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
+                // The height axis is only a "do not become a wall" guard, and in
+                // the LANDSCAPE player it is the binding one (the window is three
+                // times wider than it is tall), which is what kept the engine chips
+                // — five of them — wider than the panel on a phone. Raised so the
+                // chips and the longer server names fit on one line.
+                (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
+                (560 * density).toInt(),
+            )
+        }).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         // The panel must FLOAT on the video with all four rounded corners (and
         // the light sweeping around them) visible: it is capped against the hint
@@ -4273,10 +4297,28 @@ class PlayerActivity : ComponentActivity() {
         // screen, and anything longer still scrolls.
         val maxFraction = (win.y * if (flatPanel) 0.76f else 0.66f).toInt()
         val minPanel = (110 * density).toInt()
-        val panelH = (preferredHeightDp * density).toInt()
-            .coerceAtMost(fitsScreen)
-            .coerceAtMost(maxFraction)
-            .coerceAtLeast(minPanel)
+        val panelH = if (fillFractionY > 0f) {
+            // A FILL panel is the requested fraction of the window, and the caps
+            // that apply to it are the ones that keep the whole thing on screen:
+            // the window's height minus the hint line's room (the hint is a
+            // sibling of the panel in the same WRAP_CONTENT window, so it is
+            // exactly as much of the window as the panel cannot have — four
+            // lines of 10sp text is what it can grow to, see the maxLines in
+            // the hint view) minus the halo the panel view carries around its
+            // silhouette. Deliberately NOT capped by [maxFraction]: that cap is
+            // 0.66 of the window, i.e. it would undo the requested size in the
+            // landscape player, which is the one place the complaint comes from.
+            val hintRoom = (44 * density).toInt()
+            val room = (win.y - hintRoom - 2 * halo).coerceAtLeast((40 * density).toInt())
+            (win.y * fillFractionY).toInt()
+                .coerceAtLeast(minPanel)
+                .coerceAtMost(room)
+        } else {
+            (preferredHeightDp * density).toInt()
+                .coerceAtMost(fitsScreen)
+                .coerceAtMost(maxFraction)
+                .coerceAtLeast(minPanel)
+        }
         // The panel view carries its own halo, so its silhouette comes out
         // exactly panelW x panelH in the middle of it.
         root.addView(panel, LinearLayout.LayoutParams(
@@ -4320,6 +4362,12 @@ class PlayerActivity : ComponentActivity() {
         var appliedSil = -1
         fun fitToContent() {
             if (panelLp == null) return
+            // A FILL panel was given a definite size by the caller and keeps it:
+            // shrinking it onto its rows would undo exactly the thing the caller
+            // asked for (the subtitle search box's rows arrive over seconds, so
+            // fit-to-content had it opening at the height of its empty search
+            // row). Its content scrolls inside the box instead.
+            if (fillFractionY > 0f) return
             // The panel's own padding is what the content is laid out inside —
             // not just the halo. A flat panel adds its side gap (and the corner
             // clearance) on top of the halo (see CurvedGlassPanel.onSizeChanged),
@@ -4350,22 +4398,6 @@ class PlayerActivity : ComponentActivity() {
             appliedSil = sil
             panelLp.height = sil + 2 * halo
             panel.layoutParams = panelLp
-            // The panel has just been resized; a WRAP_CONTENT window does not
-            // hear about that on its own (see [refitWindowOnResize]). Handing
-            // the window its own layout back — same width, WRAP_CONTENT height —
-            // goes through WindowManager, which re-measures the window and so
-            // gives the taller panel the room the panel alone cannot claim.
-            if (refitWindowOnResize) {
-                panel.post {
-                    val win = dialog.window ?: return@post
-                    val width = win.attributes.width
-                    if (width > 0) {
-                        runCatching {
-                            win.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-                        }
-                    }
-                }
-            }
         }
         // Widths only exist after the dialog is shown, and the rows can change
         // height while it is up (a server landing mid-search), so fit now and
@@ -6276,12 +6308,18 @@ class PlayerActivity : ComponentActivity() {
             },
             iconRes = R.drawable.ic_search,
             rowHosts = listOf(results),
-            // The rows arrive WHILE the panel is up (that is the point of it),
-            // so the window has to be re-measured as they land: without this the
-            // box opened at the height of its empty search row and stayed there
-            // until an unrelated relayout (the screen going off and on) sized it
-            // to what had arrived.
-            refitWindowOnResize = true,
+            // A BOX, not a stack of rows. The rows arrive WHILE the panel is up
+            // (that is the point of it), and a WRAP_CONTENT window is measured
+            // only when it is shown — so a panel that sizes itself from the rows
+            // it happens to have holds whatever it opened with, which is how
+            // this box ended up the size of its empty search row on the user's
+            // phone. The box is given a definite size instead and the results
+            // scroll inside it: 86% of the window's width (the user's own
+            // sizing note, and roughly what a full-screen results list wants)
+            // and 72% of its height, capped so the whole panel stays on screen
+            // inside the room the hint line leaves.
+            fillFractionX = 0.86f,
+            fillFractionY = 0.72f,
         )
         // The keyboard is the point of this panel: the user came here to type.
         // ADJUST_RESIZE keeps the panel inside the room that is left once the

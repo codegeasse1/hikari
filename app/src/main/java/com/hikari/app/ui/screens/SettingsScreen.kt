@@ -83,6 +83,7 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestorePage
 import androidx.compose.material.icons.filled.SaveAlt
@@ -506,6 +507,7 @@ fun SettingsScreen(nav: NavHostController) {
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
     var showPlayerControls by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
+    var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
 
     // Accent colours: the app accent repaints this whole screen live; the
@@ -561,6 +563,13 @@ fun SettingsScreen(nav: NavHostController) {
     // one screen with two doors, so the two can never drift apart.
     if (showStats) {
         StatsScreen(app, onBack = { showStats = false })
+        return
+    }
+
+    // Pair & sync is its own page for the same reason the player-control editor
+    // is: two ends of a transfer, a QR code and a camera do not fit in a card.
+    if (showPair) {
+        PairScreen(app, onBack = { showPair = false })
         return
     }
 
@@ -837,7 +846,7 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                 }
                 SettingsFolder.BACKUP -> {
-                    item { SettingsCard(top = 2.dp) { BackupCard(app) } }
+                    item { SettingsCard(top = 2.dp) { BackupCard(app, onPair = { showPair = true }) } }
                 }
                 SettingsFolder.ABOUT -> {
                     item {
@@ -3974,7 +3983,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
  * restore can never point the app at a video file this phone does not have.
  */
 @Composable
-private fun BackupCard(app: HikariApp) {
+private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -4093,6 +4102,15 @@ private fun BackupCard(app: HikariApp) {
             action = tr("Restore"),
             enabled = !busy,
             onClick = { picker.launch(arrayOf("application/json", "text/plain", "*/*")) },
+        )
+        Spacer(Modifier.height(10.dp))
+        BackupRow(
+            icon = Icons.Filled.QrCode2,
+            title = tr("Pair & sync with another device"),
+            subtitle = tr("Copy this setup over Wi-Fi — no file, no cable"),
+            action = tr("Pair"),
+            enabled = !busy,
+            onClick = onPair,
         )
         Spacer(Modifier.height(10.dp))
         BackupRow(

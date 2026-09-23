@@ -204,6 +204,13 @@ class AppStore(private val ctx: Context) {
     val MANGA_SERIES_MODES = stringPreferencesKey("mangaSeriesModes")
     /** Engine ids the reader pinned to the top of the Manga tab's Browse list. */
     val PINNED_MANGA_ENGINES = stringSetPreferencesKey("pinnedMangaEngines")
+    /**
+     * Provider ids the user pinned to the top of Home's \"Choose an extension\"
+     * list, **most recently pinned first** — a JSON array rather than a set,
+     * because the order IS the point here: the pin the user just tapped has to
+     * land above the ones pinned last week, which a set cannot express.
+     */
+    val PINNED_PROVIDERS = stringPreferencesKey("pinnedProviders")
         /**
          * May adult material be shown (Settings → Content → NSFW)?
          *
@@ -1559,6 +1566,36 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPinnedMangaEngines(ids: Set<String>) {
         write("PINNED_MANGA_ENGINES") { it[K.PINNED_MANGA_ENGINES] = ids }
+    }
+
+    // ---- Pinned sources (Home → Choose an extension) ----
+
+    /**
+     * The provider ids pinned to the top of the source picker, newest first (see
+     * [K.PINNED_PROVIDERS]).
+     *
+     * Ids, not names, for the same reason the manga pins are: a name is display
+     * text an extension update can change, and a pin that fell off because of
+     * that would be worse than no pin. An id that is no longer installed is
+     * simply never matched when the list is ordered.
+     */
+    fun pinnedProvidersFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.PINNED_PROVIDERS]) }
+
+    suspend fun pinnedProviders(): List<String> = pinnedProvidersFlow().first()
+
+    /**
+     * Pins [id] above every other source, or unpins it when it is already
+     * pinned. Read-modify-write inside the store's own edit transaction (rather
+     * than a set-then-write) so two taps in quick succession cannot lose one.
+     */
+    suspend fun togglePinnedProvider(id: String) {
+        if (id.isBlank()) return
+        write("PINNED_PROVIDERS") { prefs ->
+            val current = parseStringList(prefs[K.PINNED_PROVIDERS])
+            val next = if (current.contains(id)) current - id else listOf(id) + current
+            prefs[K.PINNED_PROVIDERS] = encodeStringList(next)
+        }
     }
 
     // ---- Adult content (Settings → Content) ----

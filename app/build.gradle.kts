@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 190
-    versionName = "0.10.19"
+    versionCode = 191
+    versionName = "0.10.20"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -378,6 +378,32 @@ dependencies {
     // ran on pages every other engine had already failed on. See CHANGELOG.)
     implementation(libs.cryptography.core)
     implementation(libs.cryptography.provider.optimal)
+    // ---- Device pairing (Settings → Backup & Restore → Pair & sync) ----
+    //
+    // The feature itself is a few hundred lines: two `PairHost`/`PairClient`
+    // objects and a screen. Its two dependencies are what turn "the code on one
+    // screen" into "the code on one screen that the other device can read":
+    //
+    //  * zxing-core — the QR encoder AND decoder, pure Java, no Android
+    //    dependencies, no camera permission, ~500 KB. Encoding a pairing payload
+    //    and decoding a camera frame are both one call into it
+    //    (see com.hikari.app.pair.QrCode). It is the same library every Android
+    //    scanner app is built on; the alternative (a barcode API that only
+    //    exists on devices with Play Services) is exactly the wrong trade for an
+    //    app whose whole point is that it runs on a cheap Chinese television.
+    //  * CameraX — the scanner's camera. camera-view brings `PreviewView` (the
+    //    surface that actually draws the preview and does the device's own
+    //    rotation/scale handling, which doing it by hand is a week of bugs), and
+    //    camera-camera2 the Camera2CameraImpl underneath it. The OTHER camera in
+    //    this app is the system WebView's, which is none of our business.
+    //
+    // Both are only ever used by the pairing screen: a device that never opens it
+    // never starts a camera or a decoder.
+    implementation(libs.zxing.core)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
