@@ -261,6 +261,7 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                         tr("day"),
                     icon = Icons.Filled.Schedule,
                     modifier = Modifier.weight(1f),
+                    compact = true,
                 )
                 StatTile(
                     label = tr("Avg chapters"),
@@ -268,6 +269,7 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                         tr("day"),
                     icon = Icons.AutoMirrored.Filled.MenuBook,
                     modifier = Modifier.weight(1f),
+                    compact = true,
                 )
                 StatTile(
                     label = tr("Streak (Cur/Long)"),
@@ -275,6 +277,7 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
                         snapshot.longestStreak.toString() + "d",
                     icon = Icons.Filled.LocalFireDepartment,
                     modifier = Modifier.weight(1f),
+                    compact = true,
                 )
             }
         }
@@ -445,13 +448,17 @@ fun StatsScreen(app: HikariApp, onBack: (() -> Unit)? = null) {
     }
 }
 
-/** One of the small figures: a label, an icon, and the number under them. */
+/** One of the small figures: a label, an icon, and the number under them.
+ *  [compact] shrinks the number for the tiles whose value carries a unit
+ *  ("0.0/day", "0d / 1d"), which is what keeps a third of a phone's width wide
+ *  enough for them. */
 @Composable
 private fun StatTile(
     label: String,
     value: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     GlassCard(modifier) {
         Column(Modifier.padding(horizontal = 11.dp, vertical = 12.dp)) {
@@ -460,7 +467,7 @@ private fun StatTile(
                     label.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
@@ -475,7 +482,8 @@ private fun StatTile(
             Spacer(Modifier.height(8.dp))
             Text(
                 value,
-                style = MaterialTheme.typography.titleLarge,
+                style = if (compact) MaterialTheme.typography.titleMedium
+                else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
