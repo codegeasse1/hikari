@@ -121,6 +121,17 @@ title), and the small map is persisted in `filesDir/known-quality.json` alongsid
 collects, so a grid that is already on screen picks up a new badge the moment a
 search teaches the app the answer.
 
+**No disk I/O on the caller's thread.** `forItem` is called from COMPOSITION (a
+poster cell reading its own badge) and `remember` from the player's main-scoped
+coroutines, so neither may touch the file: `warm()` kicks the one-time read off
+on the store's own `Dispatchers.IO` scope (it is an `AtomicBoolean` check, so
+calling it from every poster cell is free), and `remember` queues load → mutate →
+write on the same scope, guarded by one lock — `save()` writes the WHOLE map, so
+two unguarded writers could interleave inside the file. Until the load lands,
+`forItem` answers from the item's own title text; the `revision` bump when it
+does is what repaints the cells that a previous session's server list can now
+label.
+
 ## Where the pieces are read
 
 * `PosterArt` — the card. Draws the halo, the treatments, the score badge, the

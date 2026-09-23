@@ -1,12 +1,17 @@
 package com.hikari.app.data
 
 import com.hikari.app.HikariApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The best video quality Hikari KNOWS a title comes in, so a poster can badge it
@@ -36,6 +41,18 @@ object TitleQuality {
 
     @Volatile
     private var loaded = false
+
+    /** The scope the one-time disk read and every write run on, so neither ever
+     *  happens on the caller's thread — [forItem] is called from COMPOSITION (a
+     *  poster cell reading its badge) and [remember] from the player's own
+     *  main-scoped coroutines, and file I/O belongs on neither. */
+    private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val loadStarted = AtomicBoolean(false)
+
+    /** Guards the load-then-write pair. `save()` writes the WHOLE map, so two
+     *  unguarded writers could interleave inside the same file; holding one lock
+     *  across load+mutate+write makes the last write the complete truth. */
+    private val lock = Any()
 
     private val _revision = MutableStateFlow(0)
 
@@ -89,11 +106,24 @@ object TitleQuality {
         return title + "|" + (item.year ?: 0)
     }
 
+    /** Starts the one-time background load of the persisted map. Does no I/O
+     *  itself, so it is safe — and cheap — to call from composition, which is
+     *  what [forItem] does on every poster cell. */
+    fun warm() {
+        if (!loadStarted.compareAndSet(false, true)) return
+        io.launch { synchronized(lock) { ensureLoaded() } }
+    }
+
     /** What the poster should print for [item]: the best quality seen for the
      *  title, or the one its own name states. Null when there is nothing to
-     *  say. */
+     *  say.
+     *
+     *  Never touches the disk. A label that is only known from a PREVIOUS
+     *  session's server list lands a frame or two after [warm]'s load finishes,
+     *  and [revision] is what repaints the cells showing that title — the item's
+     *  own text is the answer until then. */
     fun forItem(item: MediaItem): String? {
-        ensureLoaded()
+        warm()
         memory[keyOf(item)]?.let { return it }
         return fromText(
             listOfNotNull(item.title, item.originalTitle, item.year?.toString())
@@ -107,15 +137,29 @@ object TitleQuality {
      * there the next time the poster is drawn. A weaker label never overwrites a
      * stronger one: the sites' catalogue changes slowly, and a server list from a
      * bad day must not demote a title's badge.
+     *
+     * The work is queued on [io]: the one-time read of the persisted map has to
+     * happen before the write (otherwise the write would persist the new entry
+     * alone and drop the rest), and doing it on the caller's thread — the
+     * player's `lifecycleScope`, or the detail page's search — would put a file
+     * read and a file write on it.
      */
     fun remember(item: MediaItem, streams: List<StreamSource>) {
-        ensureLoaded()
         val best = bestOf(streams) ?: return
         val key = keyOf(item)
-        memory[key]?.let { if (rankOf(it) <= rankOf(best)) return }
-        memory[key] = best
-        save()
-        _revision.value++
+        io.launch {
+            val improved = synchronized(lock) {
+                ensureLoaded()
+                if (memory[key]?.let { rankOf(it) <= rankOf(best) } == true) {
+                    false
+                } else {
+                    memory[key] = best
+                    save()
+                    true
+                }
+            }
+            if (improved) _revision.value++
+        }
     }
 
     // ---- one small JSON map in the files dir (see [Ratings] for the pattern) ----
