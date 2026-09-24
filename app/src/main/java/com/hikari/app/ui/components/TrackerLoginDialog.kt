@@ -500,6 +500,20 @@ fun TrackerLoginDialog(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // Some services (AniList is the reliable one) put a
+                            // Cloudflare "verify you are human" step in front of
+                            // their login page, and a WebView is exactly what
+                            // that check is suspicious of — it can sit there
+                            // failing its own verification forever. A real
+                            // browser passes it, and the redirect it ends on is
+                            // then in the address bar to copy into the field
+                            // below, which is what the line above tells the user
+                            // to do.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { openUrl(context, url) }) {
+                                    Text(tr("Open the login page in your browser"))
+                                }
+                            }
                             Spacer(Modifier.height(6.dp))
                             OutlinedTextField(
                                 value = codeField,

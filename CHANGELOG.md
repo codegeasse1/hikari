@@ -1,3 +1,29 @@
+## 0.10.30
+
+### Fixed
+
+- **Trackers: every sign-in reported "no connection (network error)" on a device that was
+  online.** The tracker requests were issued from a Compose coroutine scope, and that runs on the
+  main thread — where a socket throws `NetworkOnMainThreadException`, an exception with no
+  message at all. That is the entire reason the card could only say "no connection": the request
+  never left the device. Every request in `TrackerApi` now runs on the IO dispatcher, at the one
+  point all of them pass through, so sign-in, search, sync and reporting are safe no matter which
+  thread called them.
+- **AniList: the login page's "verify you are human" wall now has a way around it.** AniList's
+  login page sits behind Cloudflare, and a WebView is exactly what that check is suspicious of —
+  it can sit on "Verification failed" forever, never reaching the redirect the app is waiting
+  for. The dialog now offers **Open the login page in your browser** beside the paste field: a
+  real browser passes the check, and the redirect it ends on (which carries the token) is in the
+  address bar to copy into the field, which is what the line above it already asks for.
+- **Telegram: Saved Messages now appears in "Your chats" — and can be searched for.** It is the
+  chat with yourself, and TDLib only places it in the account's chat list once that account has
+  actually saved something, so a user who opened Hikari before ever forwarding a message to
+  themselves had no Saved Messages row at all — and therefore nothing for the search above the
+  list to find ("No chat matches that name" for the one chat everybody has). It is created
+  explicitly now — `createPrivateChat` with our own user id, which is what TDLib's own
+  documentation prescribes — classified as Saved Messages from that id, and pinned to the top of
+  the list.
+
 ## 0.10.29
 
 ### Fixed

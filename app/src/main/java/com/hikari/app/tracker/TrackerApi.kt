@@ -7,6 +7,8 @@ import com.hikari.app.data.TrackerMatch
 import com.hikari.app.data.TrackerMedia
 import com.hikari.app.data.matchScore
 import com.hikari.app.net.Http
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -70,34 +72,54 @@ object TrackerApi {
         Reply(it.code, runCatching { it.body?.string() ?: "" }.getOrDefault(""))
     }
 
-    private fun get(url: String, headers: Map<String, String> = emptyMap()): Reply =
-        try {
-            replyOf(Http.get(url, headers))
-        } catch (e: Exception) {
-            Reply(-1, e.message ?: "network error")
+    /**
+     * The dispatcher every request in this file runs on.
+     *
+     * The trackers are driven from Compose — `rememberCoroutineScope()` and
+     * `LaunchedEffect` both run on the MAIN thread — and a socket touched on the
+     * main thread throws `NetworkOnMainThreadException`, an exception with a
+     * null message. That is exactly what every sign-in used to report:
+     * `Reply(-1, "network error")`, printed as "no connection", on a device that
+     * was online the whole time. The hop lives HERE, in the one place every
+     * request goes through, rather than at each call site, so no caller has to
+     * remember which thread it is on.
+     */
+    private suspend fun <T> off(block: () -> T): T = withContext(Dispatchers.IO) { block() }
+
+    private suspend fun get(url: String, headers: Map<String, String> = emptyMap()): Reply =
+        off {
+            try {
+                replyOf(Http.get(url, headers))
+            } catch (e: Exception) {
+                Reply(-1, e.message ?: e.javaClass.simpleName)
+            }
         }
 
-    private fun post(
+    private suspend fun post(
         url: String,
         body: String,
         headers: Map<String, String> = emptyMap(),
         contentType: String = "application/json; charset=utf-8",
-    ): Reply = try {
-        replyOf(Http.post(url, body, headers, contentType))
-    } catch (e: Exception) {
-        Reply(-1, e.message ?: "network error")
+    ): Reply = off {
+        try {
+            replyOf(Http.post(url, body, headers, contentType))
+        } catch (e: Exception) {
+            Reply(-1, e.message ?: e.javaClass.simpleName)
+        }
     }
 
-    private fun send(
+    private suspend fun send(
         method: String,
         url: String,
         body: String? = null,
         headers: Map<String, String> = emptyMap(),
         contentType: String = "application/json; charset=utf-8",
-    ): Reply = try {
-        replyOf(Http.request(method, url, body, headers, contentType))
-    } catch (e: Exception) {
-        Reply(-1, e.message ?: "network error")
+    ): Reply = off {
+        try {
+            replyOf(Http.request(method, url, body, headers, contentType))
+        } catch (e: Exception) {
+            Reply(-1, e.message ?: e.javaClass.simpleName)
+        }
     }
 
     /** A form body, the way the OAuth token endpoints want it. */
@@ -117,7 +139,7 @@ object TrackerApi {
      * registered against it, and a 405 is not a real failure, just the other
      * spelling of the same request.
      */
-    private fun sendAny(
+    private suspend fun sendAny(
         methods: List<String>,
         url: String,
         body: String,
@@ -351,11 +373,11 @@ object TrackerApi {
     }
 
     /** The shared half of every token exchange: read it, then who am I. */
-    private fun tokenAccount(
+    private suspend fun tokenAccount(
         client: TrackerClient,
         reply: Reply,
         which: String,
-        me: (String) -> Pair<String, String>?,
+        me: suspend (String) -> Pair<String, String>?,
     ): Result<TrackerAccount> {
         val token = reply.json()?.optString("access_token").orEmpty()
         if (!reply.ok || token.isBlank()) {
@@ -636,7 +658,7 @@ object TrackerApi {
 
     // -------------------------------------------------------------------- AniList
 
-    private fun graphql(token: String?, query: String, variables: JSONObject? = null): Reply {
+    private suspend fun graphql(token: String?, query: String, variables: JSONObject? = null): Reply {
         val body = JSONObject().apply {
             put("query", query)
             if (variables != null) put("variables", variables)
@@ -646,7 +668,7 @@ object TrackerApi {
         return post("https://graphql.anilist.co/", body.toString(), headers)
     }
 
-    private fun anilistSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
+    private suspend fun anilistSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
         val query = """
             query (${'$'}search: String) {
               Page(perPage: 12) {
@@ -689,7 +711,7 @@ object TrackerApi {
         return out.sortedByDescending { it.score }
     }
 
-    private fun anilistPush(token: String, match: TrackerMatch, media: TrackerMedia): Result<String> {
+    private suspend fun anilistPush(token: String, match: TrackerMatch, media: TrackerMedia): Result<String> {
         val progress = if (media.movie) 1 else media.episode.coerceAtLeast(1)
         val status = if (completed(media, match.total)) "COMPLETED" else "CURRENT"
         val query = """
@@ -722,7 +744,7 @@ object TrackerApi {
     private fun malHeaders(token: String) =
         mapOf("Authorization" to "Bearer $token", "Accept" to "application/json")
 
-    private fun malMe(token: String): Pair<String, String>? {
+    private suspend fun malMe(token: String): Pair<String, String>? {
         val reply = get("https://api.myanimelist.net/v2/users/@me?fields=id,name", malHeaders(token))
         val o = reply.json() ?: return null
         val name = o.optString("name")
@@ -730,7 +752,7 @@ object TrackerApi {
         return name to o.optString("id")
     }
 
-    private fun malSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
+    private suspend fun malSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
         // `nsfw=true` so a title the user is watching is not invisible in the
         // search: the adult-content switch already governs what Hikari shows,
         // and this call is about the title they are watching right now.
@@ -768,7 +790,7 @@ object TrackerApi {
         return (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
     }
 
-    private fun malPush(token: String, match: TrackerMatch, media: TrackerMedia): Result<String> {
+    private suspend fun malPush(token: String, match: TrackerMatch, media: TrackerMedia): Result<String> {
         val id = match.id.toIntOrNull()
             ?: return Result.failure(Exception("MyAnimeList: bad title id."))
         val watched = if (media.movie) 1 else media.episode.coerceAtLeast(1)
@@ -794,7 +816,7 @@ object TrackerApi {
     private fun kitsuHeaders(token: String) =
         mapOf("Authorization" to "Bearer $token", "Accept" to "application/vnd.api+json")
 
-    private fun kitsuMe(token: String): Pair<String, String>? {
+    private suspend fun kitsuMe(token: String): Pair<String, String>? {
         val reply = get("https://kitsu.io/api/edge/users?filter[self]=true", kitsuHeaders(token))
         val first = reply.json()?.optJSONArray("data")?.optJSONObject(0) ?: return null
         val name = first.optJSONObject("attributes")?.optString("name").orEmpty()
@@ -803,7 +825,7 @@ object TrackerApi {
         return name to first.optString("id")
     }
 
-    private fun kitsuSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
+    private suspend fun kitsuSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
         val url = "https://kitsu.io/api/edge/anime?filter[text]=${enc(title)}&page[limit]=12"
         val reply = get(url, kitsuHeaders(token))
         val arr = reply.json()?.optJSONArray("data") ?: return emptyList()
@@ -836,7 +858,7 @@ object TrackerApi {
      * Kitsu's list is a `library-entries` resource, so an update is a PATCH of
      * the existing entry (found by user + anime) or a POST of a new one.
      */
-    private fun kitsuPush(
+    private suspend fun kitsuPush(
         client: TrackerClient,
         account: TrackerAccount,
         match: TrackerMatch,
@@ -923,14 +945,14 @@ object TrackerApi {
             "User-Agent" to "Hikari/" + com.hikari.app.BuildConfig.VERSION_NAME,
         )
 
-    private fun shikimoriMe(token: String): Pair<String, String>? {
+    private suspend fun shikimoriMe(token: String): Pair<String, String>? {
         val o = get("https://shikimori.one/api/users/whoami", shikimoriHeaders(token)).json() ?: return null
         val name = o.optString("nickname").ifBlank { o.optString("name") }
         if (name.isBlank()) return null
         return name to o.optInt("id", 0).toString()
     }
 
-    private fun shikimoriSearch(title: String, media: TrackerMedia): List<TrackerMatch> {
+    private suspend fun shikimoriSearch(title: String, media: TrackerMedia): List<TrackerMatch> {
         val url = "https://shikimori.one/api/animes?search=${enc(title)}&limit=12&order=popularity"
         val arr = get(
             url,
@@ -962,7 +984,7 @@ object TrackerApi {
         return out.sortedByDescending { it.score }
     }
 
-    private fun shikimoriPush(
+    private suspend fun shikimoriPush(
         token: String,
         userId: String,
         match: TrackerMatch,
@@ -1016,7 +1038,7 @@ object TrackerApi {
         "Content-Type" to "application/json",
     )
 
-    private fun simklMe(clientId: String, token: String): Pair<String, String>? {
+    private suspend fun simklMe(clientId: String, token: String): Pair<String, String>? {
         // Settings is a POST on Simkl's API (an oddity of theirs, but it is the
         // documented call) — see the CloudStream client this was verified against.
         val reply = post("https://api.simkl.com/users/settings", "", simklHeaders(clientId, token))
@@ -1026,7 +1048,7 @@ object TrackerApi {
         return name to (o.optJSONObject("account")?.optInt("id", 0)?.toString() ?: "")
     }
 
-    private fun simklSearch(clientId: String, title: String, media: TrackerMedia): List<TrackerMatch> {
+    private suspend fun simklSearch(clientId: String, title: String, media: TrackerMedia): List<TrackerMatch> {
         // Simkl splits its catalogue by kind, so the search path is the filter:
         // anime first (what most Hikari extensions carry), then the kind the
         // player's own type suggests.
@@ -1065,7 +1087,7 @@ object TrackerApi {
         return out.sortedByDescending { it.score }
     }
 
-    private fun simklPush(
+    private suspend fun simklPush(
         clientId: String,
         token: String,
         match: TrackerMatch,
@@ -1168,7 +1190,7 @@ object TrackerApi {
         return h
     }
 
-    private fun traktMe(clientId: String, token: String): Pair<String, String>? {
+    private suspend fun traktMe(clientId: String, token: String): Pair<String, String>? {
         val o = get("https://api.trakt.tv/users/me", traktHeaders(clientId, token)).json() ?: return null
         val name = o.optString("username")
         if (name.isBlank()) return null
@@ -1176,7 +1198,7 @@ object TrackerApi {
         return name to o.optJSONObject("ids")?.optString("slug").orEmpty()
     }
 
-    private fun traktSearch(
+    private suspend fun traktSearch(
         clientId: String,
         token: String,
         title: String,
@@ -1211,7 +1233,7 @@ object TrackerApi {
         return out.sortedByDescending { it.score }
     }
 
-    private fun traktPush(
+    private suspend fun traktPush(
         clientId: String,
         token: String,
         match: TrackerMatch,

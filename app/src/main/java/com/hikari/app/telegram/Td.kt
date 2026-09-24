@@ -126,6 +126,13 @@ object Td {
     @Volatile
     private var myId: Long = 0
 
+    /**
+     * The id of the Saved Messages chat (the chat with our own user), once
+     * [ensureSavedChat] has made sure it exists.
+     */
+    @Volatile
+    private var savedChatId: Long = 0
+
     private val _auth = MutableStateFlow<Auth>(Auth.Idle)
     val auth: StateFlow<Auth> = _auth.asStateFlow()
 
@@ -384,6 +391,7 @@ object Td {
         _me.value = ""
         _sentTo.value = ""
         myId = 0
+        savedChatId = 0
     }
 
     /**
@@ -520,7 +528,29 @@ object Td {
         _me.value = listOf(user.firstName, user.lastName)
             .filter { it.isNotBlank() }.joinToString(" ")
             .ifBlank { "Me" }
+        ensureSavedChat()
         publishChats()
+    }
+
+    /**
+     * Makes sure the chat with ourselves — Saved Messages — exists as a chat
+     * object, and remembers its id.
+     *
+     * TDLib only puts Saved Messages in the account's chat list once the account
+     * has actually saved something, so a user who opens Hikari before ever
+     * forwarding a message to themselves had no Saved Messages row at all: not
+     * in the list, and therefore not findable by the search above it either
+     * ("No chat matches that name" for the one chat everybody has). TDLib's own
+     * documentation for a saved-messages link says exactly what this does —
+     * `createPrivateChat` with your own user id. Our own user is always in the
+     * local cache, so the call comes back without waiting on Telegram.
+     */
+    private suspend fun ensureSavedChat() {
+        val me = myId
+        if (me == 0L) return
+        val chat = query(TdApi.CreatePrivateChat(me, false)) as? TdApi.Chat ?: return
+        savedChatId = chat.id
+        chatValues[chat.id] = chat
     }
 
     // ---- TDLib plumbing --------------------------------------------------
@@ -685,20 +715,28 @@ object Td {
 
     private fun publishChats() {
         val me = myId
+        val saved = savedChatId
         val list = chatValues.values.mapNotNull { chat ->
             val order = mainOrder[chat.id] ?: 0L
-            // order 0 means "not in the main list" — archived chats, and chats
-            // TDLib has not placed yet. Saved Messages is the one chat that is
-            // always in the list even before a position arrives for it.
-            if (order == 0L && chat.id != me) return@mapNotNull null
             val kind = when (val type = chat.type) {
                 is TdApi.ChatTypePrivate ->
-                    if (type.userId == me) Chat.Kind.SAVED else Chat.Kind.PRIVATE
+                    // The chat whose other end is us. [ensureSavedChat]'s id is
+                    // the authority (that is the chat we created); the user-id
+                    // comparisons are the same test arrived at from the chat's
+                    // own side, for builds where TDLib reports a private chat's
+                    // id separately from the user it is with.
+                    if (chat.id == saved || (me != 0L && (type.userId == me || chat.id == me)))
+                        Chat.Kind.SAVED
+                    else Chat.Kind.PRIVATE
                 is TdApi.ChatTypeSecret -> Chat.Kind.SECRET
                 is TdApi.ChatTypeSupergroup ->
                     if (type.isChannel) Chat.Kind.CHANNEL else Chat.Kind.GROUP
                 else -> Chat.Kind.GROUP
             }
+            // order 0 means "not in the main list" — archived chats, and chats
+            // TDLib has not placed yet. Saved Messages is the one chat that is
+            // always shown, even when nothing has ordered it yet.
+            if (order == 0L && kind != Chat.Kind.SAVED) return@mapNotNull null
             Chat(
                 id = chat.id,
                 title = if (kind == Chat.Kind.SAVED) "Saved Messages"
