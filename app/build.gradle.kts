@@ -110,6 +110,34 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // ---- OkHttp 5 ships Java 9 multi-release jars ----
+            //
+            // okhttp-brotli, logging-interceptor and okhttp-dnsoverhttps are
+            // published as MULTI-RELEASE jars: each one carries the same
+            // JVM-only metadata under `META-INF/versions/9/` — a JPMS/OSGi
+            // bundle manifest plus the `module-info.class` next to it. AGP's
+            // Java-resource merger copies those like any other resource, so the
+            // second copy of a path is a hard error and the build stops at
+            // `:app:mergeDebugJavaResource`:
+            //
+            //   3 files found with path 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'
+            //     - com.squareup.okhttp3:okhttp-brotli:5.4.0/okhttp-brotli-5.4.0.jar
+            //     - com.squareup.okhttp3:logging-interceptor:5.4.0/logging-interceptor-5.4.0.jar
+            //     - com.squareup.okhttp3:okhttp-dnsoverhttps:5.3.2/okhttp-dnsoverhttps-5.3.2.jar
+            //
+            // Both of those entries are JVM metadata that Android cannot use:
+            // the manifest describes an OSGi bundle, the class beside it
+            // describes a JPMS module, and an APK is neither. They are dead
+            // weight, so they are dropped instead of being picked between.
+            // (Verified by listing the three real jars: those two entries are
+            // everything any of them puts under `versions/9`.)
+            excludes += "META-INF/versions/**/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/versions/**/module-info.class"
+            // The same two paths written literally, because these are the exact
+            // ones the failing build named — no reliance on how the glob above
+            // is interpreted.
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/versions/9/module-info.class"
         }
         // Native libraries are stored COMPRESSED in the APK.
         //
@@ -505,4 +533,35 @@ dependencies {
 // ---------------------------------------------------------------------------
 configurations.configureEach {
     exclude(mapOf("group" to "org.json", "module" to "json"))
+}
+
+// ---------------------------------------------------------------------------
+// NiceHttp drags a second OkHttp version onto the classpath — pin it back
+//
+// NiceHttp (com.github.Blatzar:NiceHttp, the client CloudStream plugins link
+// against) declares `com.squareup.okhttp3:okhttp-jvm:5.3.2` and
+// `com.squareup.okhttp3:okhttp-dnsoverhttps:5.3.2`. The two requests resolve
+// differently:
+//
+//  * `okhttp-jvm` is only an ALIAS. Its Gradle metadata points at the
+//    multiplatform root `com.squareup.okhttp3:okhttp`, so the request takes part
+//    in normal conflict resolution and Hikari's own 5.4.0 wins — which is why
+//    no okhttp-jvm jar appears anywhere in the build, and why the Android
+//    artifact (`okhttp-android`, the one whose AAR metadata forced compileSdk
+//    36) is the only OkHttp core on the classpath.
+//  * `okhttp-dnsoverhttps` is a plain, standalone module. Nothing else asks for
+//    it at a newer version, so its 5.3.2 request stands and a 5.3.2 jar ends up
+//    beside a 5.4.0 core — it is one of the three jars that broke
+//    `:app:mergeDebugJavaResource` (see the packaging block above).
+//
+// A 5.3.x OkHttp module calling into 5.4.0 internals is a NoSuchMethodError
+// waiting for whoever touches it. Nothing in Hikari uses DnsOverHttps (checked
+// across app/src) and neither does the bundled cloudstream3.jar, but plugins
+// link against NiceHttp's tree, so the class has to stay on the classpath:
+// pinning it to 5.4.0 puts the whole OkHttp family on ONE version, which is the
+// same rule the rest of this build follows (see the okhttp note in
+// gradle/libs.versions.toml and the org.json block above).
+// ---------------------------------------------------------------------------
+configurations.configureEach {
+    resolutionStrategy.force("com.squareup.okhttp3:okhttp-dnsoverhttps:${libs.versions.okhttp.get()}")
 }
