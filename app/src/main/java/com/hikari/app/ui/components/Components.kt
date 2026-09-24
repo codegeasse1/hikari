@@ -392,6 +392,11 @@ fun EmptyState(
      *  "Verify site" next to "Retry" for an extension behind a bot wall. */
     action2Label: String? = null,
     action2: (() -> Unit)? = null,
+    /** The engine's own words for WHY it is empty — an exception name and
+     *  message, an HTTP status, a "could not be loaded". Shown small and quiet
+     *  under [subtitle], verbatim: it is the one line that makes an empty
+     *  catalog diagnosable instead of mysterious (see CatalogViewModel). */
+    detail: String? = null,
 ) {
     Column(
         Modifier
@@ -417,6 +422,15 @@ fun EmptyState(
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 6.dp)
         )
+        if (!detail.isNullOrBlank()) {
+            Text(
+                tr(detail),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 10.dp)
+            )
+        }
         if (actionLabel != null && action != null) {
             Button(onClick = action, modifier = Modifier.padding(top = 16.dp)) {
                 Text(tr(actionLabel))

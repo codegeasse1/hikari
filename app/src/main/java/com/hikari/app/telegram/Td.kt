@@ -88,6 +88,48 @@ object Td {
         val size: Long,
         /** `data:` URL of the post's inline minithumbnail, when it has one. */
         val thumb: String?,
+        /**
+         * The post's own TEXT — the caption the user typed under the video.
+         *
+         * This is what makes a caption work as a tag: people post a batch of
+         * videos captioned "abc", then search `abc` to get the batch back. It is
+         * kept separate from [fileName] because the two are searched differently
+         * (Telegram can search its own message text across the whole chat; it
+         * cannot search a file name) — see [SearchIn].
+         */
+        val caption: String = "",
+        /** The video's original file name, as the sender wrote it. */
+        val fileName: String = "",
+        /**
+         * TDLib file id of the video's real THUMBNAIL (`Video.thumbnail.file`),
+         * or 0 when the post has none. Fetched on demand so a list of videos
+         * shows pictures instead of black rectangles — see [thumbPath].
+         */
+        val thumbFileId: Int = 0,
+    )
+
+    /** What a search inside a chat looks at — see [ChatVideo.caption].
+     *  [fileName]. A caption is message text, so Telegram indexes it; a file
+     *  name is not, so that half has its own walker (see [searchChatVideos]). */
+    enum class SearchIn(val key: String) {
+        CHAT("chat"),
+        VIDEO("video"),
+        BOTH("both");
+
+        companion object {
+            fun fromKey(key: String?): SearchIn = entries.firstOrNull { it.key == key } ?: CHAT
+        }
+    }
+
+    /** One page of [searchChatVideos]. */
+    data class ChatVideoPage(
+        val videos: List<ChatVideo>,
+        /** Hand back as the next call's `cursor`; 0 means there is nothing more. */
+        val nextCursor: Long,
+        /** How many posts this call actually looked at — printed by the UI, so a
+         *  partial scan never pretends to be a complete one. */
+        val scanned: Int,
+        val exhausted: Boolean,
     )
 
     /** What a file's download looks like right now. */
@@ -170,6 +212,13 @@ object Td {
     private val chatValues = ConcurrentHashMap<Long, TdApi.Chat>()
     private val mainOrder = ConcurrentHashMap<Long, Long>()
     private val fileValues = ConcurrentHashMap<Int, TdApi.File>()
+
+    /**
+     * Files fetched on demand with [loadFile], for the ones TDLib has not sent
+     * an `UpdateFile` about yet. Kept separate from [fileValues] so a live
+     * update always outranks a snapshot, and cleared whenever [fileValues] is.
+     */
+    private val fetchedFiles = ConcurrentHashMap<Int, TdApi.File>()
 
     // ---- lifecycle -------------------------------------------------------
 
@@ -387,6 +436,7 @@ object Td {
         chatValues.clear()
         mainOrder.clear()
         fileValues.clear()
+        fetchedFiles.clear()
         _chats.value = emptyList()
         _me.value = ""
         _sentTo.value = ""
@@ -627,6 +677,7 @@ object Td {
                 chatValues.clear()
                 mainOrder.clear()
                 fileValues.clear()
+                fetchedFiles.clear()
                 _chats.value = emptyList()
                 _me.value = ""
                 _busy.value = false
@@ -771,6 +822,9 @@ object Td {
                 date = message.date,
                 size = c.video.video.size,
                 thumb = minithumb(c.video.minithumbnail),
+                caption = c.caption.text,
+                fileName = c.video.fileName,
+                thumbFileId = c.video.thumbnail?.file?.id ?: 0,
             )
             is TdApi.MessageAnimation -> ChatVideo(
                 chatId = chatId,
@@ -781,6 +835,9 @@ object Td {
                 date = message.date,
                 size = c.animation.animation.size,
                 thumb = minithumb(c.animation.minithumbnail),
+                caption = c.caption.text,
+                fileName = c.animation.fileName,
+                thumbFileId = c.animation.thumbnail?.file?.id ?: 0,
             )
             is TdApi.MessageDocument -> {
                 val doc = c.document
@@ -794,11 +851,132 @@ object Td {
                         date = message.date,
                         size = doc.document.size,
                         thumb = minithumb(doc.minithumbnail),
+                        caption = c.caption.text,
+                        fileName = doc.fileName,
+                        thumbFileId = doc.thumbnail?.file?.id ?: 0,
                     )
                 } else null
             }
             else -> null
         }
+
+    /** How many posts one [searchChatVideos] call will walk before handing
+     *  control back to the caller (so a 50 000-post channel cannot sit in one
+     *  call without the UI ever seeing a page). */
+    private const val SCAN_MESSAGES_PER_CALL = 400
+
+    /**
+     * Search ONE chat's videos. See [ChatVideo.caption] for why this is split.
+     *
+     * [SearchIn.CHAT] is answered by Telegram itself
+     * ([TdApi.SearchChatMessages], filtered to video messages): the caption is
+     * message text, so TDLib can search the chat's WHOLE history for it and come
+     * back with the next cursor — this is the "I captioned that batch abc, show
+     * me the batch" case, and it is complete.
+     *
+     * [SearchIn.VIDEO] and [SearchIn.BOTH] cannot be: a file name is not message
+     * text, so there is nothing for Telegram to index and the chat's history has
+     * to be walked ([TdApi.GetChatHistory], a local database read — no network),
+     * [SCAN_MESSAGES_PER_CALL] posts at a time. The returned [ChatVideoPage]
+     * reports how far it got so the UI can say so and offer to go further,
+     * rather than pretending a partial walk was exhaustive.
+     */
+    suspend fun searchChatVideos(
+        chatId: Long,
+        text: String,
+        inText: SearchIn,
+        cursor: Long = 0,
+        limit: Int = 60,
+    ): ChatVideoPage {
+        // NOT named `query`: this object's `query(...)` is the function that
+        // actually talks to TDLib, and a parameter of the same name would
+        // shadow it inside this body — TDLib would then be "sent" a String.
+        val q = text.trim()
+        if (q.isEmpty()) return ChatVideoPage(emptyList(), 0, 0, true)
+
+        if (inText == SearchIn.CHAT) {
+            val found = query(
+                TdApi.SearchChatMessages(
+                    chatId,
+                    /* topicId = */ null,
+                    q,
+                    /* senderId = */ null,
+                    cursor,
+                    /* offset = */ 0,
+                    limit.coerceIn(1, 100),
+                    TdApi.SearchMessagesFilterVideo(),
+                ),
+            ) as? TdApi.FoundChatMessages
+                ?: return ChatVideoPage(emptyList(), 0, 0, true)
+            val videos = found.messages.mapNotNull { videoOf(chatId, it) }
+            val next = if (videos.isEmpty()) 0L else found.nextFromMessageId
+            return ChatVideoPage(videos, next, found.messages.size, next == 0L)
+        }
+
+        val out = mutableListOf<ChatVideo>()
+        val seen = HashSet<Long>()
+        var from = cursor
+        var scanned = 0
+        var more = true
+        while (more && scanned < SCAN_MESSAGES_PER_CALL && out.size < limit) {
+            val page = query(TdApi.GetChatHistory(chatId, from, 0, 100, false)) as? TdApi.Messages
+                ?: return ChatVideoPage(out, 0, scanned, true)
+            if (page.messages.isEmpty()) {
+                more = false
+                break
+            }
+            for (m in page.messages) {
+                scanned++
+                // TDLib answers `GetChatHistory` from `fromMessageId` INCLUSIVE,
+                // so the post the last page ended on arrives again — deduped here
+                // rather than by the caller.
+                if (!seen.add(m.id)) continue
+                val v = videoOf(chatId, m) ?: continue
+                val hit = v.fileName.contains(q, ignoreCase = true) ||
+                    (inText == SearchIn.BOTH && v.caption.contains(q, ignoreCase = true))
+                if (hit) out += v
+            }
+            from = page.messages.last().id
+            more = page.messages.size >= 100
+        }
+        val exhausted = !more
+        return ChatVideoPage(
+            videos = out.take(limit),
+            nextCursor = if (exhausted) 0L else from,
+            scanned = scanned,
+            exhausted = exhausted,
+        )
+    }
+
+    /**
+     * The local path of a small file — a video's thumbnail — asking TDLib to
+     * fetch it if it has not, and waiting up to [waitMs] for it.
+     *
+     * Null when there is nothing (or nothing yet): the caller falls back to the
+     * post's inline preimage and then to a placeholder. Thumbnails are a few
+     * kilobytes, so a `DownloadFile` for the whole file (limit 0) is the right
+     * ask — it arrives in well under a second on any connection.
+     */
+    suspend fun thumbPath(fileId: Int, waitMs: Long = 8_000): String? {
+        if (fileId == 0) return null
+        // One query to learn whether TDLib knows the file at all (it may not have
+        // sent an UpdateFile for it yet — the same gap that stopped videos
+        // playing), then only cheap map reads while polling.
+        runCatching { loadFile(fileId) }
+        val deadline = System.currentTimeMillis() + waitMs
+        var asked = false
+        while (true) {
+            val f = fileValues[fileId] ?: fetchedFiles[fileId]
+            val local = f?.local
+            if (local?.isDownloadingCompleted == true && local.path.isNotBlank()) return local.path
+            if (!asked) {
+                request(fileId, 0, 0)
+                asked = true
+            }
+            if (System.currentTimeMillis() >= deadline) return null
+            delay(200)
+        }
+    }
 
     /**
      * A post's inline thumbnail as a `data:` URL the app's poster loader already
@@ -815,7 +993,11 @@ object Td {
 
     /** Everything known about one file, read straight out of TDLib. */
     fun fileState(fileId: Int): FileState? {
-        val f = fileValues[fileId] ?: execute(TdApi.GetFile(fileId)) as? TdApi.File ?: return null
+        // `fileValues` is the live update stream and always wins. `fetchedFiles`
+        // is the fallback for a file TDLib has never sent an `UpdateFile` about —
+        // and there is one of those for every video the user has not played yet,
+        // which is precisely the case that failed (see [loadFile]).
+        val f = fileValues[fileId] ?: fetchedFiles[fileId] ?: return null
         return FileState(
             path = f.local?.path.orEmpty(),
             size = maxOf(f.size, f.expectedSize),
@@ -823,6 +1005,41 @@ object Td {
             complete = f.local?.isDownloadingCompleted == true,
             active = f.local?.isDownloadingActive == true,
         )
+    }
+
+    /**
+     * Makes sure TDLib has been ASKED for this file, and returns it.
+     *
+     * This is the fix for "Playback failed — ExoPlaybackException
+     * [ERROR_CODE_IO_UNSPECIFIED] Telegram is not available URL:
+     * hikari-td://file?id=2033". Nothing was wrong with the id and nothing was
+     * wrong with the network: `fileState` only knew the files some
+     * `UpdateFile` had already mentioned, and TDLib only sends an update once a
+     * download exists. A video the user has never watched has never been
+     * downloaded, so TDLib had said nothing about it — and the `Client.execute
+     * (GetFile)` the old code fell back to can never answer either, because
+     * `execute` only serves a small set of queries that need no database (getFile
+     * is not one of them), so the fallback silently returned null every time.
+     * Every Telegram video therefore failed to play on the first tap.
+     *
+     * Asking properly is asynchronous — a real round trip to TDLib — so this is
+     * `suspend`, and the answer is cached in [fetchedFiles] for the many
+     * `fileState` reads that follow (the player's read loop calls it constantly,
+     * and a fresh query per call would be a round trip per 2 MiB chunk).
+     */
+    suspend fun loadFile(fileId: Int): TdApi.File? {
+        fileValues[fileId]?.let { return it }
+        fetchedFiles[fileId]?.let { return it }
+        val f = query(TdApi.GetFile(fileId)) as? TdApi.File ?: return null
+        fetchedFiles[fileId] = f
+        return f
+    }
+
+    /** [fileState], with a real lookup behind it — see [loadFile]. Suspend
+     *  because that lookup goes to TDLib. */
+    suspend fun stateOf(fileId: Int): FileState? {
+        loadFile(fileId)
+        return fileState(fileId)
     }
 
     /** Ask TDLib to fetch [limit] bytes of [fileId] starting at [offset]. */

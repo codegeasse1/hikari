@@ -35,7 +35,7 @@ import okhttp3.Response
  * already stored in the jar — the same rule Nekoread's CloudflareInterceptor
  * uses.
  */
-class ExtensionCloudflareInterceptor(
+open class ExtensionCloudflareInterceptor(
     /** The UA extension requests use when they set none — the one the solver's
      *  WebView must advertise for the clearance to be accepted. */
     private val defaultUserAgent: () -> String,

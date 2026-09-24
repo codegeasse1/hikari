@@ -11,11 +11,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridScope
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -23,8 +28,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.AlertDialog
@@ -39,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,12 +72,15 @@ import com.hikari.app.telegram.TelegramVideo
 import com.hikari.app.telegram.TelegramWeb
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.PosterImage
+import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -876,6 +887,7 @@ private fun TelegramChatVideos(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val app = LocalContext.current.applicationContext as HikariApp
     var videos by remember(chatId) { mutableStateOf<List<Td.ChatVideo>?>(null) }
     var loadingMore by remember(chatId) { mutableStateOf(false) }
     var reachedEnd by remember(chatId) { mutableStateOf(false) }
@@ -885,11 +897,33 @@ private fun TelegramChatVideos(
         videos = withContext(Dispatchers.IO) { Td.chatVideos(chatId, 0, 60) }
     }
 
+    // ---- search inside this chat (see the search button below) -------------
+    // A search that lives HERE, in the chat, and does not hand the user over to
+    // the app's Search tab: that tab searches every engine for a title, while
+    // the question here is "where in this chat is the video I posted under the
+    // tag abc". Different question, different page.
+    var searchOpen by rememberSaveable(chatId) { mutableStateOf(false) }
+    var typed by rememberSaveable(chatId) { mutableStateOf("") }
+    var query by rememberSaveable(chatId) { mutableStateOf("") }
+    var searchInKey by rememberSaveable(chatId) { mutableStateOf(Td.SearchIn.CHAT.key) }
+    val searchIn = Td.SearchIn.fromKey(searchInKey)
+    // How the videos are drawn — list, tiles or posters. Remembered across
+    // visits (it is a preference, not a per-chat whim); see TgView.
+    var viewKey by rememberSaveable { mutableStateOf(TgView.LIST.key) }
+    val view = TgView.fromKey(viewKey)
+    LaunchedEffect(Unit) { viewKey = TgView.fromKey(app.store.telegramView()).key }
+    // Debounced, like the in-engine search on a manga catalog page: typing
+    // three letters must be one search, not three.
+    LaunchedEffect(typed) {
+        delay(350)
+        query = typed.trim()
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 6.dp, end = 16.dp, top = 10.dp, bottom = 6.dp),
+                .padding(start = 6.dp, end = 8.dp, top = 10.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
@@ -909,9 +943,98 @@ private fun TelegramChatVideos(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            IconButton(onClick = {
+                searchOpen = !searchOpen
+                if (!searchOpen) {
+                    typed = ""
+                    query = ""
+                }
+            }) {
+                Icon(
+                    if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                    contentDescription = if (searchOpen) tr("Close search") else tr("Search this chat"),
+                )
+            }
+        }
+
+        // ---- how the videos are drawn --------------------------------------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                tr("View"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TgView.entries.forEach { v ->
+                TgPill(tr(v.label), view == v) {
+                    viewKey = v.key
+                    scope.launch { runCatching { app.store.setTelegramView(v.key) } }
+                }
+            }
+        }
+
+        if (searchOpen) {
+            OutlinedTextField(
+                value = typed,
+                onValueChange = { typed = it },
+                label = { Text(tr("Search in this chat")) },
+                singleLine = true,
+                trailingIcon = {
+                    if (typed.isNotEmpty()) {
+                        IconButton(onClick = {
+                            typed = ""
+                            query = ""
+                        }) {
+                            Icon(Icons.Filled.Close, contentDescription = tr("Clear"))
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    tr("Look in"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Td.SearchIn.entries.forEach { m ->
+                    TgPill(tr(searchInLabel(m)), searchIn == m) { searchInKey = m.key }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
         }
 
         val loaded = videos
+
+        // A search with something to look for takes the page over. Its results
+        // are NOT a filter over what is loaded — a chat's videos may be 400
+        // posts deep and the tag being looked for near the bottom — so they come
+        // from the chat's own history (see Td.searchChatVideos). It stays on
+        // this page: nothing navigates to the app's Search tab.
+        if (searchOpen && query.isNotBlank()) {
+            ChatVideoSearchResults(
+                chatId = chatId,
+                query = query,
+                searchIn = searchIn,
+                view = view,
+                onPlay = { playTdVideo(context, it) },
+            )
+            return@Column
+        }
+
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -925,19 +1048,11 @@ private fun TelegramChatVideos(
             )
             return@Column
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 12.dp,
-                end = 12.dp,
-                top = 4.dp,
-                bottom = LocalTaskbarInset.current + 16.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ChatVideoCollection(
+            videos = loaded,
+            view = view,
+            onPlay = { playTdVideo(context, it) },
         ) {
-            items(loaded, key = { it.chatId.toString() + "/" + it.messageId }) { video ->
-                TdVideoRow(video) { playTdVideo(context, video) }
-            }
             item(key = "telegram-td-more") {
                 if (reachedEnd) {
                     Text(
@@ -969,6 +1084,131 @@ private fun TelegramChatVideos(
     }
 }
 
+/**
+ * How the videos of a chat are laid out. Three answers, because a channel with
+ * 400 clips and a chat with three are not the same page:
+ *
+ *  * [LIST] — one row per video, thumbnail beside the title. Best when the
+ *    titles are what the user is reading.
+ *  * [TILE] — a grid of wide cards, thumbnail on top. Best when the thumbnails
+ *    are what they are scanning.
+ *  * [POSTER] — a grid of tall, poster-shaped cards. The shape a viewer is used
+ *    to from every streaming app's "all episodes" wall, and the fastest to scan
+ *    by sight.
+ *
+ * The choice is stored (Settings-free, per install — see AppStore.telegramView)
+ * because it is a preference about how the user reads a chat, not a per-chat
+ * setting.
+ */
+private enum class TgView(val key: String, val label: String) {
+    LIST("list", "List"),
+    TILE("tile", "Tiles"),
+    POSTER("poster", "Posters");
+
+    companion object {
+        fun fromKey(key: String?): TgView = entries.firstOrNull { it.key == key } ?: LIST
+    }
+}
+
+/** The label for one of the search scopes — see [Td.SearchIn]. */
+private fun searchInLabel(m: Td.SearchIn): String = when (m) {
+    Td.SearchIn.CHAT -> "Chat text"
+    Td.SearchIn.VIDEO -> "Video names"
+    Td.SearchIn.BOTH -> "Both"
+}
+
+/**
+ * The videos of one chat, in whichever of the three shapes is selected, with an
+ * optional trailing block (the "load older" paging line, or a search's own
+ * footer).
+ *
+ * ONE lazy container rather than three: [LazyVerticalGrid] with a single fixed
+ * column IS the list view, so all three shapes share the same paging, the same
+ * keys and the same footer, and only the cell changes. (A [LazyColumn] plus two
+ * grids would have meant three copies of the footer and three ways for them to
+ * drift apart.)
+ */
+@Composable
+private fun ChatVideoCollection(
+    videos: List<Td.ChatVideo>,
+    view: TgView,
+    onPlay: (Td.ChatVideo) -> Unit,
+    footer: (LazyGridScope.() -> Unit)? = null,
+) {
+    LazyVerticalGrid(
+        columns = when (view) {
+            TgView.LIST -> GridCells.Fixed(1)
+            TgView.TILE -> GridCells.Adaptive(168.dp)
+            TgView.POSTER -> GridCells.Adaptive(112.dp)
+        },
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 12.dp,
+            end = 12.dp,
+            top = 4.dp,
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(videos, key = { it.chatId.toString() + "/" + it.messageId }) { video ->
+            when (view) {
+                TgView.LIST -> TdVideoRow(video) { onPlay(video) }
+                TgView.TILE -> TdVideoTile(video) { onPlay(video) }
+                TgView.POSTER -> TdVideoPoster(video) { onPlay(video) }
+            }
+        }
+        footer?.invoke(this)
+    }
+}
+
+/**
+ * A video's picture: the real thumbnail TDLib keeps for it, falling back to the
+ * post's tiny inline minithumbnail, and then to a play glyph.
+ *
+ * This is the difference between a usable list and a wall of black rectangles.
+ * The list used to draw only the inline *minithumbnail* — a 20-pixel preimage
+ * that plenty of posts simply do not carry (and which the app's poster loader
+ * would not have known how to turn into an image even when they did, because a
+ * `data:` URI never went through [PosterLoader.model]) — so most rows showed the
+ * glyph on a dark box. TDLib's own thumbnail (`Video.thumbnail.file`) is a real
+ * JPEG it can fetch in a moment, and [Td.thumbPath] asks for it and hands back
+ * its path for Coil to draw. The minithumbnail is still the instant placeholder,
+ * so a row is never empty while the real one arrives.
+ */
+@Composable
+private fun TdVideoThumb(
+    video: Td.ChatVideo,
+    modifier: Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    var path by remember(video.thumbFileId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(video.thumbFileId) {
+        if (video.thumbFileId == 0) return@LaunchedEffect
+        path = withContext(Dispatchers.IO) { Td.thumbPath(video.thumbFileId) }
+    }
+    // The inline preimage goes through the poster loader, which is what knows how
+    // to turn a `data:` URI into bytes on disk that Coil can draw.
+    val pre = remember(video.thumb) { PosterLoader.model(video.thumb) }
+    val model: Any? = remember(path, pre) { path?.let { File(it) } ?: pre }
+    Box(modifier.background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+        if (model != null) {
+            PosterImage(
+                model = model,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+        } else {
+            Icon(
+                Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 /** One video from a chat: its thumbnail, its title, when it was posted. */
 @Composable
 private fun TdVideoRow(video: Td.ChatVideo, onPlay: () -> Unit) {
@@ -981,29 +1221,13 @@ private fun TdVideoRow(video: Td.ChatVideo, onPlay: () -> Unit) {
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
+        TdVideoThumb(
+            video = video,
             modifier = Modifier
                 .width(104.dp)
                 .height(60.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (!video.thumb.isNullOrBlank()) {
-                PosterImage(
-                    model = video.thumb,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+                .clip(RoundedCornerShape(10.dp)),
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -1012,25 +1236,244 @@ private fun TdVideoRow(video: Td.ChatVideo, onPlay: () -> Unit) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            val meta = listOfNotNull(
-                stamp(video.date),
-                duration(video.duration),
-                sizeLabel(video.size),
-            ).joinToString(" · ")
-            if (meta.isNotBlank()) {
-                Text(
-                    meta,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
+            VideoMeta(video)
         }
         Icon(
             Icons.Filled.PlayArrow,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+/** One video as a wide card: thumbnail on top, title under it (see [TgView.TILE]). */
+@Composable
+private fun TdVideoTile(video: Td.ChatVideo, onPlay: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .clickable(onClick = onPlay)
+            .padding(6.dp),
+    ) {
+        TdVideoThumb(
+            video = video,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(9.dp)),
+        )
+        Text(
+            video.title,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
+        )
+        val meta = listOfNotNull(duration(video.duration), sizeLabel(video.size)).joinToString(" · ")
+        if (meta.isNotBlank()) {
+            Text(
+                meta,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp),
+            )
+        }
+    }
+}
+
+/** One video as a poster (see [TgView.POSTER]): tall card, thumbnail cropped to
+ *  fill it, play glyph over the picture, title and duration under. */
+@Composable
+private fun TdVideoPoster(video: Td.ChatVideo, onPlay: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onPlay),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(12.dp)),
+        ) {
+            TdVideoThumb(
+                video = video,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            // A play badge, because a poster is a still: without it the card
+            // reads as a photo, not as something that plays.
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp)
+                    .size(26.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            duration(video.duration)?.let { d ->
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                ) {
+                    Text(d, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        Text(
+            video.title,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 5.dp, start = 2.dp, end = 2.dp),
+        )
+    }
+}
+
+/** "when · how long · how big", the line under a row's title. */
+@Composable
+private fun VideoMeta(video: Td.ChatVideo, withStamp: Boolean = true) {
+    val meta = listOfNotNull(
+        if (withStamp) stamp(video.date) else null,
+        duration(video.duration),
+        sizeLabel(video.size),
+    ).joinToString(" · ")
+    if (meta.isNotBlank()) {
+        Text(
+            meta,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
+/** One of a row of selectable pills — the same shape as [CatalogTab], which is
+ *  what every other "pick one of these" control in the app looks like. */
+@Composable
+private fun TgPill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * The results of a search inside one chat (see the search button in
+ * [TelegramChatVideos]).
+ *
+ * They come from the chat's own history, not from the loaded list, and the
+ * footer is honest about how far it has looked: a file name is not message
+ * text, so a file-name search cannot be indexed by Telegram — it walks the
+ * history a page at a time, and "Search further back" continues where it
+ * stopped. A chat-text search IS done by Telegram across the whole chat, so it
+ * is complete on the first call.
+ */
+@Composable
+private fun ChatVideoSearchResults(
+    chatId: Long,
+    query: String,
+    searchIn: Td.SearchIn,
+    view: TgView,
+    onPlay: (Td.ChatVideo) -> Unit,
+) {
+    var results by remember(chatId, query, searchIn) { mutableStateOf<List<Td.ChatVideo>?>(null) }
+    var cursor by remember(chatId, query, searchIn) { mutableStateOf(0L) }
+    var scanned by remember(chatId, query, searchIn) { mutableIntStateOf(0) }
+    var done by remember(chatId, query, searchIn) { mutableStateOf(false) }
+    var busy by remember(chatId, query, searchIn) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(chatId, query, searchIn) {
+        results = null
+        val page = withContext(Dispatchers.IO) { Td.searchChatVideos(chatId, query, searchIn, 0, 60) }
+        results = page.videos
+        cursor = page.nextCursor
+        scanned = page.scanned
+        done = page.exhausted
+    }
+
+    val found = results
+    if (found == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    if (found.isEmpty()) {
+        EmptyState(
+            title = tr("Nothing found"),
+            subtitle = when (searchIn) {
+                Td.SearchIn.CHAT -> tr("No video in this chat has that in the text it was posted with.")
+                Td.SearchIn.VIDEO -> tr("No video in this chat has that in its file name.")
+                Td.SearchIn.BOTH -> tr("No video in this chat matches that, in its text or its file name.")
+            },
+        )
+        return
+    }
+    ChatVideoCollection(videos = found, view = view, onPlay = onPlay) {
+        item(key = "telegram-td-search-footer") {
+            Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                Text(
+                    tr("Looked at %s post(s) here.").replace("%s", scanned.toString()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!done && cursor != 0L) {
+                    TextButton(
+                        enabled = !busy,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                val page = withContext(Dispatchers.IO) {
+                                    Td.searchChatVideos(chatId, query, searchIn, cursor, 60)
+                                }
+                                busy = false
+                                val have = results.orEmpty()
+                                results = have + page.videos.filterNot { v -> have.any { it.messageId == v.messageId } }
+                                cursor = page.nextCursor
+                                scanned += page.scanned
+                                done = page.exhausted
+                            }
+                        },
+                    ) { Text(if (busy) tr("Searching…") else tr("Search further back")) }
+                } else {
+                    Text(
+                        tr("That is the whole chat."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

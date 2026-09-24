@@ -969,6 +969,17 @@ fun HomeScreen(nav: NavHostController) {
                                 // an unsupported extension library) and it is
                                 // reported here now.
                                 ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[selected]
+                                // Manga engines were missing from this chain for
+                                // the same reason Aniyomi was: a manga source
+                                // that fails to LINK or load (an OkHttp class it
+                                // needs absent from the app, a source whose own
+                                // assertions refuse our client) fell through to
+                                // the generic "the site may be down" line. Its
+                                // own record is `MangaProvider.lastOutcome`, and
+                                // the success lines in that map ("✓ 40 titles")
+                                // are filtered out so only a real failure shows.
+                                ?: com.hikari.app.manga.MangaProvider.lastOutcome[selected]
+                                    ?.takeIf { !it.startsWith("✓") && !it.startsWith("✔") }
                         // An extension whose site answers with a wall (403/503/429,
                         // a Cloudflare body, a "One moment, please" interstitial)
                         // is the one failure the user can actually do something

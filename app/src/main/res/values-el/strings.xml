@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Εμφάνιση ολόκληρου του κάδρου</string>
     <string name="player_crop_to_fill">Περικοπή για πλήρωση</string>
     <string name="player_crop_to_fill_desc">Μεγέθυνση μέχρι να γεμίσει το κάδρο</string>
+    <string name="player_stretch_video">Τέντωμα για πλήρωση</string>
+    <string name="player_stretch_video_desc">Γέμισε την οθόνη, αγνοώντας το σχήμα</string>
     <string name="player_rotate_screen">Περιστροφή οθόνης</string>
     <string name="player_rotate_screen_desc">Περιστροφή βίντεο κατά 90°</string>
     <string name="player_server_chooser">Επιλογή διακομιστή</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Εικόνα σε εικόνα</string>
     <string name="cd_player_options">Επιλογές player</string>
     <string name="cd_lock_controls">Κλείδωμα χειριστηρίων</string>
-    <string name="cd_fit_or_crop">Προσαρμογή ή περικοπή βίντεο</string>
+    <string name="cd_fit_or_crop">Προσαρμογή, περικοπή ή τέντωμα βίντεο</string>
 </resources>

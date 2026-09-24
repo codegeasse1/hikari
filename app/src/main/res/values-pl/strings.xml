@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Pokaż całą klatkę</string>
     <string name="player_crop_to_fill">Przytnij, aby wypełnić</string>
     <string name="player_crop_to_fill_desc">Powiększ, aż wypełni ramkę</string>
+    <string name="player_stretch_video">Rozciągnij, aby wypełnić</string>
+    <string name="player_stretch_video_desc">Wypełnij ekran, ignorując kształt</string>
     <string name="player_rotate_screen">Obróć ekran</string>
     <string name="player_rotate_screen_desc">Obróć wideo o 90°</string>
     <string name="player_server_chooser">Wybór serwera</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Obraz w obrazie</string>
     <string name="cd_player_options">Opcje odtwarzacza</string>
     <string name="cd_lock_controls">Zablokuj sterowanie</string>
-    <string name="cd_fit_or_crop">Dopasuj lub przytnij wideo</string>
+    <string name="cd_fit_or_crop">Dopasuj, przytnij lub rozciągnij wideo</string>
 </resources>

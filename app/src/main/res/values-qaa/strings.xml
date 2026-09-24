@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Show da hool frame</string>
     <string name="player_crop_to_fill">Chop so it fill</string>
     <string name="player_crop_to_fill_desc">Zoom til da frame full</string>
+    <string name="player_stretch_video">Stretch it to fill</string>
+    <string name="player_stretch_video_desc">Full da screen, no care bout shape</string>
     <string name="player_rotate_screen">Spin da screen</string>
     <string name="player_rotate_screen_desc">Spin da pikchur 90° each time</string>
     <string name="player_server_chooser">Pik a serva</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Pikchur in pikchur</string>
     <string name="cd_player_options">Playa stuf</string>
     <string name="cd_lock_controls">Lok da butuns</string>
-    <string name="cd_fit_or_crop">Fit or chop da pikchur</string>
+    <string name="cd_fit_or_crop">Fit, chop or stretch da pikchur</string>
 </resources>

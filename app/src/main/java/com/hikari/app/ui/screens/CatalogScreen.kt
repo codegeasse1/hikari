@@ -61,6 +61,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.ProviderType
 import com.hikari.app.i18n.I18n
 import com.hikari.app.manga.MangaProvider
 import com.hikari.app.providers.ContentProvider
@@ -143,8 +144,44 @@ class CatalogViewModel(
     private val _appliedQuery = MutableStateFlow("")
     val appliedQuery: StateFlow<String> = _appliedQuery.asStateFlow()
 
+    /**
+     * WHY this page is empty, when it is empty because the engine failed rather
+     * than because the site had nothing to give.
+     *
+     * Nothing used to be here, and the load's `catch` threw the exception away —
+     * so every failure rendered as the same "The site may be blocking or down"
+     * line and sent the reader off to pass a Cloudflare check that was never the
+     * problem. The real reasons (an extension that fails to LINK, a source whose
+     * `client` assertion refuses the app's OkHttp stack, an HTTP 403, a DNS
+     * failure) are already recorded by the engine — [MangaProvider.lastOutcome] /
+     * `AniyomiProvider.catalogErrors` — and are read back here and shown under
+     * the empty state, verbatim. This is the difference between a report the user
+     * can act on and a mystery.
+     */
+    private val _reason = MutableStateFlow<String?>(null)
+    val reason: StateFlow<String?> = _reason.asStateFlow()
+
     private var page = 1
     private var loadJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * The engine's own record of the last call it made to this provider, when
+     * that call FAILED. Success lines ("✓ 40 title(s)") are not errors and are
+     * filtered out — only the reason an empty result may be shown to the reader.
+     */
+    private fun providerReason(): String? {
+        val p = manager.byId(providerId) ?: return null
+        val raw = when (p.config.type) {
+            ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
+            ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id]
+            ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.catalogErrors[p.config.id]
+            ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.catalogErrors[p.config.id]
+            ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.catalogErrors[p.config.id]
+            ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
+            else -> null
+        }
+        return raw?.takeIf { it.isNotBlank() && !it.startsWith("✓") && !it.startsWith("✔") }
+    }
 
     init {
         loadNext()
@@ -162,6 +199,7 @@ class CatalogViewModel(
         page = 1
         _items.value = emptyList()
         _done.value = false
+        _reason.value = null
         _appliedQuery.value = q.trim()
         // Always re-ask: a blank query goes back to the catalog's own list, and
         // loadNext pages whichever of the two is in force (see it, and note that
@@ -202,6 +240,17 @@ class CatalogViewModel(
                 }
                 withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
             } catch (t: Throwable) {
+                // NOT swallowed any more. Two reasons: the message is what the
+                // empty state now shows (so a failure is diagnosable from the
+                // screen — see [_reason]), and a CANCELLATION must not be
+                // mistaken for an answer. The previous version turned every
+                // cancel into an empty page, and `loadNext` cancels the job it
+                // is replacing — so a cancelled load came back to mark the list
+                // "done" and clear the spinner while the load that replaced it
+                // was still running (pagination stopped dead after a search, and
+                // the grid looked like the engine had returned nothing).
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _reason.value = describeFailure(t)
                 emptyList()
             }
             val translated = if (providerId in com.hikari.app.data.Translator.enabledIds()) {
@@ -211,8 +260,14 @@ class CatalogViewModel(
                 fresh
             }
             if (translated.isEmpty()) {
+                // The engine's own record of the call wins over the generic
+                // message the caller caught: it is the one that names the real
+                // cause (a class-load failure, an assertion about our OkHttp
+                // stack, a 403). Cleared again the moment anything arrives.
+                _reason.value = providerReason() ?: _reason.value
                 _done.value = true
             } else {
+                _reason.value = null
                 val seen = _items.value.map { it.uniqueId }.toMutableSet()
                 val merged = _items.value + translated.filter { seen.add(it.uniqueId) }
                 _items.value = merged
@@ -223,10 +278,19 @@ class CatalogViewModel(
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
+    /** "ClassName: message" from the ROOT cause of [t] — what the empty state
+     *  shows when a load failed. See [_reason]. */
+    private fun describeFailure(t: Throwable): String {
+        var c: Throwable = t
+        while (c.cause != null && c.cause !== c) c = c.cause!!
+        return c::class.java.simpleName + (c.message?.let { ": $it" } ?: "")
+    }
+
     fun refresh() {
         page = 1
         _items.value = emptyList()
         _done.value = false
+        _reason.value = null
         loadNext()
     }
 }
@@ -275,6 +339,7 @@ fun CatalogScreen(
     // "search this extension" magnifier, and Search's own scope row.
     val searchable = rawType == "manga"
     val appliedQuery by vm.appliedQuery.collectAsState()
+    val catalogReason by vm.reason.collectAsState()
     val selectedCatalog by vm.catalog.collectAsState()
     // The engine's two own lists, as tabs (see [CatalogViewModel.catalog]).
     // Offered only where they are the whole story: the page is a MANGA catalog
@@ -461,6 +526,12 @@ fun CatalogScreen(
                         if (searchable) " " + tr("If the site shows a Cloudflare check, open it and pass it once.") else "",
                     actionLabel = if (searchable) tr("Verify site") else null,
                     action = if (searchable) openVerify else null,
+                    // What the engine actually said, when it said anything —
+                    // see CatalogViewModel.reason. Without it a source that
+                    // fails to LINK (an OkHttp class it needs missing from the
+                    // app, a source whose own assertions refuse our client) read
+                    // exactly like a site that was merely down.
+                    detail = catalogReason,
                 )
             }
         } else {

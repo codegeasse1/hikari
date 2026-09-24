@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">전체 프레임 표시</string>
     <string name="player_crop_to_fill">채우기 위해 자르기</string>
     <string name="player_crop_to_fill_desc">프레임이 가득 찰 때까지 확대</string>
+    <string name="player_stretch_video">늘려서 채우기</string>
+    <string name="player_stretch_video_desc">비율을 무시하고 화면을 채웁니다</string>
     <string name="player_rotate_screen">화면 회전</string>
     <string name="player_rotate_screen_desc">한 번에 90° 회전</string>
     <string name="player_server_chooser">서버 선택</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">화면 속 화면</string>
     <string name="cd_player_options">플레이어 옵션</string>
     <string name="cd_lock_controls">컨트롤 잠금</string>
-    <string name="cd_fit_or_crop">화면 맞춤 또는 자르기</string>
+    <string name="cd_fit_or_crop">영상 맞춤, 자르기 또는 늘리기</string>
 </resources>

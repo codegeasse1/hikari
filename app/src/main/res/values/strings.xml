@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Show the whole frame</string>
     <string name="player_crop_to_fill">Crop to fill</string>
     <string name="player_crop_to_fill_desc">Zoom until the frame is filled</string>
+    <string name="player_stretch_video">Stretch to fill</string>
+    <string name="player_stretch_video_desc">Fill the screen, ignoring the shape</string>
     <string name="player_rotate_screen">Rotate screen</string>
     <string name="player_rotate_screen_desc">Turn the video 90° at a time</string>
     <string name="player_server_chooser">Server chooser</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Picture-in-picture</string>
     <string name="cd_player_options">Player options</string>
     <string name="cd_lock_controls">Lock controls</string>
-    <string name="cd_fit_or_crop">Fit or crop video</string>
+    <string name="cd_fit_or_crop">Fit, crop or stretch video</string>
 </resources>

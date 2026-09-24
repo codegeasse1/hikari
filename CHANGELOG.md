@@ -1,3 +1,91 @@
+## 0.10.31
+
+### Fixed
+
+- **Trackers: the sign-in finished in your BROWSER now comes back to the app.** The dialog's own
+  WebView catches the redirect itself, which is why signing in inside the app worked — but the
+  button beside its paste field ("Open the login page in your browser") exists for the services
+  whose Cloudflare check refuses a WebView, and the browser had *nobody to hand the link to*: it
+  reaches the end of the sign-in with an access token in the URL and the app had never declared
+  that it can receive `hikari://oauth`, so the page simply sat there. The app claims that URL now,
+  the window is `singleTask` so the link lands in the window that is already running (the dialog
+  that started the sign-in is still there, holding the `state` the service checks — MyAnimeList's
+  `code_verifier`), and the dialog finishes it through the paste path it already had. With no
+  dialog on screen the app finishes what it can on its own — AniList's token flow needs nothing but
+  the stored client id — and says where to paste the link for the code-based ones instead of
+  pretending nothing arrived.
+- **Trackers: the login page now FITS, and whatever does not fit can be reached.** A WebView lays
+  a desktop-width page out at its natural width inside a phone-width box and then does not let you
+  pan sideways, so AniList's page (its sign-in form plus the Turnstile widget) ran off the right
+  edge with no way to get to the other half — including the "verify you are human" box and the
+  sign-in button themselves. The page is laid out at its own width and scaled to the box
+  (`useWideViewPort` + `loadWithOverviewMode`), pinch-zoom is on, the box is taller, and the
+  guidance now names the `https://anilist.co/api/v2/oauth/pin` redirect for the accounts that
+  would rather read the token as text.
+- **Extensions: the empty catalogue, for real this time.** The newer keiyoushi/Aniyomi sources
+  build their own client out of the one the app hands them and, before using it, assert *by class
+  name* that it contains a `CloudflareInterceptor` — Hikari's Cloudflare handling lived under a
+  different name, so that assert threw on the first request of the first catalogue and the
+  extension returned nothing: no titles, no verification page, nothing on screen to explain it,
+  for a whole family of sources at once. The client now carries one under the name they look for.
+  The same family also compiles against **OkHttp 5** (`okhttp3.CompressionInterceptor`,
+  `okhttp3.brotli.Brotli`, `okhttp3.zstd.Zstd`, `com.squareup.zstd.okio`), and against a jsoup
+  newer than the 4.x one this app shipped — referencing a class the host does not have is a
+  `NoClassDefFoundError` in the extension, which is also an empty catalogue with nothing on
+  screen. OkHttp is 5.4.0 with brotli and zstd, jsoup is 1.22.2, and the zstd packages are kept
+  whole in the release build's shrinking rules (external bytecode calls them by name, so R8 cannot
+  see the reference and would remove them).
+- **Catalogues now say WHY they are empty.** Every provider already records a one-line outcome
+  (`✗ HTTP 403`, `✗ Cloudflare challenge`, `✗ the site answered, but it came back with no titles`)
+  and the empty screen threw it away, so a broken extension and an extension with nothing to show
+  looked identical. The reason is drawn under the empty-state text now, and an empty page is
+  recorded as "the site answered but its markup may have changed" instead of as a success with
+  zero titles. The load also no longer swallows `CancellationException` — a cancelled load used to
+  be recorded as a *finished* one, clearing the spinner while its replacement was still running.
+- **Telegram: videos in Saved Messages played for nobody** — "Playback failed —
+  `ExoPlaybackException [ERROR_CODE_IO_UNSPECIFIED]` Telegram is not available". Nothing was wrong
+  with the id or the network: TDLib only tells the app about a file once a download exists, and a
+  video the user has never watched has never been downloaded, so the app knew nothing about it —
+  and the `getFile` fallback it used instead can never answer, because TDLib's synchronous
+  `execute` only serves queries that need no database. Every Telegram video therefore failed on
+  the first tap. The file is now *asked* for properly (an asynchronous `getFile`, cached), so
+  playback starts on the first tap.
+- **Telegram: searching inside a chat, without leaving it.** Every chat and Saved Messages now has
+  a search button in its header, and the results appear in that same chat page — nothing jumps to
+  the app's Search tab, which is a different question entirely ("which engine has this title").
+  The search has three scopes, picked right there: **Chat text** (the caption a batch of videos was
+  posted under — Telegram's own index, so it searches the WHOLE chat and is complete), **Video
+  names** (the file name, which Telegram cannot index, so the chat's history is walked and the
+  footer says exactly how many posts it looked at, with "Search further back" to continue), or
+  **Both**. That is the "I captioned that batch abc, show me the batch" case working as a tag.
+- **Telegram: real thumbnails, and three ways to read a chat.** Rows drew the tiny inline
+  *minithumbnail* that plenty of posts do not carry — which is why the list was a wall of black
+  boxes. The video's actual TDLib thumbnail is fetched now (with the inline preimage as the instant
+  placeholder). And the chat's videos can be read as a **list**, as **tiles**, or as **posters** —
+  the choice is one tap in the chat header and is remembered.
+- **Player: the fit/crop button also stretches.** The fullscreen-adjacent resize control cycled
+  between fit and crop; it now also cycles to **stretch** (fill the screen, ignoring the aspect
+  ratio) for the sources whose bars are worse than a slightly wrong shape, and the menu entry names
+  all three.
+- **Television: the player's own menus can be walked with the remote.** A D-pad can only land on a
+  control that is *focusable*, and `setOnClickListener` makes a view clickable while leaving it
+  unfocusable — which is the state of every pill, chip, swatch, header icon and ✕ in the player's
+  panels, and of the whole bottom pill row, whose scroll container additionally declared
+  `descendantFocusability="blocksDescendants"` ("no descendant of mine may EVER take focus"). So on
+  a television those menus could be seen and not selected. Anything clickable is now reachable, each
+  one wears a focus ring drawn inside its own bounds, the pill row can hand focus to its pills, and
+  a menu that opens takes the focus itself so the first arrow press walks it. A television box's
+  virtual remote (which reports itself as a touch device) gets `focusableInTouchMode` too, or the
+  remote would still find nothing on those boxes.
+
+### Changed
+
+- **OkHttp 5.4.0, jsoup 1.22.2**, with `okhttp-brotli` and `okhttp-zstd` — the versions the
+  current extension ecosystem is actually compiled against. This is also what the app's own
+  extension client now presents to sources that inspect it.
+- **App window is `singleTask`** so an external-browser sign-in returns into the running window
+  (see the tracker fix above).
+
 ## 0.10.30
 
 ### Fixed

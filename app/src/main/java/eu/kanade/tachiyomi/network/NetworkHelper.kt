@@ -2,7 +2,7 @@ package eu.kanade.tachiyomi.network
 
 import android.content.Context
 import com.hikari.app.HikariApp
-import com.hikari.app.net.ExtensionCloudflareInterceptor
+import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import okhttp3.Cache
@@ -50,7 +50,15 @@ class NetworkHelper(private val context: Context) {
         .cache(Cache(File(context.cacheDir, "aniyomi_network_cache"), 5L * 1024 * 1024))
         .addInterceptor(UncaughtExceptionInterceptor())
         .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
-        .addInterceptor(ExtensionCloudflareInterceptor(::defaultUserAgentProvider))
+        // Named `CloudflareInterceptor` ON PURPOSE, and it must stay that name:
+        // extension-lib 1.6 sources assert, by class simple name, that the client
+        // they are handed contains one — see [CloudflareInterceptor]. Hikari's own
+        // [com.hikari.app.net.ExtensionCloudflareInterceptor] is the same
+        // behaviour, but the assertion looks for the shorter name, so installing
+        // that one instead left EVERY extension in that family throwing
+        // "CloudflareInterceptor must be present in default client" on its first
+        // request — an empty catalog with no visible reason.
+        .addInterceptor(CloudflareInterceptor(context, ::defaultUserAgentProvider))
 
     val client: OkHttpClient = clientBuilder
         .addNetworkInterceptor(

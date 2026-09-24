@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">แสดงเฟรมทั้งหมด</string>
     <string name="player_crop_to_fill">ครอปให้เต็มจอ</string>
     <string name="player_crop_to_fill_desc">ซูมจนเต็มเฟรม</string>
+    <string name="player_stretch_video">ยืดให้เต็มจอ</string>
+    <string name="player_stretch_video_desc">เต็มหน้าจอโดยไม่สนใจสัดส่วน</string>
     <string name="player_rotate_screen">หมุนหน้าจอ</string>
     <string name="player_rotate_screen_desc">หมุนวิดีโอครั้งละ 90°</string>
     <string name="player_server_chooser">เลือกเซิร์ฟเวอร์</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">ภาพซ้อนภาพ</string>
     <string name="cd_player_options">ตัวเลือกเครื่องเล่น</string>
     <string name="cd_lock_controls">ล็อกปุ่มควบคุม</string>
-    <string name="cd_fit_or_crop">ปรับหรือครอปวิดีโอ</string>
+    <string name="cd_fit_or_crop">พอดี ครอป หรือยืดวิดีโอ</string>
 </resources>

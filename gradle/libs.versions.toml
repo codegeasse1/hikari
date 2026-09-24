@@ -8,8 +8,26 @@ composeBom = "2025.01.01"
 navigationCompose = "2.7.7"
 datastore = "1.1.1"
 media3 = "1.7.1"
-okhttp = "4.12.0"
-jsoup = "1.17.2"
+# OkHttp 5, NOT 4. This is not a preference — extensions built on the current
+# extension-lib (1.6.x / the keiyoushi multisrc families) link against classes
+# that only exist in OkHttp 5: `okhttp3.CompressionInterceptor`, `okhttp3.Gzip`,
+# `okhttp3.brotli.Brotli`/`BrotliInterceptor` and `okhttp3.zstd.Zstd`, plus
+# `com.squareup.zstd.okio.zstdCompress`. `KeiSource.client` (the lazy client
+# every multisrc source builds out of the one we hand it) references all of them
+# from its own method bodies, so on OkHttp 4 those extensions died with a
+# NoClassDefFoundError on the first request — an empty catalog with nothing on
+# screen to explain it. Aniyomi's own app — the one these extensions are built
+# against — ships 5.4.0 with brotli+zstd, and so does Nekoread. See the notes
+# beside the imports in app/build.gradle.kts.
+okhttp = "5.4.0"
+# jsoup is the other library extensions are compiled against and do NOT bundle;
+# they link our copy, so it has to be at least as new as the one extension-lib
+# 1.6 was compiled with (1.22.2 — same as Aniyomi's app). Older copies are how
+# a source that compiles fine against its own jsoup dies here on
+# NoSuchMethodError.
+jsoup = "1.22.2"
+# Transitive dependency of okhttp-zstd; Android artifacts, published by Square.
+zstdKmpOkio = "0.4.0"
 coil = "2.6.0"
 splashscreen = "1.0.1"
 serializationJson = "1.11.0"
@@ -59,6 +77,17 @@ androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.re
 androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
 androidx-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+# Supplied because extensions LINK against them (they are not bundled into the
+# extension APKs): extension-lib's `KeiSource` adds
+# `CompressionInterceptor(Brotli, Gzip, Zstd)` to the client it builds, and
+# `KeiSource` also imports `okhttp3.brotli.Brotli`/`okhttp3.zstd.Zstd` and
+# `com.squareup.zstd.okio.zstdCompress` for its on-disk filter cache. Without
+# these three on the classpath the extension class fails to link the moment the
+# source is used. Same set Aniyomi's app ships.
+okhttp-brotli = { group = "com.squareup.okhttp3", name = "okhttp-brotli", version.ref = "okhttp" }
+okhttp-zstd = { group = "com.squareup.okhttp3", name = "okhttp-zstd", version.ref = "okhttp" }
+logging-interceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+zstd-kmp-okio = { group = "com.squareup.zstd", name = "zstd-kmp-okio", version.ref = "zstdKmpOkio" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 coil-svg = { group = "io.coil-kt", name = "coil-svg", version.ref = "coil" }

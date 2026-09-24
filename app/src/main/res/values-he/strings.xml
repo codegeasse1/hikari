@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">הצג את הפריים כולו</string>
     <string name="player_crop_to_fill">חיתוך למילוי</string>
     <string name="player_crop_to_fill_desc">הגדל עד למילוי הפריים</string>
+    <string name="player_stretch_video">מתיחה למילוי</string>
+    <string name="player_stretch_video_desc">מלא את המסך בלי להתחשב בצורה</string>
     <string name="player_rotate_screen">סיבוב המסך</string>
     <string name="player_rotate_screen_desc">סובב את הווידאו ב-90° בכל פעם</string>
     <string name="player_server_chooser">בחירת שרת</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">תמונה בתוך תמונה</string>
     <string name="cd_player_options">אפשרויות נגן</string>
     <string name="cd_lock_controls">נעל בקרות</string>
-    <string name="cd_fit_or_crop">התאם או חתוך וידאו</string>
+    <string name="cd_fit_or_crop">התאמה, חיתוך או מתיחה של הווידאו</string>
 </resources>

@@ -16,8 +16,10 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
@@ -1206,6 +1208,11 @@ class PlayerActivity : ComponentActivity() {
                             selected = resizeIndex == 1,
                         ),
                         GlassOption(
+                            getString(R.string.player_stretch_video), getString(R.string.player_stretch_video_desc),
+                            iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
+                            selected = resizeIndex == 2,
+                        ),
+                        GlassOption(
                             getString(R.string.player_rotate_screen), getString(R.string.player_rotate_screen_desc),
                             iconRes = R.drawable.ic_rotate, marker = RowMarker.ICON, chevron = true,
                         ),
@@ -1237,17 +1244,17 @@ class PlayerActivity : ComponentActivity() {
                     iconRes = R.drawable.ic_settings,
                 ) { which ->
                     when (which) {
-                        0, 1 -> {
+                        0, 1, 2 -> {
                             resizeIndex = which
-                            playerView?.resizeMode = if (which == 0) {
-                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                            } else {
-                                C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                            playerView?.resizeMode = when (which) {
+                                1 -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                                2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                else -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT
                             }
                             updateResizeButton()
                         }
-                        2 -> cycleRotation()
-                        3 -> {
+                        3 -> cycleRotation()
+                        4 -> {
                             // Same setting as Settings -> Playback start -> the
                             // "Don't play directly" switch, so the player can
                             // flip it without leaving the video.
@@ -1261,7 +1268,7 @@ class PlayerActivity : ComponentActivity() {
                             }
                             openOptions()
                         }
-                        4 -> showCodecOverlay()
+                        5 -> showCodecOverlay()
                     }
                 }
             }
@@ -2657,20 +2664,37 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
-    /** Toggles the video resize mode between Fit and Crop (zoom to fill). */
+    /**
+     * Cycles the video resize mode: **Fit → Crop → Stretch**, then back to Fit.
+     *
+     * Fit and Crop are the two modes the button always had. Stretch is the third
+     * one the user asked for: it ignores the video's aspect ratio entirely and
+     * scales the picture to the exact size of the view, so a 4:3 or Cinemascope
+     * source fills a phone screen with no letterbox bars at all (at the cost of
+     * distorting it). It is `RESIZE_MODE_FILL` — "do nothing" in
+     * AspectRatioFrameLayout's own measure pass, i.e. leave the view at its
+     * measured (full-screen) size and let the surface scale into it.
+     *
+     * Note the first two modes are the ExoPlayer *video scaling* constants, which
+     * is what this button has always used — they happen to be the numbers
+     * AspectRatioFrameLayout reads as FIXED_WIDTH / FIXED_HEIGHT, which is why
+     * they render as fit and crop here. Switching them to RESIZE_MODE_* would
+     * change what the user already knows the button to do, so they are left
+     * alone and the new mode is appended.
+     */
     private fun cycleResize() {
         val pv = playerView ?: return
-        resizeIndex = (resizeIndex + 1) % 2
-        pv.resizeMode = if (resizeIndex == 0) {
-            C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-        } else {
-            C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+        resizeIndex = (resizeIndex + 1) % 3
+        pv.resizeMode = when (resizeIndex) {
+            1 -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+            2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+            else -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT
         }
         updateResizeButton()
     }
 
-    /** The fit/crop button has no label any more, so the state is shown by the
-     *  accent tint (accent = cropping/zoomed, white = fitting). */
+    /** The fit/crop/stretch button has no label any more, so the state is shown
+     *  by the accent tint (accent = anything but plain fit, white = fitting). */
     private fun updateResizeButton() {
         resizeBtn?.imageTintList = tintOf(resizeIndex == 0)
     }
@@ -3387,12 +3411,134 @@ class PlayerActivity : ComponentActivity() {
         // Start the scrollable pill row at its left edge, never wherever a
         // focus jump (media3's control view) left it.
         resetPillScroll()
+
+        // …and keep every control the remote is supposed to reach actually
+        // reachable, including the pills this method just moved (see
+        // [applyTvFocus]).
+        applyTvFocus()
     }
 
     /** Puts the pill row back at its left edge. */
     private fun resetPillScroll() {
         val sc = findViewById<HorizontalScrollView>(R.id.player_pill_scroll) ?: return
         if (sc.scrollX != 0) sc.scrollTo(0, 0)
+    }
+
+    // ---- Television: every control the remote has to be able to press ------
+    //
+    // The player is the screen a television viewer spends all their time on,
+    // and the View toolkit does not make its controls reachable by itself: a
+    // D-pad can only land on a view that is FOCUSABLE, while
+    // `setOnClickListener` makes a view clickable and leaves it unfocusable —
+    // which is the state of every TextView pill, chip and swatch this player
+    // builds. Two more things were actively in the way:
+    //
+    //  - the pill row's `HorizontalScrollView` carries
+    //    `android:descendantFocusability="blocksDescendants"`, which is a hard
+    //    "no descendant of mine may ever take focus", so the entire bottom menu
+    //    (speed, episodes, sources, quality, audio, subtitles, rotate, skip,
+    //    enhance) could not be reached with a remote at all, and
+    //  - the panels the menus open (see [presentGlass]) hold their ✕, their
+    //    header actions and their pills the same way.
+    //
+    // [applyTvFocus] lifts the block and walks the whole window, making
+    // anything clickable focusable and giving it a focus ring; a panel gets the
+    // same treatment when it opens, plus the focus itself (see [presentGlass]),
+    // so the first arrow press after a menu opens walks the menu rather than
+    // doing nothing. None of this runs on a phone: every entry point is behind
+    // [com.hikari.app.tv.TvMode.isTv], so touch behaviour, ripples and layout
+    // are untouched everywhere else.
+    private fun applyTvFocus() {
+        if (!com.hikari.app.tv.TvMode.isTv) return
+        // A scroll view that blocks its descendants is a menu nobody can walk.
+        runCatching {
+            findViewById<HorizontalScrollView>(R.id.player_pill_scroll)?.descendantFocusability =
+                ViewGroup.FOCUS_AFTER_DESCENDANTS
+        }
+        // The whole window, not just the control bar: the pills the control
+        // layout moves into the top bar, the lock button, the error panel's
+        // "next server" button and the loading cover are all children of it,
+        // and each one has to survive being moved around.
+        runCatching { window?.decorView?.tvFocusableTree() }
+    }
+
+    /**
+     * Makes every clickable-but-not-focusable view under this one reachable
+     * with a D-pad, and gives each of them a focus ring — see [applyTvFocus] for
+     * why a clickable view is not a focusable one.
+     */
+    private fun View.tvFocusableTree() {
+        if (isClickable && !isFocusable && visibility == View.VISIBLE) {
+            isFocusable = true
+            // A living-room box driven by a virtual remote can put its window
+            // into touch mode (those remotes send touch events) before the
+            // first key arrives, and a focusable-only view is unreachable from
+            // the D-pad while a window is in touch mode. Asserting this makes
+            // the remote work on those boxes too; on a real television, where
+            // no touch ever happens, it changes nothing.
+            isFocusableInTouchMode = true
+            // A FOREGROUND, not a background: every one of these controls
+            // already owns its background (a ripple, a gradient pill, a circle)
+            // and the foreground is the one free slot that is drawn over the
+            // content instead of under it. Only set when the view has none of
+            // its own, so nothing a panel deliberately put there is replaced.
+            if (foreground == null) foreground = tvFocusRing()
+        }
+        if (this is ViewGroup) {
+            for (i in 0 until childCount) getChildAt(i).tvFocusableTree()
+        }
+    }
+
+    /**
+     * The ring a focused control wears on a television, drawn as a
+     * focus-state-only foreground (see [View.tvFocusableTree]).
+     *
+     * It has to be visible on a dark glass pill that is *already* lit (the
+     * accent-filled Source/Quality pills), which is why it is the accent colour
+     * and two density pixels wide, and it has to be drawn entirely inside the
+     * control's own bounds — an un-inset stroke is centred on the edge and its
+     * outer half is painted away by whatever clips the control.
+     */
+    private fun tvFocusRing(): Drawable {
+        val d = resources.displayMetrics.density
+        val stroke = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            // Every row and pill in the player is a stadium, so the ring is one
+            // too; the radius is clamped to half the height when it is drawn.
+            cornerRadius = 999f
+            setColor(android.graphics.Color.TRANSPARENT)
+            setStroke((2f * d).roundToInt().coerceAtLeast(1), accentMidColor)
+        }
+        // Inset by the stroke's own outer half so all of it lands inside.
+        val inset = (1f * d).roundToInt().coerceAtLeast(1)
+        return StateListDrawable().apply {
+            addState(
+                intArrayOf(android.R.attr.state_focused),
+                InsetDrawable(stroke, inset),
+            )
+            addState(intArrayOf(), ColorDrawable(android.graphics.Color.TRANSPARENT))
+        }
+    }
+
+    /**
+     * The first control a D-pad would land on inside [root], in the order the
+     * window draws it.
+     *
+     * Used to hand the focus to a panel when it opens on a television: a dialog
+     * window that gains focus with nothing focused inside it still *looks* dead
+     * until the viewer presses a direction key, and the whole point of the TV
+     * fix is that the remote works the moment a menu appears.
+     */
+    private fun findFirstFocusable(root: View?): View? {
+        if (root == null) return null
+        if (root.isShown && root.visibility == View.VISIBLE && root.isFocusable) return root
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) {
+                val found = findFirstFocusable(root.getChildAt(i))
+                if (found != null) return found
+            }
+        }
+        return null
     }
 
     private fun syncLeftSpacer() {
@@ -4414,6 +4560,23 @@ class PlayerActivity : ComponentActivity() {
             setGravity(Gravity.CENTER)
             setDimAmount(0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+
+        // Television: a panel is a menu, and a menu a remote cannot walk is not
+        // a menu (see [applyTvFocus] for why a clickable View is not a
+        // focusable one — the ✕, the header actions and every pill in here are
+        // exactly that). The walk makes all of them selectable, and the focus
+        // goes to the first control INSIDE the panel's scroller — the first row,
+        // or the search field of the subtitle search box — so the very first
+        // arrow press moves within the panel; a panel whose rows arrive later
+        // (the search results) falls back to the headers, which are still
+        // reachable and still lead back out.
+        if (com.hikari.app.tv.TvMode.isTv) {
+            dialog.window?.decorView?.post {
+                val decor = dialog.window?.decorView ?: return@post
+                decor.tvFocusableTree()
+                (findFirstFocusable(scroll) ?: findFirstFocusable(decor))?.requestFocus()
+            }
         }
 
         // A cap TALLER than the rows it holds is just empty glass: the panel's
@@ -10348,6 +10511,9 @@ class PlayerActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemUi()
+        // The remote's targets are set up once the whole window exists (see
+        // [applyTvFocus]); a no-op on every device that is not a television.
+        applyTvFocus()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

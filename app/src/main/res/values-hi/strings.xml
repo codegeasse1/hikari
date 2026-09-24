@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">पूरा फ़्रेम दिखाएँ</string>
     <string name="player_crop_to_fill">भरने के लिए क्रॉप करें</string>
     <string name="player_crop_to_fill_desc">फ़्रेम भरने तक ज़ूम करें</string>
+    <string name="player_stretch_video">भरने के लिए खींचें</string>
+    <string name="player_stretch_video_desc">आकार अनदेखा करके स्क्रीन भरें</string>
     <string name="player_rotate_screen">स्क्रीन घुमाएँ</string>
     <string name="player_rotate_screen_desc">वीडियो को एक बार में 90° घुमाएँ</string>
     <string name="player_server_chooser">सर्वर चुनें</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">पिक्चर-इन-पिक्चर</string>
     <string name="cd_player_options">प्लेयर विकल्प</string>
     <string name="cd_lock_controls">नियंत्रण लॉक करें</string>
-    <string name="cd_fit_or_crop">वीडियो फ़िट या क्रॉप करें</string>
+    <string name="cd_fit_or_crop">वीडियो फ़िट करें, क्रॉप करें या खींचें</string>
 </resources>

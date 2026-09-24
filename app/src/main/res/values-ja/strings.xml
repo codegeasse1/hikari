@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">フレーム全体を表示</string>
     <string name="player_crop_to_fill">切り抜いて拡大</string>
     <string name="player_crop_to_fill_desc">枠いっぱいまで拡大</string>
+    <string name="player_stretch_video">引き伸ばして全体表示</string>
+    <string name="player_stretch_video_desc">形を無視して画面いっぱいに表示</string>
     <string name="player_rotate_screen">画面を回転</string>
     <string name="player_rotate_screen_desc">1回につき90°回転</string>
     <string name="player_server_chooser">サーバー選択</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">ピクチャーインピクチャー</string>
     <string name="cd_player_options">プレイヤー設定</string>
     <string name="cd_lock_controls">操作をロック</string>
-    <string name="cd_fit_or_crop">映像を合わせる／切り抜く</string>
+    <string name="cd_fit_or_crop">動画をフィット・切り抜き・引き伸ばし</string>
 </resources>

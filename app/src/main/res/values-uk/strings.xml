@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Показати весь кадр</string>
     <string name="player_crop_to_fill">Обрізати із заповненням</string>
     <string name="player_crop_to_fill_desc">Збільшити до заповнення кадру</string>
+    <string name="player_stretch_video">Розтягнути на весь екран</string>
+    <string name="player_stretch_video_desc">Заповнити екран, ігноруючи форму</string>
     <string name="player_rotate_screen">Повернути екран</string>
     <string name="player_rotate_screen_desc">Повертати відео на 90°</string>
     <string name="player_server_chooser">Вибір сервера</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Картинка в картинці</string>
     <string name="cd_player_options">Налаштування плеєра</string>
     <string name="cd_lock_controls">Заблокувати керування</string>
-    <string name="cd_fit_or_crop">Вписати або обрізати відео</string>
+    <string name="cd_fit_or_crop">Вписати, обрізати або розтягнути відео</string>
 </resources>

@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Tüm kareyi göster</string>
     <string name="player_crop_to_fill">Doldurmak için kırp</string>
     <string name="player_crop_to_fill_desc">Çerçeve dolana kadar yakınlaştır</string>
+    <string name="player_stretch_video">Doldurmak için gere</string>
+    <string name="player_stretch_video_desc">Şekli yok sayıp ekranı doldur</string>
     <string name="player_rotate_screen">Ekranı döndür</string>
     <string name="player_rotate_screen_desc">Videoyu her seferinde 90° döndür</string>
     <string name="player_server_chooser">Sunucu seçici</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Resim içinde resim</string>
     <string name="cd_player_options">Oynatıcı seçenekleri</string>
     <string name="cd_lock_controls">Kontrolleri kilitle</string>
-    <string name="cd_fit_or_crop">Videoyu sığdır veya kırp</string>
+    <string name="cd_fit_or_crop">Videoyu sığdır, kırp veya ger</string>
 </resources>

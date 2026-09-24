@@ -115,11 +115,43 @@
 
              To add another icon: drop the icon resources in, add an alias here
              with enabled="false", and add its entry to
-             com.hikari.app.ui.AppIconVariants. -->
+             com.hikari.app.ui.AppIconVariants.
+
+             `launchMode="singleTask"` is here for the tracker redirect below: a
+             sign-in finished in the device's own browser comes back as a
+             `hikari://oauth` VIEW intent, and with the activity in the browser's
+             back stack as a second instance the app would be rebuilt from
+             scratch — the dialog that started the sign-in (and holds the `state`
+             the service will check) would be gone. As a singleTask the link
+             lands in the window that is already running, through onNewIntent. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|locale|layoutDirection|fontScale|density" />
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|locale|layoutDirection|fontScale|density">
+
+            <!-- The tracker sign-in redirect (the device's browser route).
+
+                 `hikari://oauth` is the redirect URI every tracker's app
+                 registration is told to use (TrackerApi.REDIRECT_URI), and
+                 without this filter the app could not receive it from a real
+                 browser at all: the browser reaches the end of the sign-in with
+                 an access token (or an authorization code) in the URL and has
+                 nobody to hand it to, so the page just sits there. The in-app
+                 WebView needs no filter — it intercepts the redirect before it
+                 ever navigates (see TrackerLoginDialog) — which is why only the
+                 browser half of the flow was broken.
+
+                 The host is `oauth` (`hikari://oauth`) rather than a wildcard on
+                 purpose: `hikari://pair` and the other internal links the app
+                 builds must not be claimable from a web page. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hikari" android:host="oauth" />
+            </intent-filter>
+        </activity>
 
         <!-- The official Hikari icon: the only alias enabled in the manifest,
              i.e. what a fresh install (and a factory-reset state) shows. -->

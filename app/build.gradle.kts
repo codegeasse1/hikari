@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 201
-    versionName = "0.10.30"
+    versionCode = 202
+    versionName = "0.10.31"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -308,6 +308,21 @@ dependencies {
     implementation("io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0")
     implementation(libs.androidx.splashscreen)
     implementation(libs.okhttp)
+    // The three classpath-only companions of OkHttp 5 that EXTENSIONS link
+    // against. They are not used by Hikari's own code (nothing here calls
+    // Brotli/Zstd directly) — they exist so the extensions that DO can link:
+    // extension-lib 1.6's `KeiSource` adds
+    // `CompressionInterceptor(Brotli, Gzip, Zstd)` to the client it builds out
+    // of ours, and imports `okhttp3.brotli.Brotli`, `okhttp3.zstd.Zstd` and
+    // `com.squareup.zstd.okio.zstdCompress` (that last one for the zstd-
+    // compressed filter cache it writes to disk). Every source in the keiyoushi
+    // multisrc families is built on that base class, and on a classpath without
+    // these it throws NoClassDefFoundError on the first request — the "extension
+    // shows no catalog, and there is no Cloudflare page either" report for a
+    // whole family at once. Aniyomi's own app ships exactly this set.
+    implementation(libs.okhttp.brotli)
+    implementation(libs.okhttp.zstd)
+    implementation(libs.zstd.kmp.okio)
     implementation(libs.jsoup)
     implementation(libs.coil.compose)
     // SVG decoding for extension logos: plenty of plugin/addon icons are
@@ -395,8 +410,10 @@ dependencies {
     // class still has to LINK — `AnimeHttpSource.createHttpServer()` and the
     // video-resolving paths name it.
     implementation("org.nanohttpd:nanohttpd:2.3.1")
-    // `HttpLoggingInterceptor` — NetworkHelper's OkHttp stack.
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // `HttpLoggingInterceptor` — NetworkHelper's OkHttp stack. (Kept on the same
+    // version ref as `okhttp` itself: the logging interceptor's `Client`-facing
+    // API moved in 5.x and a 4.x jar against a 5.x core is a link error.)
+    implementation(libs.logging.interceptor)
     // Required to LINK the CloudStream jar's generated ViewBinding classes
     // (ToastBinding et al.) — they implement androidx.viewbinding.ViewBinding
     // and call ViewBindings.findChildViewById. Without the viewbinding runtime

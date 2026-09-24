@@ -145,6 +145,16 @@
 -keep class okhttp3.** { *; }
 -keep class okio.** { *; }
 -keep class org.jsoup.** { *; }
+# The zstd codec OkHttp 5's `okhttp3.zstd.Zstd` / `okhttp3.CompressionInterceptor`
+# drive — and, again, one that only extension bytecode calls: the newer
+# keiyoushi multisrc families name `com.squareup.zstd.okio.OkioZstd` directly
+# (it is what applies the zstd filter to their on-disk response cache), so
+# without this line their sources would compile against it, ship, and then die
+# with a NoClassDefFoundError in the release build only. `com.squareup.zstd` is
+# the codec behind that adapter, reached through JNI, so it has to stay whole.
+-keep class com.squareup.zstd.** { *; }
+-dontwarn com.squareup.zstd.**
+-dontwarn org.brotli.**
 -keep class rx.** { *; }
 -keep class io.reactivex.** { *; }
 # NanoHTTPD is published under two package names, and the two extension hosts

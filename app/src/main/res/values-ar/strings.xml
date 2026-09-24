@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">إظهار الإطار كاملًا</string>
     <string name="player_crop_to_fill">قص لملء الشاشة</string>
     <string name="player_crop_to_fill_desc">تكبير حتى ملء الإطار</string>
+    <string name="player_stretch_video">تمديد لملء الشاشة</string>
+    <string name="player_stretch_video_desc">املأ الشاشة بغض النظر عن الشكل</string>
     <string name="player_rotate_screen">تدوير الشاشة</string>
     <string name="player_rotate_screen_desc">تدوير الفيديو 90° في كل مرة</string>
     <string name="player_server_chooser">اختيار الخادم</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">صورة داخل صورة</string>
     <string name="cd_player_options">خيارات المشغّل</string>
     <string name="cd_lock_controls">قفل عناصر التحكم</string>
-    <string name="cd_fit_or_crop">ملاءمة أو قص الفيديو</string>
+    <string name="cd_fit_or_crop">ملاءمة أو قص أو تمديد الفيديو</string>
 </resources>

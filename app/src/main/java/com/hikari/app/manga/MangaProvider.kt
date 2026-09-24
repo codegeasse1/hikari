@@ -102,7 +102,22 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                 CATALOG_LATEST -> src.getLatestUpdates(page)
                 else -> src.getPopularManga(page)
             }
-            lastOutcome[config.id] = "✓ ${mangas.mangas.size} title(s)"
+            // An EMPTY page is not a success, and calling it one is what left the
+            // reader staring at "The site may be blocking or down" with nothing
+            // else to go on: no exception was thrown, so no reason was recorded
+            // anywhere, and the one thing the app could have said ("the site
+            // answered, but this list came back with no titles in it") was lost.
+            // It is reported now — it is a different problem from a block, and it
+            // is the one the reader can take back to the extension's own page
+            // (the site's markup moved), rather than to a Cloudflare check that
+            // was never the issue.
+            if (mangas.mangas.isEmpty()) {
+                lastOutcome[config.id] =
+                    "✗ the site answered, but ${ref.name.lowercase()} came back with no titles " +
+                        "(page $page) — its markup may have changed"
+            } else {
+                lastOutcome[config.id] = "✓ ${mangas.mangas.size} title(s)"
+            }
             mangas.mangas.map { toItem(it, src) }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t

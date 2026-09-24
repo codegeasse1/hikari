@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.lifecycleScope
 import com.hikari.app.net.Updater
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.components.TelegramDialog
@@ -136,6 +137,10 @@ class MainActivity : AppCompatActivity() {
             "layout: " + (if (TvMode.isTv) "television" else "phone/tablet") +
                 " (" + TvMode.describe(this) + ")",
         )
+        // A tracker sign-in that came back through the DEVICE'S BROWSER lands
+        // here as the launch intent (see [handleTrackerRedirect] and the
+        // `hikari://oauth` filter in the manifest).
+        handleTrackerRedirect(intent)
         // A television shows this app LANDSCAPE, always.
         //
         // The TV layout is a landscape design (a rail down the left, rows to the
@@ -608,6 +613,76 @@ class MainActivity : AppCompatActivity() {
                 app.providers.refresh()
             }
         }
+    }
+
+    /**
+     * Android is handing the app a URL (a `hikari://oauth` tracker redirect
+     * finished in the device's own browser — see [TrackerRedirect]).
+     *
+     * The window is `singleTask` (see the manifest), so this is the running
+     * instance coming back to the front, not a second one being built: the
+     * dialog that started the sign-in is still on screen, and it is the one that
+     * must finish the link, because the `state` the service will check is a
+     * value only that dialog knows (it is MyAnimeList's PKCE `code_verifier`).
+     * So an open dialog simply receives it.
+     *
+     * With nothing on screen — a link opened long after the app was closed, or
+     * one that arrives before the app has any UI — the activity finishes what it
+     * CAN finish on its own: the token flow (AniList's implicit grant), which
+     * needs nothing but the client id already stored in the settings. Anything
+     * else says so, with the one instruction that works, rather than pretending
+     * the link was received and silently doing nothing with it.
+     */
+    private fun handleTrackerRedirect(intent: android.content.Intent?) {
+        val url = intent?.data?.toString().orEmpty()
+        if (!url.startsWith(com.hikari.app.tracker.TrackerApi.REDIRECT_URI)) return
+        if (com.hikari.app.tracker.TrackerRedirect.dialogOpen) {
+            com.hikari.app.tracker.TrackerRedirect.deliver(url)
+            return
+        }
+        val token = com.hikari.app.tracker.TrackerApi.tokenFromRedirect(url)
+        if (token == null) {
+            // A code flow (MyAnimeList, Shikimori) with no dialog to hand it to.
+            // The code alone is not enough to exchange — it needs the `state`
+            // that was generated when the sign-in started — so the honest answer
+            // is where to put it. The link itself carries the code, and the
+            // dialog's paste box reads a code out of a whole URL.
+            toast(com.hikari.app.i18n.I18n.t("This sign-in link has to be finished in the app: Settings → Trackers → paste it into the code field."))
+            return
+        }
+        val app = application as HikariApp
+        lifecycleScope.launch {
+            val client = runCatching { app.store.trackerClient(com.hikari.app.data.TrackerKind.ANILIST) }
+                .getOrDefault(com.hikari.app.data.TrackerClient(com.hikari.app.data.TrackerKind.ANILIST))
+            if (client.id.isBlank()) {
+                toast(
+                    com.hikari.app.i18n.I18n.t("AniList signed you in, but this app does not know your client id yet — Settings → Trackers, paste it, then resend the link.")
+                )
+                return@launch
+            }
+            val done = runCatching { com.hikari.app.tracker.TrackerApi.signInWithToken(client, token) }.getOrNull()
+            if (done == null) {
+                toast(com.hikari.app.i18n.I18n.t("AniList: could not finish the sign-in from that link."))
+                return@launch
+            }
+            done.onSuccess { account ->
+                runCatching { app.store.setTrackerAccount(account) }
+                toast(account.describe + " — connected")
+            }.onFailure { toast("AniList: " + it.message) }
+        }
+    }
+
+    /** A short message from a non-Compose place. */
+    private fun toast(text: String) {
+        runCatching { android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // Kept as the activity's current intent so anything that reads it later
+        // (and a recreation, which re-runs onCreate) sees the same link.
+        setIntent(intent)
+        handleTrackerRedirect(intent)
     }
 
     /** Set MainAPI.app to this activity, whichever form the jar compiles it

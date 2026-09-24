@@ -51,7 +51,13 @@ class TdFileDataSource : BaseDataSource(false) {
             ?: throw IOException("Not a Telegram file: ${dataSpec.uri}")
         fileId = id
         position = dataSpec.position
-        val first = Td.fileState(fileId) ?: throw IOException("Telegram is not available")
+        // stateOf (not fileState): a video the user has never played has never
+        // been downloaded, so TDLib has sent no `UpdateFile` for it and
+        // `fileState` alone knows nothing — it has to be ASKED for. That lookup
+        // is a round trip to TDLib and is therefore suspend; this runs on
+        // ExoPlayer's own loading thread, which is allowed to block.
+        val first = runBlocking { Td.stateOf(fileId) }
+            ?: throw IOException("Telegram did not return this video (file $fileId)")
         length = if (first.size > 0) first.size else C.LENGTH_UNSET.toLong()
         bytesRemaining = when {
             dataSpec.length != C.LENGTH_UNSET.toLong() -> dataSpec.length

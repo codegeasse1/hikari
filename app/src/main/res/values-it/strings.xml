@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Mostra l\'intero fotogramma</string>
     <string name="player_crop_to_fill">Ritaglia per riempire</string>
     <string name="player_crop_to_fill_desc">Ingrandisci fino a riempire il riquadro</string>
+    <string name="player_stretch_video">Allunga per riempire</string>
+    <string name="player_stretch_video_desc">Riempi lo schermo ignorando la forma</string>
     <string name="player_rotate_screen">Ruota schermo</string>
     <string name="player_rotate_screen_desc">Ruota il video di 90° alla volta</string>
     <string name="player_server_chooser">Scelta del server</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Immagine nell\'immagine</string>
     <string name="cd_player_options">Opzioni del player</string>
     <string name="cd_lock_controls">Blocca i comandi</string>
-    <string name="cd_fit_or_crop">Adatta o ritaglia il video</string>
+    <string name="cd_fit_or_crop">Adatta, ritaglia o allunga il video</string>
 </resources>

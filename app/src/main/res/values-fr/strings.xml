@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Afficher l\'image entière</string>
     <string name="player_crop_to_fill">Recadrer pour remplir</string>
     <string name="player_crop_to_fill_desc">Zoomer jusqu\'à remplir le cadre</string>
+    <string name="player_stretch_video">Étirer pour remplir</string>
+    <string name="player_stretch_video_desc">Remplit l'écran en ignorant la forme</string>
     <string name="player_rotate_screen">Pivoter l\'écran</string>
     <string name="player_rotate_screen_desc">Pivoter la vidéo de 90° à la fois</string>
     <string name="player_server_chooser">Sélecteur de serveur</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Image dans l\'image</string>
     <string name="cd_player_options">Options du lecteur</string>
     <string name="cd_lock_controls">Verrouiller les commandes</string>
-    <string name="cd_fit_or_crop">Ajuster ou recadrer la vidéo</string>
+    <string name="cd_fit_or_crop">Ajuster, recadrer ou étirer la vidéo</string>
 </resources>

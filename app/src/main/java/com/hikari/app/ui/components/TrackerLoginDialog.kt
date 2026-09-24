@@ -32,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,7 @@ import com.hikari.app.data.TrackerFlow
 import com.hikari.app.data.TrackerKind
 import com.hikari.app.net.Http
 import com.hikari.app.tracker.TrackerApi
+import com.hikari.app.tracker.TrackerRedirect
 import com.hikari.app.ui.openUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -185,6 +187,23 @@ fun TrackerLoginDialog(
         }
         when (kind.flow) {
             TrackerFlow.TOKEN -> {
+                // The mistake this flow invites, named out loud. AniList's
+                // developer page renders the app's CLIENT SECRET directly above
+                // the client id, and it is 32 characters of exactly the alphabet
+                // a token uses — so it passes the "looks like a token" check
+                // below, goes to the API, and comes back as a flat "Invalid
+                // token" that explains nothing (the user's own screenshot: the
+                // secret pasted into the token field, red "AniList: Invalid
+                // token" under it). If what was pasted IS the stored secret or
+                // the stored id, say exactly that instead.
+                if (fromPaste && (text == client.secret || text == client.id)) {
+                    handled = true
+                    error = I18n.t(
+                        "That is this app's client id/secret from the developer page — it is not a " +
+                            "sign-in token. Press Sign in above and approve the app first."
+                    )
+                    return
+                }
                 val token = TrackerApi.tokenFromRedirect(text)
                     ?: text.takeIf { fromPaste && it.matches(Regex("[A-Za-z0-9._~-]{20,}")) }
                     ?: return
@@ -212,6 +231,28 @@ fun TrackerLoginDialog(
             }
             else -> Unit
         }
+    }
+
+    // The dialog is the one component that can finish a browser sign-in (see
+    // TrackerRedirect): the `state` the service will check is generated HERE —
+    // and for MyAnimeList it is the PKCE `code_verifier` — so a `hikari://oauth`
+    // link that arrives from the device's browser while this dialog is open is
+    // handed straight into the paste path below, which already knows how to read
+    // a token or a code out of a whole URL.
+    DisposableEffect(Unit) {
+        TrackerRedirect.dialogOpen = true
+        onDispose {
+            TrackerRedirect.dialogOpen = false
+            // A link that arrived for a dialog the user then closed must not be
+            // applied later, against a different `state`.
+            TrackerRedirect.consume()
+        }
+    }
+    val incomingRedirect by TrackerRedirect.incoming.collectAsState()
+    LaunchedEffect(incomingRedirect) {
+        val url = incomingRedirect ?: return@LaunchedEffect
+        TrackerRedirect.consume()
+        handleRedirect(url, fromPaste = true)
     }
 
     // The app credentials the user pasted last time decide which step opens:
@@ -454,12 +495,58 @@ fun TrackerLoginDialog(
                             AndroidView(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(360.dp),
+                                    // Taller than it was (360dp): AniList's
+                                    // login page is a form plus a Cloudflare
+                                    // Turnstile widget, and at 360dp the
+                                    // widget's "Verify you are human" box and
+                                    // the login button both fell below the
+                                    // fold of the box itself.
+                                    .height(430.dp),
                                 factory = { ctx ->
                                     WebView(ctx).apply {
                                         settings.javaScriptEnabled = true
                                         settings.domStorageEnabled = true
                                         settings.userAgentString = Http.WEBVIEW_UA
+                                        // ---- the page must FIT, and whatever
+                                        // does not fit must still be reachable.
+                                        //
+                                        // These four lines are the whole of the
+                                        // "the login page opens but I cannot
+                                        // scroll it sideways, so half of it is
+                                        // off the edge and I can't use the page"
+                                        // report. A WebView by default lays a
+                                        // desktop-width page out at its natural
+                                        // width INSIDE a phone-width box, and
+                                        // then does not let you pan horizontally
+                                        // — so the right-hand half of the page
+                                        // (and any control out there, including
+                                        // AniList's Turnstile checkbox and its
+                                        // Sign in button) is simply unreachable.
+                                        //
+                                        // `useWideViewPort` + `loadWithOverviewMode`
+                                        // lay the page out at its own width and
+                                        // then scale it down to fit the box, so
+                                        // the WHOLE page is visible at once; and
+                                        // pinch-zoom (which needs both
+                                        // `setSupportZoom` and
+                                        // `builtInZoomControls`) lets the user
+                                        // zoom into a corner and pan around it,
+                                        // with the +/- buttons hidden because
+                                        // they only ever sat on top of the page.
+                                        settings.useWideViewPort = true
+                                        settings.loadWithOverviewMode = true
+                                        settings.setSupportZoom(true)
+                                        settings.builtInZoomControls = true
+                                        settings.displayZoomControls = false
+                                        // Nothing here needs the file system or
+                                        // a popup window, and both have been a
+                                        // source of WebView escapes in the past.
+                                        settings.allowFileAccess = false
+                                        settings.allowContentAccess = false
+                                        settings.setSupportMultipleWindows(false)
+                                        isVerticalScrollBarEnabled = true
+                                        isHorizontalScrollBarEnabled = true
+                                        isScrollbarFadingEnabled = false
                                         webViewClient = object : WebViewClient() {
                                             override fun shouldOverrideUrlLoading(
                                                 view: WebView,
@@ -468,6 +555,28 @@ fun TrackerLoginDialog(
                                                 val target = request.url?.toString().orEmpty()
                                                 if (target.startsWith("hikari://")) {
                                                     handleRedirect(target)
+                                                    return true
+                                                }
+                                                return false
+                                            }
+
+                                            // The pre-API-24 overload, and it is
+                                            // NOT dead code: a `hikari://` redirect
+                                            // that arrives from a plain 30x
+                                            // (Shikimori's, MAL's) dispatches
+                                            // through THIS one on some WebView
+                                            // builds, and the app then saw
+                                            // "ERR_UNKNOWN_URL_SCHEME" in the box
+                                            // instead of a sign-in. Both are
+                                            // handled so the flow does not depend
+                                            // on which overload the engine picked.
+                                            @Suppress("DEPRECATION")
+                                            override fun shouldOverrideUrlLoading(
+                                                view: WebView,
+                                                url: String,
+                                            ): Boolean {
+                                                if (url.startsWith("hikari://")) {
+                                                    handleRedirect(url)
                                                     return true
                                                 }
                                                 return false
@@ -496,7 +605,35 @@ fun TrackerLoginDialog(
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                tr("Logged in there but nothing happened? Paste the code from the address bar below."),
+                                tr("Pinch to zoom the page, then drag to pan — the whole page is reachable."),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                (if (kind.flow == TrackerFlow.TOKEN) {
+                                    tr(
+                                        "Signed in but nothing happened? The token comes back inside the " +
+                                            "redirect link, and this app does not always get to see it — so " +
+                                            "open the page in your browser, approve the app, then copy the " +
+                                            "hikari:// link out of the address bar and paste it below."
+                                    )
+                                } else {
+                                    tr(
+                                        "Signed in but nothing happened? Copy the code out of the address " +
+                                            "bar of the page you land on and paste it below."
+                                    )
+                                }) +
+                                    if (kind.flow == TrackerFlow.TOKEN) {
+                                        " " + tr(
+                                            "If your browser will not let you copy the address either, set " +
+                                                "this app's redirect URL to"
+                                        ) + " https://anilist.co/api/v2/oauth/pin " + tr(
+                                            "in AniList's developer page: AniList will then show the token " +
+                                                "as text you can copy. (That redirect URL works for the " +
+                                                "browser route only — the WebView above needs hikari://oauth.)"
+                                        )
+                                    } else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

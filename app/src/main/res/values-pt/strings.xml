@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Mostrar o quadro inteiro</string>
     <string name="player_crop_to_fill">Cortar para preencher</string>
     <string name="player_crop_to_fill_desc">Ampliar até preencher a tela</string>
+    <string name="player_stretch_video">Esticar para preencher</string>
+    <string name="player_stretch_video_desc">Preenche o ecrã ignorando a forma</string>
     <string name="player_rotate_screen">Girar tela</string>
     <string name="player_rotate_screen_desc">Girar o vídeo 90° por vez</string>
     <string name="player_server_chooser">Escolher servidor</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Imagem sobreposta</string>
     <string name="cd_player_options">Opções do player</string>
     <string name="cd_lock_controls">Bloquear controles</string>
-    <string name="cd_fit_or_crop">Ajustar ou cortar o vídeo</string>
+    <string name="cd_fit_or_crop">Ajustar, recortar ou esticar o vídeo</string>
 </resources>

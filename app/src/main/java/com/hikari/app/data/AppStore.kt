@@ -144,6 +144,9 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
+        /** `list` / `tile` / `poster` — how a Telegram chat's videos are drawn
+         *  (see AppStore.telegramView and TgView in the Telegram screen). */
+        val TELEGRAM_VIEW = stringPreferencesKey("telegramViewStyle")
         val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
         /**
          * Whether the IPTV tab's button is drawn in the taskbar. Its OWN
@@ -1472,6 +1475,21 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTelegramDontShow(dontShow: Boolean) {
         write("TELEGRAM_DONT_SHOW") { it[K.TELEGRAM_DONT_SHOW] = dontShow }
+    }
+
+    /**
+     * How a Telegram chat's videos are drawn — `list`, `tile` or `poster` (see
+     * TgView in the Telegram screen). A stored preference rather than per-screen
+     * state because it is about how the user reads a chat, not about one chat:
+     * having to re-pick "posters" on every channel would make the choice useless.
+     * Unknown/absent values mean `list`, which is what the page always looked
+     * like.
+     */
+    suspend fun telegramView(): String = store.data.map { it[K.TELEGRAM_VIEW].orEmpty() }
+        .distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun setTelegramView(view: String) {
+        write("TELEGRAM_VIEW") { it[K.TELEGRAM_VIEW] = view }
     }
 
     /** How many downloads may run simultaneously (1–10). */

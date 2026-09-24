@@ -9,6 +9,8 @@
     <string name="player_fit_video_desc">Het hele beeld tonen</string>
     <string name="player_crop_to_fill">Bijsnijden om te vullen</string>
     <string name="player_crop_to_fill_desc">Inzoomen tot het kader gevuld is</string>
+    <string name="player_stretch_video">Uitrekken om te vullen</string>
+    <string name="player_stretch_video_desc">Vul het scherm zonder de vorm</string>
     <string name="player_rotate_screen">Scherm draaien</string>
     <string name="player_rotate_screen_desc">Video telkens 90° draaien</string>
     <string name="player_server_chooser">Serverkeuze</string>
@@ -30,5 +32,5 @@
     <string name="cd_pip">Beeld-in-beeld</string>
     <string name="cd_player_options">Speleropties</string>
     <string name="cd_lock_controls">Bediening vergrendelen</string>
-    <string name="cd_fit_or_crop">Video passend maken of bijsnijden</string>
+    <string name="cd_fit_or_crop">Video passend maken, bijsnijden of uitrekken</string>
 </resources>
