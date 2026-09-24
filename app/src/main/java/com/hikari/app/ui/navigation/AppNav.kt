@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -158,6 +159,15 @@ object Routes {
      * and the Settings index has its own door to it either way.
      */
     const val STATS = "stats"
+
+    /**
+     * The Telegram tab: the videos on the public Telegram channels the user
+     * added, played in Hikari's own player (see
+     * [com.hikari.app.ui.screens.TelegramScreen]). OFF by default and switched
+     * on in Settings → Taskbar buttons, like [IPTV] and [STATS] — an install
+     * with no channels should not carry a spare button.
+     */
+    const val TELEGRAM = "telegram"
 
     /** Opens one manga. [url] is the source's own url for the title (its id). */
     fun mangaDetail(
@@ -862,6 +872,10 @@ val BottomTabs = listOf(
     // Stats is the other off-by-default tab (Settings → Taskbar buttons): a
     // page about what you have already watched, not something to browse to.
     BottomTab(Routes.STATS, "Stats", Icons.Filled.BarChart),
+    // Telegram, off by default like IPTV and Stats: the videos on the public
+    // Telegram channels the user added, played in Hikari's player (Settings →
+    // Taskbar buttons switches the button on).
+    BottomTab(Routes.TELEGRAM, "Telegram", Icons.Filled.Send),
     BottomTab(Routes.EXTENSIONS, "Extensions", Icons.Filled.Extension),
     BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -906,11 +920,16 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // the user has already watched, and the taskbar is for getting somewhere.
     val statsTabFlow = remember { app.store.statsTabFlow() }
     val statsTabOn by statsTabFlow.collectAsState(initial = false)
+    // The Telegram tab is off by default for the same reason (its own flow, not
+    // the hidden-tabs list — see AppStore.telegramTabFlow).
+    val telegramTabFlow = remember { app.store.telegramTabFlow() }
+    val telegramTabOn by telegramTabFlow.collectAsState(initial = false)
     val visibleTabs: Set<String> = buildSet {
         addAll(hiddenTabs)
         if (!iptvTabOn) add(Routes.IPTV)
         if (!mangaTabOn) add(Routes.MANGA)
         if (!statsTabOn) add(Routes.STATS)
+        if (!telegramTabOn) add(Routes.TELEGRAM)
     }
     // How the bar itself is drawn (Settings → App Layout → Taskbar & navigation).
     val navStyleFlow = remember { app.store.navStyleFlow() }
@@ -1134,6 +1153,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                 IptvPlaylistScreen(nav, pid)
             }
             composable(Routes.EXTENSIONS) { ExtensionsScreen() }
+            // The Telegram tab (off by default — see Routes.TELEGRAM): the public
+            // channels the user added, played in this app's own player.
+            composable(Routes.TELEGRAM) { TelegramScreen(nav) }
             // ---- Manga (the off-by-default tab, its detail page and reader) ----
             composable(Routes.MANGA) { MangaScreen(nav) }
             composable(

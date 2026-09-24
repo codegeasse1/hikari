@@ -29,6 +29,12 @@ viewbinding = "8.7.3"
 cardview = "1.0.0"
 zxing = "3.5.3"
 camerax = "1.4.2"
+# Fingerprint/face unlock for the in-app lock (Settings → Privacy & Browsing →
+# App lock). The androidx prompt rather than the platform's own: it works from
+# API 24 (the platform BiometricPrompt only exists from API 28), and it tells
+# "no sensor" apart from "sensor but nothing enrolled" — which is the difference
+# between hiding the fingerprint button and showing it.
+biometric = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -88,6 +94,10 @@ androidx-camera-core = { group = "androidx.camera", name = "camera-core", versio
 androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+# The in-app lock's fingerprint prompt, and the app-level foreground/background
+# signal it locks again on (ProcessLifecycleOwner — see AppLockGate).
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycle" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

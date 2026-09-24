@@ -162,6 +162,21 @@ class AppStore(private val ctx: Context) {
          * buttons switches it on).
          */
         val STATS_TAB = booleanPreferencesKey("showStatsTab")
+        /**
+         * Whether the Telegram tab's button is drawn in the taskbar. Off by
+         * default like IPTV/Stats: the tab is for the user who keeps their
+         * videos in Telegram channels, and an install that has none should not
+         * carry a button for it (Settings → Taskbar buttons switches it on).
+         */
+        val TELEGRAM_TAB = booleanPreferencesKey("showTelegramTab")
+        /** The Telegram channels the Telegram tab browses, as JSON. */
+        val TELEGRAM_CHANNELS = stringPreferencesKey("telegramChannels")
+        /** App lock — the switch itself (Settings → Privacy & Browsing). */
+        val APP_LOCK = booleanPreferencesKey("appLock")
+        /** The lock's secret as `salt:hash` (PBKDF2-SHA256); blank = never set. */
+        val APP_LOCK_SECRET = stringPreferencesKey("appLockSecret")
+        /** Unlock with the device's fingerprint/face as well as the password. */
+        val APP_LOCK_BIO = booleanPreferencesKey("appLockBiometric")
         /** The per-day/per-title totals behind the Stats page — see
          *  [com.hikari.app.data.WatchStats]. */
         val WATCH_STATS = stringPreferencesKey("watchStats")
@@ -1518,6 +1533,74 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setStatsTab(shown: Boolean) {
         write("STATS_TAB") { it[K.STATS_TAB] = shown }
+    }
+
+    // ---- The Telegram tab (off by default; Settings → Taskbar buttons) ----
+
+    /** True when the Telegram button has been switched on in the taskbar
+     *  settings (see [setTelegramTab]). */
+    fun telegramTabFlow(): Flow<Boolean> =
+        store.data.map { it[K.TELEGRAM_TAB] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun telegramTab(): Boolean = telegramTabFlow().first()
+
+    suspend fun setTelegramTab(shown: Boolean) {
+        write("TELEGRAM_TAB") { it[K.TELEGRAM_TAB] = shown }
+    }
+
+    /**
+     * The channels the Telegram tab browses, as JSON:
+     * `[{"name":"@channel","title":"Channel"}]`.
+     *
+     * Blank is the normal state of a fresh install — the tab then draws its
+     * "add a channel" empty state, and nothing else in the app changes.
+     */
+    fun telegramChannelsFlow(): Flow<String> =
+        store.data.map { it[K.TELEGRAM_CHANNELS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun telegramChannels(): String = telegramChannelsFlow().first()
+
+    suspend fun setTelegramChannels(json: String) {
+        write("TELEGRAM_CHANNELS") { it[K.TELEGRAM_CHANNELS] = json }
+    }
+
+    // ---- App lock (Settings → Privacy & Browsing) -------------------------
+
+    /** True when the app asks for the password (or a fingerprint) on launch. */
+    fun appLockFlow(): Flow<Boolean> =
+        store.data.map { it[K.APP_LOCK] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLock(): Boolean = appLockFlow().first()
+
+    suspend fun setAppLock(on: Boolean) {
+        write("APP_LOCK") { it[K.APP_LOCK] = on }
+    }
+
+    /**
+     * The lock's secret as `salt:hash`, or blank when no password was ever set.
+     * The password itself is never stored — see [com.hikari.app.lock.AppLock].
+     */
+    fun appLockSecretFlow(): Flow<String> =
+        store.data.map { it[K.APP_LOCK_SECRET] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockSecret(): String = appLockSecretFlow().first()
+
+    suspend fun setAppLockSecret(value: String) {
+        write("APP_LOCK_SECRET") { it[K.APP_LOCK_SECRET] = value }
+    }
+
+    /**
+     * Whether the device's fingerprint/face may unlock the app too (on by
+     * default). A password always has to exist: the fingerprint is an extra
+     * way in, never the only one (see [setAppLockSecret]).
+     */
+    fun appLockBioFlow(): Flow<Boolean> =
+        store.data.map { it[K.APP_LOCK_BIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockBio(): Boolean = appLockBioFlow().first()
+
+    suspend fun setAppLockBio(on: Boolean) {
+        write("APP_LOCK_BIO") { it[K.APP_LOCK_BIO] = on }
     }
 
     // ---- Watch/read statistics (the Stats page) --------------------------

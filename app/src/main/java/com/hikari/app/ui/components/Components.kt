@@ -123,11 +123,19 @@ fun MediaRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    providerName.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                // Blank means "the row does not need to say where it came from":
+                // a folder's own page already says which folder this is (its
+                // header), so repeating the folder's name above every row was
+                // noise the user asked to lose — "we created netflix folder we
+                // know we are on it". Rows that DO mix several folders (the
+                // tab view's "All") still pass a name and still draw it.
+                if (providerName.isNotBlank()) {
+                    Text(
+                        providerName.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             if (onShowAll != null) {
                 TextButton(onClick = onShowAll) {

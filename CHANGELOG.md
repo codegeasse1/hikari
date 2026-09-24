@@ -1,3 +1,16 @@
+## 0.10.26
+
+### Added
+
+- **Telegram tab** (off by default — Settings → Taskbar buttons → Telegram). Add a public channel by its `@name` or a `t.me` link and the channel's videos are listed in the app and play in Hikari's own player, with seeking, subtitles and audio tracks as usual. Older posts load a page at a time. Private channels and Saved Messages are not readable without a Telegram login, which this build does not do.
+- **App lock** (Settings → Privacy & Browsing → App lock). A password is asked when Hikari opens, and the fingerprint or face can be used too. The password is always required — the fingerprint is only a quicker way in — and it is stored hashed, so a forgotten one cannot be recovered.
+
+### Changed
+
+- **My Stuff** sections can be swiped: Library, History and Downloads are now pages you can slide between, and the pills above them follow the swipe.
+- **A folder tile no longer prints the name of whatever is inside it** ("Recent +2") in the Personal Catalog creator — the tile says the folder's name, and an empty folder says it is empty.
+- **Inside a folder, the folder's own name is not repeated over every row** — the header already says which folder you are in. The "All" tab still labels each row, because there the rows really do come from different folders.
+
 ## 0.10.25
 
 Everything added and fixed since 0.9.8.

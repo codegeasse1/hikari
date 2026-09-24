@@ -26,6 +26,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.i18n.tr
+import kotlinx.coroutines.launch
 
 /**
  * The three "things that are yours" screens, in one taskbar slot.
@@ -121,14 +123,57 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
     }
     val strip = if (visible.isEmpty()) listOf(section) else visible
 
+    // ---- Swipe between the sections, not just tap the pill ----
+    //
+    // The three are pages of one screen, so the gesture that reaches the next
+    // one is the same one every other page of this app answers: swipe. The pill
+    // the user taps and the page the swipe lands on are the SAME state, kept in
+    // step in both directions — tapping a pill animates the pager over (so the
+    // move reads as a page turning rather than a jump), and a swipe that settles
+    // on a page selects that section, which is what redraws the pill. The two
+    // effects each check before they write, so neither can spin the other.
+    val pager = androidx.compose.foundation.pager.rememberPagerState(
+        initialPage = strip.indexOf(section).coerceAtLeast(0),
+        pageCount = { strip.size },
+    )
+    val scope = rememberCoroutineScope()
+    // Keyed on the sections as text, not on the list instance: `visible` is
+    // rebuilt by filter() on every recomposition, and an effect keyed on the
+    // list itself would re-run (and re-animate) on every pass.
+    val stripKey = strip.joinToString(",")
+    LaunchedEffect(section, stripKey) {
+        val target = strip.indexOf(section)
+        if (target >= 0 && target != pager.currentPage) pager.animateScrollToPage(target)
+    }
+    LaunchedEffect(pager.currentPage, stripKey) {
+        val shown = strip.getOrNull(pager.currentPage)
+        if (shown != null && shown != section) section = shown
+    }
+
     Column(Modifier.fillMaxSize()) {
         // One section left means the strip is a single pill: hide it rather than
         // draw a lone button that does nothing but take a row of the screen.
-        if (strip.size > 1) MyStuffStrip(strip, section) { section = it }
-        when (section) {
-            MyStuff.HISTORY -> HistoryScreen(nav, embedded = true)
-            MyStuff.DOWNLOADS -> DownloadsScreen(nav, embedded = true)
-            else -> LibraryScreen(nav, embedded = true)
+        if (strip.size > 1) {
+            MyStuffStrip(strip, section) { picked ->
+                section = picked
+                scope.launch {
+                    val target = strip.indexOf(picked)
+                    if (target >= 0) pager.animateScrollToPage(target)
+                }
+            }
+        }
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            modifier = Modifier.fillMaxSize(),
+            // With one section there is nothing to swipe to, and a pager that
+            // still slides is a page the user can drag into empty space.
+            userScrollEnabled = strip.size > 1,
+        ) { page ->
+            when (strip.getOrNull(page)) {
+                MyStuff.HISTORY -> HistoryScreen(nav, embedded = true)
+                MyStuff.DOWNLOADS -> DownloadsScreen(nav, embedded = true)
+                else -> LibraryScreen(nav, embedded = true)
+            }
         }
     }
 }

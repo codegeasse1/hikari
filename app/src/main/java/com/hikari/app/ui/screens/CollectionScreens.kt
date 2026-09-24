@@ -4091,6 +4091,9 @@ private fun CollectionTabsContent(nav: NavHostController, collection: Collection
                 current?.sources.orEmpty()
             },
             loaded = rows,
+            // Only the "All" tab mixes folders, so only it needs each row to say
+            // which folder it came from (see FolderRowList.showProviderName).
+            showProviderName = showAll && index == allSlot,
             emptyTitle = tr("Nothing here right now"),
             emptySubtitle = tr(
                 "This folder's catalogs returned no content. Check the extension's " +
@@ -4216,17 +4219,21 @@ fun FolderTile(
                 modifier = Modifier.padding(horizontal = 3.dp),
             )
         }
-        Text(
-            folder.sources.firstOrNull()?.title?.let { first ->
-                if (folder.sources.size > 1) "$first +${folder.sources.size - 1}"
-                else first
-            } ?: tr("Empty folder"),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 3.dp),
-        )
+        // The small grey line under the name used to name the folder's FIRST
+        // catalog and count the rest — "Recent +2", "الاحداث +2" — which told the
+        // user nothing they could act on and read as a stray label on every tile
+        // ("show remove the text that showing"). What is left is the one case
+        // that IS information: a folder that has nothing in it.
+        if (folder.sources.isEmpty()) {
+            Text(
+                tr("Empty folder"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 3.dp),
+            )
+        }
     }
 }
 
@@ -4282,6 +4289,9 @@ private fun CollectionFolderContent(
             nav = nav,
             sources = folder.sources,
             loaded = loaded,
+            // One folder on screen: its own header says which one, so the rows
+            // do not repeat it (see FolderRowList.showProviderName).
+            showProviderName = false,
             emptyTitle = tr("Nothing here right now"),
             emptySubtitle = tr(
                 "This folder's catalogs returned no content. Check the extension's " +
@@ -4306,6 +4316,16 @@ private fun FolderRowList(
     loaded: List<CatalogRow>?,
     emptyTitle: String,
     emptySubtitle: String,
+    /**
+     * Whether a row draws the "Collection · Folder" line under its title.
+     *
+     * False when the page IS one folder: the header above already says which
+     * folder this is, and repeating its name over every row is what the user
+     * circled — "then again write netflix subhesder of next row… we know we are
+     * on it". True for the tab view's "All" tab, where the rows really do come
+     * from different folders and the line is the only thing that says which.
+     */
+    showProviderName: Boolean = true,
 ) {
     if (loaded == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -4328,7 +4348,7 @@ private fun FolderRowList(
             val src = sources.firstOrNull { it.key == row.catalogId }
             MediaRow(
                 title = row.title,
-                providerName = row.providerName,
+                providerName = if (showProviderName) row.providerName else "",
                 items = row.items,
                 onClick = { item ->
                     Routes.safeNavigate(

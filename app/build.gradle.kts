@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 196
-    versionName = "0.10.25"
+    versionCode = 197
+    versionName = "0.10.26"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -404,6 +404,18 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    // ---- The in-app lock (Settings → Privacy & Browsing → App lock) ----
+    //
+    //  * biometric — the fingerprint/face prompt itself. The androidx one, not
+    //    the platform's: this app runs from API 24 and the platform
+    //    BiometricPrompt only exists from API 28, so the platform API would mean
+    //    writing (and testing) two different prompts on two different paths.
+    //  * lifecycle-process — ProcessLifecycleOwner, the ONE signal that means
+    //    "the app went to the background". Locking on the activity's own stop
+    //    would re-lock behind the player (a separate activity), i.e. a password
+    //    prompt every time a film ends.
+    implementation(libs.androidx.biometric)
+    implementation(libs.androidx.lifecycle.process)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 

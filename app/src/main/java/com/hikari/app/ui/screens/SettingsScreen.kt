@@ -5,6 +5,8 @@ import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Tv
 import com.hikari.app.i18n.tr
+import com.hikari.app.lock.AppLock
+import com.hikari.app.ui.Biometrics
 import com.hikari.app.i18n.I18n
 
 import android.content.Context
@@ -49,6 +51,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -70,6 +73,8 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
@@ -138,6 +143,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -825,7 +832,8 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                 }
                 SettingsFolder.PRIVACY -> {
-                    item { SettingsCard(top = 2.dp) { AdBlockingCard(app) } }
+                    item { SettingsCard(top = 2.dp) { AppLockCard(app) } }
+                    item { SettingsCard { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
                 }
@@ -1608,19 +1616,25 @@ private fun TaskbarCard(app: HikariApp) {
     // Stats is the third off-by-default button (see AppStore.statsTabFlow).
     val statsFlow = remember { app.store.statsTabFlow() }
     val statsTab by statsFlow.collectAsState(initial = false)
+    // Telegram is the fourth off-by-default button (AppStore.telegramTabFlow):
+    // the videos on the public Telegram channels the user added.
+    val telegramFlow = remember { app.store.telegramTabFlow() }
+    val telegramTab by telegramFlow.collectAsState(initial = false)
     fun shown(tab: BottomTab): Boolean = when (tab.route) {
         Routes.IPTV -> iptvTab
         Routes.MANGA -> mangaTab
         Routes.STATS -> statsTab
+        Routes.TELEGRAM -> telegramTab
         else -> tab.route !in hidden
     }
-    // The tabs that obey the "the last one cannot be switched off" rule. IPTV,
-    // Manga and Stats are not among them: they are extra pages, so switching any
-    // of them on or off can never leave the user without a way around the app.
-    val extras = setOf(Routes.IPTV, Routes.MANGA, Routes.STATS)
+    // The tabs that obey "the last one cannot be switched off" rule. IPTV,
+    // Manga, Stats and Telegram are not among them: they are extra pages, so
+    // switching any of them on or off can never leave the user without a way
+    // around the app.
+    val extras = setOf(Routes.IPTV, Routes.MANGA, Routes.STATS, Routes.TELEGRAM)
     val coreVisible = BottomTabs.filter { it.route !in extras && it.route !in hidden }
     val visibleCount = coreVisible.size + (if (iptvTab) 1 else 0) + (if (mangaTab) 1 else 0) +
-        (if (statsTab) 1 else 0)
+        (if (statsTab) 1 else 0) + (if (telegramTab) 1 else 0)
     val labelsFlow = remember { app.store.tabLabelsFlow() }
     val labels by labelsFlow.collectAsState(initial = true)
 
@@ -1684,6 +1698,13 @@ private fun TaskbarCard(app: HikariApp) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (tab.route == Routes.TELEGRAM) {
+                        Text(
+                            tr("Off by default — switch on to watch your Telegram channels"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (tab.route == Routes.LIBRARY) {
                         // My Stuff is really THREE pages behind one button, so
                         // its own sections get their own switches directly under
@@ -1708,6 +1729,7 @@ private fun TaskbarCard(app: HikariApp) {
                                 Routes.IPTV -> app.store.setIptvTab(on)
                                 Routes.MANGA -> app.store.setMangaTab(on)
                                 Routes.STATS -> app.store.setStatsTab(on)
+                                Routes.TELEGRAM -> app.store.setTelegramTab(on)
                                 else -> app.store.setTabHidden(tab.route, !on)
                             }
                         }
@@ -4010,6 +4032,177 @@ private fun PerformanceBoosterCard(app: HikariApp) {
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * The in-app lock (Settings → Privacy & Browsing → App lock).
+ *
+ * Two halves, and the order matters: a PASSWORD always has to exist for the
+ * lock to be switchable on at all, and the fingerprint/face is an additional,
+ * optional way in on top of it. That is the user's own rule — "have to choose
+ * at least one password type" — and it is also the only shape that cannot lock
+ * someone out of their own app on a phone whose sensor was never enrolled.
+ *
+ * There is no recovery, and the card says so BEFORE the password is set: what
+ * is stored is a PBKDF2 derivation (see [AppLock]), so nothing in the app can
+ * read the password back. The way out of a forgotten password is clearing the
+ * app's data, exactly like every other app lock.
+ */
+@Composable
+private fun AppLockCard(app: HikariApp) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val lockFlow = remember { app.store.appLockFlow() }
+    val on by lockFlow.collectAsState(initial = false)
+    val secretFlow = remember { app.store.appLockSecretFlow() }
+    val secret by secretFlow.collectAsState(initial = "")
+    val bioFlow = remember { app.store.appLockBioFlow() }
+    val bioOn by bioFlow.collectAsState(initial = true)
+    val hasSecret = AppLock.isSet(secret)
+    // Whether this device can offer the fingerprint at all: no sensor, nothing
+    // enrolled, or a biometric stack that says no all read as "not available",
+    // and the toggle is then explained rather than shown as a switch that can
+    // never work.
+    val biometrics = remember(context) { Biometrics.available(context) }
+    var setDialog by remember { mutableStateOf(false) }
+    var first by remember { mutableStateOf("") }
+    var second by remember { mutableStateOf("") }
+    val tooShort = first.isNotEmpty() && first.length < 4
+    val mismatch = second.isNotEmpty() && first != second
+    val canSave = first.length >= 4 && first == second
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Lock, tr("App lock"))
+        SettingsToggle(
+            label = tr("Ask for a password when Hikari opens"),
+            supporting = if (on) tr("On — the app opens locked") else tr("Off"),
+            checked = on,
+            onCheckedChange = { want ->
+                // Switching it on with no password yet must not leave the app in
+                // a lock that cannot be opened: the password comes first, and the
+                // switch is turned on when it is saved.
+                if (want && !hasSecret) {
+                    first = ""
+                    second = ""
+                    setDialog = true
+                } else {
+                    scope.launch { runCatching { app.store.setAppLock(want) } }
+                }
+            },
+        )
+        if (hasSecret) {
+            SettingsToggle(
+                label = tr("Unlock with fingerprint"),
+                supporting = if (biometrics) {
+                    tr("Use the fingerprint or face this device already has")
+                } else {
+                    tr("No fingerprint or face is set up on this device")
+                },
+                checked = bioOn && biometrics,
+                onCheckedChange = { scope.launch { runCatching { app.store.setAppLockBio(it) } } },
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    first = ""
+                    second = ""
+                    setDialog = true
+                }) {
+                    Text(tr("Change password"))
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching {
+                            app.store.setAppLock(false)
+                            app.store.setAppLockSecret("")
+                        }
+                    }
+                }) {
+                    Text(tr("Remove password"))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            tr(
+                "The password is always required — the fingerprint is only a " +
+                    "quicker way in. Write it down: a forgotten password cannot be " +
+                    "recovered, and the only way back into the app would be clearing " +
+                    "Hikari's data."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (setDialog) {
+        AlertDialog(
+            onDismissRequest = { setDialog = false },
+            title = { Text(tr("Set a password")) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = first,
+                        onValueChange = { first = it },
+                        label = { Text(tr("Password")) },
+                        singleLine = true,
+                        isError = tooShort,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = second,
+                        onValueChange = { second = it },
+                        label = { Text(tr("Repeat password")) },
+                        singleLine = true,
+                        isError = mismatch,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (tooShort) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            tr("Use at least 4 characters"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    if (mismatch) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            tr("The two passwords are not the same"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = canSave,
+                    onClick = {
+                        scope.launch {
+                            runCatching {
+                                app.store.setAppLockSecret(AppLock.encode(first))
+                                app.store.setAppLock(true)
+                                app.store.setAppLockBio(biometrics)
+                            }
+                        }
+                        setDialog = false
+                    },
+                ) {
+                    Text(tr("Save"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { setDialog = false }) { Text(tr("Cancel")) }
+            },
         )
     }
 }

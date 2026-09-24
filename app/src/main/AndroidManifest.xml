@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- The in-app lock (Settings → Privacy & Browsing → App lock) unlocks with
+         the device's fingerprint/face as an alternative to the password. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- The player holds a partial + Wi-Fi wakelock while streaming
          (ExoPlayer WAKE_MODE_NETWORK) so the radio can't drop into power-save

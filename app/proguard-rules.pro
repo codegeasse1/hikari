@@ -102,6 +102,20 @@
 -keep class com.hikari.ext.** { *; }
 
 # ---------------------------------------------------------------------------
+# 3b. androidx.biometric (the in-app lock's fingerprint prompt)
+#
+# The prompt is a fragment `androidx.biometric.BiometricFragment` that the
+# library instantiates FROM A STRING ("androidx.biometric.BiometricFragment")
+# and attaches to the host activity's FragmentManager, so R8 cannot see the
+# reference and would remove the class — the lock would then stop offering the
+# fingerprint in the release build only, which is the worst possible place for
+# that bug to live. `-dontobfuscate` is already on above, so keeping the classes
+# is all that is needed.
+# ---------------------------------------------------------------------------
+-keep class androidx.biometric.** { *; }
+-dontwarn androidx.biometric.**
+
+# ---------------------------------------------------------------------------
 # 4. Libraries third-party code links against by name
 #
 # Not one of these is referenced by Hikari's own source — they are here so

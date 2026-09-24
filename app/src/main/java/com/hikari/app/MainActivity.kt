@@ -441,6 +441,13 @@ class MainActivity : AppCompatActivity() {
                 // below, which is why the provider wraps them too. On a phone
                 // this is a pass-through and the platform ripple is unchanged.
                 TvFocusProvider(androidx.compose.material3.MaterialTheme.colorScheme.primary) {
+                // The in-app lock (Settings → Privacy & Browsing → App lock).
+                // While it is on and the app has not been unlocked, this is the
+                // only thing on screen — the gate draws the unlock card INSTEAD
+                // of AppRoot and of the dialogs below, so nothing of the app (a
+                // title, a poster, a notification about an update) can be read
+                // over the lock.
+                com.hikari.app.ui.AppLockGate(this@MainActivity) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
                     UpdateDialog(
@@ -457,6 +464,7 @@ class MainActivity : AppCompatActivity() {
                             scope.launch { runCatching { store.setTelegramDontShow(true) } }
                         },
                     )
+                }
                 }
                 }
             }
