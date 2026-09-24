@@ -244,7 +244,7 @@ object TrackerApi {
             val viewer = reply.json()?.optJSONObject("data")?.optJSONObject("Viewer")
             val name = viewer?.optString("name").orEmpty()
             if (viewer == null || name.isBlank()) {
-                Result.failure(Exception(reply.graphqlError()?.let { "AniList: $it" }
+                Result.failure(Exception(reply.graphQlError()?.let { "AniList: $it" }
                     ?: problem(reply, "AniList sign-in")))
             } else {
                 Result.success(

@@ -140,7 +140,8 @@ import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
 import com.hikari.app.data.Translator
 import com.hikari.app.data.Trailer
-import com.hikari.app.tracker.TrackerSyncimport com.hikari.app.net.StreamProbe
+import com.hikari.app.tracker.TrackerSync
+import com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider

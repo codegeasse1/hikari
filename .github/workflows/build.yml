@@ -97,6 +97,13 @@ jobs:
           # that is worse than a clean failure, because the retry never gets a
           # chance to run. "timeout" turns a hang into exit code 124, which the
           # retry below treats like any other transient network problem.
+          # `set +e` is load-bearing: this step's shell runs with `-e` (see
+          # `shell:` above), and a failing `timeout gradle…` would abort the
+          # script at that line — before `code=$?`, before the retry, and before
+          # the error dump below. That is why a failed build used to be logged
+          # as "attempt 1/5" followed by nothing at all: the actual Kotlin
+          # errors were in gradle-build.log, and the step never printed them.
+          set +e
           code=1
           for attempt in 1 2 3 4 5; do
             echo "==== Gradle build attempt $attempt/5 ===="
